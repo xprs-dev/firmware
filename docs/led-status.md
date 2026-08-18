@@ -166,11 +166,11 @@ All LED functions are thread-safe. A mutex protects concurrent access to the LED
 ### Mesh Events (main.cpp)
 
 ```c
-case GEOGRAM_MESH_EVENT_CONNECTED:
+case XPRS_MESH_EVENT_CONNECTED:
     led_set_state(LED_STATE_OK);
     break;
 
-case GEOGRAM_MESH_EVENT_DISCONNECTED:
+case XPRS_MESH_EVENT_DISCONNECTED:
     led_set_state(LED_STATE_ERROR);
     break;
 ```

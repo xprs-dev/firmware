@@ -1,6 +1,6 @@
 # Release Process
 
-This document describes how to publish a new release of the Geogram ESP32 firmware.
+This document describes how to publish a new release of the XPRS ESP32 firmware.
 
 ## Prerequisites
 

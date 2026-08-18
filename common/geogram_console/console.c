@@ -20,7 +20,7 @@
 static const char *TAG = "console";
 
 #define CONSOLE_UART_NUM    UART_NUM_0
-#define CONSOLE_PROMPT      "geogram> "
+#define CONSOLE_PROMPT      "xprs> "
 #define MAX_CMDLINE_LENGTH  256
 #define MAX_CMDLINE_ARGS    8
 #define HISTORY_SIZE        30
@@ -202,7 +202,7 @@ static void console_task(void *arg)
 
     ESP_LOGI(TAG, "Console task started");
     printf("\n");
-    printf("Geogram Serial Console\n");
+    printf("XPRS Serial Console\n");
     printf("Type 'help' for available commands\n\n");
 
     while (s_running) {

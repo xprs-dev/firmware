@@ -1,6 +1,6 @@
-# Geogram Serial Console CLI
+# XPRS Serial Console CLI
 
-The Geogram firmware provides a serial console interface for device control, configuration, and debugging. Connect via UART at 115200 baud.
+The XPRS firmware provides a serial console interface for device control, configuration, and debugging. Connect via UART at 115200 baud.
 
 ## Getting Started
 
@@ -15,10 +15,10 @@ picocom -b 115200 /dev/ttyUSB0
 You'll see the prompt:
 
 ```
-Geogram Serial Console
+XPRS Serial Console
 Type 'help' for available commands
 
-geogram>
+xprs>
 ```
 
 ## Features
@@ -36,9 +36,9 @@ geogram>
 Display full device status including firmware version, WiFi, sensors, and memory.
 
 ```
-geogram> status
+xprs> status
 
-=== Geogram Device Status ===
+=== XPRS Device Status ===
 
 Firmware: 1.0.0
 Board: ESP32S3-ePaper-1.54
@@ -59,7 +59,7 @@ Heap: 245632 bytes free
 Display firmware version.
 
 ```
-geogram> version
+xprs> version
 1.0.0
 ```
 
@@ -67,7 +67,7 @@ geogram> version
 Reboot the device.
 
 ```
-geogram> reboot
+xprs> reboot
 Rebooting...
 ```
 
@@ -75,7 +75,7 @@ Rebooting...
 Display free heap memory.
 
 ```
-geogram> heap
+xprs> heap
 Free heap: 245632 bytes
 Minimum free heap: 198456 bytes
 ```
@@ -84,7 +84,7 @@ Minimum free heap: 198456 bytes
 Display device uptime.
 
 ```
-geogram> uptime
+xprs> uptime
 Uptime: 2h 15m 30s
 ```
 
@@ -92,13 +92,13 @@ Uptime: 2h 15m 30s
 Get or set the output format. JSON mode is useful for automation.
 
 ```
-geogram> format
+xprs> format
 Current format: text
 
-geogram> format json
+xprs> format json
 Output format set to JSON
 
-geogram> status
+xprs> status
 {"version":"1.0.0","callsign":"ESPAB12","uptime":5025,"wifi":"connected","ip":"192.168.1.51"}
 ```
 
@@ -108,7 +108,7 @@ Set the ESP-IDF log level.
 Levels: `none`, `error`, `warn`, `info`, `debug`, `verbose`
 
 ```
-geogram> log debug
+xprs> log debug
 Log level set to debug
 ```
 
@@ -118,7 +118,7 @@ Log level set to debug
 Display current WiFi status.
 
 ```
-geogram> wifi
+xprs> wifi
 WiFi: Connected
 IP: 192.168.1.50
 ```
@@ -127,14 +127,14 @@ IP: 192.168.1.50
 Connect to a WiFi network. Credentials are automatically saved to NVS for reconnection on reboot.
 
 ```
-geogram> wifi_connect MyNetwork secret123
+xprs> wifi_connect MyNetwork secret123
 Connecting to MyNetwork...
 ```
 
 For open networks, omit the password:
 
 ```
-geogram> wifi_connect OpenNetwork
+xprs> wifi_connect OpenNetwork
 Connecting to OpenNetwork...
 ```
 
@@ -142,7 +142,7 @@ Connecting to OpenNetwork...
 Disconnect from the current WiFi network.
 
 ```
-geogram> wifi_disconnect
+xprs> wifi_disconnect
 Disconnecting from WiFi...
 Disconnected
 ```
@@ -151,7 +151,7 @@ Disconnected
 Clear saved WiFi credentials from NVS. The device will not auto-reconnect on next boot.
 
 ```
-geogram> wifi_clear
+xprs> wifi_clear
 WiFi credentials cleared
 ```
 
@@ -159,7 +159,7 @@ WiFi credentials cleared
 Display saved WiFi credentials (password is masked).
 
 ```
-geogram> wifi_saved
+xprs> wifi_saved
 Saved SSID: MyNetwork
 Password: ********
 ```
@@ -170,7 +170,7 @@ Password: ********
 Show current display status.
 
 ```
-geogram> display
+xprs> display
 Display rotation: 0 degrees
 ```
 
@@ -178,10 +178,10 @@ Display rotation: 0 degrees
 Rotate the display. Valid angles: `0`, `90`, `180`, `270`. Omit angle to cycle through rotations.
 
 ```
-geogram> display_rotate 90
+xprs> display_rotate 90
 Display rotated to 90 degrees
 
-geogram> display_rotate
+xprs> display_rotate
 Display rotated to 180 degrees
 ```
 
@@ -189,11 +189,11 @@ Display rotated to 180 degrees
 Trigger a display refresh. Use `-f` for a full refresh (clears ghosting on e-paper).
 
 ```
-geogram> display_refresh
+xprs> display_refresh
 Performing partial display refresh...
 Display refreshed
 
-geogram> display_refresh -f
+xprs> display_refresh -f
 Performing full display refresh...
 Display refreshed
 ```
@@ -204,7 +204,7 @@ Display refreshed
 Display all configuration settings.
 
 ```
-geogram> config
+xprs> config
 
 === Configuration ===
 
@@ -221,7 +221,7 @@ WiFi Password: ********
 Reset all configuration to factory defaults. Clears WiFi credentials, display settings, and application settings.
 
 ```
-geogram> config_reset
+xprs> config_reset
 Resetting all configuration...
 Configuration reset. Reboot to apply changes.
 ```
@@ -234,21 +234,21 @@ Low-level commands for inspecting and modifying NVS storage.
 List known NVS namespaces.
 
 ```
-geogram> nvs_list
+xprs> nvs_list
 Known NVS namespaces:
   wifi_config - WiFi credentials
   display     - Display settings
-  geogram     - Application settings
+  XPRS     - Application settings
 ```
 
 #### `nvs_get <namespace> <key>`
 Read a value from NVS.
 
 ```
-geogram> nvs_get wifi_config ssid
+xprs> nvs_get wifi_config ssid
 wifi_config/ssid = "MyNetwork" (string)
 
-geogram> nvs_get display rotation
+xprs> nvs_get display rotation
 display/rotation = 90 (i32)
 ```
 
@@ -258,10 +258,10 @@ Write a value to NVS. Default type is `str` (string).
 Types: `str`, `i32`, `u32`
 
 ```
-geogram> nvs_set geogram device_name "My Geogram"
-Set geogram/device_name = My Geogram
+xprs> nvs_set XPRS device_name "My XPRS"
+Set XPRS/device_name = My XPRS
 
-geogram> nvs_set display rotation 180 -t i32
+xprs> nvs_set display rotation 180 -t i32
 Set display/rotation = 180
 ```
 
@@ -269,10 +269,10 @@ Set display/rotation = 180
 Erase a key or entire namespace from NVS.
 
 ```
-geogram> nvs_erase geogram device_name
-Erased key 'device_name' from namespace 'geogram'
+xprs> nvs_erase XPRS device_name
+Erased key 'device_name' from namespace 'XPRS'
 
-geogram> nvs_erase wifi_config
+xprs> nvs_erase wifi_config
 Erased all keys from namespace 'wifi_config'
 ```
 
@@ -281,25 +281,25 @@ Erased all keys from namespace 'wifi_config'
 When `format json` is enabled, commands output machine-parseable JSON:
 
 ```
-geogram> format json
+xprs> format json
 Output format set to JSON
 
-geogram> status
+xprs> status
 {"version":"1.0.0","callsign":"ESPAB12","uptime":5025,"wifi":"connected","ip":"192.168.1.51"}
 
-geogram> wifi
+xprs> wifi
 {"status":"connected","ip":"192.168.1.50"}
 
-geogram> heap
+xprs> heap
 {"free":245632,"minimum":198456}
 
-geogram> uptime
+xprs> uptime
 {"uptime":8130}
 
-geogram> display
+xprs> display
 {"rotation":90}
 
-geogram> config
+xprs> config
 {"callsign":"ESPAB12","version":"1.0.0","board":"ESP32S3-ePaper-1.54","display_rotation":90,"wifi_ssid":"MyNetwork"}
 ```
 

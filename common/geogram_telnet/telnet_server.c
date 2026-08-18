@@ -27,7 +27,7 @@ static const char *TAG = "telnet";
 #define TELNET_TASK_PRIO    3
 #define TELNET_RX_BUFFER    256
 #define TELNET_TX_BUFFER    1024
-#define TELNET_PROMPT       "geogram> "
+#define TELNET_PROMPT       "xprs> "
 
 // Telnet protocol bytes
 #define TELNET_IAC          255     // Interpret As Command
@@ -203,7 +203,7 @@ static void telnet_handle_client(void)
     // Send welcome message
     telnet_print("\r\n");
     telnet_print("╔═══════════════════════════════════════╗\r\n");
-    telnet_print("║     Geogram ESP32 Telnet Console      ║\r\n");
+    telnet_print("║      XPRS ESP32 Telnet Console        ║\r\n");
     telnet_print("╚═══════════════════════════════════════╝\r\n");
     telnet_print("\r\n");
     telnet_print("Type 'help' for available commands\r\n");

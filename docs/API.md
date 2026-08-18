@@ -1,6 +1,6 @@
-# Geogram HTTP API
+# XPRS HTTP API
 
-The Geogram firmware provides an HTTP API for device status, configuration, and control. The API is available when the device is connected to WiFi.
+The XPRS firmware provides an HTTP API for device status, configuration, and control. The API is available when the device is connected to WiFi.
 
 ## Base URL
 
@@ -79,7 +79,7 @@ Full device status with station information. Only available when Station API is 
 {
   "station": {
     "callsign": "ESPAB12",
-    "name": "Geogram Station",
+    "name": "XPRS Station",
     "version": "1.0.0",
     "uptime": 3600,
     "clients": 0
@@ -144,7 +144,7 @@ WebSocket endpoint for real-time communication with connected clients.
 
 ## Station API
 
-The Station API provides information about the Geogram device acting as a local "station" that clients can connect to.
+The Station API provides information about the XPRS device acting as a local "station" that clients can connect to.
 
 ### Callsign
 
@@ -232,7 +232,7 @@ curl -X POST http://192.168.4.1/connect \
 ### AP Mode (Setup)
 
 When no WiFi credentials are saved or connection fails, the device starts in Access Point mode:
-- SSID: `Geogram-Setup`
+- SSID: `xprs-setup`
 - Password: (none - open network)
 - IP: `192.168.4.1`
 

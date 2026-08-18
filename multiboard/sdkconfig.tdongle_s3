@@ -509,18 +509,18 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
-# Geogram Board Selection
+# XPRS Board Selection
 #
 # CONFIG_GEOGRAM_BOARD_EPAPER_1IN54 is not set
 CONFIG_GEOGRAM_BOARD_TDONGLE_S3=y
 # CONFIG_GEOGRAM_BOARD_HELTEC_V3 is not set
-# end of Geogram Board Selection
+# end of XPRS Board Selection
 
 #
-# Geogram Mesh Networking
+# XPRS Mesh Networking
 #
 # CONFIG_GEOGRAM_MESH_ENABLED is not set
-# end of Geogram Mesh Networking
+# end of XPRS Mesh Networking
 
 #
 # Compiler options

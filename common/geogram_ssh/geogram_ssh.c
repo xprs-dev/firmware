@@ -218,7 +218,7 @@ static void ssh_shell_callback(ssh_server_session_t *session, void *ctx) {
     char line[256];
 
     printf("\r\n");
-    printf("Geogram SSH Console\r\n");
+    printf("XPRS SSH Console\r\n");
     if (session && session->username) {
         printf("Connected as: %s\r\n", session->username);
     }
@@ -226,7 +226,7 @@ static void ssh_shell_callback(ssh_server_session_t *session, void *ctx) {
     printf("\r\n");
 
     while (1) {
-        printf("geogram> ");
+        printf("xprs> ");
         fflush(stdout);
 
         if (fgets(line, sizeof(line), stdin) == NULL) {

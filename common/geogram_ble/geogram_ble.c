@@ -857,7 +857,7 @@ static char *ble_build_chat_rooms_body(void)
 
     cJSON_AddStringToObject(room, "id", "general");
     cJSON_AddStringToObject(room, "name", "General");
-    cJSON_AddStringToObject(room, "description", "Geogram local chat room");
+    cJSON_AddStringToObject(room, "description", "XPRS local chat room");
     cJSON_AddStringToObject(room, "type", "public");
     cJSON_AddNumberToObject(room, "memberCount", 1);
     cJSON_AddNumberToObject(room, "messageCount", (double)mesh_chat_get_count());
@@ -2669,7 +2669,7 @@ esp_err_t geogram_ble_init(void)
     ble_svc_gap_init();
     ble_svc_gatt_init();
 
-    rc = ble_svc_gap_device_name_set("Geogram");
+    rc = ble_svc_gap_device_name_set("XPRS");
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_svc_gap_device_name_set failed: rc=%d", rc);
     }

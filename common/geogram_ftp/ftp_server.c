@@ -645,7 +645,7 @@ static void handle_client(int client_sock, struct sockaddr_in *client_addr)
     strcpy(session.cwd, "/");
 
     // Send welcome
-    ftp_send(&session, "220 Geogram FTP Server Ready");
+    ftp_send(&session, "220 XPRS FTP Server Ready");
 
     char buf[FTP_BUFFER_SIZE];
     int buf_pos = 0;

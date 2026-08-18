@@ -112,10 +112,10 @@ void tdongle_ui_update(void)
         uint32_t seconds = total_sec % 60;
 
         if (days == 0) {
-            snprintf(buf, sizeof(buf), "geogram uptime: %02lu:%02lu:%02lu",
+            snprintf(buf, sizeof(buf), "XPRS uptime: %02lu:%02lu:%02lu",
                      (unsigned long)hours, (unsigned long)minutes, (unsigned long)seconds);
         } else {
-            snprintf(buf, sizeof(buf), "geogram uptime: %lu day%s %02lu h",
+            snprintf(buf, sizeof(buf), "XPRS uptime: %lu day%s %02lu h",
                      (unsigned long)days, (days == 1 ? "" : "s"), (unsigned long)hours);
         }
         lv_label_set_text(s_status_label, buf);
@@ -198,7 +198,7 @@ static void build_ui(void)
     lv_obj_align(top, LV_ALIGN_TOP_MID, 0, 0);
 
     s_status_label = lv_label_create(top);
-    lv_label_set_text(s_status_label, "geogram  00:00:00");
+    lv_label_set_text(s_status_label, "XPRS  00:00:00");
     lv_obj_set_style_text_font(s_status_label, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(s_status_label, lv_color_black(), 0);
     lv_obj_align(s_status_label, LV_ALIGN_LEFT_MID, 4, 0);

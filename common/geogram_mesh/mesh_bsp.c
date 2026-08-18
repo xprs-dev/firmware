@@ -44,7 +44,7 @@ static const char *TAG = "mesh_bsp";
  * @brief Callback to construct SSID from MAC address for mesh peer discovery
  *
  * ESP-Mesh-Lite discovers peers via vendor IEs in beacon frames, but needs
- * to know the exact SSID to connect to. All nodes use the same SSID "geogram"
+ * to know the exact SSID to connect to. All nodes use the same SSID "xprs"
  * so phones can auto-connect. Mesh peers are distinguished by BSSID, not SSID.
  *
  * This callback is called during scan when a mesh peer is found via vendor IE.

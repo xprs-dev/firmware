@@ -1,6 +1,6 @@
 # ESP32 Wi-Fi Mesh Networking
 
-This document describes the ESP-MESH networking support for Geogram ESP32 devices. The mesh network enables multiple ESP32 boards to communicate with each other while each providing a SoftAP for phone connections.
+This document describes the ESP-MESH networking support for XPRS ESP32 devices. The mesh network enables multiple ESP32 boards to communicate with each other while each providing a SoftAP for phone connections.
 
 ## Overview
 
@@ -76,12 +76,12 @@ esp_err_t geogram_mesh_stop(void);
 ```c
 // Get current mesh status
 typedef enum {
-    GEOGRAM_MESH_STATUS_STOPPED = 0,
-    GEOGRAM_MESH_STATUS_STARTED,
-    GEOGRAM_MESH_STATUS_CONNECTED,
-    GEOGRAM_MESH_STATUS_DISCONNECTED,
-    GEOGRAM_MESH_STATUS_ROOT,
-    GEOGRAM_MESH_STATUS_ERROR
+    XPRS_MESH_STATUS_STOPPED = 0,
+    XPRS_MESH_STATUS_STARTED,
+    XPRS_MESH_STATUS_CONNECTED,
+    XPRS_MESH_STATUS_DISCONNECTED,
+    XPRS_MESH_STATUS_ROOT,
+    XPRS_MESH_STATUS_ERROR
 } geogram_mesh_status_t;
 
 geogram_mesh_status_t geogram_mesh_get_status(void);
@@ -164,16 +164,16 @@ esp_err_t geogram_mesh_load_config(geogram_mesh_config_t *config);
 ```c
 // Event types passed to callback
 typedef enum {
-    GEOGRAM_MESH_EVENT_STARTED,
-    GEOGRAM_MESH_EVENT_STOPPED,
-    GEOGRAM_MESH_EVENT_CONNECTED,
-    GEOGRAM_MESH_EVENT_DISCONNECTED,
-    GEOGRAM_MESH_EVENT_ROOT_CHANGED,
-    GEOGRAM_MESH_EVENT_CHILD_CONNECTED,
-    GEOGRAM_MESH_EVENT_CHILD_DISCONNECTED,
-    GEOGRAM_MESH_EVENT_ROUTE_TABLE_CHANGE,
-    GEOGRAM_MESH_EVENT_EXTERNAL_STA_CONNECTED,
-    GEOGRAM_MESH_EVENT_EXTERNAL_STA_DISCONNECTED
+    XPRS_MESH_EVENT_STARTED,
+    XPRS_MESH_EVENT_STOPPED,
+    XPRS_MESH_EVENT_CONNECTED,
+    XPRS_MESH_EVENT_DISCONNECTED,
+    XPRS_MESH_EVENT_ROOT_CHANGED,
+    XPRS_MESH_EVENT_CHILD_CONNECTED,
+    XPRS_MESH_EVENT_CHILD_DISCONNECTED,
+    XPRS_MESH_EVENT_ROUTE_TABLE_CHANGE,
+    XPRS_MESH_EVENT_EXTERNAL_STA_CONNECTED,
+    XPRS_MESH_EVENT_EXTERNAL_STA_DISCONNECTED
 } geogram_mesh_event_t;
 
 // Event callback signature
@@ -191,21 +191,21 @@ typedef void (*geogram_mesh_event_cb_t)(
 static void mesh_event_handler(geogram_mesh_event_t event, void *data)
 {
     switch (event) {
-        case GEOGRAM_MESH_EVENT_CONNECTED:
+        case XPRS_MESH_EVENT_CONNECTED:
             ESP_LOGI(TAG, "Mesh connected, layer: %d", geogram_mesh_get_layer());
 
             // Start external AP for phone connections
-            geogram_mesh_start_external_ap("geogram-X3ABCD", "", 4);
+            geogram_mesh_start_external_ap("xprs-X3ABCD", "", 4);
 
             // Enable IP bridging
             geogram_mesh_enable_bridge();
             break;
 
-        case GEOGRAM_MESH_EVENT_ROOT_CHANGED:
+        case XPRS_MESH_EVENT_ROOT_CHANGED:
             ESP_LOGI(TAG, "I am now %s", geogram_mesh_is_root() ? "ROOT" : "CHILD");
             break;
 
-        case GEOGRAM_MESH_EVENT_EXTERNAL_STA_CONNECTED:
+        case XPRS_MESH_EVENT_EXTERNAL_STA_CONNECTED:
             ESP_LOGI(TAG, "Phone connected to my AP");
             break;
 
@@ -222,7 +222,7 @@ void app_main(void)
     // Configure mesh network
     geogram_mesh_config_t config = {
         .mesh_id = "geomsh",         // 6-byte mesh ID
-        .password = "geogram-mesh",  // Mesh network password
+        .password = "XPRS-mesh",  // Mesh network password
         .channel = 1,
         .max_layer = 6,
         .allow_root = true,
@@ -239,10 +239,10 @@ void app_main(void)
 The mesh component provides Kconfig options:
 
 ```
-CONFIG_GEOGRAM_MESH_ENABLED        - Enable/disable mesh support
-CONFIG_GEOGRAM_MESH_CHANNEL        - Default WiFi channel (1-13)
-CONFIG_GEOGRAM_MESH_MAX_LAYER      - Maximum mesh tree depth
-CONFIG_GEOGRAM_MESH_EXTERNAL_AP_MAX_CONN - Max phones per node
+CONFIG_XPRS_MESH_ENABLED        - Enable/disable mesh support
+CONFIG_XPRS_MESH_CHANNEL        - Default WiFi channel (1-13)
+CONFIG_XPRS_MESH_MAX_LAYER      - Maximum mesh tree depth
+CONFIG_XPRS_MESH_EXTERNAL_AP_MAX_CONN - Max phones per node
 ```
 
 ### Board-Specific Limits (ESP32-C3)
@@ -250,7 +250,7 @@ CONFIG_GEOGRAM_MESH_EXTERNAL_AP_MAX_CONN - Max phones per node
 Due to memory constraints, ESP32-C3 has reduced limits:
 - `CONFIG_MESH_MAX_LAYER=3` (vs 6 on ESP32-S3)
 - `CONFIG_MESH_ROUTE_TABLE_SIZE=20` (vs 50)
-- `CONFIG_GEOGRAM_MESH_EXTERNAL_AP_MAX_CONN=2` (vs 4)
+- `CONFIG_XPRS_MESH_EXTERNAL_AP_MAX_CONN=2` (vs 4)
 
 ## IP Bridging Protocol
 
@@ -294,7 +294,7 @@ The mesh component provides console commands for testing and debugging:
 ### mesh
 Show current mesh network status.
 ```
-geogram> mesh
+xprs> mesh
 
 === Mesh Network Status ===
 Status:      Connected
@@ -320,7 +320,7 @@ Bytes RX:    7820
 ### mesh_start
 Start mesh networking.
 ```
-geogram> mesh_start -c 6 -r
+xprs> mesh_start -c 6 -r
 Channel: 6, Allow root: yes
 Mesh started, scanning for network...
 ```
@@ -331,7 +331,7 @@ Options:
 ### mesh_stop
 Stop mesh networking.
 ```
-geogram> mesh_stop
+xprs> mesh_stop
 Stopping mesh network...
 Mesh stopped
 ```
@@ -339,7 +339,7 @@ Mesh stopped
 ### mesh_nodes
 List all known mesh nodes.
 ```
-geogram> mesh_nodes
+xprs> mesh_nodes
 
 === Mesh Nodes (3) ===
 MAC Address           Layer     Subnet      Root
@@ -352,7 +352,7 @@ AA:BB:CC:DD:EE:FF     1         192.168.10.x  YES
 ### mesh_send
 Send a test message to a specific mesh node.
 ```
-geogram> mesh_send AA:BB:CC:DD:EE:FF "Hello from node 2!"
+xprs> mesh_send AA:BB:CC:DD:EE:FF "Hello from node 2!"
 [SEND] To: AA:BB:CC:DD:EE:FF, Seq: 1, Message: "Hello from node 2!"
 [SEND] SUCCESS
 ```
@@ -360,7 +360,7 @@ geogram> mesh_send AA:BB:CC:DD:EE:FF "Hello from node 2!"
 ### mesh_broadcast
 Broadcast a message to all mesh nodes.
 ```
-geogram> mesh_broadcast "Hello everyone!"
+xprs> mesh_broadcast "Hello everyone!"
 [BROADCAST] Seq: 2, Message: "Hello everyone!"
 [BROADCAST] Sent to AA:BB:CC:DD:EE:FF
 [BROADCAST] Sent to 77:88:99:AA:BB:CC
@@ -370,7 +370,7 @@ geogram> mesh_broadcast "Hello everyone!"
 ### mesh_ping
 Ping a mesh node and measure round-trip time.
 ```
-geogram> mesh_ping AA:BB:CC:DD:EE:FF
+xprs> mesh_ping AA:BB:CC:DD:EE:FF
 [PING] To: AA:BB:CC:DD:EE:FF, Seq: 3, Time: 123456 ms
 [PING] Sent, waiting for PONG...
 
@@ -382,7 +382,7 @@ geogram> mesh_ping AA:BB:CC:DD:EE:FF
 ### mesh_bridge
 Show IP bridge statistics.
 ```
-geogram> mesh_bridge
+xprs> mesh_bridge
 
 === IP Bridge Statistics ===
 Status:      Enabled
@@ -395,35 +395,35 @@ Bytes RX:    7820
 ### mesh_ap
 Start or stop the external SoftAP for phone connections.
 ```
-geogram> mesh_ap
+xprs> mesh_ap
 Starting external AP...
-  SSID: geogram-X3ABCD
-  Password: geogram
+  SSID: xprs-X3ABCD
+  Password: XPRS
 External AP started at 192.168.52.1
 
-geogram> mesh_ap --stop
+xprs> mesh_ap --stop
 Stopping external AP...
 External AP stopped
 ```
 Options:
 - `-s, --stop`: Stop the external AP
-- `[ssid]`: Custom SSID (default: geogram-{callsign})
+- `[ssid]`: Custom SSID (default: xprs-{callsign})
 
 ### mesh_debug
 Enable or disable verbose debug logging.
 ```
-geogram> mesh_debug --on
+xprs> mesh_debug --on
 Mesh debug logging ENABLED
 
-geogram> mesh_debug --off
+xprs> mesh_debug --off
 Mesh debug logging DISABLED
 ```
 
 ## External AP Configuration
 
 When a node joins the mesh network, it automatically starts a SoftAP for phone connections:
-- **SSID**: `geogram-{callsign}` (e.g., `geogram-X3ABCD`)
-- **Password**: `geogram`
+- **SSID**: `xprs-{callsign}` (e.g., `xprs-X3ABCD`)
+- **Password**: `XPRS`
 - **IP**: `192.168.{10+subnet_id}.1`
 
 Phones connecting to this AP receive IPs via DHCP in the range `192.168.{10+subnet_id}.2-254`.
@@ -445,7 +445,7 @@ Returns current mesh status:
     "node_count": 3,
     "subnet_id": 12,
     "ip": "192.168.12.1",
-    "external_ap_ssid": "geogram-X3ABCD",
+    "external_ap_ssid": "xprs-X3ABCD",
     "external_ap_clients": 1,
     "bridge_enabled": true,
     "packets_forwarded": 142
@@ -494,7 +494,7 @@ The mesh network includes a built-in chat system that allows text messaging betw
 #### chat
 Send a chat message from the serial console.
 ```
-geogram> chat Hello from Node 1!
+xprs> chat Hello from Node 1!
 [CHAT TX] Sending message #1: "Hello from Node 1!"
 [CHAT TX] Broadcast to 2/2 nodes
 ```
@@ -502,7 +502,7 @@ geogram> chat Hello from Node 1!
 #### chat_history
 Display recent chat messages.
 ```
-geogram> chat_history
+xprs> chat_history
 === Chat History (3 messages) ===
 [1] 14:23:05 X3ABCD: Hello everyone!
 [2] 14:23:12 X3DEFG: Hi there!
@@ -622,7 +622,7 @@ cd code && ~/.platformio/penv/bin/pio run -e esp32c3_mini
 [mesh] Starting self-organized mesh on channel 1
 [mesh] Connected to mesh, layer: 2
 [mesh] Parent: AA:BB:CC:DD:EE:FF (RSSI: -45)
-[mesh] External AP started: geogram-X3ABCD (192.168.12.1)
+[mesh] External AP started: xprs-X3ABCD (192.168.12.1)
 ```
 
 4. Connect phones to different nodes' SoftAPs
@@ -638,7 +638,7 @@ cd code && ~/.platformio/penv/bin/pio run -e esp32c3_mini
 [mesh] Scanning for mesh network...
 [mesh] Found mesh root, connecting...
 [mesh] Connected to mesh, layer: 2
-[mesh] External AP started: geogram-X3ABCD (192.168.12.1)
+[mesh] External AP started: xprs-X3ABCD (192.168.12.1)
 [mesh] Phone connected to external AP (1 total)
 [bridge] Packet from 192.168.12.5 -> 192.168.11.3
 [bridge] Forwarding to node AA:BB:CC:DD:EE:FF

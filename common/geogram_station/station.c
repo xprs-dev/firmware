@@ -73,7 +73,7 @@ void station_init(void) {
     }
 
     // Set station name
-    snprintf(s_station.name, sizeof(s_station.name), "Geogram ESP32 Station");
+    snprintf(s_station.name, sizeof(s_station.name), "XPRS ESP32 Station");
 
     // Record start time
     s_station.start_time = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -219,11 +219,11 @@ size_t station_build_status_json(char *buffer, size_t size) {
     geo_json_object_start(&builder);
 
     // Core identification (matching p2p.radio format)
-    geo_json_add_string(&builder, "service", "Geogram Station Server");
+    geo_json_add_string(&builder, "service", "XPRS Station Server");
     geo_json_add_string(&builder, "name", s_station.name);
     geo_json_add_string(&builder, "version", STATION_VERSION);
     geo_json_add_string(&builder, "callsign", s_station.callsign);
-    geo_json_add_string(&builder, "description", "Geogram ESP32 Station");
+    geo_json_add_string(&builder, "description", "XPRS ESP32 Station");
     geo_json_add_string(&builder, "platform", "esp32");
 
     // Station status
@@ -343,7 +343,7 @@ size_t station_build_hello_ack_json(char *buffer, size_t size, bool success, con
     geo_json_add_string(&builder, "type", "hello_ack");
     geo_json_add_bool(&builder, "success", success);
     geo_json_add_string(&builder, "station_id", s_station.callsign);
-    geo_json_add_string(&builder, "message", message ? message : "Welcome to Geogram ESP32 Station");
+    geo_json_add_string(&builder, "message", message ? message : "Welcome to XPRS ESP32 Station");
     geo_json_add_string(&builder, "version", STATION_VERSION);
     geo_json_object_end(&builder);
 

@@ -382,14 +382,22 @@ static int ble_client_gap_event(struct ble_gap_event *event, void *arg)
             found = true;
         }
 
-        // Match by name
+        // Match by name. BOTH names are accepted on purpose: the advertised
+        // name became "XPRS" in the rebrand, and a dongle still running older
+        // firmware advertises "Geogram". Dropping the old one would make the
+        // two mutually invisible, which is a poor way to discover you have a
+        // mixed fleet. The old match comes out once none are left.
+        if (!found && fields.name_len >= 4 &&
+            memcmp(fields.name, "XPRS", 4) == 0) {
+            found = true;
+        }
         if (!found && fields.name_len >= 7 &&
             memcmp(fields.name, "Geogram", 7) == 0) {
             found = true;
         }
 
         if (found) {
-            ESP_LOGI(TAG, "Found Geogram: " MACSTR " type=%d",
+            ESP_LOGI(TAG, "Found XPRS station: " MACSTR " type=%d",
                      MAC2STR(event->disc.addr.val), event->disc.addr.type);
             ble_gap_disc_cancel();
             s_scanning = false;
@@ -535,7 +543,7 @@ esp_err_t ble_client_init(void)
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
-    ble_svc_gap_device_name_set("Geogram-Dongle");
+    ble_svc_gap_device_name_set("XPRS-Dongle");
 
     s_initialized = true;
     nimble_port_freertos_init(ble_host_task);

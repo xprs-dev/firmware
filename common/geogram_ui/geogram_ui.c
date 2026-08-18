@@ -155,7 +155,7 @@ esp_err_t geogram_ui_init(void)
     // === Status Message (Very Bottom) ===
     s_lbl_status = lv_label_create(s_screen);
     lv_obj_add_style(s_lbl_status, &s_style_small, 0);
-    lv_label_set_text(s_lbl_status, "Geogram Ready");
+    lv_label_set_text(s_lbl_status, "XPRS Ready");
     lv_obj_align(s_lbl_status, LV_ALIGN_BOTTOM_MID, 0, -8);
 
     ESP_LOGI(TAG, "UI initialized");

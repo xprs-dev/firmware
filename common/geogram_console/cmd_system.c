@@ -42,7 +42,7 @@ static int cmd_status(int argc, char **argv)
         printf("%s\n", json_buf);
     } else {
         // Human-readable status
-        printf("\n=== Geogram Device Status ===\n\n");
+        printf("\n=== XPRS Device Status ===\n\n");
 
         // Firmware info
         printf("Firmware: %s\n", GEOGRAM_VERSION);

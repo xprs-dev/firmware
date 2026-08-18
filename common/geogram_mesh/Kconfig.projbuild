@@ -1,4 +1,4 @@
-menu "Geogram Mesh Networking"
+menu "XPRS Mesh Networking"
 
     config GEOGRAM_MESH_ENABLED
         bool "Enable ESP-Mesh-Lite support"

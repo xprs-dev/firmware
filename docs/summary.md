@@ -1,6 +1,6 @@
-# Geogram ESP32 Firmware Summary
+# XPRS ESP32 Firmware Summary
 
-This repository contains ESP32 firmware for Geogram network stations, with a primary target of the ESP32-S3 ePaper 1.54" board and a skeleton for generic ESP32 and ESP32-C3 mini variants.
+This repository contains ESP32 firmware for XPRS network stations, with a primary target of the ESP32-S3 ePaper 1.54" board and a skeleton for generic ESP32 and ESP32-C3 mini variants.
 
 ## High-level architecture
 
@@ -34,7 +34,7 @@ This repository contains ESP32 firmware for Geogram network stations, with a pri
 
 ## Mesh mode (optional)
 
-- When `CONFIG_GEOGRAM_MESH_ENABLED` is set, mesh events in `code/src/main.cpp` start or stop AP/HTTP/Telnet services and enable bridging.
+- When `CONFIG_XPRS_MESH_ENABLED` is set, mesh events in `code/src/main.cpp` start or stop AP/HTTP/Telnet services and enable bridging.
 
 ## Key files to start with
 

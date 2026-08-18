@@ -5,3 +5,9 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # This node exists to hear ESP-NOW. A station that modem-sleeps misses frames.
 CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# LVGL (managed component, configured via Kconfig — its CMake sets
+# CONFIG_LV_CONF_SKIP=y, so lv_conf.h is ignored). Montserrat 14 is the
+# Kconfig default; the bars use 12.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_10=y

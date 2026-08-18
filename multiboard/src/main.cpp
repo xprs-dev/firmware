@@ -169,7 +169,7 @@ static void start_mesh_services(void)
         return;
     }
 
-    const char *ap_ssid = "geogram";
+    const char *ap_ssid = "xprs";
     esp_err_t ap_ret = geogram_mesh_start_external_ap(
         ap_ssid, "", CONFIG_GEOGRAM_MESH_EXTERNAL_AP_MAX_CONN);
     if (ap_ret != ESP_OK) {
@@ -773,9 +773,9 @@ static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
             char ap_ssid[32];
             const char *callsign = nostr_keys_get_callsign();
             if (callsign && strlen(callsign) > 0) {
-                snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+                snprintf(ap_ssid, sizeof(ap_ssid), "xprs-%s", callsign);
             } else {
-                snprintf(ap_ssid, sizeof(ap_ssid), "geogram-setup");
+                snprintf(ap_ssid, sizeof(ap_ssid), "xprs-setup");
             }
 
             geogram_ui_update_wifi(UI_WIFI_STATUS_AP_MODE, s_current_ip, ap_ssid);
@@ -827,13 +827,13 @@ static void start_ap_mode(void)
     // Ensure station identity is available for chat/API responses
     station_init();
 
-    // Build SSID with callsign: "geogram-X3ABCD"
+    // Build SSID with callsign: "xprs-X3ABCD"
     char ap_ssid[32];
     const char *callsign = nostr_keys_get_callsign();
     if (callsign && strlen(callsign) > 0) {
-        snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+        snprintf(ap_ssid, sizeof(ap_ssid), "xprs-%s", callsign);
     } else {
-        snprintf(ap_ssid, sizeof(ap_ssid), "geogram-setup");
+        snprintf(ap_ssid, sizeof(ap_ssid), "xprs-setup");
     }
 
     geogram_wifi_ap_config_t ap_config = {};
@@ -1487,7 +1487,7 @@ extern "C" void app_main(void)
     geogram_log_plain(TAG, "  Offline-First Communication");
     geogram_log_plain(TAG, "   · · · ·   ───   · ── ·   ·");
     geogram_log_plain(TAG, "    Wi-Fi  ·  BLE  ·  NOSTR");
-    ESP_LOGI(TAG, "  Geogram Firmware v%s", GEOGRAM_VERSION);
+    ESP_LOGI(TAG, "  XPRS Firmware v%s", GEOGRAM_VERSION);
     ESP_LOGI(TAG, "  Board: %s", BOARD_NAME);
     ESP_LOGI(TAG, "  Model: %s", MODEL_NAME);
     ESP_LOGI(TAG, "=====================================");
@@ -1574,7 +1574,7 @@ extern "C" void app_main(void)
             ESP_LOGE(TAG, "T-Dongle WiFi init failed: %s", esp_err_to_name(ret));
         } else {
             geogram_wifi_ap_config_t ap_config = {};
-            strncpy(ap_config.ssid, "geogram", sizeof(ap_config.ssid) - 1);
+            strncpy(ap_config.ssid, "xprs", sizeof(ap_config.ssid) - 1);
             ap_config.password[0] = '\0';  // Open network
             ap_config.channel = 1;
             ap_config.max_connections = 4;
@@ -1911,7 +1911,7 @@ extern "C" void app_main(void)
     } else {
         // Start WiFi AP mode
         geogram_wifi_ap_config_t ap_config = {};
-        strncpy(ap_config.ssid, "geogram", sizeof(ap_config.ssid) - 1);
+        strncpy(ap_config.ssid, "xprs", sizeof(ap_config.ssid) - 1);
         ap_config.password[0] = '\0';  // Open network
         ap_config.channel = 1;
         ap_config.max_connections = 4;
@@ -1987,7 +1987,7 @@ extern "C" void app_main(void)
     // Show boot splash on OLED
     if (display) {
         ssd1306_clear(display);
-        ssd1306_draw_string(display, 16, 0, "== GEOGRAM ==", true);
+        ssd1306_draw_string(display, 16, 0, "==   XPRS   ==", true);
         ssd1306_draw_string(display, 22, 12, "v" GEOGRAM_VERSION, true);
         ssd1306_draw_string(display, 0, 28, BOARD_NAME, true);
         if (lora) {
@@ -2026,9 +2026,9 @@ extern "C" void app_main(void)
         char ap_ssid[32];
         const char *callsign = nostr_keys_get_callsign();
         if (callsign && strlen(callsign) > 0) {
-            snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+            snprintf(ap_ssid, sizeof(ap_ssid), "xprs-%s", callsign);
         } else {
-            snprintf(ap_ssid, sizeof(ap_ssid), "geogram");
+            snprintf(ap_ssid, sizeof(ap_ssid), "xprs");
         }
 
         // Start WiFi AP mode
@@ -2065,7 +2065,7 @@ extern "C" void app_main(void)
                 geogram_wifi_get_ap_ip(ip_str);
 
                 ssd1306_clear(display);
-                ssd1306_draw_string(display, 0, 0, "== GEOGRAM ==", true);
+                ssd1306_draw_string(display, 0, 0, "==   XPRS   ==", true);
                 ssd1306_draw_string(display, 0, 12, ap_ssid, true);
                 ssd1306_draw_string(display, 0, 24, ip_str, true);
                 if (lora) {
@@ -2092,7 +2092,7 @@ extern "C" void app_main(void)
     // Show boot splash on OLED
     if (display) {
         ssd1306_clear(display);
-        ssd1306_draw_string(display, 16, 0, "== GEOGRAM ==", true);
+        ssd1306_draw_string(display, 16, 0, "==   XPRS   ==", true);
         ssd1306_draw_string(display, 22, 12, "v" GEOGRAM_VERSION, true);
         ssd1306_draw_string(display, 0, 28, BOARD_NAME, true);
         if (lora) {
@@ -2131,9 +2131,9 @@ extern "C" void app_main(void)
         char ap_ssid[32];
         const char *callsign = nostr_keys_get_callsign();
         if (callsign && strlen(callsign) > 0) {
-            snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+            snprintf(ap_ssid, sizeof(ap_ssid), "xprs-%s", callsign);
         } else {
-            snprintf(ap_ssid, sizeof(ap_ssid), "geogram");
+            snprintf(ap_ssid, sizeof(ap_ssid), "xprs");
         }
 
         // Start WiFi AP mode
@@ -2170,7 +2170,7 @@ extern "C" void app_main(void)
                 geogram_wifi_get_ap_ip(ip_str);
 
                 ssd1306_clear(display);
-                ssd1306_draw_string(display, 0, 0, "== GEOGRAM ==", true);
+                ssd1306_draw_string(display, 0, 0, "==   XPRS   ==", true);
                 ssd1306_draw_string(display, 0, 12, ap_ssid, true);
                 ssd1306_draw_string(display, 0, 24, ip_str, true);
                 if (lora) {

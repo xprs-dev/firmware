@@ -1,10 +1,10 @@
-# Geogram ESP32 Development Context
+# XPRS ESP32 Development Context
 
 This document captures important implementation details and constraints for AI assistants working on this codebase.
 
 ## Project Overview
 
-Geogram is an **offline-first mesh communication system** for ESP32 devices. Key features:
+XPRS is an **offline-first mesh communication system** for ESP32 devices. Key features:
 - **ESP-Mesh-Lite** for router-less mesh networking
 - **Nostr protocol** for cryptographic identity and message signing
 - **Web UI** served via captive portal for phone/laptop access
@@ -84,12 +84,12 @@ wait
 
 ## ESP-Mesh-Lite Configuration
 
-### SSID Requirement: Must Be "geogram"
+### SSID Requirement: Must Be "xprs"
 
-**All mesh nodes MUST broadcast the same SSID "geogram"** for phone auto-connect functionality.
+**All mesh nodes MUST broadcast the same SSID "xprs"** for phone auto-connect functionality.
 
 Why this matters:
-- Users expect to connect to "geogram" network automatically
+- Users expect to connect to "xprs" network automatically
 - Phones remember the network and reconnect when in range
 - Different SSIDs per node would require manual connection each time
 
@@ -101,7 +101,7 @@ Despite all nodes having the same SSID, mesh peers find each other through:
 2. **BSSID targeting** - Nodes connect to specific MAC addresses, not SSIDs
 3. **Mesh ID matching** - Configured as `0x67` ('g') in `CONFIG_MESH_LITE_ID`
 
-The `mesh_get_ssid_by_mac()` callback tells mesh-lite to use "geogram" for all peer connections.
+The `mesh_get_ssid_by_mac()` callback tells mesh-lite to use "xprs" for all peer connections.
 
 ### Root Election
 
@@ -130,7 +130,7 @@ This ensures exactly one root node in any mesh topology.
 ### Important Config Options
 
 ```
-CONFIG_BRIDGE_SOFTAP_SSID="geogram"           # Common SSID for all nodes
+CONFIG_BRIDGE_SOFTAP_SSID="xprs"           # Common SSID for all nodes
 CONFIG_MESH_LITE_ID=103                        # Mesh network ID (0x67 = 'g')
 CONFIG_JOIN_MESH_WITHOUT_CONFIGURED_WIFI=y    # Join mesh without router
 CONFIG_JOIN_MESH_IGNORE_ROUTER_STATUS=y       # Operate without internet
@@ -162,12 +162,12 @@ rm -f sdkconfig.esp32c3_mini && pio run -e esp32c3_mini
    ```
 3. Verify in logs:
    - Root node: `[EVENT] Level: 1, Is Root: YES`
-   - Child node: `wifi:connected with geogram` + `[STA] Got IP: 192.168.5.2`
+   - Child node: `wifi:connected with XPRS` + `[STA] Got IP: 192.168.5.2`
 4. Verify SSIDs from host:
    ```bash
-   nmcli dev wifi list | grep geogram
+   nmcli dev wifi list | grep XPRS
    ```
-   Both should show SSID "geogram" (no MAC suffix).
+   Both should show SSID "xprs" (no MAC suffix).
 
 ## Nostr Integration
 
@@ -217,7 +217,7 @@ reboot            - Restart device
 
 ### Driver Coexistence Warnings
 
-The firmware uses patched ESP-IDF drivers to allow legacy and new driver coexistence. Warnings like `GEOGRAM_PATCHED: legacy temp sensor driver...` are expected and harmless.
+The firmware uses patched ESP-IDF drivers to allow legacy and new driver coexistence. Warnings like `XPRS_PATCHED: legacy temp sensor driver...` are expected and harmless.
 
 ### Memory Considerations
 
@@ -233,7 +233,7 @@ The firmware uses patched ESP-IDF drivers to allow legacy and new driver coexist
    - Both on same WiFi channel (default: 1)
 
 2. **Web UI not loading?** Check:
-   - Connected to "geogram" WiFi
+   - Connected to "xprs" WiFi
    - HTTP server started (look for `HTTP server started` in logs)
    - Try `http://192.168.4.1` or `http://192.168.5.1`
 

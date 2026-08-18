@@ -530,14 +530,14 @@ static int cmd_mesh_ap(int argc, char **argv)
     } else {
         const char *callsign = nostr_keys_get_callsign();
         if (callsign && strlen(callsign) > 0) {
-            snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+            snprintf(ap_ssid, sizeof(ap_ssid), "xprs-%s", callsign);
         } else {
-            strncpy(ap_ssid, "geogram-mesh", sizeof(ap_ssid));
+            strncpy(ap_ssid, "xprs-mesh", sizeof(ap_ssid));
         }
     }
 
-    // Default password is "geogram"
-    const char *password = "geogram";
+    // Default password is "xprs"
+    const char *password = "xprs";
 
     printf("Starting external AP...\n");
     printf("  SSID: %s\n", ap_ssid);
@@ -775,7 +775,7 @@ static void chat_message_callback(const mesh_chat_message_t *msg)
     }
 
     printf("\n[CHAT] [%s] <%s> %s\n", time_str, msg->callsign, msg->text);
-    printf("geogram> ");  // Reprint prompt
+    printf("xprs> ");  // Reprint prompt
     fflush(stdout);
 }
 
@@ -873,7 +873,7 @@ void register_mesh_commands(void)
 
     // mesh_ap
     mesh_ap_args.stop = arg_lit0("s", "stop", "Stop external AP");
-    mesh_ap_args.ssid = arg_str0(NULL, NULL, "[ssid]", "AP SSID (default: geogram-test)");
+    mesh_ap_args.ssid = arg_str0(NULL, NULL, "[ssid]", "AP SSID (default: xprs-test)");
     mesh_ap_args.end = arg_end(2);
     const esp_console_cmd_t mesh_ap_cmd = {
         .command = "mesh_ap",

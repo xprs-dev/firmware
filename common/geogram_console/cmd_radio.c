@@ -52,7 +52,7 @@ static void aprs_rx_console_cb(const char *from_callsign,
     (void)user_ctx;
     printf("\n[APRS RX] %s -> %s: %s\n", from_callsign, to_callsign, message_text);
     printf("[APRS RX] %s\n", raw_tnc2);
-    printf("geogram> ");
+    printf("xprs> ");
     fflush(stdout);
 }
 
