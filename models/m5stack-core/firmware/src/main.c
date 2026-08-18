@@ -48,7 +48,8 @@
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
 #include "ili9342.h"
-#include "m5ui.h"
+#include "ili9342.h"
+#include "xprs_ui.h"
 
 static const char *TAG = "m5xprs";
 
@@ -147,9 +148,11 @@ typedef struct {
     char     link[7];
     int      rssi;
     uint32_t ms;
+    char     text[160];        /* m: payload, or the raw wire for the rest */
 } flow_t;
 static flow_t s_flow[FLOW_MAX];
-static int s_flow_n;      /* total ever, ring position = s_flow_n % FLOW_MAX */
+static int s_flow_n;
+static int s_flow_sel;    /* Flow panel: selected row (arrows move it) */      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
@@ -167,6 +170,11 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     snprintf(fl->call, sizeof fl->call, "%s", call);
     if (!xprs_get_str(&sp, "d", fl->to, sizeof fl->to)) fl->to[0] = 0;
     xprs_type(&sp, fl->type, sizeof fl->type);
+    /* What the Flow panel shows when the row is selected: the message text
+     * when there is one, the raw packet for everything else. */
+    if (!xprs_get_str(&sp, "m", fl->text, sizeof fl->text))
+        snprintf(fl->text, sizeof fl->text, "%.*s",
+                 len > 150 ? 150 : len, wire);
     snprintf(fl->link, sizeof fl->link, "%s", bearer);
     fl->rssi = rssi;
     fl->ms = now;
@@ -495,34 +503,34 @@ static void ui_render(void)
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
     body[0] = 0;
-    m5ui_show_home(s_panel == 0);
-    m5ui_show_flow(s_panel == 1);
+    xui_show_home(s_panel == 0);
+    xui_show_flow(s_panel == 1);
 
     switch (s_panel) {
     case 0: {   /* Links: the graphic home panel */
         char d[48];
-        snprintf(d, sizeof d, "ch %u, %d peers",
+        snprintf(d, sizeof d, "Ch %u, %d peers",
                  xprsnow_channel(), xprsnow_peer_count(600));
-        m5ui_home_row(0, "ESP-NOW", xprsnow_is_active(), d);
+        xui_home_row(0, "ESP-NOW", xprsnow_is_active(), d);
 
         if (s_ip_str[0])
             snprintf(d, sizeof d, "%s", s_ip_str);
         else
-            snprintf(d, sizeof d, "%s", WIFI_SSID[0] ? "joining..." : "down");
-        m5ui_home_row(1, "WiFi / LAN", s_ip_str[0] != 0, d);
+            snprintf(d, sizeof d, "%s", WIFI_SSID[0] ? "Joining..." : "Down");
+        xui_home_row(1, "WiFi / LAN", s_ip_str[0] != 0, d);
 
-        if (!s_ip_str[0])       snprintf(d, sizeof d, "no address");
-        else if (!s_inet_known) snprintf(d, sizeof d, "probing...");
+        if (!s_ip_str[0])       snprintf(d, sizeof d, "No address");
+        else if (!s_inet_known) snprintf(d, sizeof d, "Probing...");
         else                    snprintf(d, sizeof d, "%s",
-                                          s_inet_up ? "reachable" : "down");
-        m5ui_home_row(2, "Internet", s_inet_known && s_inet_up, d);
+                                          s_inet_up ? "Reachable" : "Down");
+        xui_home_row(2, "Internet", s_inet_known && s_inet_up, d);
 
-        m5ui_home_heard(s_heard_count);
+        xui_home_heard(s_heard_count);
 
         /* The scope: everybody in reach, at their estimated distance. */
-        m5ui_blip_t blips[M5UI_BLIP_MAX];
+        xui_blip_t blips[XUI_BLIP_MAX];
         int nb = 0;
-        for (int i = 0; i < SEEN_MAX && nb < M5UI_BLIP_MAX; i++) {
+        for (int i = 0; i < SEEN_MAX && nb < XUI_BLIP_MAX; i++) {
             if (!s_seen[i].call[0]) continue;
             if ((now - s_seen[i].last_ms) / 1000 >= UI_INRANGE_SEC) continue;
             snprintf(blips[nb].label, sizeof blips[nb].label, "%s",
@@ -530,28 +538,34 @@ static void ui_render(void)
             blips[nb].meters = est_distance_m(s_seen[i].rssi);
             nb++;
         }
-        m5ui_radar_blips(blips, nb);
-        m5ui_set_title("links 1/5");
+        xui_radar_blips(blips, nb);
+        xui_set_title("Links 1/5");
         break;
     }
     case 1: {   /* Flow: the packets going past, newest first */
-        m5ui_flow_t rows[M5UI_FLOW_ROWS];
+        xui_flow_t rows[XUI_FLOW_ROWS];
         int nr = 0;
-        for (int i = 0; i < FLOW_MAX && nr < M5UI_FLOW_ROWS; i++) {
+        for (int i = 0; i < FLOW_MAX && nr < XUI_FLOW_ROWS; i++) {
             int idx = (s_flow_n - 1 - i);
             if (idx < 0) break;
             flow_t *fl = &s_flow[idx % FLOW_MAX];
             if (!fl->call[0]) continue;
-            m5ui_flow_t *r = &rows[nr++];
+            xui_flow_t *r = &rows[nr++];
             snprintf(r->from, sizeof r->from, "%s", fl->call);
             snprintf(r->to, sizeof r->to, "%s", fl->to);
             snprintf(r->type, sizeof r->type, "%s", fl->type);
             snprintf(r->link, sizeof r->link, "%s", fl->link);
             r->dist_m = fl->rssi ? est_distance_m(fl->rssi) : -1.0f;
             r->age_s = (now - fl->ms) / 1000;
+            snprintf(r->text, sizeof r->text, "%s", fl->text);
         }
-        m5ui_flow_rows(rows, nr);
-        m5ui_set_title("flow 2/5");
+        /* Keep the selection on the list: clamp, and take the first row
+         * when packets arrive after the panel was visited empty. */
+        if (s_flow_sel >= nr) s_flow_sel = nr - 1;
+        if (s_flow_sel < 0 && nr > 0) s_flow_sel = 0;
+        xui_flow_rows(rows, nr);
+        xui_flow_select(s_flow_sel);
+        xui_set_title("Flow 2/5");
         break;
     }
     case 2: {   /* Traffic */
@@ -577,7 +591,7 @@ static void ui_render(void)
                  (unsigned long)cancelled, (unsigned long)dropped,
                  (unsigned long)lrx, (unsigned long)ltx, (unsigned long)lcancel,
                  (unsigned long)s_heard_count, last);
-        m5ui_set_title("traffic 3/5");
+        xui_set_title("Traffic 3/5");
         break;
     }
     case 3: {   /* Devices */
@@ -601,8 +615,8 @@ static void ui_render(void)
                                 (unsigned long)age);
         }
         if (n == 0) snprintf(body, sizeof body,
-                             "In reach (0):\nnobody heard yet");
-        m5ui_set_title("devices 4/5");
+                             "In reach (0):\nNobody heard yet");
+        xui_set_title("Devices 4/5");
         break;
     }
     default: {  /* Node */
@@ -617,36 +631,30 @@ static void ui_render(void)
                  "Peer keys %d learned",
                  s_call, np,
                  (unsigned)esp_get_free_heap_size(),
-                 xprschan_busy() ? "busy" : "idle",
+                 xprschan_busy() ? "Busy" : "Idle",
                  xprschan_busy() ? " (off home channel)" : "",
                  s_peers_n);
-        m5ui_set_title("node 5/5");
+        xui_set_title("Node 5/5");
         break;
     }
     }
-    m5ui_set_body(body);
-    m5ui_set_device_count(seen_in_range());
+    xui_set_body(body);
+    xui_set_device_count(seen_in_range());
 
-    /* Bottom-left: rotate through in-reach callsigns, then the heard tally —
-     * the T-Dongle's habit. */
-    static int rot;
-    char info[40] = "";
-    int shown = 0, want = -1;
-    int alive = seen_in_range();
-    if (alive > 0) want = rot % (alive + 1);
-    for (int i = 0; i < SEEN_MAX && want >= 0; i++) {
-        if (!s_seen[i].call[0]) continue;
-        if ((now - s_seen[i].last_ms) / 1000 >= UI_INRANGE_SEC) continue;
-        if (shown++ == want) {
-            snprintf(info, sizeof info, "%s via %s", s_seen[i].call,
-                     s_seen[i].bearer);
-            break;
-        }
-    }
-    if (!info[0]) snprintf(info, sizeof info, "heard %lu",
-                           (unsigned long)s_heard_count);
-    rot++;
-    m5ui_set_info(info);
+    /* The bottom bar tells the user what the three buttons under it do:
+     * A cycles the menus (long press goes home), B and C move the selection
+     * on the panels that have one. */
+    if (s_panel == 1)
+        xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
+    else
+        xui_set_keys("Menu", "", "");
+}
+
+/* Bridge the generic UI's flush callback onto this board's panel driver. */
+static void lcd_flush_adapter(int x1, int y1, int x2, int y2,
+                              const uint16_t *px, void *ctx)
+{
+    ili9342_flush((ili9342_handle_t)ctx, x1, y1, x2, y2, px);
 }
 
 /* Poll one active-low button; 3 agreeing samples = state, fire on the edge.
@@ -672,7 +680,6 @@ static void ui_task(void *arg)
 {
     (void)arg;
 
-    static btn_t ba = { BTN_A, 0, true };
     static btn_t bb = { BTN_B, 0, true };
     static btn_t bc = { BTN_C, 0, true };
     gpio_config_t io = {
@@ -685,21 +692,42 @@ static void ui_task(void *arg)
     gpio_config(&io);
 
     uint64_t next_render_us = 0;
+    int a_held_ms = 0;
+    bool a_long_fired = false;
     for (;;) {
         bool force = false;
-        if (btn_pressed(&ba)) {
-            s_panel = (s_panel + UI_PANEL_COUNT - 1) % UI_PANEL_COUNT;
+
+        /* Button A: a short press steps to the next menu, holding it is ESC
+         * -- back to the home panel. */
+        if (gpio_get_level(BTN_A) == 0) {
+            a_held_ms += 10;
+            if (a_held_ms >= 700 && !a_long_fired) {
+                a_long_fired = true;
+                s_panel = 0;
+                force = true;
+                ESP_LOGI(TAG, "button A long: home");
+            }
+        } else {
+            if (a_held_ms >= 30 && !a_long_fired) {
+                s_panel = (s_panel + 1) % UI_PANEL_COUNT;
+                force = true;
+                ESP_LOGI(TAG, "button A: panel %d", s_panel);
+            }
+            a_held_ms = 0;
+            a_long_fired = false;
+        }
+
+        /* B and C: up / down. On the Flow panel they walk the packet list
+         * and the strip below shows the selected packet. */
+        if (btn_pressed(&bb)) {
+            if (s_panel == 1 && s_flow_sel > 0) s_flow_sel--;
             force = true;
-            ESP_LOGI(TAG, "button A: panel %d", s_panel);
+            ESP_LOGI(TAG, "button B: up (sel %d)", s_flow_sel);
         }
         if (btn_pressed(&bc)) {
-            s_panel = (s_panel + 1) % UI_PANEL_COUNT;
+            if (s_panel == 1) s_flow_sel++;   /* render clamps to the list */
             force = true;
-            ESP_LOGI(TAG, "button C: panel %d", s_panel);
-        }
-        if (btn_pressed(&bb)) {
-            force = true;
-            ESP_LOGI(TAG, "button B: refresh");
+            ESP_LOGI(TAG, "button C: down (sel %d)", s_flow_sel);
         }
 
         /* A new packet flashes the RX dot the moment it lands; the panels
@@ -708,13 +736,13 @@ static void ui_task(void *arg)
         static uint32_t last_heard;
         if (s_heard_count != last_heard) {
             last_heard = s_heard_count;
-            m5ui_pulse();
+            xui_pulse();
         }
 
         /* Console debug: 'S' = screenshot over the UART, '1'..'5' = jump
          * to a panel (the buttons, but reachable from a script). */
         int ch = getchar();
-        if (ch == 'S') m5ui_framedump();
+        if (ch == 'S') xui_framedump();
         if (ch >= '1' && ch <= '0' + UI_PANEL_COUNT) {
             s_panel = ch - '1';
             force = true;
@@ -728,7 +756,7 @@ static void ui_task(void *arg)
                 ((s_panel == 0 || s_panel == 1) ? 10000000ULL : 2000000ULL);
         }
 
-        m5ui_update();
+        xui_update();
 
         /* At 100 Hz tick a small delay can round to zero and starve IDLE0 —
          * same guard the T-Dongle carries. */
@@ -793,7 +821,9 @@ void app_main(void)
         .cs_pin = 14, .dc_pin = 27, .rst_pin = 33, .bl_pin = 32,
     };
     ili9342_handle_t lcd = NULL;
-    if (ili9342_init(&lcd_cfg, &lcd) == ESP_OK && m5ui_init(lcd) == ESP_OK) {
+    if (ili9342_init(&lcd_cfg, &lcd) == ESP_OK &&
+        xui_init(ILI9342_WIDTH, ILI9342_HEIGHT, lcd_flush_adapter,
+                 lcd) == ESP_OK) {
         xTaskCreate(ui_task, "ui", 4096, NULL, 4, NULL);
     } else {
         ESP_LOGE(TAG, "display init failed — running headless");
