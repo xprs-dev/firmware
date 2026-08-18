@@ -246,6 +246,27 @@ Two consequences worth building around:
   - nothing closes that handle when the power goes, so without an `fsync()` the
     whole active file is invisible after a reboot. 2000 records were lost to a
     reset exactly this way.
+- **`CONFIG_FATFS_LFN` defaults to OFF, and 8.3 is smaller than you think.**
+  The index names its segments `seg_<10 digits>.bin` -- fourteen characters --
+  so on a build without long-filename support every segment `fopen()` fails.
+  Nothing said so: the store's counter increments when a record is ACCEPTED
+  into RAM, not when it is written, so the station reported "9 packets held"
+  over a store with zero bytes on it and answered 404 to every history ask.
+  Two lessons in one bug: `CONFIG_FATFS_LFN_HEAP=y` belongs in every board's
+  `sdkconfig.defaults` that mounts a store, and when "held" and "served"
+  disagree, read ONE record back (`xprsindex_get(st, 0, ...)`) before
+  trusting either number.
+- **A board's sdkconfig fixes travel by hand.** The dongle had LFN on; the
+  M5Stack regenerated its `sdkconfig` from its own `defaults` and silently
+  did not. Anything a store or a driver needs (`LFN`, LVGL fonts, flash
+  size) must be in THAT board's `sdkconfig.defaults`, because deleting the
+  generated file to pick up a new default also discards every setting that
+  only ever lived in the generated file.
+- **The store does not need an SD card.** The M5Stack Core has 16 MB of
+  flash and an app that uses 1.6 MB: a `storage, data, fat` partition after
+  `factory` plus `esp_vfs_fat_spiflash_mount_rw_wl()` gives the index 14 MB
+  of wear-levelled FAT and keeps NVS and the app at their old offsets, so
+  a reflash loses nothing. Same FatFs, same traps as above.
 
 ## Heap is the binding constraint -- check it first
 
@@ -262,6 +283,7 @@ look like memory:
 | `esp_now_send` returns `ESP_ERR_ESPNOW_NO_MEM` for every packet | the driver cannot get a send buffer |
 | `BLE_INIT: Malloc failed` + `ext_adv_set_data rc=519` | the same, on the other radio |
 | the station beacons never, answers nothing, and otherwise looks fine | a task never started -- see below |
+| a debug/rare path silently does nothing (a screenshot dump emitting zero slices) | its one-shot `malloc` outgrew the heap and the `if (buf)` skips the whole feature |
 
 **Create the big task stacks first.** `relay_task` asks for 8 KB in one piece.
 It used to be created from `on_sync()`, which runs after WiFi, NimBLE, the SD
@@ -296,6 +318,20 @@ WiFi (62 KB), NimBLE (47 KB) and the SD card (32 KB) are the three that matter;
 everything else is noise beside them. Steady state after association is around
 13 KB, so **there is no room for a new 8 KB anything** -- take it at boot or
 reclaim first (`sdkconfig` buffer counts) and measure again.
+
+The whole cycle repeated on the M5Stack Core the day it grew an indexer, and
+the same medicine worked: `xprsidx_wr`'s 8 KB start became a coin toss at
+~29 KB free, so the index task moved to the top of `app_main` (heap still one
+172 KB block) with its create checked and logged; LVGL's pool was sized from
+`lv_mem_monitor()` (~20 KB used on a 320x240 table-and-chart dashboard, pool
+36 KB) instead of guessed; the draw buffer went from a fifth to an eighth of
+the screen; and `max_files` came back DOWN after being raised "to be safe" --
+each open `FILE` is a 4 KB sector cache, so raising it to 12 had offered the
+heap a 48 KB hole. Steady-state free heap went 29 KB -> 57 KB. A rarely-used
+debug path (the serial frame dump) had also grown a 41 KB `malloc` nobody
+re-measured; it failed silently the day the indexer moved in. Anything that
+must not die quietly encodes in small static chunks instead of allocating
+the whole answer.
 
 A queue is heap too. `XPRSNOW_RX_QUEUE` was widened from 4 to 16 to stop
 drops -- 264 bytes an entry, so four kilobytes out of the eight the board had --
@@ -396,7 +432,10 @@ Consequences that have already bitten:
 - **Opening `/dev/ttyACM0` reboots the board.** `monitor-capture.sh` asserts DTR
   whether or not `-r` is passed, and the board needs ~28 s afterwards before it
   is on the network again. A probe sent during a capture hits a rebooting
-  device, and the result means nothing.
+  device, and the result means nothing. The M5Stack's CP2104 (`/dev/ttyUSB0`)
+  does the same on every `open()` regardless of pyserial's pre-open DTR/RTS
+  settings -- open once, ride out the boot (~45 s to WiFi), keep the port open
+  for the whole session, and drive everything else over the network.
 - So **measure over the network** -- ping, curl, UDP -- with no serial open. Use
   serial only for facts that are only visible at boot: heap sizes, "HTTP server
   started", WiFi disconnect reasons.
