@@ -215,35 +215,65 @@ typedef struct {
 static flow_t s_flow[FLOW_MAX];
 static int s_flow_n;
 
-/* Hourly statistics for the Stats panel: a 24-bucket ring keyed by uptime
- * hour. Each bucket counts packets in, packets out, and the distinct
- * stations heard (up to 12 tracked by a small hash list). */
-#define STAT_HOURS 24
-#define STAT_DEVS  12
+/* Statistics for the Stats panel, on the WALL CLOCK so they survive a
+ * reboot: 10-minute buckets covering a day and daily buckets covering a
+ * month, both rings persisted to /idx/stats.bin by idx_task and reloaded
+ * at boot. Before NTP syncs nothing is banked -- a bucket keyed by a wrong
+ * clock would poison the ring it lands in. Aggregation upward: packets
+ * add, distinct-device counts take the busiest sub-bucket (a device seen
+ * in two buckets is one device, not two, so summing would lie). */
+#define SB10_N   144            /* 10-minute buckets: one day */
+#define SBDAY_N  30             /* daily buckets: one month */
+#define STAT_DEVS 12
 typedef struct {
     uint32_t rx, tx;
-    uint32_t devh[STAT_DEVS];
-    int      devn;
-} stat_hour_t;
-static stat_hour_t s_stat[STAT_HOURS];
-static uint32_t s_stat_hournum;      /* uptime hour the current bucket is for */
+    uint16_t dev, pad;
+} sbucket_t;
+static sbucket_t s_sb10[SB10_N];
+static uint32_t  s_sb10_id[SB10_N];     /* absolute period each slot holds */
+static sbucket_t s_sbday[SBDAY_N];
+static uint32_t  s_sbday_id[SBDAY_N];
+static int s_tz_off;                    /* seconds east of UTC, from config */
 
-/* Roll the ring forward to the current uptime hour, clearing re-used
- * buckets, and hand back the live one. */
-static stat_hour_t *stat_bucket(void)
+/* Distinct devices in the LIVE 10-minute bucket only. */
+static uint32_t s_cur_devh[STAT_DEVS];
+static int      s_cur_devn;
+static uint32_t s_cur_slot;
+
+static uint32_t epoch_now(void)
 {
-    uint32_t hournum = (uint32_t)(esp_timer_get_time() / 3600000000ULL);
-    while (s_stat_hournum < hournum) {
-        s_stat_hournum++;
-        memset(&s_stat[s_stat_hournum % STAT_HOURS], 0, sizeof(stat_hour_t));
+    time_t t = time(NULL);
+    return t > 1700000000 ? (uint32_t)t : 0;   /* 0 until NTP has spoken */
+}
+
+static sbucket_t *stat10(uint32_t ep)
+{
+    uint32_t slot = ep / 600;
+    int i = (int)(slot % SB10_N);
+    if (s_sb10_id[i] != slot) {
+        memset(&s_sb10[i], 0, sizeof s_sb10[i]);
+        s_sb10_id[i] = slot;
     }
-    return &s_stat[hournum % STAT_HOURS];
+    if (s_cur_slot != slot) { s_cur_slot = slot; s_cur_devn = 0; }
+    return &s_sb10[i];
+}
+
+static sbucket_t *statday(uint32_t ep)
+{
+    uint32_t slot = (uint32_t)((int64_t)ep + s_tz_off) / 86400;
+    int i = (int)(slot % SBDAY_N);
+    if (s_sbday_id[i] != slot) {
+        memset(&s_sbday[i], 0, sizeof s_sbday[i]);
+        s_sbday_id[i] = slot;
+    }
+    return &s_sbday[i];
 }
 static int s_sel[8];      /* per-panel selected row (arrows move it) */
 /* Settings is modal: A stays the Menu key until the arrows dive into the
  * list, then it becomes OK; climbing back out above the top row hands the
  * Menu key back. */
-static bool s_set_focus;      /* total ever, ring position = s_flow_n % FLOW_MAX */
+static bool s_set_focus;
+static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
@@ -286,14 +316,23 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_ask.pending = true;                 /* published last */
     } while (0);
 
-    stat_hour_t *hb = stat_bucket();
-    hb->rx++;
-    uint32_t ch = 5381;
-    for (const char *c = call; *c; c++) ch = ch * 33 + (uint8_t)*c;
-    bool known = false;
-    for (int i = 0; i < hb->devn; i++)
-        if (hb->devh[i] == ch) { known = true; break; }
-    if (!known && hb->devn < STAT_DEVS) hb->devh[hb->devn++] = ch;
+    uint32_t ep = epoch_now();
+    if (ep) {
+        sbucket_t *b = stat10(ep);
+        sbucket_t *d = statday(ep);
+        b->rx++;
+        d->rx++;
+        uint32_t chh = 5381;
+        for (const char *c = call; *c; c++) chh = chh * 33 + (uint8_t)*c;
+        bool known = false;
+        for (int i = 0; i < s_cur_devn; i++)
+            if (s_cur_devh[i] == chh) { known = true; break; }
+        if (!known && s_cur_devn < STAT_DEVS) {
+            s_cur_devh[s_cur_devn++] = chh;
+            b->dev = (uint16_t)s_cur_devn;
+            if (b->dev > d->dev) d->dev = b->dev;
+        }
+    }
 
     flow_t *fl = &s_flow[s_flow_n % FLOW_MAX];
     snprintf(fl->call, sizeof fl->call, "%s", call);
@@ -646,9 +685,12 @@ static void ui_render(void)
         static uint32_t tx_prev;
         static bool tx_primed;
         uint32_t tx_total = done + ltx;
-        if (tx_primed && tx_total > tx_prev)
-            stat_bucket()->tx += tx_total - tx_prev;
-        tx_prev = tx_total;
+        uint32_t ep = epoch_now();
+        if (tx_primed && tx_total > tx_prev && ep) {
+            stat10(ep)->tx += tx_total - tx_prev;
+            statday(ep)->tx += tx_total - tx_prev;
+        }
+        if (ep || !tx_primed) tx_prev = tx_total;
         tx_primed = true;
     }
 
@@ -925,6 +967,24 @@ static void ui_render(void)
         SROW("Name", xcfg_get("name", "--"),
              "The device's friendly name. Set it through the config "
              "share above.");
+        {
+            uint32_t tep = epoch_now();
+            char tval[26];
+            if (tep) {
+                time_t lt = (time_t)((int64_t)tep + s_tz_off);
+                struct tm tmv;
+                gmtime_r(&lt, &tmv);
+                snprintf(tval, sizeof tval, "%02d:%02d UTC%+d",
+                         tmv.tm_hour, tmv.tm_min, s_tz_off / 3600);
+            } else {
+                snprintf(tval, sizeof tval, "No sync");
+            }
+            snprintf(det, sizeof det,
+                     "NTP: %s. Set the server and the timezone offset in "
+                     "config.ini through the config share.",
+                     xcfg_get("ntp", "pool.ntp.org"));
+            SROW("Time", tval, det);
+        }
         SROW("Restart", "--",
              "OK restarts the station so pending changes take effect.");
         #undef SROW
@@ -933,22 +993,70 @@ static void ui_render(void)
         xui_set_title("Settings 6/7");
         break;
     }
-    default: {  /* Stats: hourly graphs of who and what went past */
-        /* Oldest to newest, ending at the running hour. */
-        stat_bucket();   /* roll the ring before reading it */
-        int nh = (int)s_stat_hournum + 1;
-        if (nh > STAT_HOURS) nh = STAT_HOURS;
-        uint16_t dev[STAT_HOURS], rxv[STAT_HOURS], txv[STAT_HOURS];
-        for (int k = 0; k < nh; k++) {
-            uint32_t hour = s_stat_hournum - (nh - 1 - k);
-            stat_hour_t *hb = &s_stat[hour % STAT_HOURS];
-            dev[k] = (uint16_t)hb->devn;
-            rxv[k] = (uint16_t)(hb->rx > 65535 ? 65535 : hb->rx);
-            txv[k] = (uint16_t)(hb->tx > 65535 ? 65535 : hb->tx);
+    default: {  /* Stats: 10-minute, hourly or daily bars; arrows switch */
+        uint16_t dev[SBDAY_N], rxv[SBDAY_N], txv[SBDAY_N];
+        int np = 0;
+        uint32_t ep = epoch_now();
+        const char *suffix = "";
+        if (!ep) {
+            suffix = " (waiting for time)";
+        } else if (s_stats_view == 0) {
+            /* Last 24 ten-minute buckets: four hours. */
+            suffix = " / 10 min (4 h)";
+            uint32_t slot = ep / 600;
+            np = 24;
+            for (int k = 0; k < np; k++) {
+                uint32_t sl = slot - (np - 1 - k);
+                int i = (int)(sl % SB10_N);
+                bool live = s_sb10_id[i] == sl;
+                dev[k] = live ? s_sb10[i].dev : 0;
+                rxv[k] = live ? (uint16_t)s_sb10[i].rx : 0;
+                txv[k] = live ? (uint16_t)s_sb10[i].tx : 0;
+            }
+        } else if (s_stats_view == 1) {
+            /* Last 24 hours, each the sum of its six buckets. */
+            suffix = " / hour (24 h)";
+            uint32_t hour = ep / 3600;
+            np = 24;
+            for (int k = 0; k < np; k++) {
+                uint32_t hk = hour - (np - 1 - k);
+                uint32_t rx = 0, tx = 0;
+                uint16_t dv = 0;
+                for (int j = 0; j < 6; j++) {
+                    uint32_t sl = hk * 6 + j;
+                    int i = (int)(sl % SB10_N);
+                    if (s_sb10_id[i] != sl) continue;
+                    rx += s_sb10[i].rx;
+                    tx += s_sb10[i].tx;
+                    if (s_sb10[i].dev > dv) dv = s_sb10[i].dev;
+                }
+                dev[k] = dv;
+                rxv[k] = (uint16_t)(rx > 65535 ? 65535 : rx);
+                txv[k] = (uint16_t)(tx > 65535 ? 65535 : tx);
+            }
+        } else {
+            /* Last 30 days. */
+            suffix = " / day (30 d)";
+            uint32_t dslot = (uint32_t)((int64_t)ep + s_tz_off) / 86400;
+            np = 30;
+            for (int k = 0; k < np; k++) {
+                uint32_t sl = dslot - (np - 1 - k);
+                int i = (int)(sl % SBDAY_N);
+                bool live = s_sbday_id[i] == sl;
+                dev[k] = live ? s_sbday[i].dev : 0;
+                rxv[k] = live ? (uint16_t)(s_sbday[i].rx > 65535 ? 65535
+                                           : s_sbday[i].rx) : 0;
+                txv[k] = live ? (uint16_t)(s_sbday[i].tx > 65535 ? 65535
+                                           : s_sbday[i].tx) : 0;
+            }
         }
-        xui_stats_set(0, "Devices heard / hour", dev, nh);
-        xui_stats_set(1, "Packets received / hour", rxv, nh);
-        xui_stats_set(2, "Packets sent / hour", txv, nh);
+        char t0[48], t1[48], t2[48];
+        snprintf(t0, sizeof t0, "Devices heard%s", suffix);
+        snprintf(t1, sizeof t1, "Packets received%s", suffix);
+        snprintf(t2, sizeof t2, "Packets sent%s", suffix);
+        xui_stats_set(0, t0, dev, np);
+        xui_stats_set(1, t1, rxv, np);
+        xui_stats_set(2, t2, txv, np);
         list_n = 0;
         xui_set_title("Stats 7/7");
         break;
@@ -974,7 +1082,7 @@ static void ui_render(void)
      * on the panels that have one. */
     if (s_panel == 5)
         xui_set_keys(s_set_focus ? "OK" : "Menu", XUI_KEY_UP, XUI_KEY_DOWN);
-    else if (s_panel != 0 && s_panel != 6)
+    else if (s_panel != 0)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else
         xui_set_keys("Menu", "", "");
@@ -1161,6 +1269,47 @@ static void idx_answer_history(void)
     idx_result(bearer, from, cmdid, s_page.more ? 206 : 200);
 }
 
+/* The stats rings, serialised whole: under 3 KB, written every ten minutes
+ * by idx_task (the only task allowed near the storage) and read back at
+ * boot -- a reboot no longer forgets the day. */
+#define STATS_MAGIC 0x31545358u   /* "XST1" */
+typedef struct {
+    uint32_t  magic;
+    sbucket_t sb10[SB10_N];
+    uint32_t  sb10_id[SB10_N];
+    sbucket_t sbday[SBDAY_N];
+    uint32_t  sbday_id[SBDAY_N];
+} stats_blob_t;
+
+static void stats_load(void)
+{
+    FILE *f = fopen("/idx/stats.bin", "rb");
+    if (!f) return;
+    static stats_blob_t bl;
+    bool ok = fread(&bl, sizeof bl, 1, f) == 1 && bl.magic == STATS_MAGIC;
+    fclose(f);
+    if (!ok) return;
+    memcpy(s_sb10, bl.sb10, sizeof s_sb10);
+    memcpy(s_sb10_id, bl.sb10_id, sizeof s_sb10_id);
+    memcpy(s_sbday, bl.sbday, sizeof s_sbday);
+    memcpy(s_sbday_id, bl.sbday_id, sizeof s_sbday_id);
+    ESP_LOGI(TAG, "stats reloaded from flash");
+}
+
+static void stats_save(void)
+{
+    FILE *f = fopen("/idx/stats.bin", "wb");
+    if (!f) return;
+    static stats_blob_t bl;
+    bl.magic = STATS_MAGIC;
+    memcpy(bl.sb10, s_sb10, sizeof s_sb10);
+    memcpy(bl.sb10_id, s_sb10_id, sizeof s_sb10_id);
+    memcpy(bl.sbday, s_sbday, sizeof s_sbday);
+    memcpy(bl.sbday_id, s_sbday_id, sizeof s_sbday_id);
+    fwrite(&bl, sizeof bl, 1, f);
+    fclose(f);
+}
+
 static void idx_task(void *arg)
 {
     (void)arg;
@@ -1190,7 +1339,10 @@ static void idx_task(void *arg)
                  esp_err_to_name(err));
     }
 
+    stats_load();
+
     uint32_t last_announce_s = 0;
+    uint32_t last_stats_save_s = 0;
     for (;;) {
         /* Drain what the radios heard. */
         while (s_idxq_r != s_idxq_w) {
@@ -1220,6 +1372,13 @@ static void idx_task(void *arg)
 
         if (s_ask.pending && s_index && xcfg_get_bool("index_on", true))
             idx_answer_history();
+
+        /* The stats rings hit the flash every ten minutes -- losing at most
+         * ten minutes of bars to a power pull. */
+        if (epoch_now() && now_s - last_stats_save_s >= 600) {
+            last_stats_save_s = now_s;
+            stats_save();
+        }
 
         /* The heartbeat esp32.md prescribes: a writer that stops is visible
          * here without a boot log. */
@@ -1271,7 +1430,7 @@ static void settings_ok(int row)
             xcfg_set_bool("share_on", true);
         }
         break;
-    case 8:
+    case 9:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -1360,6 +1519,8 @@ static void ui_task(void *arg)
             if (s_panel == 5) {
                 if (s_set_focus && s_sel[5] > 0) s_sel[5]--;
                 else s_set_focus = false;   /* above the top row: back out */
+            } else if (s_panel == 6) {
+                s_stats_view = (s_stats_view + 2) % 3;
             } else if (s_panel != 0 && s_sel[s_panel] > 0) {
                 s_sel[s_panel]--;
             }
@@ -1370,6 +1531,8 @@ static void ui_task(void *arg)
             if (s_panel == 5) {
                 if (!s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
                 else s_sel[5]++;             /* render clamps to the list */
+            } else if (s_panel == 6) {
+                s_stats_view = (s_stats_view + 1) % 3;
             } else if (s_panel != 0) {
                 s_sel[s_panel]++;
             }
@@ -1398,11 +1561,13 @@ static void ui_task(void *arg)
         if (ch == 'U' && s_panel != 0) {
             if (s_panel == 5 && (!s_set_focus || s_sel[5] == 0))
                 s_set_focus = false;
+            else if (s_panel == 6) s_stats_view = (s_stats_view + 2) % 3;
             else if (s_sel[s_panel] > 0) s_sel[s_panel]--;
             force = true;
         }
         if (ch == 'D' && s_panel != 0) {
             if (s_panel == 5 && !s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
+            else if (s_panel == 6) s_stats_view = (s_stats_view + 1) % 3;
             else s_sel[s_panel]++;
             force = true;
         }
@@ -1496,8 +1661,20 @@ void app_main(void)
      * wifi_up(): SNTP posts to the lwip thread, which exists only once the
      * network stack does. */
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(0, xcfg_get("ntp", "pool.ntp.org"));
     esp_sntp_init();
+
+    /* The timezone ("time fuse"): an offset like +01:00 or -05:30 in the
+     * config. It places the day boundary for the daily statistics. */
+    {
+        const char *tz = xcfg_get("tz", "+00:00");
+        int th = 0, tm = 0;
+        if (sscanf(tz, "%d:%d", &th, &tm) >= 1)
+            s_tz_off = th * 3600 + (th < 0 ? -tm : tm) * 60;
+        ESP_LOGI(TAG, "NTP %s, timezone %+03d:%02d",
+                 xcfg_get("ntp", "pool.ntp.org"),
+                 s_tz_off / 3600, abs(s_tz_off / 60) % 60);
+    }
 
     /* The LAN bearer first, deliberately: its task is what pumps every bearer's
      * re-air queue and beacon, ESP-NOW included. Starting ESP-NOW without it

@@ -148,7 +148,7 @@ void xui_flow_select(int idx);
 /* ---- The stats panel: stacked hourly bar charts ------------------------- */
 
 #define XUI_STATS_CHARTS 3
-#define XUI_STATS_POINTS 24
+#define XUI_STATS_POINTS 30
 
 /** Show the stats panel (true) or the plain text body (false). UI task only. */
 void xui_show_stats(bool show);

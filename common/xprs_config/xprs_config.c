@@ -35,6 +35,8 @@ static cfg_entry_t s_cfg[] = {
     { "bridge_on", {0}, false },
     { "igate_on",  {0}, false },
     { "index_on",  {0}, false },
+    { "ntp",       {0}, false },
+    { "tz",        {0}, false },
 };
 #define CFG_N (sizeof(s_cfg) / sizeof(s_cfg[0]))
 
@@ -141,7 +143,14 @@ int xcfg_ini_render(char *buf, size_t cap)
         "\n"
         "[share]\n"
         "; This browser editor itself.\n"
-        "enabled = %s\n",
+        "enabled = %s\n"
+        "\n"
+        "[time]\n"
+        "; NTP server (community pool by default) and the timezone as an\n"
+        "; offset from UTC, e.g. +01:00 or -05:30. The offset places the\n"
+        "; day boundary for the daily statistics.\n"
+        "server = %s\n"
+        "tz = %s\n",
         xcfg_get("name", ""),
         xcfg_get_bool("wifi_on", true) ? "yes" : "no",
         xcfg_get("ssid", ""),
@@ -151,7 +160,9 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("bridge_on", true) ? "yes" : "no",
         xcfg_get_bool("igate_on", true) ? "yes" : "no",
         xcfg_get_bool("index_on", true) ? "yes" : "no",
-        xcfg_get_bool("share_on", false) ? "yes" : "no");
+        xcfg_get_bool("share_on", false) ? "yes" : "no",
+        xcfg_get("ntp", "pool.ntp.org"),
+        xcfg_get("tz", "+00:00"));
 }
 
 /* section + key -> NVS key. */
@@ -167,6 +178,8 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "bridge",  "enabled",  "bridge_on" },
     { "igate",   "enabled",  "igate_on" },
     { "indexer", "enabled",  "index_on" },
+    { "time",    "server",   "ntp" },
+    { "time",    "tz",       "tz" },
 };
 
 static char *trim(char *s)
