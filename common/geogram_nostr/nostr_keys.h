@@ -76,6 +76,17 @@ const char *nostr_keys_get_npub(void);
 esp_err_t nostr_keys_generate(void);
 
 /**
+ * @brief Import a private key from its bech32 nsec form
+ *
+ * Replaces the station's identity: derives the public key, re-derives the
+ * callsign, and persists the pair to NVS.
+ *
+ * @param nsec Null-terminated "nsec1..." string
+ * @return ESP_OK on success
+ */
+esp_err_t nostr_keys_import_nsec(const char *nsec);
+
+/**
  * @brief Check if keys have been initialized
  *
  * @return true if keys are available

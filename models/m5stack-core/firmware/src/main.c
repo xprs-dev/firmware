@@ -44,12 +44,18 @@
 
 #include "wifi_secrets.h"   /* gitignored; see wifi_secrets.h.example */
 
+/* The credentials actually used: config.ini overrides the compiled-in
+ * secrets, so a device can be repointed without a rebuild. */
+static char s_ssid[32];   /* sized to wifi_config_t */
+static char s_pass[64];
+
 #include <math.h>
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
 #include "ili9342.h"
 #include "ili9342.h"
 #include "xprs_ui.h"
+#include "xprs_config.h"
 
 static const char *TAG = "m5xprs";
 
@@ -407,13 +413,13 @@ static void wifi_up(void)
         IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
-    if (WIFI_SSID[0]) {
+    if (s_ssid[0]) {
         wifi_config_t wc = {0};
-        snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", WIFI_SSID);
-        snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", WIFI_PASS);
+        snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", s_ssid);
+        snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", s_pass);
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
         ESP_LOGI(TAG, "associating to \"%s\" — this is what puts us on the "
-                      "dongle's channel", WIFI_SSID);
+                      "dongle's channel", s_ssid);
     } else {
         ESP_LOGW(TAG, "no WiFi credentials: staying unassociated on channel %d. "
                       "That only meets another unassociated board — an "
@@ -421,7 +427,7 @@ static void wifi_up(void)
                  ESPNOW_FALLBACK_CHANNEL);
     }
     ESP_ERROR_CHECK(esp_wifi_start());
-    if (!WIFI_SSID[0]) {
+    if (!s_ssid[0]) {
         ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_FALLBACK_CHANNEL,
                                              WIFI_SECOND_CHAN_NONE));
     }
@@ -470,7 +476,7 @@ static void inet_probe_task(void *arg)
 #define BTN_B GPIO_NUM_38
 #define BTN_C GPIO_NUM_37
 
-#define UI_PANEL_COUNT 5
+#define UI_PANEL_COUNT 6
 #define UI_INRANGE_SEC 300
 
 static int s_panel;
@@ -517,7 +523,7 @@ static void ui_render(void)
         if (s_ip_str[0])
             snprintf(d, sizeof d, "%s", s_ip_str);
         else
-            snprintf(d, sizeof d, "%s", WIFI_SSID[0] ? "Joining..." : "Down");
+            snprintf(d, sizeof d, "%s", s_ssid[0] ? "Joining..." : "Down");
         xui_home_row(1, "WiFi / LAN", s_ip_str[0] != 0, d);
 
         if (!s_ip_str[0])       snprintf(d, sizeof d, "No address");
@@ -540,7 +546,7 @@ static void ui_render(void)
             nb++;
         }
         xui_radar_blips(blips, nb);
-        xui_set_title("Links 1/5");
+        xui_set_title("Links 1/6");
         break;
     }
     case 1: {   /* Flow: the packets going past, newest first */
@@ -562,7 +568,7 @@ static void ui_render(void)
         }
         xui_flow_rows(rows, nr);
         list_n = nr;
-        xui_set_title("Flow 2/5");
+        xui_set_title("Flow 2/6");
         break;
     }
     case 2: {   /* Traffic: counters, one per row, explained when selected */
@@ -619,7 +625,7 @@ static void ui_render(void)
         #undef TROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Traffic 3/5");
+        xui_set_title("Traffic 3/6");
         break;
     }
     case 3: {   /* Devices: everyone in reach, detail on selection */
@@ -657,10 +663,10 @@ static void ui_render(void)
         }
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Devices 4/5");
+        xui_set_title("Devices 4/6");
         break;
     }
-    default: {  /* Node: this station's facts, full values on selection */
+    case 4: {   /* Node: this station's facts, full values on selection */
         static const char *const hdr[2] = { "Item", "Value" };
         static const int cw[2] = { 110, 210 };
         xui_table_setup(2, hdr, cw);
@@ -715,7 +721,49 @@ static void ui_render(void)
         #undef NROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Node 5/5");
+        xui_set_title("Node 5/6");
+        break;
+    }
+    default: {  /* Settings: OK (button A) toggles the selected row */
+        static const char *const hdr[2] = { "Setting", "State" };
+        static const int cw[2] = { 170, 150 };
+        xui_table_setup(2, hdr, cw);
+
+        static xui_row_t tr[XUI_TAB_ROWS];
+        int nr = 0;
+        #define SROW(c0, val, det) do { \
+            snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
+            snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], "%s", val); \
+            snprintf(tr[nr].detail, sizeof tr[nr].detail, "%s", det); \
+            nr++; } while (0)
+
+        SROW("WiFi / LAN", xcfg_get_bool("wifi_on", true) ? "On" : "Off",
+             "Join the WiFi network and speak XPRS over the LAN. "
+             "OK toggles; applies after restart.");
+        SROW("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
+             "The 2.4 GHz radio link between nearby stations. "
+             "OK toggles; applies after restart.");
+        char det[160];
+        if (xcfg_share_running())
+            snprintf(det, sizeof det,
+                     "Serving now: open http://%s/ in a browser to edit "
+                     "config.ini (WiFi, name, nsec). OK turns it off.",
+                     s_ip_str[0] ? s_ip_str : "<ip>");
+        else
+            snprintf(det, sizeof det,
+                     "Off. OK starts a browser editor for config.ini "
+                     "(WiFi, name, nsec)%s.",
+                     s_ip_str[0] ? "" : " -- needs WiFi first");
+        SROW("Config share", xcfg_share_running() ? "On" : "Off", det);
+        SROW("Name", xcfg_get("name", "--"),
+             "The device's friendly name. Set it through the config "
+             "share above.");
+        SROW("Restart", "--",
+             "OK restarts the station so pending changes take effect.");
+        #undef SROW
+        xui_table_rows(tr, nr);
+        list_n = nr;
+        xui_set_title("Settings 6/6");
         break;
     }
     }
@@ -734,10 +782,40 @@ static void ui_render(void)
     /* The bottom bar tells the user what the three buttons under it do:
      * A cycles the menus (long press goes home), B and C move the selection
      * on the panels that have one. */
-    if (s_panel != 0)
+    if (s_panel == 5)
+        xui_set_keys("OK", XUI_KEY_UP, XUI_KEY_DOWN);
+    else if (s_panel != 0)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else
         xui_set_keys("Menu", "", "");
+}
+
+/* OK on the Settings panel: toggle or act on the selected row. Radio
+ * toggles persist and apply on restart; the config share flips live. */
+static void settings_ok(int row)
+{
+    switch (row) {
+    case 0:
+        xcfg_set_bool("wifi_on", !xcfg_get_bool("wifi_on", true));
+        break;
+    case 1:
+        xcfg_set_bool("espnow_on", !xcfg_get_bool("espnow_on", true));
+        break;
+    case 2:
+        if (xcfg_share_running()) {
+            xcfg_share_stop();
+            xcfg_set_bool("share_on", false);
+        } else if (xcfg_share_start() == ESP_OK) {
+            xcfg_set_bool("share_on", true);
+        }
+        break;
+    case 4:
+        ESP_LOGI(TAG, "restart from the Settings panel");
+        esp_restart();
+        break;
+    default:
+        break;
+    }
 }
 
 /* Bridge the generic UI's flush callback onto this board's panel driver. */
@@ -799,9 +877,14 @@ static void ui_task(void *arg)
             }
         } else {
             if (a_held_ms >= 30 && !a_long_fired) {
-                s_panel = (s_panel + 1) % UI_PANEL_COUNT;
+                if (s_panel == 5) {
+                    /* On Settings, A is OK: act on the selected row. */
+                    settings_ok(s_sel[5]);
+                } else {
+                    s_panel = (s_panel + 1) % UI_PANEL_COUNT;
+                    ESP_LOGI(TAG, "button A: panel %d", s_panel);
+                }
                 force = true;
-                ESP_LOGI(TAG, "button A: panel %d", s_panel);
             }
             a_held_ms = 0;
             a_long_fired = false;
@@ -837,6 +920,12 @@ static void ui_task(void *arg)
             s_panel = ch - '1';
             force = true;
         }
+        /* 'U'/'D' move the selection, 'K' is OK -- the buttons, scripted. */
+        if (ch == 'U' && s_panel != 0 && s_sel[s_panel] > 0) {
+            s_sel[s_panel]--; force = true;
+        }
+        if (ch == 'D' && s_panel != 0) { s_sel[s_panel]++; force = true; }
+        if (ch == 'K' && s_panel == 5) { settings_ok(s_sel[5]); force = true; }
 
         uint64_t now_us = esp_timer_get_time();
         if (force || now_us >= next_render_us) {
@@ -864,10 +953,25 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(err);
 
+    xcfg_init();
+    snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", WIFI_SSID));
+    snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", WIFI_PASS));
+
     if (nostr_keys_init() != ESP_OK || !nostr_keys_available()) {
         ESP_LOGE(TAG, "no signing key — this station cannot take part in §23.7, "
                       "which follows only invitations it can check");
     }
+    /* An nsec written into config.ini is consumed exactly once: import it,
+     * wipe it from the store, and carry the new identity from here on. */
+    const char *pending_nsec = xcfg_get("nsec", NULL);
+    if (pending_nsec) {
+        if (nostr_keys_import_nsec(pending_nsec) == ESP_OK)
+            ESP_LOGI(TAG, "identity imported from config");
+        else
+            ESP_LOGE(TAG, "config nsec was invalid; keeping the old identity");
+        xcfg_set("nsec", "");
+    }
+
     derive_callsign();
     /* §3: an X3 callsign derives from the signing key, so a receiver can
      * re-derive it. This board keeps its MAC-derived X5 name only when there is
@@ -878,6 +982,12 @@ void app_main(void)
     ESP_LOGI(TAG, "M5Stack XPRS station %s (ESP-NOW + LAN, no BLE5 on this chip)",
              s_call);
 
+    if (!xcfg_get_bool("wifi_on", true)) {
+        /* ESP-NOW still needs the WiFi driver started, just not a network:
+         * wifi_up() with no SSID does exactly that, so blank the name. */
+        s_ssid[0] = 0;
+        ESP_LOGI(TAG, "WiFi/LAN disabled by config (radio up for ESP-NOW only)");
+    }
     wifi_up();
 
     /* The LAN bearer first, deliberately: its task is what pumps every bearer's
@@ -891,7 +1001,9 @@ void app_main(void)
         ESP_LOGE(TAG, "LAN bearer failed — nothing will pump ESP-NOW either");
     }
 
-    if (xprsnow_start(s_call) == ESP_OK) {
+    if (!xcfg_get_bool("espnow_on", true)) {
+        ESP_LOGI(TAG, "ESP-NOW disabled by config");
+    } else if (xprsnow_start(s_call) == ESP_OK) {
         xprsnow_set_rx_cb(on_espnow);
         xprsnow_set_heard_cb(heard_espnow);
         /* Faster than the dongle's 300 s: this board exists to be measured, and
@@ -915,6 +1027,9 @@ void app_main(void)
         xui_init(ILI9342_WIDTH, ILI9342_HEIGHT, lcd_flush_adapter,
                  lcd) == ESP_OK) {
         xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL);
+        if (xcfg_get_bool("share_on", false) &&
+            xcfg_get_bool("wifi_on", true))
+            xcfg_share_start();
     } else {
         ESP_LOGE(TAG, "display init failed — running headless");
     }

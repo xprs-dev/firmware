@@ -287,6 +287,61 @@ esp_err_t nostr_keys_generate(void) {
     return ESP_OK;
 }
 
+esp_err_t nostr_keys_import_nsec(const char *nsec) {
+    if (!nsec || strncmp(nsec, "nsec1", 5) != 0) return ESP_ERR_INVALID_ARG;
+
+    char hrp[8];
+    uint8_t priv[NOSTR_PRIVATE_KEY_LEN];
+    size_t priv_len = sizeof(priv);
+    esp_err_t ret = bech32_decode(nsec, hrp, priv, &priv_len);
+    if (ret != ESP_OK || priv_len != NOSTR_PRIVATE_KEY_LEN ||
+        strcmp(hrp, "nsec") != 0) {
+        ESP_LOGE(TAG, "nsec import: not a valid nsec string");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // Derive the public key Q = d * G on secp256k1
+    mbedtls_ecp_group grp;
+    mbedtls_mpi d;
+    mbedtls_ecp_point Q;
+    mbedtls_ecp_group_init(&grp);
+    mbedtls_mpi_init(&d);
+    mbedtls_ecp_point_init(&Q);
+
+    ret = ESP_FAIL;
+    uint8_t pub_uncompressed[65];
+    size_t pub_len = 0;
+    if (mbedtls_ecp_group_load(&grp, MBEDTLS_ECP_DP_SECP256K1) != 0) goto out;
+    if (mbedtls_mpi_read_binary(&d, priv, NOSTR_PRIVATE_KEY_LEN) != 0) goto out;
+    if (mbedtls_ecp_check_privkey(&grp, &d) != 0) {
+        ESP_LOGE(TAG, "nsec import: scalar out of range");
+        goto out;
+    }
+    if (mbedtls_ecp_mul(&grp, &Q, &d, &grp.G, esp_rng_func, NULL) != 0) goto out;
+    if (mbedtls_ecp_point_write_binary(&grp, &Q, MBEDTLS_ECP_PF_UNCOMPRESSED,
+                                       &pub_len, pub_uncompressed,
+                                       sizeof(pub_uncompressed)) != 0 ||
+        pub_len != 65) goto out;
+
+    memcpy(s_keys.private_key, priv, NOSTR_PRIVATE_KEY_LEN);
+    memcpy(s_keys.public_key, pub_uncompressed + 1, NOSTR_PUBLIC_KEY_LEN);
+    ret = encode_keys(&s_keys);
+    if (ret != ESP_OK) goto out;
+    ret = nostr_keys_derive_callsign(s_keys.npub, s_keys.callsign);
+    if (ret != ESP_OK) goto out;
+    ret = save_keys_to_nvs(&s_keys);
+    if (ret == ESP_OK) {
+        s_initialized = true;
+        ESP_LOGI(TAG, "Imported identity - callsign: %s", s_keys.callsign);
+    }
+out:
+    mbedtls_ecp_group_free(&grp);
+    mbedtls_mpi_free(&d);
+    mbedtls_ecp_point_free(&Q);
+    memset(priv, 0, sizeof(priv));
+    return ret;
+}
+
 const nostr_keys_t *nostr_keys_get(void) {
     return s_initialized ? &s_keys : NULL;
 }

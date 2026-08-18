@@ -146,9 +146,17 @@ static xprsidx_dir_entry_t s_dir[XPRS_DIR_MAX];
  * that announces with a real timestamp (see the rotation below). */
 #define RNS_IDENTITY_VERSION 1
 
-#define APP_NAME "aurora"
+/* The Reticulum destination namespace. This was "aurora" while the phone and
+ * desktop app announced "geogram", which meant the dongle was in a namespace of
+ * its own: its announces were structurally fine, routed by the hubs, and then
+ * discarded by the app because they matched none of its service tuples. A
+ * dongle has therefore never appeared as one of our devices in the mesh graph.
+ * Both sides say "xprs" now, which is what finally puts them on the same
+ * overlay. A flashed dongle has no override for this -- it is compile-time, so
+ * every unit has to be reflashed. */
+#define APP_NAME "xprs"
 #define ASPECT   "chat"
-#define FULL_NAME "aurora.chat"      /* expand_name(None, app, aspect) */
+#define FULL_NAME "xprs.chat"        /* expand_name(None, app, aspect) */
 
 /* ---- our identity (RNS) ------------------------------------------------- */
 static uint8_t s_ed_sk[64];   /* Ed25519 secret: seed(32) || pub(32) */
