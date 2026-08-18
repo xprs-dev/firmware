@@ -94,9 +94,36 @@ typedef struct {
  *  station holds its bearing between updates. UI task only. */
 void xui_radar_blips(const xui_blip_t *blips, int n);
 
-/* ---- The flow table ----------------------------------------------------- */
+/* ---- Generic selectable table ------------------------------------------- */
 
-#define XUI_FLOW_ROWS 8
+#define XUI_TAB_ROWS 8
+#define XUI_TAB_COLS 5
+
+typedef struct {
+    char cell[XUI_TAB_COLS][26];   /* one line per column */
+    char detail[160];              /* shown in the strip when selected */
+} xui_row_t;
+
+/** Reconfigure the table: column count, header texts, and reference widths
+ *  (pixels on a 320px screen; the last column soaks up the rest).
+ *  UI task only. */
+void xui_table_setup(int ncols, const char *const headers[],
+                     const int ref_w[]);
+
+/** Replace the table's rows. UI task only. */
+void xui_table_rows(const xui_row_t *rows, int n);
+
+/** Highlight one row and show its detail in the strip under the table.
+ *  Pass -1 for no selection. UI task only. */
+void xui_table_select(int idx);
+
+/** Show the table + detail strip (true) or the plain text body (false).
+ *  UI task only. */
+void xui_show_table(bool show);
+
+/* ---- The flow table (a preset of the generic table) --------------------- */
+
+#define XUI_FLOW_ROWS XUI_TAB_ROWS
 
 typedef struct {
     char     from[10];

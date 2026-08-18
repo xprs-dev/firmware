@@ -152,7 +152,7 @@ typedef struct {
 } flow_t;
 static flow_t s_flow[FLOW_MAX];
 static int s_flow_n;
-static int s_flow_sel;    /* Flow panel: selected row (arrows move it) */      /* total ever, ring position = s_flow_n % FLOW_MAX */
+static int s_sel[8];      /* per-panel selected row (arrows move it) */      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
@@ -500,11 +500,12 @@ static int seen_in_range(void)
 static void ui_render(void)
 {
     char body[720];
+    int list_n = 0;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
     body[0] = 0;
     xui_show_home(s_panel == 0);
-    xui_show_flow(s_panel == 1);
+    xui_show_table(s_panel != 0);
 
     switch (s_panel) {
     case 0: {   /* Links: the graphic home panel */
@@ -559,81 +560,161 @@ static void ui_render(void)
             r->age_s = (now - fl->ms) / 1000;
             snprintf(r->text, sizeof r->text, "%s", fl->text);
         }
-        /* Keep the selection on the list: clamp, and take the first row
-         * when packets arrive after the panel was visited empty. */
-        if (s_flow_sel >= nr) s_flow_sel = nr - 1;
-        if (s_flow_sel < 0 && nr > 0) s_flow_sel = 0;
         xui_flow_rows(rows, nr);
-        xui_flow_select(s_flow_sel);
+        list_n = nr;
         xui_set_title("Flow 2/5");
         break;
     }
-    case 2: {   /* Traffic */
+    case 2: {   /* Traffic: counters, one per row, explained when selected */
         uint32_t rx = 0, tx = 0, cancelled = 0, dropped = 0;
         uint32_t issued = 0, done = 0, failed = 0;
         uint32_t lrx = 0, ltx = 0, lcancel = 0;
         xprsnow_stats(&rx, &tx, &cancelled, &dropped);
         xprsnow_tx_stats(&issued, &done, &failed);
         xprslan_stats(&lrx, &ltx, &lcancel);
-        char last[48] = "--";
+
+        static const char *const hdr[2] = { "Counter", "Value" };
+        static const int cw[2] = { 170, 150 };
+        xui_table_setup(2, hdr, cw);
+
+        static xui_row_t tr[XUI_TAB_ROWS];
+        int nr = 0;
+        #define TROW(c0, det, fmt, ...) do { \
+            snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
+            snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], fmt, __VA_ARGS__); \
+            snprintf(tr[nr].detail, sizeof tr[nr].detail, "%s", det); \
+            nr++; } while (0)
+        TROW("ESP-NOW rx",
+             "Packets received over the ESP-NOW radio since boot.",
+             "%lu", (unsigned long)rx);
+        char det[160];
+        snprintf(det, sizeof det,
+                 "Completed / queued transmissions over ESP-NOW. "
+                 "Failed: %lu.", (unsigned long)failed);
+        TROW("ESP-NOW tx", det, "%lu/%lu",
+             (unsigned long)done, (unsigned long)issued);
+        snprintf(det, sizeof det,
+                 "Frames dropped: %lu. Radio-busy cancels: %lu.",
+                 (unsigned long)dropped, (unsigned long)cancelled);
+        TROW("ESP-NOW drop", det, "%lu",
+             (unsigned long)(dropped + cancelled));
+        TROW("LAN rx",
+             "Packets received over WiFi / LAN (UDP broadcast).",
+             "%lu", (unsigned long)lrx);
+        snprintf(det, sizeof det,
+                 "Packets sent over WiFi / LAN. Cancelled: %lu.",
+                 (unsigned long)lcancel);
+        TROW("LAN tx", det, "%lu", (unsigned long)ltx);
+        TROW("Heard",
+             "All XPRS packets heard on every link since boot.",
+             "%lu", (unsigned long)s_heard_count);
         if (s_last_call[0]) {
-            snprintf(last, sizeof last, "%s, %lus ago", s_last_call,
+            snprintf(det, sizeof det, "%s was the last station heard, "
+                     "%lu s ago.", s_last_call,
                      (unsigned long)((now - s_last_rx_ms) / 1000));
+            TROW("Last station", det, "%s", s_last_call);
+        } else {
+            TROW("Last station", "Nobody heard yet.", "%s", "--");
         }
-        snprintf(body, sizeof body,
-                 "ESPNOW rx %lu  tx %lu/%lu  fail %lu\n"
-                 "       cancel %lu  drop %lu\n"
-                 "LAN    rx %lu  tx %lu  cancel %lu\n"
-                 "Heard  %lu packets\n"
-                 "Last   %s",
-                 (unsigned long)rx, (unsigned long)done, (unsigned long)issued,
-                 (unsigned long)failed,
-                 (unsigned long)cancelled, (unsigned long)dropped,
-                 (unsigned long)lrx, (unsigned long)ltx, (unsigned long)lcancel,
-                 (unsigned long)s_heard_count, last);
+        #undef TROW
+        xui_table_rows(tr, nr);
+        list_n = nr;
         xui_set_title("Traffic 3/5");
         break;
     }
-    case 3: {   /* Devices */
-        int n = seen_in_range();
-        int pos = snprintf(body, sizeof body, "In reach (%d):", n);
-        for (int i = 0; i < SEEN_MAX && pos < (int)sizeof body - 40; i++) {
+    case 3: {   /* Devices: everyone in reach, detail on selection */
+        static const char *const hdr[4] = { "Call", "Link", "Dist", "When" };
+        static const int cw[4] = { 80, 74, 60, 106 };
+        xui_table_setup(4, hdr, cw);
+
+        static xui_row_t tr[XUI_TAB_ROWS];
+        int nr = 0;
+        for (int i = 0; i < SEEN_MAX && nr < XUI_TAB_ROWS; i++) {
             if (!s_seen[i].call[0]) continue;
             uint32_t age = (now - s_seen[i].last_ms) / 1000;
             if (age >= UI_INRANGE_SEC) continue;
-            if (s_seen[i].rssi)
-                pos += snprintf(body + pos, sizeof body - pos,
-                                "\n%-8s %-6s %4d dBm ~%dm  %lus",
-                                s_seen[i].call, s_seen[i].bearer,
-                                s_seen[i].rssi,
-                                (int)(est_distance_m(s_seen[i].rssi) + 0.5f),
-                                (unsigned long)age);
-            else
-                pos += snprintf(body + pos, sizeof body - pos,
-                                "\n%-8s %-6s          %lus",
-                                s_seen[i].call, s_seen[i].bearer,
-                                (unsigned long)age);
+            xui_row_t *r = &tr[nr++];
+            snprintf(r->cell[0], sizeof r->cell[0], "%s", s_seen[i].call);
+            snprintf(r->cell[1], sizeof r->cell[1], "%s", s_seen[i].bearer);
+            if (s_seen[i].rssi) {
+                int m = (int)(est_distance_m(s_seen[i].rssi) + 0.5f);
+                snprintf(r->cell[2], sizeof r->cell[2], "~%dm", m);
+                snprintf(r->detail, sizeof r->detail,
+                         "%s via %s: %d dBm, about %d m away. "
+                         "Heard %lu s ago.",
+                         s_seen[i].call, s_seen[i].bearer,
+                         s_seen[i].rssi, m, (unsigned long)age);
+            } else {
+                snprintf(r->cell[2], sizeof r->cell[2], "-");
+                snprintf(r->detail, sizeof r->detail,
+                         "%s via %s: distance unknown on this link. "
+                         "Heard %lu s ago.",
+                         s_seen[i].call, s_seen[i].bearer,
+                         (unsigned long)age);
+            }
+            snprintf(r->cell[3], sizeof r->cell[3], "%lus",
+                     (unsigned long)age);
         }
-        if (n == 0) snprintf(body, sizeof body,
-                             "In reach (0):\nNobody heard yet");
+        xui_table_rows(tr, nr);
+        list_n = nr;
         xui_set_title("Devices 4/5");
         break;
     }
-    default: {  /* Node */
+    default: {  /* Node: this station's facts, full values on selection */
+        static const char *const hdr[2] = { "Item", "Value" };
+        static const int cw[2] = { 110, 210 };
+        xui_table_setup(2, hdr, cw);
+
+        static xui_row_t tr[XUI_TAB_ROWS];
+        int nr = 0;
+        #define NROW(c0, val, det) do { \
+            snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
+            snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], "%s", val); \
+            snprintf(tr[nr].detail, sizeof tr[nr].detail, "%s", det); \
+            nr++; } while (0)
+        char val[26], det[160];   /* val matches the table cell size */
+
+        NROW("Callsign", s_call,
+             "Station callsign, derived from the signing key so a receiver "
+             "can re-derive and check it.");
+
         const char *npub = nostr_keys_get_npub();
-        char np[20] = "none";
-        if (npub && npub[0]) snprintf(np, sizeof np, "%.12s...", npub);
-        snprintf(body, sizeof body,
-                 "Callsign  %s\n"
-                 "Key       %s\n"
-                 "Heap      %u free\n"
-                 "Rendezvous %s%s\n"
-                 "Peer keys %d learned",
-                 s_call, np,
-                 (unsigned)esp_get_free_heap_size(),
-                 xprschan_busy() ? "Busy" : "Idle",
-                 xprschan_busy() ? " (off home channel)" : "",
-                 s_peers_n);
+        if (npub && npub[0]) {
+            snprintf(val, sizeof val, "%.12s...", npub);
+            NROW("Key", val, npub);
+        } else {
+            NROW("Key", "none", "No signing key: packets go out unsigned.");
+        }
+
+        uint32_t up = now / 1000;
+        snprintf(val, sizeof val, "%02lu:%02lu:%02lu",
+                 (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60),
+                 (unsigned long)(up % 60));
+        NROW("Uptime", val, "Time since this station booted.");
+
+        unsigned heap = (unsigned)esp_get_free_heap_size();
+        snprintf(val, sizeof val, "%u KB", heap / 1024);
+        snprintf(det, sizeof det, "%u bytes of internal RAM free.", heap);
+        NROW("Heap", val, det);
+
+        NROW("Rendezvous", xprschan_busy() ? "Busy" : "Idle",
+             xprschan_busy()
+                 ? "Off the home channel for an agreed working-channel "
+                   "meeting (XPRS 23.7)."
+                 : "Listening on the home channel; no working-channel "
+                   "meeting under way.");
+
+        snprintf(val, sizeof val, "%d", s_peers_n);
+        NROW("Peer keys", val,
+             "Public keys learned from identity packets; they verify "
+             "signatures and address private traffic.");
+
+        NROW("IP", s_ip_str[0] ? s_ip_str : "none",
+             s_ip_str[0] ? "Address on the local WiFi network."
+                         : "No WiFi address yet.");
+        #undef NROW
+        xui_table_rows(tr, nr);
+        list_n = nr;
         xui_set_title("Node 5/5");
         break;
     }
@@ -641,10 +722,19 @@ static void ui_render(void)
     xui_set_body(body);
     xui_set_device_count(seen_in_range());
 
+    /* Every list panel keeps its own selection: clamp it to what is on the
+     * screen, and take the first row when rows appear after the panel was
+     * visited empty. */
+    if (s_panel != 0) {
+        if (s_sel[s_panel] >= list_n) s_sel[s_panel] = list_n - 1;
+        if (s_sel[s_panel] < 0 && list_n > 0) s_sel[s_panel] = 0;
+        xui_table_select(s_sel[s_panel]);
+    }
+
     /* The bottom bar tells the user what the three buttons under it do:
      * A cycles the menus (long press goes home), B and C move the selection
      * on the panels that have one. */
-    if (s_panel == 1)
+    if (s_panel != 0)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else
         xui_set_keys("Menu", "", "");
@@ -717,17 +807,17 @@ static void ui_task(void *arg)
             a_long_fired = false;
         }
 
-        /* B and C: up / down. On the Flow panel they walk the packet list
-         * and the strip below shows the selected packet. */
+        /* B and C: up / down. On every list panel they walk the rows and
+         * the strip below shows the selected row's detail. */
         if (btn_pressed(&bb)) {
-            if (s_panel == 1 && s_flow_sel > 0) s_flow_sel--;
+            if (s_panel != 0 && s_sel[s_panel] > 0) s_sel[s_panel]--;
             force = true;
-            ESP_LOGI(TAG, "button B: up (sel %d)", s_flow_sel);
+            ESP_LOGI(TAG, "button B: up (sel %d)", s_sel[s_panel]);
         }
         if (btn_pressed(&bc)) {
-            if (s_panel == 1) s_flow_sel++;   /* render clamps to the list */
+            if (s_panel != 0) s_sel[s_panel]++;  /* render clamps to the list */
             force = true;
-            ESP_LOGI(TAG, "button C: down (sel %d)", s_flow_sel);
+            ESP_LOGI(TAG, "button C: down (sel %d)", s_sel[s_panel]);
         }
 
         /* A new packet flashes the RX dot the moment it lands; the panels
@@ -824,7 +914,7 @@ void app_main(void)
     if (ili9342_init(&lcd_cfg, &lcd) == ESP_OK &&
         xui_init(ILI9342_WIDTH, ILI9342_HEIGHT, lcd_flush_adapter,
                  lcd) == ESP_OK) {
-        xTaskCreate(ui_task, "ui", 4096, NULL, 4, NULL);
+        xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL);
     } else {
         ESP_LOGE(TAG, "display init failed — running headless");
     }

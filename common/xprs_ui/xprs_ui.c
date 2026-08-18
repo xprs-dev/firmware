@@ -67,14 +67,22 @@ static volatile bool s_pulse_pending;
 static lv_obj_t *s_radar;
 static lv_obj_t *s_sweep_line;
 static lv_point_t s_sweep_pts[2];
+#define SWEEP_TRAIL 5
+static lv_obj_t *s_sweep_trail[SWEEP_TRAIL];
+static lv_point_t s_trail_pts[SWEEP_TRAIL][2];
+static lv_point_t s_cross_pts[2][2];
+static lv_point_t s_tick_pts[12][2];
 static lv_obj_t *s_blip_dot[XUI_BLIP_MAX];
+static lv_obj_t *s_blip_halo[XUI_BLIP_MAX];
 static lv_obj_t *s_blip_lbl[XUI_BLIP_MAX];
 
-/* Flow table + the content strip under it. */
+/* The generic table + the detail strip under it (the Flow panel is one
+ * preset of it; any panel may reconfigure columns and rows). */
 static lv_obj_t *s_flowtab;
 static lv_obj_t *s_flow_content;
-static xui_flow_t s_flow_rows[XUI_FLOW_ROWS];
-static int s_flow_n;
+static char s_tab_detail[XUI_TAB_ROWS][160];
+static int s_tab_n;
+static int s_tab_ncols = 5;
 static int s_flow_sel = -1;
 static void flow_draw_cb(lv_event_t *e);
 
@@ -159,9 +167,17 @@ void xui_update(void)
      * redraw per frame and nothing when the panel is hidden. */
     if (s_sweep_line && s_home && !lv_obj_has_flag(s_home, LV_OBJ_FLAG_HIDDEN)) {
         float ang = (float)((now_us / 1000) % 4000) * (2.0f * (float)M_PI / 4000.0f);
-        s_sweep_pts[1].x = s_radar_size / 2 + (lv_coord_t)(sinf(ang) * s_radar_r);
-        s_sweep_pts[1].y = s_radar_size / 2 - (lv_coord_t)(cosf(ang) * s_radar_r);
+        int rc = s_radar_size / 2;
+        s_sweep_pts[1].x = rc + (lv_coord_t)(sinf(ang) * s_radar_r);
+        s_sweep_pts[1].y = rc - (lv_coord_t)(cosf(ang) * s_radar_r);
         lv_line_set_points(s_sweep_line, s_sweep_pts, 2);
+        /* The afterglow trails a few degrees behind the leading edge. */
+        for (int i = 0; i < SWEEP_TRAIL; i++) {
+            float ta = ang - 0.10f * (float)(i + 1);
+            s_trail_pts[i][1].x = rc + (lv_coord_t)(sinf(ta) * s_radar_r);
+            s_trail_pts[i][1].y = rc - (lv_coord_t)(cosf(ta) * s_radar_r);
+            lv_line_set_points(s_sweep_trail[i], s_trail_pts[i], 2);
+        }
     }
 
     uint32_t total_sec = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -311,20 +327,36 @@ static void build_ui(void)
         lv_obj_align(s_home_detail[i], LV_ALIGN_TOP_LEFT, 26, y + 17);
     }
 
-    /* ---- The radar, right half ---- */
+    /* ---- The radar, right half: a PPI scope like a tower console ---- */
     s_radar = lv_obj_create(s_home);
     lv_obj_remove_style_all(s_radar);
     lv_obj_set_size(s_radar, s_radar_size, s_radar_size);
     lv_obj_set_style_radius(s_radar, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_radar, lv_color_make(0, 24, 0), 0);
+    lv_obj_set_style_bg_color(s_radar, lv_color_make(0, 14, 0), 0);
     lv_obj_set_style_bg_opa(s_radar, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(s_radar, 2, 0);
-    lv_obj_set_style_border_color(s_radar, lv_color_make(0, 170, 0), 0);
+    lv_obj_set_style_border_width(s_radar, 3, 0);
+    lv_obj_set_style_border_color(s_radar, lv_color_make(0, 150, 0), 0);
     lv_obj_clear_flag(s_radar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(s_radar, LV_ALIGN_RIGHT_MID, -4, 0);
 
-    /* Range rings: ~1 m centre, ~10 m, ~100 m rim (log scale). */
+    int rc = s_radar_size / 2;
+
+    /* Crosshairs, faint, through the centre. */
+    for (int i = 0; i < 2; i++) {
+        s_cross_pts[i][0].x = i ? rc : 4;
+        s_cross_pts[i][0].y = i ? 4 : rc;
+        s_cross_pts[i][1].x = i ? rc : s_radar_size - 4;
+        s_cross_pts[i][1].y = i ? s_radar_size - 4 : rc;
+        lv_obj_t *ln = lv_line_create(s_radar);
+        lv_line_set_points(ln, s_cross_pts[i], 2);
+        lv_obj_set_style_line_width(ln, 1, 0);
+        lv_obj_set_style_line_color(ln, lv_color_make(0, 60, 0), 0);
+    }
+
+    /* Range rings: ~1 m centre, ~10 m, ~100 m rim (log scale), with the
+     * range written on them the way a scope prints its scale. */
     static const int ring_frac[2] = { 33, 66 };
+    static const char *const ring_txt[2] = { "10m", "100m" };
     for (int i = 0; i < 2; i++) {
         lv_obj_t *ring = lv_obj_create(s_radar);
         lv_obj_remove_style_all(ring);
@@ -332,27 +364,72 @@ static void build_ui(void)
         lv_obj_set_size(ring, rd, rd);
         lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_border_width(ring, 1, 0);
-        lv_obj_set_style_border_color(ring, lv_color_make(0, 90, 0), 0);
+        lv_obj_set_style_border_color(ring, lv_color_make(0, 80, 0), 0);
         lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
         lv_obj_center(ring);
+
+        lv_obj_t *rl = lv_label_create(s_radar);
+        lv_label_set_text(rl, ring_txt[i]);
+        lv_obj_set_style_text_font(rl, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(rl, lv_color_make(0, 120, 0), 0);
+        /* On the south-east diagonal of its ring, clear of the crosshair. */
+        int rr = s_radar_r * ring_frac[i] / 100;
+        lv_obj_set_pos(rl, rc + (int)(rr * 0.707f) - 8,
+                       rc + (int)(rr * 0.707f) - 4);
     }
 
-    /* The sweep. */
-    s_sweep_pts[0].x = s_radar_size / 2; s_sweep_pts[0].y = s_radar_size / 2;
-    s_sweep_pts[1].x = s_radar_size / 2; s_sweep_pts[1].y = 4;
+    /* Bearing ticks every 30 degrees on the rim, heavier on the cardinals. */
+    for (int i = 0; i < 12; i++) {
+        float a = (float)i * (2.0f * (float)M_PI / 12.0f);
+        float sx = sinf(a), cy_ = cosf(a);
+        s_tick_pts[i][0].x = rc + (lv_coord_t)(sx * (s_radar_r - 1));
+        s_tick_pts[i][0].y = rc - (lv_coord_t)(cy_ * (s_radar_r - 1));
+        s_tick_pts[i][1].x = rc + (lv_coord_t)(sx * (s_radar_r - 7));
+        s_tick_pts[i][1].y = rc - (lv_coord_t)(cy_ * (s_radar_r - 7));
+        lv_obj_t *tk = lv_line_create(s_radar);
+        lv_line_set_points(tk, s_tick_pts[i], 2);
+        lv_obj_set_style_line_width(tk, i % 3 == 0 ? 2 : 1, 0);
+        lv_obj_set_style_line_color(tk, lv_color_make(0, 130, 0), 0);
+    }
+
+    /* The sweep: a bright leading edge with a fading afterglow behind it,
+     * the classic PPI phosphor look. */
+    static const lv_opa_t trail_opa[SWEEP_TRAIL] = { 150, 105, 70, 42, 22 };
+    for (int i = 0; i < SWEEP_TRAIL; i++) {
+        s_trail_pts[i][0].x = rc; s_trail_pts[i][0].y = rc;
+        s_trail_pts[i][1].x = rc; s_trail_pts[i][1].y = rc;
+        s_sweep_trail[i] = lv_line_create(s_radar);
+        lv_line_set_points(s_sweep_trail[i], s_trail_pts[i], 2);
+        lv_obj_set_style_line_width(s_sweep_trail[i], 2, 0);
+        lv_obj_set_style_line_color(s_sweep_trail[i],
+                                    lv_color_make(0, 200, 30), 0);
+        lv_obj_set_style_line_opa(s_sweep_trail[i], trail_opa[i], 0);
+    }
+    s_sweep_pts[0].x = rc; s_sweep_pts[0].y = rc;
+    s_sweep_pts[1].x = rc; s_sweep_pts[1].y = 4;
     s_sweep_line = lv_line_create(s_radar);
     lv_line_set_points(s_sweep_line, s_sweep_pts, 2);
     lv_obj_set_style_line_width(s_sweep_line, 2, 0);
-    lv_obj_set_style_line_color(s_sweep_line, lv_color_make(0, 220, 0), 0);
+    lv_obj_set_style_line_color(s_sweep_line, lv_color_make(80, 255, 100), 0);
     lv_obj_set_style_line_rounded(s_sweep_line, true, 0);
 
-    /* Blip pool, hidden until used. */
+    /* Blip pool: a bright contact dot inside a dim halo, hidden until used. */
     for (int i = 0; i < XUI_BLIP_MAX; i++) {
+        s_blip_halo[i] = lv_obj_create(s_radar);
+        lv_obj_remove_style_all(s_blip_halo[i]);
+        lv_obj_set_size(s_blip_halo[i], 15, 15);
+        lv_obj_set_style_radius(s_blip_halo[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(s_blip_halo[i], 1, 0);
+        lv_obj_set_style_border_color(s_blip_halo[i],
+                                      lv_color_make(0, 150, 40), 0);
+        lv_obj_set_style_bg_opa(s_blip_halo[i], LV_OPA_TRANSP, 0);
+        lv_obj_add_flag(s_blip_halo[i], LV_OBJ_FLAG_HIDDEN);
+
         s_blip_dot[i] = lv_obj_create(s_radar);
         lv_obj_remove_style_all(s_blip_dot[i]);
         lv_obj_set_size(s_blip_dot[i], 7, 7);
         lv_obj_set_style_radius(s_blip_dot[i], LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(s_blip_dot[i], lv_color_make(0, 255, 70), 0);
+        lv_obj_set_style_bg_color(s_blip_dot[i], lv_color_make(60, 255, 90), 0);
         lv_obj_set_style_bg_opa(s_blip_dot[i], LV_OPA_COVER, 0);
         lv_obj_add_flag(s_blip_dot[i], LV_OBJ_FLAG_HIDDEN);
 
@@ -363,7 +440,7 @@ static void build_ui(void)
         lv_obj_add_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    /* RX flash at the radar's centre. */
+    /* RX flash at the scope's centre. */
     s_rx_dot = lv_obj_create(s_radar);
     lv_obj_remove_style_all(s_rx_dot);
     lv_obj_set_size(s_rx_dot, 14, 14);
@@ -570,7 +647,7 @@ static void flow_draw_cb(lv_event_t *e)
 {
     lv_obj_draw_part_dsc_t *d = lv_event_get_draw_part_dsc(e);
     if (d->part != LV_PART_ITEMS) return;
-    uint32_t row = d->id / 5;
+    uint32_t row = d->id / s_tab_ncols;
     if (row == 0) {
         d->rect_dsc->bg_color = lv_color_make(30, 90, 200);
         d->rect_dsc->bg_opa = LV_OPA_COVER;
@@ -583,6 +660,8 @@ static void flow_draw_cb(lv_event_t *e)
         d->rect_dsc->bg_opa = LV_OPA_COVER;
     }
 }
+
+void xui_show_table(bool show) { xui_show_flow(show); }
 
 void xui_show_flow(bool show)
 {
@@ -615,55 +694,98 @@ static const char *type_icon(const char *type)
 static void flow_show_content(void)
 {
     if (!s_flow_content) return;
-    if (s_flow_sel < 0 || s_flow_sel >= s_flow_n) {
+    if (s_flow_sel < 0 || s_flow_sel >= s_tab_n) {
         lv_label_set_text(s_flow_content,
-                          s_flow_n ? "Scroll with the arrows to read a packet"
-                                   : "");
+                          s_tab_n ? "Scroll with the arrows for detail" : "");
         return;
     }
-    lv_label_set_text(s_flow_content, s_flow_rows[s_flow_sel].text);
+    lv_label_set_text(s_flow_content, s_tab_detail[s_flow_sel]);
 }
 
-void xui_flow_rows(const xui_flow_t *rows, int n)
+void xui_table_setup(int ncols, const char *const headers[],
+                     const int ref_w[])
 {
     if (!s_flowtab) return;
-    if (n > XUI_FLOW_ROWS) n = XUI_FLOW_ROWS;
-    memcpy(s_flow_rows, rows, n * sizeof(xui_flow_t));
-    s_flow_n = n;
+    if (ncols < 1) ncols = 1;
+    if (ncols > XUI_TAB_COLS) ncols = XUI_TAB_COLS;
+    /* Drop the data rows BEFORE reshaping the columns: LVGL frees a row's
+     * cells using the current column count, so shrinking/growing columns
+     * while another panel's rows still sit in the table frees the wrong
+     * pointers (LoadProhibited in lv_table_set_row_cnt). */
+    if (ncols != s_tab_ncols) {
+        lv_table_set_row_cnt(s_flowtab, 1);
+        s_tab_n = 0;
+    }
+    s_tab_ncols = ncols;
+    lv_table_set_col_cnt(s_flowtab, ncols);
+    int used = 0;
+    for (int i = 0; i < ncols; i++) {
+        int cw = (i == ncols - 1) ? s_w - used : ref_w[i] * s_w / 320;
+        lv_table_set_col_width(s_flowtab, i, cw);
+        used += cw;
+        lv_table_set_cell_value(s_flowtab, 0, i, headers[i]);
+    }
+}
+
+void xui_table_rows(const xui_row_t *rows, int n)
+{
+    if (!s_flowtab) return;
+    if (n > XUI_TAB_ROWS) n = XUI_TAB_ROWS;
+    s_tab_n = n;
     lv_table_set_row_cnt(s_flowtab, n + 1);
-    char cell[24];
     for (int i = 0; i < n; i++) {
-        const xui_flow_t *r = &rows[i];
-        lv_table_set_cell_value(s_flowtab, i + 1, 0, r->from);
-        lv_table_set_cell_value(s_flowtab, i + 1, 1,
-                                r->to[0] ? r->to : "all");
-        /* One line per packet: long type names get cut, not wrapped. */
-        snprintf(cell, sizeof cell, "%s %.8s", type_icon(r->type), r->type);
-        lv_table_set_cell_value(s_flowtab, i + 1, 2, cell);
-        /* Distance reads better than dBm; the link's icon says how it came:
-         * a bolt for ESP-NOW, the antenna for the LAN (no range there). */
-        if (r->dist_m >= 0)
-            snprintf(cell, sizeof cell, LV_SYMBOL_CHARGE " ~%dm",
-                     (int)(r->dist_m + 0.5f));
-        else
-            snprintf(cell, sizeof cell, LV_SYMBOL_WIFI);
-        lv_table_set_cell_value(s_flowtab, i + 1, 3, cell);
-        if (r->age_s < 60)
-            snprintf(cell, sizeof cell, "%lus", (unsigned long)r->age_s);
-        else if (r->age_s < 3600)
-            snprintf(cell, sizeof cell, "%lum", (unsigned long)(r->age_s / 60));
-        else
-            snprintf(cell, sizeof cell, "%luh",
-                     (unsigned long)(r->age_s / 3600));
-        lv_table_set_cell_value(s_flowtab, i + 1, 4, cell);
+        for (int c = 0; c < s_tab_ncols; c++)
+            lv_table_set_cell_value(s_flowtab, i + 1, c, rows[i].cell[c]);
+        snprintf(s_tab_detail[i], sizeof s_tab_detail[i], "%s",
+                 rows[i].detail);
     }
     if (s_flow_sel >= n) s_flow_sel = n - 1;
     flow_show_content();
 }
 
-void xui_flow_select(int idx)
+void xui_flow_rows(const xui_flow_t *rows, int n)
 {
-    if (idx >= s_flow_n) idx = s_flow_n - 1;
+    static const char *const hdr[5] = { "From", "To", "Type", "Dist", "When" };
+    static const int ref_w[5] = { 70, 54, 90, 54, 52 };  /* first fits X1RD89-7 */
+    xui_table_setup(5, hdr, ref_w);
+
+    /* Static: 8 rows of cells would not be kind to the UI task's stack. */
+    static xui_row_t tr[XUI_TAB_ROWS];
+    if (n > XUI_TAB_ROWS) n = XUI_TAB_ROWS;
+    for (int i = 0; i < n; i++) {
+        const xui_flow_t *r = &rows[i];
+        snprintf(tr[i].cell[0], sizeof tr[i].cell[0], "%s", r->from);
+        snprintf(tr[i].cell[1], sizeof tr[i].cell[1], "%s",
+                 r->to[0] ? r->to : "all");
+        /* One line per packet: long type names get cut, not wrapped. */
+        snprintf(tr[i].cell[2], sizeof tr[i].cell[2], "%s %.8s",
+                 type_icon(r->type), r->type);
+        /* Distance reads better than dBm; the link's icon says how it came:
+         * a bolt for ESP-NOW, the antenna for the LAN (no range there). */
+        if (r->dist_m >= 0)
+            snprintf(tr[i].cell[3], sizeof tr[i].cell[3],
+                     LV_SYMBOL_CHARGE " ~%dm", (int)(r->dist_m + 0.5f));
+        else
+            snprintf(tr[i].cell[3], sizeof tr[i].cell[3], LV_SYMBOL_WIFI);
+        if (r->age_s < 60)
+            snprintf(tr[i].cell[4], sizeof tr[i].cell[4], "%lus",
+                     (unsigned long)r->age_s);
+        else if (r->age_s < 3600)
+            snprintf(tr[i].cell[4], sizeof tr[i].cell[4], "%lum",
+                     (unsigned long)(r->age_s / 60));
+        else
+            snprintf(tr[i].cell[4], sizeof tr[i].cell[4], "%luh",
+                     (unsigned long)(r->age_s / 3600));
+        snprintf(tr[i].detail, sizeof tr[i].detail, "%s", r->text);
+    }
+    xui_table_rows(tr, n);
+}
+
+void xui_flow_select(int idx) { xui_table_select(idx); }
+
+void xui_table_select(int idx)
+{
+    if (idx >= s_tab_n) idx = s_tab_n - 1;
     if (idx < -1) idx = -1;
     s_flow_sel = idx;
     flow_show_content();
@@ -734,9 +856,13 @@ void xui_radar_blips(const xui_blip_t *blips, int n)
 {
     if (!s_radar) return;
     if (n > XUI_BLIP_MAX) n = XUI_BLIP_MAX;
+
+    /* First pass: place every contact (dot + halo), remember where. */
+    int bx[XUI_BLIP_MAX], by[XUI_BLIP_MAX];
     for (int i = 0; i < XUI_BLIP_MAX; i++) {
         if (i >= n) {
             lv_obj_add_flag(s_blip_dot[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_blip_halo[i], LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
@@ -744,15 +870,27 @@ void xui_radar_blips(const xui_blip_t *blips, int n)
          * station a stable, label-derived angle -- it holds its spot on the
          * scope between updates instead of jumping. */
         uint32_t hsh = 5381;
-        for (const char *c = blips[i].label; *c; c++) hsh = hsh * 33 + (uint8_t)*c;
+        for (const char *c = blips[i].label; *c; c++)
+            hsh = hsh * 33 + (uint8_t)*c;
         float ang = (float)(hsh % 360) * (2.0f * (float)M_PI / 360.0f);
         int r = radius_for(blips[i].meters);
-        int cx = s_radar_size / 2 + (int)(sinf(ang) * r);
-        int cy = s_radar_size / 2 - (int)(cosf(ang) * r);
+        bx[i] = s_radar_size / 2 + (int)(sinf(ang) * r);
+        by[i] = s_radar_size / 2 - (int)(cosf(ang) * r);
 
         lv_obj_clear_flag(s_blip_dot[i], LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(s_blip_dot[i], cx - 3, cy - 3);
+        lv_obj_set_pos(s_blip_dot[i], bx[i] - 3, by[i] - 3);
+        lv_obj_clear_flag(s_blip_halo[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(s_blip_halo[i], bx[i] - 7, by[i] - 7);
+    }
 
+    /* Second pass: the labels. A label belongs NEXT TO its contact -- try
+     * the eight positions around the dot in preference order and take the
+     * first that covers nothing (other contacts' halos, labels already
+     * placed, the scope's centre where the RX flash lives). Only if every
+     * spot is taken does it slide down as a last resort. */
+    int lrx[XUI_BLIP_MAX], lry[XUI_BLIP_MAX];
+    int lrw[XUI_BLIP_MAX], lrh[XUI_BLIP_MAX];
+    for (int i = 0; i < n; i++) {
         char txt[24];
         if (blips[i].meters >= 0)
             snprintf(txt, sizeof txt, "%s\n~%dm", blips[i].label,
@@ -761,14 +899,72 @@ void xui_radar_blips(const xui_blip_t *blips, int n)
             snprintf(txt, sizeof txt, "%s", blips[i].label);
         lv_obj_clear_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(s_blip_lbl[i], txt);
-        /* Keep the label inside the scope: flip to the left of the dot on
-         * the right half. */
         lv_obj_update_layout(s_blip_lbl[i]);
         int lw = lv_obj_get_width(s_blip_lbl[i]);
-        int lx = (cx > s_radar_size / 2) ? cx - 6 - lw : cx + 6;
-        int ly = cy - 10;
+        int lh = lv_obj_get_height(s_blip_lbl[i]);
+
+        /* Candidates around the dot: beside first, then under/over, then
+         * the diagonals. The far side of the scope prefers the inner side
+         * so the label stays inside the circle. */
+        bool right_half = bx[i] > s_radar_size / 2;
+        int cand[8][2] = {
+            { right_half ? bx[i] - 10 - lw : bx[i] + 10, by[i] - lh / 2 },
+            { right_half ? bx[i] + 10 : bx[i] - 10 - lw, by[i] - lh / 2 },
+            { bx[i] - lw / 2, by[i] + 10 },
+            { bx[i] - lw / 2, by[i] - 10 - lh },
+            { bx[i] + 8, by[i] + 8 },
+            { bx[i] - 8 - lw, by[i] + 8 },
+            { bx[i] + 8, by[i] - 8 - lh },
+            { bx[i] - 8 - lw, by[i] - 8 - lh },
+        };
+
+        int lx = cand[2][0], ly = cand[2][1];   /* fallback: below */
+        for (int c = 0; c < 8; c++) {
+            int tx = cand[c][0], ty = cand[c][1];
+            if (tx < 2) tx = 2;
+            if (tx + lw > s_radar_size - 2) tx = s_radar_size - 2 - lw;
+            if (ty < 2) ty = 2;
+            if (ty + lh > s_radar_size - 2) ty = s_radar_size - 2 - lh;
+            bool free = true;
+            int ccx = s_radar_size / 2 - 9;
+            if (tx < ccx + 18 && ccx < tx + lw &&
+                ty < ccx + 18 && ccx < ty + lh) free = false;
+            for (int j = 0; free && j < n; j++) {
+                if (j == i) continue;
+                int jx = bx[j] - 8, jy = by[j] - 8;
+                if (tx < jx + 16 && jx < tx + lw &&
+                    ty < jy + 16 && jy < ty + lh) free = false;
+            }
+            for (int j = 0; free && j < i; j++) {
+                if (tx < lrx[j] + lrw[j] && lrx[j] < tx + lw &&
+                    ty < lry[j] + lrh[j] && lry[j] < ty + lh) free = false;
+            }
+            if (free) { lx = tx; ly = ty; goto placed; }
+        }
+        /* Nothing free around the dot: slide the below-position down. */
+        for (int pass = 0; pass < n + XUI_BLIP_MAX; pass++) {
+            bool moved = false;
+            for (int j = 0; j < n; j++) {
+                if (j == i) continue;
+                int jx = bx[j] - 8, jy = by[j] - 8;
+                if (lx < jx + 16 && jx < lx + lw &&
+                    ly < jy + 16 && jy < ly + lh) { ly = jy + 17; moved = true; }
+            }
+            for (int j = 0; j < i; j++) {
+                if (lx < lrx[j] + lrw[j] && lrx[j] < lx + lw &&
+                    ly < lry[j] + lrh[j] && lry[j] < ly + lh) {
+                    ly = lry[j] + lrh[j] + 1;
+                    moved = true;
+                }
+            }
+            if (!moved) break;
+        }
         if (lx < 2) lx = 2;
         if (lx + lw > s_radar_size - 2) lx = s_radar_size - 2 - lw;
+        if (ly + lh > s_radar_size - 2) ly = s_radar_size - 2 - lh;
+        if (ly < 2) ly = 2;
+placed:
         lv_obj_set_pos(s_blip_lbl[i], lx, ly);
+        lrx[i] = lx; lry[i] = ly; lrw[i] = lw; lrh[i] = lh;
     }
 }
