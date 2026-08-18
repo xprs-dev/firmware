@@ -5,4 +5,5 @@ idf_component_register(
              esp_netif lwip
              geogram_xprs geogram_xprsbearer geogram_xprsnow geogram_xprslan
              geogram_nostr geogram_xprssig geogram_xprsid geogram_xprschan
-             ili9342 xprs_ui xprs_config esp_http_server)
+             ili9342 xprs_ui xprs_config esp_http_server
+             geogram_xprsindex fatfs)

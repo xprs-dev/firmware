@@ -96,7 +96,7 @@ void xui_radar_blips(const xui_blip_t *blips, int n);
 
 /* ---- Generic selectable table ------------------------------------------- */
 
-#define XUI_TAB_ROWS 8
+#define XUI_TAB_ROWS 10
 #define XUI_TAB_COLS 5
 
 typedef struct {
@@ -144,6 +144,18 @@ void xui_flow_rows(const xui_flow_t *rows, int n);
 /** Highlight one row and show its content in the strip under the table.
  *  Pass -1 for no selection. UI task only. */
 void xui_flow_select(int idx);
+
+/* ---- The stats panel: stacked hourly bar charts ------------------------- */
+
+#define XUI_STATS_CHARTS 3
+#define XUI_STATS_POINTS 24
+
+/** Show the stats panel (true) or the plain text body (false). UI task only. */
+void xui_show_stats(bool show);
+
+/** Fill one chart (0..2): a title drawn above it and up to 24 hourly values,
+ *  oldest first. The y range fits itself to the data. UI task only. */
+void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n);
 
 #ifdef __cplusplus
 }

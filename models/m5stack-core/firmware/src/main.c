@@ -56,6 +56,11 @@ static char s_pass[64];
 #include "ili9342.h"
 #include "xprs_ui.h"
 #include "xprs_config.h"
+#include "xprsindex.h"
+#include "esp_vfs_fat.h"
+#include "wear_levelling.h"
+#include "esp_sntp.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "m5xprs";
 
@@ -124,6 +129,57 @@ static int sign_wire(char *wire, int len, int cap)
     return k ? xprsid_sign(wire, len, cap, k->private_key) : len;
 }
 
+/* ── The index: everything heard, kept and answerable (XPRS 36) ─────────── */
+
+/* The store lives on a wear-levelled FAT partition filling the spare flash.
+ * NOTHING here runs on a receive path: hearing a packet only copies it into
+ * this ring, and idx_task (core 1) does every write, query and reply --
+ * flash work on the radio cores is how stations go deaf. */
+#define IDXQ_N 12
+static struct {
+    char    wire[XPRSIDX_WIRE_MAX + 1];
+    int16_t len;
+    int8_t  rssi;
+} s_idxq[IDXQ_N];
+static volatile int s_idxq_w, s_idxq_r;   /* single writer set, single reader */
+static uint32_t s_idxq_dropped;
+
+static xprsidx_t *s_index;
+
+/* One pending history ask; a second one arriving while busy is dropped --
+ * one replay in flight protects the channel (31.4). */
+static struct {
+    volatile bool pending;
+    char wire[XPRSIDX_WIRE_MAX + 1];
+    int  len;
+    char bearer[7];
+} s_ask;
+
+static void idx_enqueue(const char *wire, int len, int rssi)
+{
+    if (!s_index || !xcfg_get_bool("index_on", true)) return;
+    if (len > XPRSIDX_WIRE_MAX) return;
+    int w = s_idxq_w, nw = (w + 1) % IDXQ_N;
+    if (nw == s_idxq_r) { s_idxq_dropped++; return; }   /* full: drop, count */
+    memcpy(s_idxq[w].wire, wire, len);
+    s_idxq[w].wire[len] = 0;
+    s_idxq[w].len = (int16_t)len;
+    s_idxq[w].rssi = (int8_t)(rssi < -127 ? -127 : rssi);
+    s_idxq_w = nw;
+}
+
+/* What the index calls to decide whether a stored packet is really from who
+ * it says. Runs on idx_task, never on a radio task. Three answers: 1 checks
+ * out, -1 fails against a key we hold, 0 cannot tell. */
+static int index_verifier(const char *wire, int len, const char *from)
+{
+    const uint8_t *key = peer_key(from);
+    if (!key) return 0;
+    xprs_t p;
+    if (!xprs_parse(wire, len, &p)) return 0;
+    return xprsid_verify(&p, key) ? 1 : -1;
+}
+
 /* ── What we hear ───────────────────────────────────────────────────────── */
 
 static uint32_t s_heard_count;
@@ -158,7 +214,36 @@ typedef struct {
 } flow_t;
 static flow_t s_flow[FLOW_MAX];
 static int s_flow_n;
-static int s_sel[8];      /* per-panel selected row (arrows move it) */      /* total ever, ring position = s_flow_n % FLOW_MAX */
+
+/* Hourly statistics for the Stats panel: a 24-bucket ring keyed by uptime
+ * hour. Each bucket counts packets in, packets out, and the distinct
+ * stations heard (up to 12 tracked by a small hash list). */
+#define STAT_HOURS 24
+#define STAT_DEVS  12
+typedef struct {
+    uint32_t rx, tx;
+    uint32_t devh[STAT_DEVS];
+    int      devn;
+} stat_hour_t;
+static stat_hour_t s_stat[STAT_HOURS];
+static uint32_t s_stat_hournum;      /* uptime hour the current bucket is for */
+
+/* Roll the ring forward to the current uptime hour, clearing re-used
+ * buckets, and hand back the live one. */
+static stat_hour_t *stat_bucket(void)
+{
+    uint32_t hournum = (uint32_t)(esp_timer_get_time() / 3600000000ULL);
+    while (s_stat_hournum < hournum) {
+        s_stat_hournum++;
+        memset(&s_stat[s_stat_hournum % STAT_HOURS], 0, sizeof(stat_hour_t));
+    }
+    return &s_stat[hournum % STAT_HOURS];
+}
+static int s_sel[8];      /* per-panel selected row (arrows move it) */
+/* Settings is modal: A stays the Menu key until the arrows dive into the
+ * list, then it becomes OK; climbing back out above the top row hands the
+ * Menu key back. */
+static bool s_set_focus;      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
@@ -171,6 +256,44 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     s_last_rx_ms = now;
     snprintf(s_last_call, sizeof s_last_call, "%s", call);
+
+    /* Every heard packet is offered to the index; ping/pong and duplicates
+     * are its problem to refuse, not ours to guess. */
+    idx_enqueue(wire, len, rssi);
+
+    /* A history ask addressed to us (or to the whole channel) is copied for
+     * idx_task; everything with a cost happens there. */
+    do {
+        char type[16], cmd[16], dst[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "cmd", cmd, sizeof cmd) ||
+            strcmp(cmd, "history") != 0) break;
+        if (xprs_get_str(&sp, "d", dst, sizeof dst)) {
+            char *dash = strchr(dst, '-');
+            if (dash) *dash = 0;              /* base callsign, section 3.1 */
+            char base[16];
+            snprintf(base, sizeof base, "%s", s_call);
+            dash = strchr(base, '-');
+            if (dash) *dash = 0;
+            if (strcasecmp(dst, base) != 0) break;
+        }
+        if (s_ask.pending) break;
+        memcpy(s_ask.wire, wire, len);
+        s_ask.wire[len] = 0;
+        s_ask.len = len;
+        snprintf(s_ask.bearer, sizeof s_ask.bearer, "%s", bearer);
+        s_ask.pending = true;                 /* published last */
+    } while (0);
+
+    stat_hour_t *hb = stat_bucket();
+    hb->rx++;
+    uint32_t ch = 5381;
+    for (const char *c = call; *c; c++) ch = ch * 33 + (uint8_t)*c;
+    bool known = false;
+    for (int i = 0; i < hb->devn; i++)
+        if (hb->devh[i] == ch) { known = true; break; }
+    if (!known && hb->devn < STAT_DEVS) hb->devh[hb->devn++] = ch;
 
     flow_t *fl = &s_flow[s_flow_n % FLOW_MAX];
     snprintf(fl->call, sizeof fl->call, "%s", call);
@@ -222,10 +345,12 @@ static void on_espnow(const char *wire, int len, const uint8_t mac[6], int rssi)
     }
     ESP_LOGI(TAG, "espnow %02x:%02x:%02x:%02x:%02x:%02x %4d dBm %3dB  %s",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], rssi, len, wire);
-    /* A station with two bearers is a bridge: what arrived here goes out there,
-     * under the ordinary relay rules (the bearer refuses when we are already in
-     * via: or the hop budget is spent). */
-    xprslan_offer(wire, len);
+    /* iGate: what arrived on the radio goes toward the LAN (and whatever
+     * internet sits behind it), under the ordinary relay rules -- the bearer
+     * refuses when we are already in via: or the hop budget is spent. */
+    if (xcfg_get_bool("igate_on", true)) xprslan_offer(wire, len);
+    /* Digipeater: re-air on the radio itself, for stations past our reach. */
+    if (xcfg_get_bool("digi_on", false)) xprsnow_offer(wire, len);
 }
 
 /* Every hearing on ESP-NOW, duplicates included.
@@ -252,7 +377,8 @@ static void on_lan(const char *wire, int len, uint32_t ip)
              (unsigned)(ip & 0xFF), (unsigned)((ip >> 8) & 0xFF),
              (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 24) & 0xFF),
              len, wire);
-    xprsnow_offer(wire, len);
+    /* Bridge: carry LAN traffic onto the radio. */
+    if (xcfg_get_bool("bridge_on", true)) xprsnow_offer(wire, len);
 }
 
 /* ── What we say ────────────────────────────────────────────────────────── */
@@ -476,7 +602,7 @@ static void inet_probe_task(void *arg)
 #define BTN_B GPIO_NUM_38
 #define BTN_C GPIO_NUM_37
 
-#define UI_PANEL_COUNT 6
+#define UI_PANEL_COUNT 7
 #define UI_INRANGE_SEC 300
 
 static int s_panel;
@@ -509,9 +635,27 @@ static void ui_render(void)
     int list_n = 0;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
+    /* Bank transmitted-packet deltas into the hourly ring on every render
+     * tick, whichever panel is up -- the bearers stay untouched and the
+     * Stats panel never misses what happened while it was not looking. */
+    {
+        uint32_t issued = 0, done = 0, failed = 0;
+        uint32_t lrx = 0, ltx = 0, lcancel = 0;
+        xprsnow_tx_stats(&issued, &done, &failed);
+        xprslan_stats(&lrx, &ltx, &lcancel);
+        static uint32_t tx_prev;
+        static bool tx_primed;
+        uint32_t tx_total = done + ltx;
+        if (tx_primed && tx_total > tx_prev)
+            stat_bucket()->tx += tx_total - tx_prev;
+        tx_prev = tx_total;
+        tx_primed = true;
+    }
+
     body[0] = 0;
     xui_show_home(s_panel == 0);
-    xui_show_table(s_panel != 0);
+    xui_show_table(s_panel != 0 && s_panel != 6);
+    xui_show_stats(s_panel == 6);
 
     switch (s_panel) {
     case 0: {   /* Links: the graphic home panel */
@@ -546,7 +690,7 @@ static void ui_render(void)
             nb++;
         }
         xui_radar_blips(blips, nb);
-        xui_set_title("Links 1/6");
+        xui_set_title("Links 1/7");
         break;
     }
     case 1: {   /* Flow: the packets going past, newest first */
@@ -568,7 +712,7 @@ static void ui_render(void)
         }
         xui_flow_rows(rows, nr);
         list_n = nr;
-        xui_set_title("Flow 2/6");
+        xui_set_title("Flow 2/7");
         break;
     }
     case 2: {   /* Traffic: counters, one per row, explained when selected */
@@ -625,7 +769,7 @@ static void ui_render(void)
         #undef TROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Traffic 3/6");
+        xui_set_title("Traffic 3/7");
         break;
     }
     case 3: {   /* Devices: everyone in reach, detail on selection */
@@ -663,7 +807,7 @@ static void ui_render(void)
         }
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Devices 4/6");
+        xui_set_title("Devices 4/7");
         break;
     }
     case 4: {   /* Node: this station's facts, full values on selection */
@@ -721,10 +865,10 @@ static void ui_render(void)
         #undef NROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Node 5/6");
+        xui_set_title("Node 5/7");
         break;
     }
-    default: {  /* Settings: OK (button A) toggles the selected row */
+    case 5: {   /* Settings: OK (button A) toggles the selected row */
         static const char *const hdr[2] = { "Setting", "State" };
         static const int cw[2] = { 170, 150 };
         xui_table_setup(2, hdr, cw);
@@ -743,6 +887,29 @@ static void ui_render(void)
         SROW("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
              "The 2.4 GHz radio link between nearby stations. "
              "OK toggles; applies after restart.");
+        SROW("Digipeater", xcfg_get_bool("digi_on", false) ? "On" : "Off",
+             "Re-air packets heard on ESP-NOW back onto ESP-NOW, for "
+             "stations past our reach. OK toggles; applies at once.");
+        SROW("Bridge", xcfg_get_bool("bridge_on", true) ? "On" : "Off",
+             "Carry LAN traffic onto the ESP-NOW radio. "
+             "OK toggles; applies at once.");
+        SROW("iGate", xcfg_get_bool("igate_on", true) ? "On" : "Off",
+             "Carry ESP-NOW traffic onto the LAN, toward the internet "
+             "side. OK toggles; applies at once.");
+        char idet[160];
+        if (s_index) {
+            xprsidx_stats_t ist;
+            xprsindex_stats(s_index, &ist);
+            snprintf(idet, sizeof idet,
+                     "Keep every packet heard, answer cmd:history, hold "
+                     "mail. Holding %lu packet%s. OK toggles.",
+                     (unsigned long)ist.count, ist.count == 1 ? "" : "s");
+        } else {
+            snprintf(idet, sizeof idet,
+                     "Keep every packet heard, answer cmd:history, hold "
+                     "mail. Storage not mounted. OK toggles.");
+        }
+        SROW("Indexer", xcfg_get_bool("index_on", true) ? "On" : "Off", idet);
         char det[160];
         if (xcfg_share_running())
             snprintf(det, sizeof det,
@@ -763,7 +930,27 @@ static void ui_render(void)
         #undef SROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Settings 6/6");
+        xui_set_title("Settings 6/7");
+        break;
+    }
+    default: {  /* Stats: hourly graphs of who and what went past */
+        /* Oldest to newest, ending at the running hour. */
+        stat_bucket();   /* roll the ring before reading it */
+        int nh = (int)s_stat_hournum + 1;
+        if (nh > STAT_HOURS) nh = STAT_HOURS;
+        uint16_t dev[STAT_HOURS], rxv[STAT_HOURS], txv[STAT_HOURS];
+        for (int k = 0; k < nh; k++) {
+            uint32_t hour = s_stat_hournum - (nh - 1 - k);
+            stat_hour_t *hb = &s_stat[hour % STAT_HOURS];
+            dev[k] = (uint16_t)hb->devn;
+            rxv[k] = (uint16_t)(hb->rx > 65535 ? 65535 : hb->rx);
+            txv[k] = (uint16_t)(hb->tx > 65535 ? 65535 : hb->tx);
+        }
+        xui_stats_set(0, "Devices heard / hour", dev, nh);
+        xui_stats_set(1, "Packets received / hour", rxv, nh);
+        xui_stats_set(2, "Packets sent / hour", txv, nh);
+        list_n = 0;
+        xui_set_title("Stats 7/7");
         break;
     }
     }
@@ -773,21 +960,284 @@ static void ui_render(void)
     /* Every list panel keeps its own selection: clamp it to what is on the
      * screen, and take the first row when rows appear after the panel was
      * visited empty. */
-    if (s_panel != 0) {
+    if (s_panel != 0 && s_panel != 6) {
         if (s_sel[s_panel] >= list_n) s_sel[s_panel] = list_n - 1;
         if (s_sel[s_panel] < 0 && list_n > 0) s_sel[s_panel] = 0;
-        xui_table_select(s_sel[s_panel]);
+        if (s_panel == 5 && !s_set_focus)
+            xui_table_select(-1);   /* nothing armed until the arrows dive in */
+        else
+            xui_table_select(s_sel[s_panel]);
     }
 
     /* The bottom bar tells the user what the three buttons under it do:
      * A cycles the menus (long press goes home), B and C move the selection
      * on the panels that have one. */
     if (s_panel == 5)
-        xui_set_keys("OK", XUI_KEY_UP, XUI_KEY_DOWN);
-    else if (s_panel != 0)
+        xui_set_keys(s_set_focus ? "OK" : "Menu", XUI_KEY_UP, XUI_KEY_DOWN);
+    else if (s_panel != 0 && s_panel != 6)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else
         xui_set_keys("Menu", "", "");
+}
+
+/* ── idx_task: the indexer's writer, announcer and replayer (core 1) ────── */
+
+/* Sends one wire on the bearer an ask arrived on; announcements go on both. */
+static void idx_air(const char *bearer, const char *wire, int len)
+{
+    if (strcmp(bearer, "espnow") == 0) xprsnow_send(wire, len);
+    else                               xprslan_send(wire, len);
+}
+
+static void idx_result(const char *bearer, const char *to, const char *cmdid,
+                       int code)
+{
+    char w[XPRSIDX_WIRE_MAX + 1];
+    time_t t = time(NULL);
+    int n;
+    if (t > 1700000000) {              /* clock synced: say when */
+        struct tm tm;
+        gmtime_r(&t, &tm);
+        n = snprintf(w, sizeof w,
+                     "t:result f:%s d:%s ts:%04d-%02d-%02d_%02d:%02d:%02d "
+                     "r:%s code:%d",
+                     s_call, to, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec, cmdid, code);
+    } else {
+        n = snprintf(w, sizeof w, "t:result f:%s d:%s r:%s code:%d",
+                     s_call, to, cmdid, code);
+    }
+    n = sign_wire(w, n, sizeof w);
+    idx_air(bearer, w, n);
+}
+
+/* Budgets, section 31.2: replays per hour, per asker and global. */
+#define HIST_PAGE         12
+#define HIST_KNOWN_PH      6
+#define HIST_STRANGER_PH   2
+#define HIST_GLOBAL_PH    12
+static struct { char call[16]; uint32_t when[HIST_KNOWN_PH]; } s_hist_asks[6];
+static uint32_t s_hist_global[HIST_GLOBAL_PH];
+static struct { char id[8]; uint32_t when; } s_hist_answered[8];
+
+static bool hist_budget(const char *from, uint32_t now_s)
+{
+    int g = 0;
+    for (int i = 0; i < HIST_GLOBAL_PH; i++)
+        if (s_hist_global[i] && now_s - s_hist_global[i] < 3600) g++;
+    if (g >= HIST_GLOBAL_PH) return false;
+    int limit = peer_key(from) ? HIST_KNOWN_PH : HIST_STRANGER_PH;
+    for (int a = 0; a < 6; a++) {
+        if (strcasecmp(s_hist_asks[a].call, from) != 0) continue;
+        int n = 0;
+        for (int i = 0; i < HIST_KNOWN_PH; i++)
+            if (s_hist_asks[a].when[i] && now_s - s_hist_asks[a].when[i] < 3600)
+                n++;
+        return n < limit;
+    }
+    return true;
+}
+
+static void hist_record(const char *from, uint32_t now_s)
+{
+    for (int i = 0; i < HIST_GLOBAL_PH; i++)
+        if (!s_hist_global[i] || now_s - s_hist_global[i] >= 3600) {
+            s_hist_global[i] = now_s;
+            break;
+        }
+    int slot = 0;
+    for (int a = 0; a < 6; a++) {
+        if (strcasecmp(s_hist_asks[a].call, from) == 0) { slot = a; goto have; }
+        if (!s_hist_asks[a].call[0]) slot = a;
+    }
+    snprintf(s_hist_asks[slot].call, sizeof s_hist_asks[0].call, "%s", from);
+    memset(s_hist_asks[slot].when, 0, sizeof s_hist_asks[0].when);
+have:
+    for (int i = 0; i < HIST_KNOWN_PH; i++)
+        if (!s_hist_asks[slot].when[i] ||
+            now_s - s_hist_asks[slot].when[i] >= 3600) {
+            s_hist_asks[slot].when[i] = now_s;
+            break;
+        }
+}
+
+/* The replay page: wires verbatim -- the author's bytes, the author's sig. */
+static struct {
+    int n;
+    bool more;
+    char wire[HIST_PAGE][XPRSIDX_WIRE_MAX + 1];
+    int16_t len[HIST_PAGE];
+} s_page;
+
+static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
+{
+    (void)ctx;
+    if (s_page.n >= HIST_PAGE) { s_page.more = true; return false; }
+    memcpy(s_page.wire[s_page.n], rec->wire, rec->len);
+    s_page.wire[s_page.n][rec->len] = 0;
+    s_page.len[s_page.n] = (int16_t)rec->len;
+    s_page.n++;
+    return true;
+}
+
+/* One heard `cmd:history`, on idx_task: the check-everything-then-replay
+ * shape of the Dart responder (xprs_history_server.dart) and the dongle,
+ * paced a packet per 1500 ms so the replay never owns the channel. */
+static void idx_answer_history(void)
+{
+    char wire[XPRSIDX_WIRE_MAX + 1];
+    char bearer[7];
+    int len = s_ask.len;
+    memcpy(wire, s_ask.wire, len + 1);
+    snprintf(bearer, sizeof bearer, "%s", s_ask.bearer);
+    s_ask.pending = false;
+
+    xprs_t p;
+    if (!xprs_parse(wire, len, &p)) return;
+    char from[16], cmdid[8];
+    if (!xprs_get_str(&p, "f", from, sizeof from)) return;
+    xprs_id(&p, cmdid);
+
+    uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+
+    /* One answer per command id, then quiet -- the ask's advert repeats. */
+    for (int i = 0; i < 8; i++)
+        if (strcmp(s_hist_answered[i].id, cmdid) == 0 &&
+            now_s - s_hist_answered[i].when < 600) return;
+    int slot = 0;
+    for (int i = 0; i < 8; i++)
+        if (!s_hist_answered[i].id[0] ||
+            now_s - s_hist_answered[i].when >= 600) { slot = i; break; }
+    snprintf(s_hist_answered[slot].id, sizeof s_hist_answered[0].id, "%s",
+             cmdid);
+    s_hist_answered[slot].when = now_s;
+
+    /* A forged ask gets nothing at all. */
+    const uint8_t *key = peer_key(from);
+    char sigbuf[8];
+    if (xprs_get_str(&p, "sig", sigbuf, sizeof sigbuf) && key &&
+        !xprsid_verify(&p, key)) {
+        ESP_LOGW(TAG, "history ask from %s is forged - ignored", from);
+        return;
+    }
+
+    if (!hist_budget(from, now_s)) {
+        ESP_LOGW(TAG, "history for %s refused - over budget (429)", from);
+        idx_result(bearer, from, cmdid, 429);
+        return;
+    }
+
+    char since[24] = "", until[24] = "", only[16] = "";
+    xprs_get_str(&p, "since", since, sizeof since);
+    xprs_get_str(&p, "until", until, sizeof until);
+    xprs_get_str(&p, "only", only, sizeof only);
+
+    xprsidx_query_t q = {
+        .since_ts = since[0] ? xprsindex_ts_to_epoch(since, strlen(since)) : 0,
+        .until_ts = until[0] ? xprsindex_ts_to_epoch(until, strlen(until)) : 0,
+        .type = only[0] ? xprsidx_type_code(only) : -1,
+        .asker = from,
+        .limit = HIST_PAGE + 1,
+        .newest_first = true,
+    };
+    s_page.n = 0;
+    s_page.more = false;
+    xprsindex_query(s_index, &q, hist_collect, NULL);
+
+    if (s_page.n == 0) {
+        ESP_LOGI(TAG, "history for %s - nothing in that window (404)", from);
+        idx_result(bearer, from, cmdid, 404);
+        return;
+    }
+    hist_record(from, now_s);
+    idx_result(bearer, from, cmdid, 202);
+    ESP_LOGI(TAG, "history for %s - %d packet%s%s", from, s_page.n,
+             s_page.n == 1 ? "" : "s", s_page.more ? ", more held" : "");
+    for (int i = 0; i < s_page.n; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        idx_air(bearer, s_page.wire[i], s_page.len[i]);
+    }
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    idx_result(bearer, from, cmdid, s_page.more ? 206 : 200);
+}
+
+static void idx_task(void *arg)
+{
+    (void)arg;
+
+    /* Mount the wear-levelled FAT filling the spare flash and open the
+     * store there. Done on THIS task: it is the only one that touches it. */
+    static wl_handle_t wl = WL_INVALID_HANDLE;
+    const esp_vfs_fat_mount_config_t mc = {
+        .max_files = 5,    /* each open FILE holds a 4 KB sector cache */
+        .format_if_mount_failed = true,
+        .allocation_unit_size = 4096,
+    };
+    esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage",
+                                                     &mc, &wl);
+    if (err == ESP_OK) {
+        s_index = xprsindex_open("/idx/xprs");
+        if (s_index) {
+            xprsindex_set_verifier(s_index, index_verifier);
+            xprsidx_stats_t st;
+            xprsindex_stats(s_index, &st);
+            ESP_LOGI(TAG, "indexer up: %lu packet%s held, epoch %c",
+                     (unsigned long)st.count, st.count == 1 ? "" : "s",
+                     st.epoch);
+        }
+    } else {
+        ESP_LOGE(TAG, "indexer storage failed to mount: %s",
+                 esp_err_to_name(err));
+    }
+
+    uint32_t last_announce_s = 0;
+    for (;;) {
+        /* Drain what the radios heard. */
+        while (s_idxq_r != s_idxq_w) {
+            int r = s_idxq_r;
+            if (s_index && xcfg_get_bool("index_on", true))
+                xprsindex_add(s_index, s_idxq[r].wire, s_idxq[r].len,
+                              s_idxq[r].rssi, false, 0);
+            s_idxq_r = (r + 1) % IDXQ_N;
+        }
+
+        /* Say what this station serves, every ten minutes (section 36). */
+        uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        if (s_index && xcfg_get_bool("index_on", true) &&
+            now_s - last_announce_s >= 600) {
+            last_announce_s = now_s;
+            xprsidx_stats_t st;
+            xprsindex_stats(s_index, &st);
+            char w[XPRSIDX_WIRE_MAX + 1];
+            int n = snprintf(w, sizeof w,
+                             "t:service f:%s serve:index,history,mailbox "
+                             "count:%lu",
+                             s_call, (unsigned long)st.count);
+            n = sign_wire(w, n, sizeof w);
+            xprsnow_send(w, n);
+            xprslan_send(w, n);
+        }
+
+        if (s_ask.pending && s_index && xcfg_get_bool("index_on", true))
+            idx_answer_history();
+
+        /* The heartbeat esp32.md prescribes: a writer that stops is visible
+         * here without a boot log. */
+        static uint32_t dbg_last;
+        if (s_index && now_s - dbg_last >= 30) {
+            dbg_last = now_s;
+            uint32_t waiting = 0, dropped = 0;
+            xprsindex_queue_stats(s_index, &waiting, &dropped);
+            xprsidx_stats_t st2;
+            xprsindex_stats(s_index, &st2);
+            ESP_LOGI(TAG, "index queue: waiting=%lu dropped=%lu held=%lu "
+                     "verified=%lu forged=%lu", (unsigned long)waiting,
+                     (unsigned long)dropped, (unsigned long)st2.count,
+                     (unsigned long)st2.verified, (unsigned long)st2.forged);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
 }
 
 /* OK on the Settings panel: toggle or act on the selected row. Radio
@@ -802,6 +1252,18 @@ static void settings_ok(int row)
         xcfg_set_bool("espnow_on", !xcfg_get_bool("espnow_on", true));
         break;
     case 2:
+        xcfg_set_bool("digi_on", !xcfg_get_bool("digi_on", false));
+        break;
+    case 3:
+        xcfg_set_bool("bridge_on", !xcfg_get_bool("bridge_on", true));
+        break;
+    case 4:
+        xcfg_set_bool("igate_on", !xcfg_get_bool("igate_on", true));
+        break;
+    case 5:
+        xcfg_set_bool("index_on", !xcfg_get_bool("index_on", true));
+        break;
+    case 6:
         if (xcfg_share_running()) {
             xcfg_share_stop();
             xcfg_set_bool("share_on", false);
@@ -809,7 +1271,7 @@ static void settings_ok(int row)
             xcfg_set_bool("share_on", true);
         }
         break;
-    case 4:
+    case 8:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -872,16 +1334,18 @@ static void ui_task(void *arg)
             if (a_held_ms >= 700 && !a_long_fired) {
                 a_long_fired = true;
                 s_panel = 0;
+                s_set_focus = false;
                 force = true;
                 ESP_LOGI(TAG, "button A long: home");
             }
         } else {
             if (a_held_ms >= 30 && !a_long_fired) {
-                if (s_panel == 5) {
-                    /* On Settings, A is OK: act on the selected row. */
+                if (s_panel == 5 && s_set_focus) {
+                    /* Inside the Settings list, A is OK. */
                     settings_ok(s_sel[5]);
                 } else {
                     s_panel = (s_panel + 1) % UI_PANEL_COUNT;
+                    s_set_focus = false;
                     ESP_LOGI(TAG, "button A: panel %d", s_panel);
                 }
                 force = true;
@@ -893,12 +1357,22 @@ static void ui_task(void *arg)
         /* B and C: up / down. On every list panel they walk the rows and
          * the strip below shows the selected row's detail. */
         if (btn_pressed(&bb)) {
-            if (s_panel != 0 && s_sel[s_panel] > 0) s_sel[s_panel]--;
+            if (s_panel == 5) {
+                if (s_set_focus && s_sel[5] > 0) s_sel[5]--;
+                else s_set_focus = false;   /* above the top row: back out */
+            } else if (s_panel != 0 && s_sel[s_panel] > 0) {
+                s_sel[s_panel]--;
+            }
             force = true;
             ESP_LOGI(TAG, "button B: up (sel %d)", s_sel[s_panel]);
         }
         if (btn_pressed(&bc)) {
-            if (s_panel != 0) s_sel[s_panel]++;  /* render clamps to the list */
+            if (s_panel == 5) {
+                if (!s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
+                else s_sel[5]++;             /* render clamps to the list */
+            } else if (s_panel != 0) {
+                s_sel[s_panel]++;
+            }
             force = true;
             ESP_LOGI(TAG, "button C: down (sel %d)", s_sel[s_panel]);
         }
@@ -921,18 +1395,29 @@ static void ui_task(void *arg)
             force = true;
         }
         /* 'U'/'D' move the selection, 'K' is OK -- the buttons, scripted. */
-        if (ch == 'U' && s_panel != 0 && s_sel[s_panel] > 0) {
-            s_sel[s_panel]--; force = true;
+        if (ch == 'U' && s_panel != 0) {
+            if (s_panel == 5 && (!s_set_focus || s_sel[5] == 0))
+                s_set_focus = false;
+            else if (s_sel[s_panel] > 0) s_sel[s_panel]--;
+            force = true;
         }
-        if (ch == 'D' && s_panel != 0) { s_sel[s_panel]++; force = true; }
-        if (ch == 'K' && s_panel == 5) { settings_ok(s_sel[5]); force = true; }
+        if (ch == 'D' && s_panel != 0) {
+            if (s_panel == 5 && !s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
+            else s_sel[s_panel]++;
+            force = true;
+        }
+        if (ch == 'K' && s_panel == 5 && s_set_focus) {
+            settings_ok(s_sel[5]);
+            force = true;
+        }
 
         uint64_t now_us = esp_timer_get_time();
         if (force || now_us >= next_render_us) {
             ui_render();
             /* Scope and flow settle every 10 s; the counter panels at 2 s. */
             next_render_us = now_us +
-                ((s_panel == 0 || s_panel == 1) ? 10000000ULL : 2000000ULL);
+                ((s_panel == 0 || s_panel == 1 || s_panel == 6)
+                     ? 10000000ULL : 2000000ULL);
         }
 
         xui_update();
@@ -972,6 +1457,16 @@ void app_main(void)
         xcfg_set("nsec", "");
     }
 
+    /* The indexer's writer/replayer, pinned to core 1 (flash work off the
+     * radio cores) and created HERE, before WiFi and the bearers carve up
+     * the heap -- esp32.md: claim big stacks first, check the result, or a
+     * silent pdFAIL becomes a station that answers 404 to everything. The
+     * task mounts its own storage; its radio sends no-op until the bearers
+     * are up. */
+    if (xTaskCreatePinnedToCore(idx_task, "idx", 8192, NULL, 3, NULL, 1)
+            != pdPASS)
+        ESP_LOGE(TAG, "indexer task failed to start -- nothing will be kept");
+
     derive_callsign();
     /* §3: an X3 callsign derives from the signing key, so a receiver can
      * re-derive it. This board keeps its MAC-derived X5 name only when there is
@@ -988,7 +1483,21 @@ void app_main(void)
         s_ssid[0] = 0;
         ESP_LOGI(TAG, "WiFi/LAN disabled by config (radio up for ESP-NOW only)");
     }
+    ESP_LOGI(TAG, "heap before wifi: %u (largest %u)",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     wifi_up();
+    ESP_LOGI(TAG, "heap after wifi: %u (largest %u)",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+    /* A wall clock makes since:/until: windows mean something; without one
+     * the index still works, ordered by its own monotonic index. AFTER
+     * wifi_up(): SNTP posts to the lwip thread, which exists only once the
+     * network stack does. */
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_init();
 
     /* The LAN bearer first, deliberately: its task is what pumps every bearer's
      * re-air queue and beacon, ESP-NOW included. Starting ESP-NOW without it
@@ -1026,7 +1535,8 @@ void app_main(void)
     if (ili9342_init(&lcd_cfg, &lcd) == ESP_OK &&
         xui_init(ILI9342_WIDTH, ILI9342_HEIGHT, lcd_flush_adapter,
                  lcd) == ESP_OK) {
-        xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL);
+        if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
+            ESP_LOGE(TAG, "UI task failed to start");
         if (xcfg_get_bool("share_on", false) &&
             xcfg_get_bool("wifi_on", true))
             xcfg_share_start();

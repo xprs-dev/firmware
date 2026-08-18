@@ -86,10 +86,18 @@ static int s_tab_ncols = 5;
 static int s_flow_sel = -1;
 static void flow_draw_cb(lv_event_t *e);
 
+/* Stats: three stacked hourly bar charts. */
+static lv_obj_t  *s_stats;
+static lv_obj_t  *s_stats_chart[XUI_STATS_CHARTS];
+static lv_obj_t  *s_stats_title[XUI_STATS_CHARTS];
+static lv_chart_series_t *s_stats_series[XUI_STATS_CHARTS];
+static lv_coord_t s_stats_vals[XUI_STATS_CHARTS][XUI_STATS_POINTS];
+
 /* ---- LVGL flush callback ------------------------------------------------ */
 
 static volatile bool s_dump_pending;
 static bool s_dump_active;
+
 
 static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                          lv_color_t *color_p)
@@ -103,23 +111,23 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
     }
 
     /* Debug frame dump: mirror every slice of this refresh onto the UART as
-     * base64, so a host script can reassemble a screenshot. Costs nothing
-     * unless a dump was requested. */
+     * base64, so a host script can reassemble a screenshot. Encoded in small
+     * chunks (multiples of 3 bytes, so the pieces concatenate into one valid
+     * base64 string) -- an earlier draft malloc'd the whole 40 KB slice and
+     * died silently the day the free heap shrank below it. */
     if (s_dump_active) {
-        size_t b64_need = ((size * 2 + 2) / 3) * 4 + 4;
-        unsigned char *b64 = malloc(b64_need);
-        if (b64) {
+        size_t total = size * 2;
+        size_t b64_total = ((total + 2) / 3) * 4;
+        printf("SLICE %d %d %d %d %u\n",
+               area->x1, area->y1, area->x2, area->y2, (unsigned)b64_total);
+        static unsigned char b64[644];
+        const unsigned char *raw = (const unsigned char *)px;
+        for (size_t off = 0; off < total; off += 480) {
+            size_t n = total - off > 480 ? 480 : total - off;
             size_t olen = 0;
-            mbedtls_base64_encode(b64, b64_need, &olen,
-                                  (const unsigned char *)px, size * 2);
-            printf("SLICE %d %d %d %d %u\n",
-                   area->x1, area->y1, area->x2, area->y2, (unsigned)olen);
-            for (size_t off = 0; off < olen; off += 512) {
-                size_t nch = olen - off > 512 ? 512 : olen - off;
-                fwrite(b64 + off, 1, nch, stdout);
-                fputc('\n', stdout);
-            }
-            free(b64);
+            mbedtls_base64_encode(b64, sizeof b64, &olen, raw + off, n);
+            fwrite(b64, 1, olen, stdout);
+            fputc('\n', stdout);
         }
     }
 
@@ -153,11 +161,17 @@ void xui_update(void)
 
     if (s_dump_pending) {
         s_dump_pending = false;
+        lv_mem_monitor_t mm;
+        lv_mem_monitor(&mm);
+        ESP_LOGI(TAG, "dump: scr=%p disp=%p lvmem free=%u frag=%u%% "
+                 "biggest=%u", (void *)lv_scr_act(), (void *)s_disp,
+                 (unsigned)mm.free_size, mm.frag_pct,
+                 (unsigned)mm.free_biggest_size);
         esp_log_level_set("*", ESP_LOG_NONE);   /* keep the stream clean */
         printf("FRAMEDUMP BEGIN %d %d\n", s_w, s_h);
         s_dump_active = true;
         lv_obj_invalidate(lv_scr_act());
-        lv_refr_now(NULL);
+        lv_refr_now(s_disp);
         s_dump_active = false;
         printf("FRAMEDUMP END\n");
         esp_log_level_set("*", ESP_LOG_INFO);
@@ -526,6 +540,49 @@ static void build_ui(void)
                  s_top_h + s_flow_h + 4);
     lv_obj_add_flag(s_flow_content, LV_OBJ_FLAG_HIDDEN);
 
+    /* ---- The stats panel: three hourly bar charts, hidden until shown --- */
+    s_stats = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_stats);
+    lv_obj_set_size(s_stats, s_w, s_center_h);
+    lv_obj_align(s_stats, LV_ALIGN_TOP_LEFT, 0, s_top_h);
+    lv_obj_set_style_bg_color(s_stats, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_stats, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_stats, LV_OBJ_FLAG_SCROLLABLE);
+
+    static const lv_color_t chart_col[XUI_STATS_CHARTS] = {
+        LV_COLOR_MAKE(255, 140, 0),    /* devices: the top bar's orange */
+        LV_COLOR_MAKE(0, 220, 60),     /* received: radar green */
+        LV_COLOR_MAKE(70, 150, 255),   /* sent: the flow header's blue */
+    };
+    int slot_h = s_center_h / XUI_STATS_CHARTS;
+    for (int i = 0; i < XUI_STATS_CHARTS; i++) {
+        s_stats_title[i] = lv_label_create(s_stats);
+        lv_label_set_text(s_stats_title[i], "");
+        lv_obj_set_style_text_font(s_stats_title[i], &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(s_stats_title[i],
+                                    lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
+        lv_obj_set_pos(s_stats_title[i], 8, i * slot_h + 2);
+
+        lv_obj_t *ch = lv_chart_create(s_stats);
+        s_stats_chart[i] = ch;
+        lv_obj_set_size(ch, s_w - 16, slot_h - 18);
+        lv_obj_set_pos(ch, 8, i * slot_h + 14);
+        lv_obj_set_style_bg_color(ch, lv_color_make(10, 10, 10), 0);
+        lv_obj_set_style_border_width(ch, 1, 0);
+        lv_obj_set_style_border_color(ch, lv_color_make(50, 50, 50), 0);
+        lv_obj_set_style_radius(ch, 2, 0);
+        lv_obj_set_style_pad_all(ch, 2, 0);
+        lv_obj_set_style_pad_column(ch, 1, LV_PART_ITEMS);
+        lv_chart_set_type(ch, LV_CHART_TYPE_BAR);
+        lv_chart_set_point_count(ch, XUI_STATS_POINTS);
+        lv_chart_set_div_line_count(ch, 3, 0);
+        lv_obj_set_style_line_color(ch, lv_color_make(35, 35, 35), 0);
+        s_stats_series[i] = lv_chart_add_series(ch, chart_col[i],
+                                                LV_CHART_AXIS_PRIMARY_Y);
+        lv_chart_set_ext_y_array(ch, s_stats_series[i], s_stats_vals[i]);
+    }
+    lv_obj_add_flag(s_stats, LV_OBJ_FLAG_HIDDEN);
+
     /* ---- Bottom bar (grey): button legend + device count ---- */
     lv_obj_t *bot = lv_obj_create(scr);
     lv_obj_set_size(bot, s_w, s_bot_h);
@@ -574,7 +631,10 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
 
     lv_init();
 
-    int buf_rows = s_h / 5;
+    /* An eighth of the screen: refresh crosses the panel in a few strokes
+     * and the ~11 KB saved is what lets the indexer's writer task start on
+     * a busy station. */
+    int buf_rows = s_h / 8;
     static lv_color_t *buf1;
     buf1 = heap_caps_malloc(s_w * buf_rows * sizeof(lv_color_t),
                             MALLOC_CAP_DMA);
@@ -815,6 +875,41 @@ void xui_show_home(bool show)
         lv_obj_add_flag(s_home, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(lv_obj_get_parent(s_body_label), LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+void xui_show_stats(bool show)
+{
+    if (!s_stats || !s_body_label) return;
+    if (show) {
+        lv_obj_clear_flag(s_stats, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lv_obj_get_parent(s_body_label), LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_stats, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n)
+{
+    if (idx < 0 || idx >= XUI_STATS_CHARTS || !s_stats_chart[idx]) return;
+    if (n > XUI_STATS_POINTS) n = XUI_STATS_POINTS;
+
+    uint16_t maxv = 0;
+    for (int i = 0; i < n; i++) if (vals[i] > maxv) maxv = vals[i];
+
+    /* Oldest first, right-aligned so "now" is always the rightmost bar. */
+    int pad = XUI_STATS_POINTS - n;
+    for (int i = 0; i < XUI_STATS_POINTS; i++)
+        s_stats_vals[idx][i] = (i < pad) ? 0 : (lv_coord_t)vals[i - pad];
+
+    /* Headroom keeps a full-scale hour from touching the frame. */
+    uint16_t range = maxv < 4 ? 4 : maxv + maxv / 4 + 1;
+    lv_chart_set_range(s_stats_chart[idx], LV_CHART_AXIS_PRIMARY_Y, 0, range);
+
+    char buf[64];
+    snprintf(buf, sizeof buf, "%s   (peak %u)", title, (unsigned)maxv);
+    lv_label_set_text(s_stats_title[idx], buf);
+
+    lv_chart_refresh(s_stats_chart[idx]);
 }
 
 void xui_home_row(int idx, const char *name, bool up, const char *detail)

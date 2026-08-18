@@ -31,6 +31,10 @@ static cfg_entry_t s_cfg[] = {
     { "pass",      {0}, false },
     { "espnow_on", {0}, false },
     { "share_on",  {0}, false },
+    { "digi_on",   {0}, false },
+    { "bridge_on", {0}, false },
+    { "igate_on",  {0}, false },
+    { "index_on",  {0}, false },
 };
 #define CFG_N (sizeof(s_cfg) / sizeof(s_cfg[0]))
 
@@ -119,6 +123,22 @@ int xcfg_ini_render(char *buf, size_t cap)
         "[espnow]\n"
         "enabled = %s\n"
         "\n"
+        "[digipeater]\n"
+        "; Re-air packets heard on ESP-NOW back onto ESP-NOW.\n"
+        "enabled = %s\n"
+        "\n"
+        "[bridge]\n"
+        "; Carry LAN traffic onto the ESP-NOW radio.\n"
+        "enabled = %s\n"
+        "\n"
+        "[igate]\n"
+        "; Carry ESP-NOW traffic onto the LAN (toward the internet side).\n"
+        "enabled = %s\n"
+        "\n"
+        "[indexer]\n"
+        "; Keep every packet heard, answer cmd:history, hold mail.\n"
+        "enabled = %s\n"
+        "\n"
         "[share]\n"
         "; This browser editor itself.\n"
         "enabled = %s\n",
@@ -127,6 +147,10 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("ssid", ""),
         xcfg_get("pass", ""),
         xcfg_get_bool("espnow_on", true) ? "yes" : "no",
+        xcfg_get_bool("digi_on", false) ? "yes" : "no",
+        xcfg_get_bool("bridge_on", true) ? "yes" : "no",
+        xcfg_get_bool("igate_on", true) ? "yes" : "no",
+        xcfg_get_bool("index_on", true) ? "yes" : "no",
         xcfg_get_bool("share_on", false) ? "yes" : "no");
 }
 
@@ -139,6 +163,10 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "wifi",    "password", "pass" },
     { "espnow",  "enabled",  "espnow_on" },
     { "share",   "enabled",  "share_on" },
+    { "digipeater", "enabled", "digi_on" },
+    { "bridge",  "enabled",  "bridge_on" },
+    { "igate",   "enabled",  "igate_on" },
+    { "indexer", "enabled",  "index_on" },
 };
 
 static char *trim(char *s)
