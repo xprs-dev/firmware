@@ -422,10 +422,10 @@ static void build_ui(void)
     lv_obj_set_scrollbar_mode(s_flowtab, LV_SCROLLBAR_MODE_OFF);
     lv_table_set_col_cnt(s_flowtab, 5);
     lv_table_set_row_cnt(s_flowtab, 1);
-    lv_table_set_col_width(s_flowtab, 0, 64);
-    lv_table_set_col_width(s_flowtab, 1, 62);
-    lv_table_set_col_width(s_flowtab, 2, 84);
-    lv_table_set_col_width(s_flowtab, 3, 58);
+    lv_table_set_col_width(s_flowtab, 0, 70);   /* fits "X1RD89-7" */
+    lv_table_set_col_width(s_flowtab, 1, 54);
+    lv_table_set_col_width(s_flowtab, 2, 90);
+    lv_table_set_col_width(s_flowtab, 3, 54);
     lv_table_set_col_width(s_flowtab, 4, 52);
     lv_table_set_cell_value(s_flowtab, 0, 0, "From");
     lv_table_set_cell_value(s_flowtab, 0, 1, "To");
@@ -570,6 +570,7 @@ static const char *type_icon(const char *type)
     if (strcmp(type, "position") == 0) return LV_SYMBOL_GPS;
     if (strcmp(type, "beacon") == 0)   return LV_SYMBOL_VOLUME_MAX;
     if (strcmp(type, "identity") == 0) return LV_SYMBOL_EYE_OPEN;
+    if (strcmp(type, "observation") == 0) return LV_SYMBOL_EYE_OPEN;
     if (strcmp(type, "ping") == 0 ||
         strcmp(type, "pong") == 0)     return LV_SYMBOL_LOOP;
     if (strcmp(type, "receipt") == 0)  return LV_SYMBOL_OK;
@@ -588,7 +589,8 @@ void m5ui_flow_rows(const m5ui_flow_t *rows, int n)
         lv_table_set_cell_value(s_flowtab, i + 1, 0, r->from);
         lv_table_set_cell_value(s_flowtab, i + 1, 1,
                                 r->to[0] ? r->to : "all");
-        snprintf(cell, sizeof cell, "%s %s", type_icon(r->type), r->type);
+        /* One line per packet: long type names get cut, not wrapped. */
+        snprintf(cell, sizeof cell, "%s %.8s", type_icon(r->type), r->type);
         lv_table_set_cell_value(s_flowtab, i + 1, 2, cell);
         /* Distance reads better than dBm; the link's icon says how it came:
          * a bolt for ESP-NOW, the antenna for the LAN (no range there). */

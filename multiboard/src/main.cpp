@@ -1582,7 +1582,7 @@ extern "C" void app_main(void)
 
             ret = geogram_wifi_start_ap(&ap_config);
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "WiFi AP started: geogram (open)");
+                ESP_LOGI(TAG, "WiFi AP started: xprs (open)");
                 tdongle_ui_set_ip("192.168.4.1");
                 // No WiFi power-save: with BLE sharing the radio, modem sleep made
                 // the STA miss beacons (bcn_timeout) and drop. Keep WiFi awake.
@@ -1919,7 +1919,7 @@ extern "C" void app_main(void)
 
         ret = geogram_wifi_start_ap(&ap_config);
         if (ret == ESP_OK) {
-            ESP_LOGI(TAG, "WiFi AP started: geogram");
+            ESP_LOGI(TAG, "WiFi AP started: xprs");
 
             // Try to auto-connect STA with saved WiFi credentials.
             // Delay 5 s so the AP and DHCP server are fully stable before STA
