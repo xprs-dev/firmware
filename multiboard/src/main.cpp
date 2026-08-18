@@ -1,0 +1,2231 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <time.h>
+#include <sys/time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_sntp.h"
+#include "app_config.h"
+
+// Station API
+#include "station.h"
+#include "geogram_ble.h"
+
+// NOSTR keys (for callsign)
+#include "nostr_keys.h"
+
+// Serial console
+#include "console.h"
+
+// Telnet server
+#include "telnet_server.h"
+
+// SSH server
+#include "geogram_ssh.h"
+
+// DNS server for captive portal
+#include "dns_server.h"
+
+// IP geolocation for timezone
+#include "geoloc.h"
+
+// Plain log helper (no ANSI)
+#include "geogram_log_plain.h"
+
+#include "nvs.h"
+
+// Mesh networking (optional, enabled via CONFIG_GEOGRAM_MESH_ENABLED)
+#ifdef CONFIG_GEOGRAM_MESH_ENABLED
+#include "mesh_bsp.h"
+#include "esp_netif.h"
+#include "lwip/ip4_addr.h"
+#endif
+
+// Include board-specific model initialization
+#if BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "board_power.h"
+    #include "button_bsp.h"
+    #include "epaper_1in54.h"
+    #include "shtc3.h"
+    #include "pcf85063.h"
+    #include "lvgl_port.h"
+    #include "geogram_ui.h"
+    #include "wifi_bsp.h"
+    #include "http_server.h"
+    #include "sdcard.h"
+    #include "tiles.h"
+    #include "updates.h"
+    #include "ftp_server.h"
+#elif BOARD_MODEL == MODEL_ESP32C3_MINI
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "wifi_bsp.h"
+    #include "http_server.h"
+    #if HAS_LED
+    #include "led_bsp.h"
+    #endif
+#elif BOARD_MODEL == MODEL_KV4P
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "wifi_bsp.h"
+    #include "esp_wifi.h"
+    #include "http_server.h"
+    #include "ble_aprs.h"
+    #include "radio_tx.h"
+    #if HAS_LED
+    #include "led_bsp.h"
+    #endif
+#elif BOARD_MODEL == MODEL_TDONGLE_S3
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "tdongle_ui.h"
+    #include "ble_hello.h"
+    #include "aprsis.h"
+    #include "nostr_keys.h"
+    #include "wifi_bsp.h"
+    #include "http_server.h"
+    #include "esp_coexist.h"
+    #include "esp_wifi.h"
+    #include "sdcard.h"
+    #include "msgstore.h"
+    #include "xprsindex.h"
+    #include "xprslan.h"
+    #include "esp_timer.h"
+    #include "esp_heap_caps.h"
+    // Log free heap + largest contiguous block at a boot stage. WiFi STA netif /
+    // DHCP, httpd, and the SD/FATFS mount all allocate here on a no-PSRAM S3;
+    // this makes a heap shortage (which silently breaks the STA DHCP) visible.
+    #define TDONGLE_LOG_HEAP(stage) \
+        ESP_LOGI(TAG, "heap %s: free=%u largest=%u", (stage), \
+                 (unsigned)esp_get_free_heap_size(), \
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT))
+#elif BOARD_MODEL == MODEL_HELTEC_V3
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "ssd1306.h"
+    #include "sx1262.h"
+    #include "wifi_bsp.h"
+    #include "http_server.h"
+#elif BOARD_MODEL == MODEL_HELTEC_V2 || BOARD_MODEL == MODEL_HELTEC_V1
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "ssd1306.h"
+    #include "sx1276.h"
+    #include "wifi_bsp.h"
+    #include "http_server.h"
+#elif BOARD_MODEL == MODEL_ESP32_GENERIC
+    #include "model_config.h"
+    #include "model_init.h"
+    #include "wifi_bsp.h"
+    #include "http_server.h"
+#else
+    #error "Invalid BOARD_MODEL defined!"
+#endif
+
+static const char *TAG = "geogram";
+
+// ============================================================================
+// Mesh Networking Support (optional)
+// ============================================================================
+
+#ifdef CONFIG_GEOGRAM_MESH_ENABLED
+static bool s_mesh_mode = false;
+static bool s_mesh_connected = false;
+static bool s_mesh_services_started = false;
+static bool s_http_server_started = false;  // Track if HTTP server started early
+
+static esp_err_t start_dns_for_softap(const char *context)
+{
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (!ap_netif) {
+        ESP_LOGW(TAG, "DNS start skipped (%s): SoftAP netif not available", context);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_netif_ip_info_t ip_info;
+    esp_err_t ip_ret = esp_netif_get_ip_info(ap_netif, &ip_info);
+    if (ip_ret != ESP_OK || ip_info.ip.addr == 0) {
+        ESP_LOGW(TAG, "DNS start skipped (%s): SoftAP IP not ready (%s)",
+                 context,
+                 ip_ret == ESP_OK ? "invalid state" : esp_err_to_name(ip_ret));
+        return ip_ret == ESP_OK ? ESP_ERR_INVALID_STATE : ip_ret;
+    }
+
+    esp_err_t dns_ret = dns_server_start(ip_info.ip.addr);
+    if (dns_ret != ESP_OK) {
+        ESP_LOGW(TAG, "DNS server start failed (%s): %s", context, esp_err_to_name(dns_ret));
+    }
+    return dns_ret;
+}
+
+static void start_mesh_services(void)
+{
+    if (s_mesh_services_started) {
+        return;
+    }
+
+    const char *ap_ssid = "geogram";
+    esp_err_t ap_ret = geogram_mesh_start_external_ap(
+        ap_ssid, "", CONFIG_GEOGRAM_MESH_EXTERNAL_AP_MAX_CONN);
+    if (ap_ret != ESP_OK) {
+        ESP_LOGW(TAG, "Deferring mesh services, external AP not ready: %s", esp_err_to_name(ap_ret));
+        return;
+    }
+    ESP_LOGI(TAG, "External AP: %s (open)", ap_ssid);
+
+    // Always derive DNS response IP from the live SoftAP netif.
+    start_dns_for_softap("mesh services");
+
+    // Only start HTTP server if not already started early
+    if (!s_http_server_started) {
+        station_init();
+        esp_err_t http_ret = http_server_start_ex(NULL, true);
+        if (http_ret == ESP_OK) {
+            s_http_server_started = true;
+            ESP_LOGI(TAG, "Station API started on mesh node");
+        } else {
+            ESP_LOGE(TAG, "Failed to start Station API on mesh node: %s", esp_err_to_name(http_ret));
+        }
+    } else {
+        ESP_LOGI(TAG, "HTTP server already running (started early)");
+    }
+
+#if BOARD_MODEL == MODEL_KV4P
+    // KV4P runs mesh + BLE + SA818 APRS on no-PSRAM ESP32; keep telnet off by default
+    // to preserve heap for radio and BLE operation.
+    ESP_LOGI(TAG, "Telnet auto-start disabled on KV4P (serial console remains available)");
+#else
+    if (telnet_server_start(TELNET_DEFAULT_PORT) == ESP_OK) {
+        ESP_LOGI(TAG, "Telnet server started on port %d", TELNET_DEFAULT_PORT);
+    }
+#endif
+
+    s_mesh_services_started = true;
+}
+
+/**
+ * @brief Mesh event callback
+ */
+static void mesh_event_cb(geogram_mesh_event_t event, void *event_data)
+{
+    switch (event) {
+        case GEOGRAM_MESH_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "Mesh connected, layer: %d", geogram_mesh_get_layer());
+            ESP_LOGI(TAG, "Mesh nodes: %zu, role: %s",
+                     geogram_mesh_get_node_count(),
+                     geogram_mesh_is_root() ? "root" : "child");
+            s_mesh_connected = true;
+
+#if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
+            // System OK - solid green LED
+            led_set_state(LED_STATE_OK);
+#endif
+
+            start_mesh_services();
+
+            // Enable IP bridging
+            geogram_mesh_enable_bridge();
+
+            break;
+
+        case GEOGRAM_MESH_EVENT_DISCONNECTED:
+            ESP_LOGW(TAG, "Mesh disconnected");
+            ESP_LOGI(TAG, "Mesh nodes now: %zu", geogram_mesh_get_node_count());
+            s_mesh_connected = false;
+
+#if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
+            // Error state - blinking red LED
+            led_set_state(LED_STATE_ERROR);
+#endif
+
+            // Stop services
+            telnet_server_stop();
+            http_server_stop();
+            s_http_server_started = false;
+            geogram_mesh_disable_bridge();
+            geogram_mesh_stop_external_ap();
+            s_mesh_services_started = false;
+            break;
+
+        case GEOGRAM_MESH_EVENT_ROOT_CHANGED:
+            ESP_LOGI(TAG, "Root status changed: %s",
+                     geogram_mesh_is_root() ? "I am ROOT" : "I am CHILD");
+            break;
+
+        case GEOGRAM_MESH_EVENT_EXTERNAL_STA_CONNECTED:
+            ESP_LOGI(TAG, "Phone connected to mesh AP (%d total)",
+                     geogram_mesh_get_external_ap_client_count());
+            break;
+
+        case GEOGRAM_MESH_EVENT_EXTERNAL_STA_DISCONNECTED:
+            ESP_LOGI(TAG, "Phone disconnected from mesh AP (%d remaining)",
+                     geogram_mesh_get_external_ap_client_count());
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief Start mesh networking mode
+ */
+static void start_mesh_mode(void)
+{
+    ESP_LOGI(TAG, "Starting mesh networking mode");
+
+    // Initialize mesh subsystem
+    esp_err_t ret = geogram_mesh_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Mesh init failed: %s", esp_err_to_name(ret));
+#if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
+        led_set_state(LED_STATE_ERROR);
+#endif
+        return;
+    }
+
+    // Configure mesh network
+    geogram_mesh_config_t mesh_cfg = {
+        .mesh_id = {'g', 'e', 'o', 'm', 's', 'h'},  // "geomsh"
+        .password = "",
+        .channel = CONFIG_GEOGRAM_MESH_CHANNEL,
+        .max_layer = CONFIG_GEOGRAM_MESH_MAX_LAYER,
+        .allow_root = true,
+        .callback = mesh_event_cb
+    };
+
+    ret = geogram_mesh_start(&mesh_cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Mesh start failed: %s", esp_err_to_name(ret));
+#if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
+        led_set_state(LED_STATE_ERROR);
+#endif
+        return;
+    }
+
+    s_mesh_mode = true;
+    ESP_LOGI(TAG, "Mesh mode started, scanning for network...");
+
+    // Mesh CONNECTED event can arrive before geogram_mesh_start() finishes.
+    // If services were deferred, start them now that mesh startup returned.
+    if (s_mesh_connected && !s_mesh_services_started) {
+        start_mesh_services();
+    }
+
+    // Start HTTP server immediately for SoftAP clients
+    // (Don't wait for mesh NODE_JOIN event which may never fire for root-only nodes)
+    station_init();
+
+    // Log the SoftAP IP for debugging and start DNS server for captive portal
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif) {
+        esp_netif_ip_info_t ip_info;
+        if (esp_netif_get_ip_info(ap_netif, &ip_info) == ESP_OK) {
+            ESP_LOGI(TAG, "SoftAP IP: " IPSTR ", Gateway: " IPSTR,
+                     IP2STR(&ip_info.ip), IP2STR(&ip_info.gw));
+
+            // Start DNS server immediately for captive portal
+            // All DNS queries will resolve to the SoftAP IP
+            esp_err_t dns_ret = start_dns_for_softap("mesh mode early start");
+            if (dns_ret == ESP_OK) {
+                ESP_LOGI(TAG, "DNS server started for captive portal");
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "Could not get SoftAP netif handle");
+    }
+
+    esp_err_t http_ret = http_server_start_ex(NULL, true);
+    if (http_ret == ESP_OK) {
+        s_http_server_started = true;
+        ESP_LOGI(TAG, "HTTP server started for SoftAP clients");
+    } else {
+        ESP_LOGE(TAG, "Failed to start HTTP server: %s", esp_err_to_name(http_ret));
+    }
+
+}
+#endif  // CONFIG_GEOGRAM_MESH_ENABLED
+
+// ============================================================================
+// T-Dongle-S3 WiFi Support
+// ============================================================================
+
+#if BOARD_MODEL == MODEL_TDONGLE_S3
+
+/* Operator's home WiFi -- used only when no captive-portal/console credentials
+ * are saved in NVS. Lets the iGate reach APRS-IS out of the box. Override at
+ * runtime via the captive portal or the `wifi_connect` console command.
+ *
+ * THE CREDENTIALS ARE NOT IN THIS FILE. They were, and a real network's SSID
+ * and password sat in a public repository as a result. Copy
+ * `wifi_secrets.h.example` to `wifi_secrets.h` and fill it in; that filename is
+ * gitignored, and it is the same file the m5stack and espnow_probe projects
+ * already use, so one copy serves all three.
+ *
+ * Without it the defaults are empty and the station simply waits for the
+ * captive portal, which is the correct behaviour for anyone who is not the
+ * operator of this particular dongle. */
+#if defined(__has_include)
+#  if __has_include("wifi_secrets.h")
+#    include "wifi_secrets.h"
+#  endif
+#endif
+
+#ifndef TDONGLE_DEFAULT_WIFI_SSID
+#  ifdef WIFI_SSID
+#    define TDONGLE_DEFAULT_WIFI_SSID WIFI_SSID
+#  else
+#    define TDONGLE_DEFAULT_WIFI_SSID ""
+#  endif
+#endif
+#ifndef TDONGLE_DEFAULT_WIFI_PASS
+#  ifdef WIFI_PASS
+#    define TDONGLE_DEFAULT_WIFI_PASS WIFI_PASS
+#  else
+#    define TDONGLE_DEFAULT_WIFI_PASS ""
+#  endif
+#endif
+
+/* Two independent SD archives: text messages and automated position beacons. */
+static msgstore_t *s_msg_store    = NULL;
+static msgstore_t *s_beacon_store = NULL;
+static xprsidx_t  *s_xprs_index   = NULL;
+
+/* iGate position/radius persisted in NVS so it survives reboots. */
+#define TDONGLE_IGATE_NVS_NS  "igate"
+
+static void tdongle_load_igate_position(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(TDONGLE_IGATE_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    int32_t lat_e6 = 0, lon_e6 = 0, radius = 0;
+    bool any = (nvs_get_i32(h, "lat_e6", &lat_e6) == ESP_OK);
+    nvs_get_i32(h, "lon_e6", &lon_e6);
+    nvs_get_i32(h, "radius_km", &radius);
+    nvs_close(h);
+    if (any && (lat_e6 || lon_e6)) {
+        aprsis_set_position(lat_e6 / 1e6, lon_e6 / 1e6, radius);
+        ESP_LOGI(TAG, "iGate position from NVS: %.5f,%.5f r=%dkm",
+                 lat_e6 / 1e6, lon_e6 / 1e6, (int)radius);
+    }
+}
+
+static void tdongle_save_igate_position(double lat, double lon, int radius_km)
+{
+    nvs_handle_t h;
+    if (nvs_open(TDONGLE_IGATE_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_i32(h, "lat_e6", (int32_t)(lat * 1e6));
+    nvs_set_i32(h, "lon_e6", (int32_t)(lon * 1e6));
+    if (radius_km > 0) nvs_set_i32(h, "radius_km", (int32_t)radius_km);
+    nvs_commit(h);
+    nvs_close(h);
+    /* Keep the BLE ping responder's position in sync with the iGate position. */
+    ble_hello_set_position(lat, lon);
+}
+
+/**
+ * @brief WiFi event callback for T-Dongle-S3
+ */
+static void tdongle_wifi_event_cb(geogram_wifi_status_t status, void *event_data)
+{
+    char ip_str[16];
+
+    switch (status) {
+        case GEOGRAM_WIFI_STATUS_GOT_IP:
+            geogram_wifi_get_ip(ip_str);
+            ESP_LOGI(TAG, "T-Dongle STA connected, IP: %s", ip_str);
+            tdongle_ui_set_ip(ip_str);
+            break;
+
+        case GEOGRAM_WIFI_STATUS_DISCONNECTED:
+            ESP_LOGW(TAG, "T-Dongle STA disconnected, showing AP IP");
+            tdongle_ui_set_ip("192.168.4.1");
+            break;
+
+        case GEOGRAM_WIFI_STATUS_AP_STARTED:
+            ESP_LOGI(TAG, "T-Dongle AP started");
+            tdongle_ui_set_ip("192.168.4.1");
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief WiFi credentials received via captive portal
+ */
+static void tdongle_wifi_config_received(const char *ssid, const char *password)
+{
+    ESP_LOGI(TAG, "WiFi credentials received for SSID: %s", ssid);
+    geogram_wifi_connect_sta(ssid, password);
+}
+
+#endif  // BOARD_MODEL == MODEL_TDONGLE_S3
+
+#if BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+
+// Sensor update interval (ms)
+#define SENSOR_UPDATE_INTERVAL  30000
+#define DISPLAY_REFRESH_INTERVAL 60000
+
+// WiFi configuration
+#define WIFI_AP_PASSWORD    ""  // Open network for easy setup
+#define WIFI_AP_CHANNEL     1
+#define WIFI_AP_MAX_CONN    4
+
+static bool s_wifi_connected = false;
+static char s_current_ip[16] = {0};
+static bool s_ntp_synced = false;
+static pcf85063_handle_t s_rtc_handle = NULL;
+static bool s_ap_mode_active = false;
+static TaskHandle_t s_network_services_task = NULL;
+static epaper_1in54_handle_t s_display_handle = NULL;
+static button_handle_t s_power_button = NULL;
+
+// Flag to trigger shutdown from main loop (avoids blocking button callback)
+static volatile bool s_shutdown_requested = false;
+
+/**
+ * @brief Perform device shutdown - clear display and enter deep sleep
+ */
+static void device_shutdown(void)
+{
+    ESP_LOGI(TAG, "Shutdown initiated - clearing display and entering deep sleep");
+
+    // Turn on backlight so user can see the shutdown message
+    board_power_backlight_on();
+
+    // Show shutdown message
+    geogram_ui_show_status("Powering off...");
+    geogram_ui_refresh(false);
+
+    // Give time for partial refresh to show the message
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
+    // Now blank the e-paper display completely
+    if (s_display_handle != NULL) {
+        ESP_LOGI(TAG, "Blanking e-paper display...");
+
+        // Re-initialize display for full refresh mode (needed for clean blank)
+        epaper_1in54_init(s_display_handle);
+
+        // Clear buffer to all white
+        epaper_1in54_clear(s_display_handle);
+
+        // Send to display with full refresh (this does a proper e-paper clear cycle)
+        epaper_1in54_refresh(s_display_handle);
+
+        // Wait for the e-paper refresh to complete
+        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        ESP_LOGI(TAG, "Display blanked");
+    }
+
+    // Turn off backlight
+    board_power_backlight_off();
+
+    // Turn off peripherals
+    board_power_epd_off();
+    board_power_audio_off();
+
+    ESP_LOGI(TAG, "Entering deep sleep - press power button to wake");
+
+    // Enter deep sleep with power button wake-up (0 = external wake only)
+    board_power_deep_sleep(0);
+}
+
+/**
+ * @brief Power button event callback
+ */
+static void power_button_callback(gpio_num_t gpio, button_event_t event, void *user_data)
+{
+    switch (event) {
+        case BUTTON_EVENT_LONG_PRESS:
+            ESP_LOGI(TAG, "Power button long press detected - requesting shutdown");
+            s_shutdown_requested = true;  // Handle in main loop to avoid blocking callback
+            break;
+
+        case BUTTON_EVENT_CLICK:
+            ESP_LOGI(TAG, "Power button click - toggling backlight");
+            board_power_backlight_timed(3000);  // Turn on backlight for 3 seconds
+            break;
+
+        case BUTTON_EVENT_DOUBLE_CLICK:
+            ESP_LOGI(TAG, "Power button double click - force display refresh");
+            geogram_ui_refresh(true);  // Full refresh
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief NTP time sync notification callback
+ */
+static void ntp_sync_notification_cb(struct timeval *tv)
+{
+    ESP_LOGI(TAG, "NTP time synchronized");
+    s_ntp_synced = true;
+
+    // Get the current time
+    time_t now = tv->tv_sec;
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+
+    ESP_LOGI(TAG, "Current time: %04d-%02d-%02d %02d:%02d:%02d",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+    // Update RTC with NTP time if RTC is available
+    if (s_rtc_handle != NULL) {
+        pcf85063_datetime_t datetime = {
+            .year = (uint16_t)(timeinfo.tm_year + 1900),
+            .month = (uint8_t)(timeinfo.tm_mon + 1),
+            .day = (uint8_t)timeinfo.tm_mday,
+            .hour = (uint8_t)timeinfo.tm_hour,
+            .minute = (uint8_t)timeinfo.tm_min,
+            .second = (uint8_t)timeinfo.tm_sec,
+            .weekday = (uint8_t)timeinfo.tm_wday
+        };
+
+        if (pcf85063_set_datetime(s_rtc_handle, &datetime) == ESP_OK) {
+            ESP_LOGI(TAG, "RTC updated with NTP time");
+        } else {
+            ESP_LOGW(TAG, "Failed to update RTC");
+        }
+    }
+}
+
+/**
+ * @brief Initialize SNTP for time synchronization
+ */
+static void init_sntp(void)
+{
+    ESP_LOGI(TAG, "Initializing SNTP");
+
+    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.nist.gov");
+    esp_sntp_set_time_sync_notification_cb(ntp_sync_notification_cb);
+    esp_sntp_init();
+}
+
+/**
+ * @brief Background task for network services (geolocation, NTP)
+ *
+ * This task runs slow network operations in the background to avoid
+ * blocking the main boot process and WiFi event handlers.
+ */
+static void network_services_task(void *pvParameter)
+{
+    ESP_LOGI(TAG, "Starting network services (background)...");
+
+    // Small delay to let WiFi stack stabilize
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Step 1: Fetch geolocation (sets timezone)
+    ESP_LOGI(TAG, "[Background] Fetching geolocation...");
+    geogram_ui_show_status("Getting location...");
+    geogram_ui_refresh(false);
+
+    geoloc_data_t geoloc;
+    if (geoloc_fetch(&geoloc) == ESP_OK) {
+        geoloc_apply_timezone();
+        ESP_LOGI(TAG, "[Background] Location: %s, %s", geoloc.city, geoloc.country);
+
+        // Update station with location data for API
+        station_set_location(geoloc.latitude, geoloc.longitude,
+                            geoloc.city, geoloc.country, geoloc.timezone);
+    } else {
+        ESP_LOGW(TAG, "[Background] Geolocation failed, using UTC");
+        setenv("TZ", "UTC0", 1);
+        tzset();
+    }
+
+    // Step 2: Initialize NTP (now that timezone is set)
+    ESP_LOGI(TAG, "[Background] Initializing NTP...");
+    geogram_ui_show_status("Syncing time...");
+    geogram_ui_refresh(false);
+
+    init_sntp();
+
+    // Wait a bit for NTP to sync (non-blocking check)
+    for (int i = 0; i < 10 && !s_ntp_synced; i++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    if (s_ntp_synced) {
+        ESP_LOGI(TAG, "[Background] NTP synced successfully");
+    } else {
+        ESP_LOGW(TAG, "[Background] NTP sync pending (will complete in background)");
+    }
+
+    // Done - show connected status
+    geogram_ui_show_status("Connected");
+    geogram_ui_refresh(false);
+
+    ESP_LOGI(TAG, "Network services initialization complete");
+
+    // Task complete, delete self
+    s_network_services_task = NULL;
+    vTaskDelete(NULL);
+}
+
+// Forward declaration
+static void start_ap_mode(void);
+
+/**
+ * @brief WiFi event callback
+ */
+static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
+{
+    switch (status) {
+        case GEOGRAM_WIFI_STATUS_GOT_IP:
+            ESP_LOGI(TAG, "WiFi connected with IP");
+            s_wifi_connected = true;
+            s_ap_mode_active = false;
+            geogram_wifi_get_ip(s_current_ip);
+            geogram_ui_update_wifi(UI_WIFI_STATUS_CONNECTED, s_current_ip, NULL);
+            geogram_ui_show_status("WiFi Connected");
+            geogram_ui_refresh(false);
+
+            // Stop DNS server (used in AP mode)
+            dns_server_stop();
+
+            // Stop AP mode HTTP server and start Station API server
+            http_server_stop();
+
+            // Initialize and start Station API
+            station_init();
+            http_server_start_ex(NULL, true);  // Station API enabled
+            ESP_LOGI(TAG, "Station API started - callsign: %s", station_get_callsign());
+
+            // Start Telnet server for remote CLI access
+            if (telnet_server_start(TELNET_DEFAULT_PORT) == ESP_OK) {
+                ESP_LOGI(TAG, "Telnet server started on port %d", TELNET_DEFAULT_PORT);
+            }
+
+            // SSH server disabled for now (libssh init issues)
+            // TODO: Re-enable once libssh threading is properly configured
+            // if (geogram_ssh_start(GEOGRAM_SSH_DEFAULT_PORT) == ESP_OK) {
+            //     ESP_LOGI(TAG, "SSH server started on port %d", GEOGRAM_SSH_DEFAULT_PORT);
+            // }
+
+            // Start update mirror polling (check GitHub every hour, first check after 1 minute)
+            if (updates_is_available()) {
+                updates_start_polling(60 * 60);  // 1 hour
+                ESP_LOGI(TAG, "Update mirror polling started (hourly)");
+            }
+
+            // Start FTP server if SD card is mounted
+            if (sdcard_is_mounted()) {
+                if (ftp_server_start(FTP_DEFAULT_PORT) == ESP_OK) {
+                    ESP_LOGI(TAG, "FTP server started on port %d", FTP_DEFAULT_PORT);
+                }
+            }
+
+            // Start network services in background (geolocation, NTP)
+            // This avoids blocking the WiFi callback with slow HTTP requests
+            if (s_network_services_task == NULL) {
+                xTaskCreate(network_services_task, "net_services", 4096, NULL, 3, &s_network_services_task);
+            }
+            break;
+
+        case GEOGRAM_WIFI_STATUS_DISCONNECTED:
+            // Note: WiFi layer now auto-reconnects up to 10 times before calling this
+            ESP_LOGW(TAG, "WiFi disconnected (after retries exhausted)");
+            s_wifi_connected = false;
+            s_current_ip[0] = '\0';
+            geogram_ui_update_wifi(UI_WIFI_STATUS_DISCONNECTED, NULL, NULL);
+            geogram_ui_show_status("WiFi Failed");
+            geogram_ui_refresh(false);
+
+            // Stop Telnet server (SSH disabled)
+            telnet_server_stop();
+            // geogram_ssh_stop();
+
+            // Stop FTP server
+            ftp_server_stop();
+
+            // Stop update polling
+            updates_stop_polling();
+
+            // Fall back to AP mode if not already active
+            if (!s_ap_mode_active) {
+                ESP_LOGW(TAG, "WiFi connection failed, starting AP mode for configuration");
+                start_ap_mode();
+            }
+            break;
+
+        case GEOGRAM_WIFI_STATUS_AP_STARTED: {
+            ESP_LOGI(TAG, "AP mode started");
+            s_ap_mode_active = true;
+            geogram_wifi_get_ap_ip(s_current_ip);
+
+            // Build AP SSID for display
+            char ap_ssid[32];
+            const char *callsign = nostr_keys_get_callsign();
+            if (callsign && strlen(callsign) > 0) {
+                snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+            } else {
+                snprintf(ap_ssid, sizeof(ap_ssid), "geogram-setup");
+            }
+
+            geogram_ui_update_wifi(UI_WIFI_STATUS_AP_MODE, s_current_ip, ap_ssid);
+            geogram_ui_show_status("Setup Mode");
+            geogram_ui_refresh(false);
+
+            // Start DNS server for captive portal (resolves callsign to AP IP)
+            uint32_t ap_ip = 0;
+            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+                dns_server_start(ap_ip);
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief Callback when WiFi credentials are submitted via HTTP
+ */
+static void wifi_config_received(const char *ssid, const char *password)
+{
+    ESP_LOGI(TAG, "WiFi credentials received for SSID: %s", ssid);
+
+    geogram_ui_show_status("Connecting...");
+    geogram_ui_refresh(false);
+
+    // Stop AP mode
+    geogram_wifi_stop_ap();
+
+    // Connect to the configured network
+    geogram_wifi_config_t config = {};
+    strncpy(config.ssid, ssid, sizeof(config.ssid) - 1);
+    strncpy(config.password, password, sizeof(config.password) - 1);
+    config.callback = wifi_event_cb;
+
+    geogram_wifi_connect(&config);
+}
+
+/**
+ * @brief Start WiFi in AP mode for configuration
+ */
+static void start_ap_mode(void)
+{
+    ESP_LOGI(TAG, "Starting AP mode for WiFi configuration");
+
+    // Ensure station identity is available for chat/API responses
+    station_init();
+
+    // Build SSID with callsign: "geogram-X3ABCD"
+    char ap_ssid[32];
+    const char *callsign = nostr_keys_get_callsign();
+    if (callsign && strlen(callsign) > 0) {
+        snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+    } else {
+        snprintf(ap_ssid, sizeof(ap_ssid), "geogram-setup");
+    }
+
+    geogram_wifi_ap_config_t ap_config = {};
+    strncpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid) - 1);
+    strncpy(ap_config.password, WIFI_AP_PASSWORD, sizeof(ap_config.password) - 1);
+    ap_config.channel = WIFI_AP_CHANNEL;
+    ap_config.max_connections = WIFI_AP_MAX_CONN;
+    ap_config.callback = wifi_event_cb;
+
+    geogram_wifi_start_ap(&ap_config);
+
+    // Start HTTP server with chat/API endpoints
+    http_server_start_ex(wifi_config_received, true);
+}
+
+/**
+ * @brief Try to connect with saved credentials
+ */
+static bool try_saved_credentials(void)
+{
+    char ssid[33] = {0};
+    char password[65] = {0};
+
+    if (geogram_wifi_load_credentials(ssid, password) == ESP_OK && strlen(ssid) > 0) {
+        ESP_LOGI(TAG, "Found saved credentials for SSID: %s", ssid);
+
+        geogram_ui_show_status("Connecting...");
+        geogram_ui_update_wifi(UI_WIFI_STATUS_CONNECTING, NULL, ssid);
+        geogram_ui_refresh(false);
+
+        geogram_wifi_config_t config = {};
+        strncpy(config.ssid, ssid, sizeof(config.ssid) - 1);
+        strncpy(config.password, password, sizeof(config.password) - 1);
+        config.callback = wifi_event_cb;
+
+        geogram_wifi_connect(&config);
+        return true;
+    }
+
+    return false;
+}
+
+/**
+ * @brief Sensor reading task
+ */
+static void sensor_task(void *pvParameter)
+{
+    shtc3_handle_t sensor = (shtc3_handle_t)pvParameter;
+    shtc3_data_t data;
+    uint32_t refresh_counter = 0;
+    bool first_reading = true;
+
+    while (1) {
+        if (shtc3_read(sensor, &data) == ESP_OK) {
+            ESP_LOGI(TAG, "Temp: %.1f C, Humidity: %.1f %%",
+                     data.temperature, data.humidity);
+            geogram_ui_update_sensor(data.temperature, data.humidity);
+
+            // Trigger immediate display update on first reading
+            if (first_reading) {
+                first_reading = false;
+                geogram_ui_refresh(false);
+            }
+        } else {
+            ESP_LOGW(TAG, "Failed to read sensor");
+        }
+
+        // Refresh display periodically
+        refresh_counter += SENSOR_UPDATE_INTERVAL;
+        if (refresh_counter >= DISPLAY_REFRESH_INTERVAL) {
+            geogram_ui_refresh(false);
+            refresh_counter = 0;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(SENSOR_UPDATE_INTERVAL));
+    }
+}
+
+/**
+ * @brief RTC and uptime update task
+ */
+static void rtc_task(void *pvParameter)
+{
+    pcf85063_handle_t rtc = (pcf85063_handle_t)pvParameter;
+    pcf85063_datetime_t datetime;
+    uint8_t last_minute = 255;
+    uint32_t uptime_seconds = 0;
+    uint32_t last_uptime_minute = 0;
+    bool first_reading = true;
+
+    while (1) {
+        if (pcf85063_get_datetime(rtc, &datetime) == ESP_OK) {
+            // Update time display on first read or when minute changes
+            if (first_reading || datetime.minute != last_minute) {
+                geogram_ui_update_time(datetime.hour, datetime.minute);
+                geogram_ui_update_date(datetime.year, datetime.month, datetime.day);
+                last_minute = datetime.minute;
+
+                if (first_reading) {
+                    first_reading = false;
+                    geogram_ui_refresh(false);
+                }
+            }
+        }
+
+        // Update uptime every minute
+        uptime_seconds++;
+        uint32_t current_minute = uptime_seconds / 60;
+        if (current_minute != last_uptime_minute) {
+            geogram_ui_update_uptime(uptime_seconds);
+            last_uptime_minute = current_minute;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Check every second
+    }
+}
+
+#endif  // BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+
+// ============================================================================
+// BlueAPRS bridge callbacks (KV4P + T-Dongle-S3)
+// ============================================================================
+
+#if BOARD_MODEL == MODEL_KV4P
+#include "aprs_store.h"
+
+/** BLE RX → SA818 radio TX queue */
+static void kv4p_ble_aprs_rx(const char *tnc2, int rssi, void *ctx)
+{
+    (void)ctx;
+    ESP_LOGI(TAG, "BlueAPRS RX (rssi=%d): %s", rssi, tnc2);
+
+    /* Parse TNC2 "FROM>TO:message" into radio_tx_item_t */
+    radio_tx_item_t item = {0};
+    const char *gt = strchr(tnc2, '>');
+    const char *colon = strchr(tnc2, ':');
+    if (!gt || !colon || colon <= gt) {
+        ESP_LOGW(TAG, "BlueAPRS: malformed TNC2 frame");
+        return;
+    }
+
+    int from_len = gt - tnc2;
+    int to_len = colon - gt - 1;
+    if (from_len >= RADIO_TX_MAX_CALLSIGN) from_len = RADIO_TX_MAX_CALLSIGN - 1;
+    if (to_len >= RADIO_TX_MAX_CALLSIGN) to_len = RADIO_TX_MAX_CALLSIGN - 1;
+
+    memcpy(item.from, tnc2, from_len);
+    item.from[from_len] = '\0';
+    memcpy(item.to, gt + 1, to_len);
+    item.to[to_len] = '\0';
+    strncpy(item.message, colon + 1, RADIO_TX_MAX_MESSAGE - 1);
+    item.message[RADIO_TX_MAX_MESSAGE - 1] = '\0';
+
+    if (radio_tx_queue_send(&item)) {
+        ESP_LOGI(TAG, "BlueAPRS→radio: %s -> %s", item.from, item.to);
+    } else {
+        ESP_LOGW(TAG, "BlueAPRS→radio: TX queue full");
+    }
+}
+
+/** SA818 RX (via aprs_store) → BLE TX advertisement */
+static void kv4p_aprs_to_ble(const char *from, const char *to,
+                              const char *msg, void *ctx)
+{
+    (void)ctx;
+    char tnc2[BLE_APRS_MAX_TNC2_LEN];
+    int len = snprintf(tnc2, sizeof(tnc2), "%s>%s:%s", from, to, msg);
+    if (len > 0 && len < (int)sizeof(tnc2)) {
+        ble_aprs_advertise(tnc2, 2000);
+    }
+}
+#endif  /* MODEL_KV4P */
+
+#if BOARD_MODEL == MODEL_TDONGLE_S3
+/** Aurora APRS-over-BLE RX → rolling chat on the T-Dongle display.
+ *  Decoded by ble_hello (the radio owner); we only format + push a line. */
+/*
+ * One line every 15 s, because silence is ambiguous on this board.
+ *
+ * It logs only NEW callsigns, its display dedup is an hour long and the WiFi
+ * reconnect goes quiet after ten attempts — so a healthy idle dongle and a
+ * wedged one look identical on the console. What cannot be seen from outside
+ * goes here, and `min` is the heap low-water mark since boot: a station that
+ * stops answering for a few seconds under load has usually dipped, and this is
+ * the only way to see a dip that has already recovered.
+ */
+static void tdongle_heartbeat_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(15000));
+
+        char ip[16] = "-";
+        if (geogram_wifi_get_status() == GEOGRAM_WIFI_STATUS_GOT_IP) {
+            geogram_wifi_get_ip(ip);
+        }
+        uint32_t qwait = 0, qdrop = 0;
+        xprsindex_queue_stats(s_xprs_index, &qwait, &qdrop);
+        xprsidx_stats_t xs;
+        xprsindex_stats(s_xprs_index, &xs);
+
+        ESP_LOGW(TAG, "alive %us ip=%s wifi=%d heap=%u min=%u big=%u "
+                      "recs=%u q=%u/%u lan=%d",
+                 (unsigned)(esp_timer_get_time() / 1000000ULL), ip,
+                 (int)geogram_wifi_get_status(),
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)esp_get_minimum_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                                            MALLOC_CAP_8BIT),
+                 (unsigned)xs.count, (unsigned)qwait, (unsigned)qdrop,
+                 xprslan_is_active() ? xprslan_peer_count(600) : -1);
+    }
+}
+
+/* ---- when the card may run ---------------------------------------------- */
+
+/*
+ * The SDMMC bus desensitises the 2.4 GHz radio. Measured on this board: with
+ * the XPRS store writing as packets arrive, the WiFi station stayed associated
+ * and could not transmit — `wifi:m f null`, DNS timing out, 1 of 96 pings
+ * answered. The same firmware with FEATURE_SDCARD=0, BLE still running,
+ * answered 159 of 162.
+ *
+ * So the card is only allowed to run when nothing is trying to get on the air.
+ * Every path this firmware transmits from calls tdongle_radio_busy(), and the
+ * index writer holds its records in RAM until things have been quiet for
+ * TDONGLE_RADIO_QUIET_MS. A record waiting in memory costs nothing; a frame
+ * that misses its moment is lost.
+ */
+#define TDONGLE_RADIO_QUIET_MS  400
+
+static volatile int64_t s_last_tx_us;
+
+static inline void tdongle_radio_busy(void)
+{
+    s_last_tx_us = esp_timer_get_time();
+}
+
+static bool tdongle_card_may_run(void)
+{
+    // Associating is the worst moment of all: the handshake is several
+    // round-trips that all have to land.
+    if (geogram_wifi_get_status() == GEOGRAM_WIFI_STATUS_CONNECTING) return false;
+    int64_t quiet_us = esp_timer_get_time() - s_last_tx_us;
+    return quiet_us > (int64_t)TDONGLE_RADIO_QUIET_MS * 1000;
+}
+
+static void tdongle_aprs_rx(const char *from, const char *to,
+                            const char *text, int rssi)
+{
+    tdongle_radio_busy();   /* heard on the air, and relayed straight back onto it */
+    ESP_LOGI(TAG, "Aurora APRS RX (rssi=%d): %s -> %s : %s",
+             rssi, from, (to && *to) ? to : "(geo)", text);
+
+    /* Persist to the SD-backed log (deduped) so other devices can query it by
+     * index over HTTP/BLE. Positions go to the beacons archive, everything else
+     * (messages, group, geo-chat) to the messages archive. No-op without SD. */
+    msgstore_kind_t k = msgstore_kind_from_to(to);
+    msgstore_add(k == MSGSTORE_KIND_POSITION ? s_beacon_store : s_msg_store,
+                 from, to ? to : "", text ? text : "", k, rssi, false);
+
+    /* iGate RF→Internet: gate this locally-heard frame up to APRS-IS (the
+     * iGate decides what is gateable: direct messages + positions). */
+    aprsis_uplink(from, to ? to : "", text ? text : "");
+
+    /* Geo-chat text carries a leading ">>" marker — not useful on screen. */
+    if (text && text[0] == '>' && text[1] == '>') text += 2;
+
+    char line[120];
+    if (to && to[0] == '!') {              // position: text = lat,lon[,comment]
+        snprintf(line, sizeof(line), "@ %s", text);
+    } else if (to && to[0] == '#') {       // group / bulletin
+        snprintf(line, sizeof(line), "%s %s", to, text);
+    } else {                               // 1:1 message / geo-chat
+        snprintf(line, sizeof(line), "%s", text);
+    }
+    tdongle_ui_push_message(from, line);
+}
+
+/* GET /api/igate — APRS-IS iGate + archive status (operational visibility: the
+ * device is headless, so expose whether the iGate is connected upstream, the
+ * configured position/radius, and how much each archive holds). */
+static esp_err_t tdongle_igate_status_handler(httpd_req_t *req)
+{
+    uint32_t rx_lines = 0, rx_msgs = 0, rx_gated = 0;
+    aprsis_get_rx_stats(&rx_lines, &rx_msgs, &rx_gated);
+    double lat = 0, lon = 0; int radius = 0; bool have_pos = false;
+    aprsis_get_position(&lat, &lon, &radius, &have_pos);
+    char buf[420];
+    int n = snprintf(buf, sizeof buf,
+        "{\"aprsis_connected\":%s,\"have_position\":%s,\"lat\":%.5f,\"lon\":%.5f,"
+        "\"radius_km\":%d,\"rx_lines\":%u,\"rx_msgs\":%u,\"rx_gated\":%u,"
+        "\"messages\":{\"ready\":%s,\"count\":%u,\"latest_index\":\"%c%u\",\"diag\":\"%s\"},"
+        "\"beacons\":{\"ready\":%s,\"count\":%u,\"latest_index\":\"%c%u\",\"diag\":\"%s\"}}",
+        aprsis_is_connected() ? "true" : "false",
+        have_pos ? "true" : "false", lat, lon, radius,
+        (unsigned)rx_lines, (unsigned)rx_msgs, (unsigned)rx_gated,
+        msgstore_ready(s_msg_store) ? "true" : "false",
+        (unsigned)msgstore_get_count(s_msg_store),
+        msgstore_get_epoch(s_msg_store),
+        (unsigned)msgstore_get_latest_index(s_msg_store),
+        msgstore_diag(s_msg_store),
+        msgstore_ready(s_beacon_store) ? "true" : "false",
+        (unsigned)msgstore_get_count(s_beacon_store),
+        msgstore_get_epoch(s_beacon_store),
+        (unsigned)msgstore_get_latest_index(s_beacon_store),
+        msgstore_diag(s_beacon_store));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
+/* Map a ?kind= string to a msgstore kind (-1 = any). */
+static int tdongle_kind_from_str(const char *s)
+{
+    if (!strcmp(s, "message"))  return MSGSTORE_KIND_MESSAGE;
+    if (!strcmp(s, "position")) return MSGSTORE_KIND_POSITION;
+    if (!strcmp(s, "group"))    return MSGSTORE_KIND_GROUP;
+    if (!strcmp(s, "geochat"))  return MSGSTORE_KIND_GEOCHAT;
+    if (!strcmp(s, "other"))    return MSGSTORE_KIND_OTHER;
+    return -1;
+}
+
+/* Parse an epoch-prefixed id ("Q42" -> epoch 'Q', index 42; "42" -> index 42). */
+static void tdongle_parse_id(const char *s, char *epoch, uint32_t *idx)
+{
+    *epoch = 0; *idx = 0;
+    if (!s || !s[0]) return;
+    const char *p = s;
+    if ((*p >= 'A' && *p <= 'Z') || (*p >= 'a' && *p <= 'z')) { *epoch = (char)toupper((unsigned char)*p); p++; }
+    *idx = (uint32_t)strtoul(p, NULL, 10);
+}
+
+/* Shared query handler for both archives. */
+static esp_err_t tdongle_archive_query(httpd_req_t *req, msgstore_t *store)
+{
+    char query[192] = {0};
+    char param[40];
+    uint32_t since_id = 0, limit = 0, tail = 0, days = 0, since_ts = 0;
+    char want_epoch = 0;
+    char call[16] = {0};
+    int kind = -1;
+    bool had_range = false;   /* user narrowed the query explicitly */
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "since", param, sizeof(param)) == ESP_OK) {
+            tdongle_parse_id(param, &want_epoch, &since_id); had_range = true;
+        }
+        if (httpd_query_key_value(query, "call", param, sizeof(param)) == ESP_OK)
+            strlcpy(call, param, sizeof call);
+        if (httpd_query_key_value(query, "kind", param, sizeof(param)) == ESP_OK)
+            kind = tdongle_kind_from_str(param);
+        if (httpd_query_key_value(query, "limit", param, sizeof(param)) == ESP_OK) {
+            limit = (uint32_t)strtoul(param, NULL, 10); had_range = true;
+        }
+        if (httpd_query_key_value(query, "tail", param, sizeof(param)) == ESP_OK) {
+            tail = (uint32_t)strtoul(param, NULL, 10); had_range = true;
+        }
+        if (httpd_query_key_value(query, "days", param, sizeof(param)) == ESP_OK) {
+            days = (uint32_t)strtoul(param, NULL, 10); had_range = true;
+        }
+    }
+
+    /* Cap so a client can't pull the whole archive in one request; default to the
+     * latest 30 when no range/window is given (the user narrows with
+     * tail=/since=/limit=/days=). */
+    const uint32_t kApiDefault = 30, kApiMax = 200;
+    if (!had_range) tail = kApiDefault;
+    if (limit == 0 || limit > kApiMax) limit = kApiMax;
+
+    /* days= -> wall-clock window (only meaningful once the SNTP clock is set). */
+    if (days > 0) {
+        time_t nowt = time(NULL);
+        if (nowt > 1600000000) since_ts = (uint32_t)nowt - days * 86400u;
+    }
+
+    if (tail > 0 && msgstore_ready(store)) {
+        // since_index is inclusive; the last `tail` records are indices
+        // [latest-tail+1 .. latest], i.e. since = latest+1-tail (clamped to 0).
+        uint32_t latest = msgstore_get_latest_index(store);
+        since_id = (latest + 1 > tail) ? (latest + 1 - tail) : 0;
+        want_epoch = 0;
+        if (limit < tail) limit = tail;
+    }
+
+    const size_t buffer_size = 2048;
+    char *buffer = (char *)malloc(buffer_size);
+    if (!buffer) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    // Same card, same single httpd worker: hold the index writer off for the
+    // length of this read too, even though it is a different store.
+    xprsindex_pause_writes(s_xprs_index, true);
+    size_t len;
+    if (msgstore_ready(store)) {
+        if (want_epoch && want_epoch != msgstore_get_epoch(store)) since_id = 0;
+        msgstore_query_t q = {
+            .since_index = since_id,
+            .call_filter = call[0] ? call : NULL,
+            .kind_filter = kind,
+            .limit = limit,
+            .since_ts = since_ts,
+        };
+        len = msgstore_build_json(store, buffer, buffer_size, &q);
+    } else {
+        len = (size_t)snprintf(buffer, buffer_size,
+            "{\"epoch\":\"?\",\"latest_index\":\"?0\",\"next\":\"?0\","
+            "\"more\":false,\"count\":0,\"messages\":[]}");
+    }
+
+    xprsindex_pause_writes(s_xprs_index, false);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_send(req, buffer, len);
+    free(buffer);
+    return ESP_OK;
+}
+
+/* ---- the LAN bearer: XPRS to and from everyone on the wire -------------- */
+
+/* Heard on the LAN. Keep it, and put it on the BLE air for the stations that
+ * have no network — that is the whole point of a dongle sitting on both. */
+static void tdongle_xprs_from_lan(const char *wire, int len, uint32_t ip)
+{
+    tdongle_radio_busy();          // it arrived on the air, and we may re-air it
+    if (s_xprs_index) {
+        // rssi 0 is the store's "unknown", which a LAN genuinely is.
+        xprsindex_add(s_xprs_index, wire, len, 0, false, (uint32_t)time(NULL));
+    }
+#if FEATURE_BLE
+    ble_hello_air_xprs(wire, len);
+#endif
+    ESP_LOGI(TAG, "XPRS from the LAN (%u.%u.%u.%u): %d B",
+             (unsigned)(ip & 0xFF), (unsigned)((ip >> 8) & 0xFF),
+             (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 24) & 0xFF), len);
+}
+
+/* Heard on the BLE air. Offer it to the LAN, which waits a random moment and
+ * drops it if another station gets there first (see xprslan.h). */
+static void tdongle_xprs_from_ble(const char *wire, int len, int rssi)
+{
+    (void)rssi;
+    tdongle_radio_busy();
+    xprslan_offer(wire, len);
+}
+
+/* This station, on the bearer it is describing (docs/XPRS.md section 10.6).
+ * Built on the bearer's own task — see xprslan_set_beacon(). */
+static int tdongle_xprs_lan_beacon(char *out, int cap)
+{
+    const char *call = nostr_keys_get_callsign();
+    if (!call || !*call) return 0;
+    return snprintf(out, (size_t)cap, "t:observation f:%s link:lan peers:%d",
+                    call, xprslan_peer_count(600));
+}
+
+static esp_err_t tdongle_api_messages_handler(httpd_req_t *req) { return tdongle_archive_query(req, s_msg_store); }
+static esp_err_t tdongle_api_beacons_handler(httpd_req_t *req)  { return tdongle_archive_query(req, s_beacon_store); }
+
+/* ---- GET /api/xprs — the indexer, over HTTP ----------------------------- */
+
+typedef struct {
+    char  *buf;
+    size_t size;
+    size_t len;
+    bool   first;
+    bool   full;
+} tdongle_xq_ctx_t;
+
+/* Writes straight into the response buffer. It used to build the record in two
+ * ~600-byte stack temporaries, which is a quarter of this httpd task's whole
+ * stack on the T-Dongle (5120 B, trimmed to fit the heap) — enough to take the
+ * server down mid-request and leave it accepting connections it never answers. */
+static bool tdongle_xq_emit(const xprsidx_rec_t *r, void *vctx)
+{
+    tdongle_xq_ctx_t *c = (tdongle_xq_ctx_t *)vctx;
+    size_t room = (c->len + 96 < c->size) ? c->size - c->len - 96 : 0;
+    if (room == 0) { c->full = true; return false; }
+
+    int n = snprintf(c->buf + c->len, room,
+        "%s{\"i\":%u,\"ts\":%u,\"rssi\":%d,\"type\":\"%s\",\"from\":\"%s\","
+        "\"mail\":%s,\"wire\":\"",
+        c->first ? "" : ",", (unsigned)r->index, (unsigned)r->ts, (int)r->rssi,
+        xprsidx_type_name(r->type), r->from,
+        (r->flags & XI_F_MAIL) ? "true" : "false");
+    if (n < 0 || (size_t)n >= room) { c->full = true; return false; }
+    size_t len = c->len + (size_t)n;
+
+    /* The packet is text by construction (XPRS.md §4), but a quote or backslash
+     * inside a message field would still break the JSON. */
+    for (const char *w = r->wire; *w; w++) {
+        if (len + 4 >= c->size) { c->full = true; return false; }
+        if (*w == '"' || *w == '\\') c->buf[len++] = '\\';
+        c->buf[len++] = *w;
+    }
+    if (len + 3 >= c->size) { c->full = true; return false; }
+    c->buf[len++] = '"';
+    c->buf[len++] = '}';
+    c->buf[len] = 0;
+
+    c->len = len;
+    c->first = false;
+    return true;
+}
+
+/* GET /api/xprs?type=warning&recent=1&limit=20
+ *              ?since=<epoch>&until=<epoch>&from=X1A67X&asker=X1RD89
+ *
+ * `us` in the reply is the query's own time on the device, so the two questions
+ * this store exists to answer can be measured rather than described.
+ */
+static esp_err_t tdongle_api_xprs_handler(httpd_req_t *req)
+{
+    char query[224] = {0};
+    char param[48];
+    xprsidx_query_t q = { .type = -1 };
+    char from[XPRSIDX_CALL_LEN] = {0}, asker[XPRSIDX_CALL_LEN] = {0};
+    uint32_t days = 0;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "type", param, sizeof(param)) == ESP_OK)
+            q.type = xprsidx_type_code(param);
+        if (httpd_query_key_value(query, "since", param, sizeof(param)) == ESP_OK)
+            q.since_ts = (uint32_t)strtoul(param, NULL, 10);
+        if (httpd_query_key_value(query, "until", param, sizeof(param)) == ESP_OK)
+            q.until_ts = (uint32_t)strtoul(param, NULL, 10);
+        if (httpd_query_key_value(query, "days", param, sizeof(param)) == ESP_OK)
+            days = (uint32_t)strtoul(param, NULL, 10);
+        if (httpd_query_key_value(query, "limit", param, sizeof(param)) == ESP_OK)
+            q.limit = (uint32_t)strtoul(param, NULL, 10);
+        if (httpd_query_key_value(query, "recent", param, sizeof(param)) == ESP_OK)
+            q.newest_first = (param[0] == '1' || param[0] == 't');
+        if (httpd_query_key_value(query, "from", param, sizeof(param)) == ESP_OK)
+            strlcpy(from, param, sizeof from);
+        if (httpd_query_key_value(query, "asker", param, sizeof(param)) == ESP_OK)
+            strlcpy(asker, param, sizeof asker);
+    }
+    if (days > 0) {
+        time_t nowt = time(NULL);
+        if (nowt > 1600000000) q.since_ts = (uint32_t)nowt - days * 86400u;
+    }
+    q.from  = from[0]  ? from  : NULL;
+    q.asker = asker[0] ? asker : NULL;
+    if (q.limit == 0 || q.limit > 200) q.limit = (q.limit > 200) ? 200 : 30;
+
+    /* 3 KB, like the APRS archive handler above: this S3 has no PSRAM and an
+     * 8 KB request-time malloc fails once WiFi, BLE and FATFS have taken their
+     * share of the heap. A packet is at most 250 B, so this still carries a
+     * useful page; `truncated` tells the client to narrow. */
+    const size_t buffer_size = 3072;
+    char *buffer = (char *)malloc(buffer_size);
+    if (!buffer) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_FAIL;
+    }
+
+    xprsidx_stats_t st;
+    xprsindex_stats(s_xprs_index, &st);
+
+    tdongle_xq_ctx_t ctx = { .buf = buffer, .size = buffer_size, .len = 0,
+                             .first = true, .full = false };
+    ctx.len = (size_t)snprintf(buffer, buffer_size,
+        "{\"epoch\":\"%c\",\"count\":%u,\"segments\":%u,\"free_bytes\":%llu,"
+        "\"recs\":[",
+        st.epoch, (unsigned)st.count, (unsigned)st.segments,
+        (unsigned long long)st.free_bytes);
+
+    // Take the card for the read, then give it straight back. The writer keeps
+    // accepting records into RAM meanwhile; only its SD access waits.
+    xprsindex_pause_writes(s_xprs_index, true);
+    int64_t t0 = esp_timer_get_time();
+    size_t n = s_xprs_index ? xprsindex_query(s_xprs_index, &q, tdongle_xq_emit, &ctx) : 0;
+    int64_t us = esp_timer_get_time() - t0;
+    xprsindex_pause_writes(s_xprs_index, false);
+
+    int m = snprintf(buffer + ctx.len, buffer_size - ctx.len,
+                     "],\"n\":%u,\"truncated\":%s,\"us\":%u}",
+                     (unsigned)n, ctx.full ? "true" : "false", (unsigned)us);
+    if (m > 0) ctx.len += (size_t)m;
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_send(req, buffer, ctx.len);
+    free(buffer);
+    return ESP_OK;
+}
+
+/* POST /api/igate/position?lat=&lon=&radius_km= — set + persist the iGate
+ * coordinates and nearby radius (lat=0&lon=0 clears the position filter). */
+static esp_err_t tdongle_igate_position_handler(httpd_req_t *req)
+{
+    char query[128] = {0};
+    char param[32];
+    double lat = 0, lon = 0; int radius = 0;
+    bool have_lat = false, have_lon = false;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "lat", param, sizeof(param)) == ESP_OK) { lat = atof(param); have_lat = true; }
+        if (httpd_query_key_value(query, "lon", param, sizeof(param)) == ESP_OK) { lon = atof(param); have_lon = true; }
+        if (httpd_query_key_value(query, "radius_km", param, sizeof(param)) == ESP_OK) radius = atoi(param);
+    }
+    if (!have_lat || !have_lon) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "lat and lon required");
+        return ESP_FAIL;
+    }
+    aprsis_set_position(lat, lon, radius);
+    tdongle_save_igate_position(lat, lon, radius);
+    double rlat = 0, rlon = 0; int rrad = 0; bool hp = false;
+    aprsis_get_position(&rlat, &rlon, &rrad, &hp);
+    char buf[160];
+    int n = snprintf(buf, sizeof buf,
+        "{\"ok\":true,\"have_position\":%s,\"lat\":%.5f,\"lon\":%.5f,\"radius_km\":%d}",
+        hp ? "true" : "false", rlat, rlon, rrad);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
+static void tdongle_register_igate_status(void)
+{
+    httpd_handle_t srv = http_server_get_handle();
+    if (!srv) { ESP_LOGW(TAG, "igate endpoints: no httpd handle"); return; }
+    static const httpd_uri_t u_status = { .uri = "/api/igate", .method = HTTP_GET,
+        .handler = tdongle_igate_status_handler, .user_ctx = NULL };
+    static const httpd_uri_t u_pos = { .uri = "/api/igate/position", .method = HTTP_POST,
+        .handler = tdongle_igate_position_handler, .user_ctx = NULL };
+    static const httpd_uri_t u_msgs = { .uri = "/api/aprs", .method = HTTP_GET,
+        .handler = tdongle_api_messages_handler, .user_ctx = NULL };
+    static const httpd_uri_t u_beacons = { .uri = "/api/beacons", .method = HTTP_GET,
+        .handler = tdongle_api_beacons_handler, .user_ctx = NULL };
+    static const httpd_uri_t u_xprs = { .uri = "/api/xprs", .method = HTTP_GET,
+        .handler = tdongle_api_xprs_handler, .user_ctx = NULL };
+    httpd_register_uri_handler(srv, &u_status);
+    httpd_register_uri_handler(srv, &u_pos);
+    httpd_register_uri_handler(srv, &u_msgs);
+    httpd_register_uri_handler(srv, &u_beacons);
+    httpd_register_uri_handler(srv, &u_xprs);
+    ESP_LOGI(TAG, "iGate endpoints registered (/api/igate[/position], /api/aprs, /api/beacons)");
+}
+#endif  /* MODEL_TDONGLE_S3 */
+
+extern "C" void app_main(void)
+{
+    ESP_LOGI(TAG, "=====================================");
+    geogram_log_plain(TAG, "  Offline-First Communication");
+    geogram_log_plain(TAG, "   · · · ·   ───   · ── ·   ·");
+    geogram_log_plain(TAG, "    Wi-Fi  ·  BLE  ·  NOSTR");
+    ESP_LOGI(TAG, "  Geogram Firmware v%s", GEOGRAM_VERSION);
+    ESP_LOGI(TAG, "  Board: %s", BOARD_NAME);
+    ESP_LOGI(TAG, "  Model: %s", MODEL_NAME);
+    ESP_LOGI(TAG, "=====================================");
+
+    // Initialize board-specific hardware
+    esp_err_t ret = model_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Board initialization failed: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ESP_LOGI(TAG, "Board initialized successfully");
+
+#if BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+    // Initialize tile cache if SD card is available
+    if (sdcard_is_mounted()) {
+        ret = tiles_init();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Tile cache initialized");
+        } else {
+            ESP_LOGW(TAG, "Tile cache init failed: %s", esp_err_to_name(ret));
+        }
+
+        // Initialize update mirror service
+        ret = updates_init();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Update mirror service initialized");
+        } else {
+            ESP_LOGW(TAG, "Update mirror init failed: %s", esp_err_to_name(ret));
+        }
+    }
+#endif
+
+    // Initialize console: registers esp_console + commands (used by the telnet
+    // network console) and, unless FEATURE_CONSOLE==0, starts the local serial
+    // REPL. The REPL is gated off on the headless T-Dongle iGate (see console.c).
+    ret = console_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize console: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Serial console initialized");
+    }
+
+#if BOARD_MODEL == MODEL_ESP32C3_MINI
+    // Ensure station identity is available for BLE handshakes.
+    station_init();
+
+    ret = geogram_ble_init();
+    if (ret == ESP_OK) {
+        geogram_ble_start();
+        ESP_LOGI(TAG, "BLE service initialized");
+    } else if (ret == ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG, "BLE is disabled in this firmware configuration");
+    } else {
+        ESP_LOGW(TAG, "BLE init failed: %s", esp_err_to_name(ret));
+    }
+#elif BOARD_MODEL == MODEL_KV4P
+    // KV4P: station init (BLE observer+broadcaster added after HTTP server)
+    station_init();
+#elif BOARD_MODEL == MODEL_TDONGLE_S3
+    // T-Dongle-S3: display + BLE HELLO + WiFi AP + captive portal
+    {
+        st7735_handle_t lcd = model_get_lcd();
+        if (lcd) {
+            ret = tdongle_ui_init(lcd);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "T-Dongle LCD UI started");
+            } else {
+                ESP_LOGW(TAG, "T-Dongle UI init failed: %s", esp_err_to_name(ret));
+            }
+        }
+
+        // Init nostr keys (for callsign). BLE HELLO is started LATER — only after
+        // WiFi has finished connecting — because WiFi and BLE share one 2.4 GHz
+        // radio and an active BLE scan/advertise starves the WPA2 4-way handshake
+        // and DHCP (the STA then fails to authenticate / never gets an IP).
+        nostr_keys_init();
+        const char *callsign = nostr_keys_get_callsign();
+        TDONGLE_LOG_HEAP("after nostr init");
+
+        // Start WiFi AP (same pattern as KV4P standalone mode)
+        ret = geogram_wifi_init();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "T-Dongle WiFi init failed: %s", esp_err_to_name(ret));
+        } else {
+            geogram_wifi_ap_config_t ap_config = {};
+            strncpy(ap_config.ssid, "geogram", sizeof(ap_config.ssid) - 1);
+            ap_config.password[0] = '\0';  // Open network
+            ap_config.channel = 1;
+            ap_config.max_connections = 4;
+            ap_config.callback = tdongle_wifi_event_cb;
+
+            ret = geogram_wifi_start_ap(&ap_config);
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "WiFi AP started: geogram (open)");
+                tdongle_ui_set_ip("192.168.4.1");
+                // No WiFi power-save: with BLE sharing the radio, modem sleep made
+                // the STA miss beacons (bcn_timeout) and drop. Keep WiFi awake.
+                esp_wifi_set_ps(WIFI_PS_NONE);
+                TDONGLE_LOG_HEAP("after WiFi AP/STA setup");
+
+                // Auto-connect STA: prefer captive-portal/console-saved
+                // credentials; otherwise fall back to the operator's
+                // configured home network so the iGate has internet out of
+                // the box. (Captive portal / `wifi_connect` still override.)
+                {
+                    char saved_ssid[33] = {0};
+                    char saved_pass[65] = {0};
+                    bool have_saved =
+                        geogram_wifi_load_credentials(saved_ssid, saved_pass) == ESP_OK
+                        && strlen(saved_ssid) > 0;
+                    const char *sta_ssid = have_saved ? saved_ssid : TDONGLE_DEFAULT_WIFI_SSID;
+                    const char *sta_pass = have_saved ? saved_pass : TDONGLE_DEFAULT_WIFI_PASS;
+                    if (sta_ssid[0]) {
+                        ESP_LOGI(TAG, "Will connect to WiFi in 5 s: %s (%s)",
+                                 sta_ssid, have_saved ? "saved" : "default");
+                        vTaskDelay(pdMS_TO_TICKS(5000));
+                        ESP_LOGI(TAG, "Connecting to WiFi: %s", sta_ssid);
+                        geogram_wifi_connect_sta(sta_ssid, sta_pass);
+                    }
+                }
+
+                // DNS server for captive portal
+                uint32_t ap_ip = 0;
+                if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+                    dns_server_start(ap_ip);
+                }
+
+                // HTTP server with WiFi config UI
+                station_init();
+                http_server_start_ex(tdongle_wifi_config_received, true);
+                ESP_LOGI(TAG, "HTTP server + captive portal started");
+                TDONGLE_LOG_HEAP("after httpd start");
+
+                // Give WiFi the radio to itself to finish connecting (auth +
+                // DHCP) before starting BLE — the two share one 2.4 GHz radio and
+                // an active BLE scan/advertise starves the handshake/DHCP. Wait up
+                // to 30 s for an IP; if WiFi can't connect (wrong creds / out of
+                // range), start BLE anyway so the device stays useful over BLE and
+                // the captive portal remains reachable.
+                {
+                    // Keep BLE OFF and the AP UP until the STA actually gets an
+                    // IP, so the (RF-marginal, multi-retry) connect happens with
+                    // the radio to itself, and the AP is dropped the instant it
+                    // succeeds — the device then runs STA+BLE, which is stable.
+                    // Long cap so a slow connect still lands inside this window;
+                    // if WiFi truly can't connect, start BLE anyway (keep AP).
+                    int waited = 0;
+                    while (geogram_wifi_get_status() != GEOGRAM_WIFI_STATUS_GOT_IP
+                           && waited < 180000) {
+                        vTaskDelay(pdMS_TO_TICKS(500));
+                        waited += 500;
+                    }
+                    if (geogram_wifi_get_status() == GEOGRAM_WIFI_STATUS_GOT_IP) {
+                        ESP_LOGI(TAG, "WiFi connected — dropping SoftAP, mounting SD");
+                        // On the LAN now: drop the SoftAP (keep STA) so only STA +
+                        // BLE share the radio — far more stable than AP+STA+BLE.
+                        // The captive portal is only needed before connecting.
+                        geogram_wifi_disable_ap_keep_sta();
+#if HAS_SDCARD
+                        // Mount the SD store ONLY NOW — the SDMMC bus desensitises
+                        // the 2.4 GHz radio, so keeping it idle until the WiFi
+                        // handshake/DHCP are done lets the STA connect reliably.
+                        // (Confirmed: with SD init skipped, WiFi connects instantly.)
+                        if (sdcard_init() == ESP_OK) {
+                            ESP_LOGI(TAG, "SD card mounted (%.2f GB) — APRS log enabled",
+                                     sdcard_get_capacity_gb());
+                            // Two independent archives: live/addressed text messages
+                            // and automated position beacons.
+                            s_msg_store    = msgstore_open("/sdcard/aprs/msg");
+                            s_beacon_store = msgstore_open("/sdcard/aprs/beacon");
+                            aprsis_set_stores(s_msg_store, s_beacon_store);
+                            ble_hello_set_msgstore(s_msg_store);
+                            // Indexer (docs/XPRS.md §36), on by default and
+                            // alongside store-and-forward: every XPRS packet
+                            // heard is kept here and answerable. Its own
+                            // directory and epoch — the APRS archives above
+                            // keep their record shape and their clients.
+                            s_xprs_index = xprsindex_open("/sdcard/xprs");
+                            if (xprsindex_ready(s_xprs_index)) {
+                                ble_hello_set_xprsindex(s_xprs_index);
+                                xprsidx_stats_t xs;
+                                xprsindex_stats(s_xprs_index, &xs);
+                                ESP_LOGI(TAG, "XPRS indexer ready — %u records, "
+                                              "epoch %c, %u segments",
+                                         (unsigned)xs.count, xs.epoch,
+                                         (unsigned)xs.segments);
+                            } else {
+                                ESP_LOGW(TAG, "XPRS indexer unavailable — "
+                                              "packets are relayed, none kept");
+                            }
+#ifdef XPRSIDX_BENCH
+                            // -DXPRSIDX_BENCH only: fill the store and time the
+                            // two headline queries on real SD hardware. Never
+                            // in a shipped build (see xprsindex.h).
+                            xprsindex_bench(s_xprs_index, XPRSIDX_BENCH);
+#endif
+                        } else {
+                            ESP_LOGW(TAG, "No usable SD card — APRS persistence disabled");
+                        }
+#endif
+                    } else {
+                        ESP_LOGW(TAG, "WiFi not up after %d ms — keeping AP (portal), "
+                                      "starting BLE anyway (SD left unmounted)", waited);
+                    }
+                }
+
+                // BLE HELLO — started only now (after WiFi). Radio is shared, so
+                // bias coex BALANCED so a later WiFi reconnect can still handshake.
+#if FEATURE_BLE
+                ret = ble_hello_init(callsign);
+                if (ret == ESP_OK) {
+                    ESP_LOGI(TAG, "BLE HELLO active — callsign: %s", callsign);
+                    ble_hello_set_aprs_cb(tdongle_aprs_rx);
+                    ble_hello_set_xprs_cb(tdongle_xprs_from_ble);
+                    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+                } else {
+                    ESP_LOGW(TAG, "BLE HELLO init failed: %s", esp_err_to_name(ret));
+                }
+                TDONGLE_LOG_HEAP("after BLE init");
+#else
+                ESP_LOGW(TAG, "[FEATURE_BLE=0] BLE HELLO disabled for diagnostics");
+#endif
+
+                // XPRS on the LAN (docs/lan.md): broadcast to and from everyone
+                // on this network, on its own UDP port. Not Reticulum and not
+                // the internet — it never leaves the wire it is attached to.
+                // Started whatever WiFi ended up doing: with only the SoftAP
+                // up, the stations joining it are still a local network.
+                if (xprslan_start(callsign) == ESP_OK) {
+                    xprslan_set_rx_cb(tdongle_xprs_from_lan);
+                    // Say we are here 20 s in (DHCP done by then), and every
+                    // 5 minutes after. It runs on the bearer's task, not an
+                    // esp_timer: building a beacon derives a SHA-256 identifier
+                    // and the timer task's stack is not sized for that.
+                    xprslan_set_beacon(tdongle_xprs_lan_beacon, 300, 20);
+                    ESP_LOGI(TAG, "XPRS LAN bearer up on UDP %d", XPRSLAN_PORT);
+                } else {
+                    ESP_LOGW(TAG, "XPRS LAN bearer failed to start");
+                }
+
+                // 3 KB. It only formats one line a quarter-minute, but ESP_LOG
+                // with ten arguments is most of that line's cost and 2 KB
+                // overflowed — the diagnostic must never be what crashes it.
+                xTaskCreatePinnedToCore(tdongle_heartbeat_task, "heartbeat",
+                                        3072, NULL, 1, NULL, 1);
+
+                // APRS-IS iGate: bridges APRS-IS <-> BLE once WiFi is up.
+                // Coordinates default undefined (no GPS) so only messages to
+                // BLE-heard callsigns are gated; set TDONGLE_DEFAULT_LAT/LON
+                // or call aprsis_set_position() to also gate nearby traffic.
+#if FEATURE_APRSIS
+                ret = aprsis_init(callsign);
+                if (ret == ESP_OK) {
+                    // Bridge the iGate to this firmware's legacy-BLE link (heard
+                    // registry + relay). The rns_ble5 dongle sets BLE5 hooks
+                    // instead — aprsis itself no longer depends on ble_hello.
+                    aprsis_set_ble_hooks(ble_hello_get_heard, ble_hello_relay_aprs);
+                    ESP_LOGI(TAG, "APRS-IS iGate started for %s", callsign);
+#if defined(TDONGLE_DEFAULT_LAT) && defined(TDONGLE_DEFAULT_LON)
+#ifndef TDONGLE_DEFAULT_RADIUS_KM
+#define TDONGLE_DEFAULT_RADIUS_KM 50
+#endif
+                    aprsis_set_position(TDONGLE_DEFAULT_LAT, TDONGLE_DEFAULT_LON,
+                                        TDONGLE_DEFAULT_RADIUS_KM);
+#endif
+                    // Runtime position/radius (POST /api/igate/position) overrides
+                    // the build-time default and persists across reboots.
+                    tdongle_load_igate_position();
+                    // Share the configured position with the BLE ping responder
+                    // so its ?PONG replies carry coordinates.
+                    {
+                        double plat = 0, plon = 0; int prad = 0; bool phave = false;
+                        aprsis_get_position(&plat, &plon, &prad, &phave);
+                        if (phave) ble_hello_set_position(plat, plon);
+                    }
+                    // Expose the live APRS-IS connection state on /api/device.
+                    station_set_aprsis_status_cb(aprsis_is_connected);
+                } else {
+                    ESP_LOGW(TAG, "APRS-IS iGate init failed: %s", esp_err_to_name(ret));
+                }
+#else
+                ESP_LOGW(TAG, "[FEATURE_APRSIS=0] APRS-IS iGate disabled for diagnostics");
+#endif
+                tdongle_register_igate_status();
+            } else {
+                ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(ret));
+            }
+        }
+    }
+#endif
+
+#ifdef CONFIG_GEOGRAM_MESH_ENABLED
+    geogram_log_plain(TAG, "Mesh support: ENABLED");
+#else
+    geogram_log_plain(TAG, "Mesh support: DISABLED in this build");
+#endif
+
+#if defined(CONFIG_GEOGRAM_MESH_ENABLED) && (BOARD_MODEL == MODEL_ESP32C3_MINI)
+    geogram_log_plain(TAG, "Starting mesh mode by default");
+    start_mesh_mode();
+#endif
+
+#if defined(CONFIG_GEOGRAM_MESH_ENABLED) && (BOARD_MODEL == MODEL_KV4P)
+    geogram_log_plain(TAG, "KV4P: mesh auto-start disabled (using standalone AP mode)");
+#endif
+
+#if defined(CONFIG_GEOGRAM_MESH_ENABLED) && (BOARD_MODEL == MODEL_TDONGLE_S3)
+#if FEATURE_MESH
+    geogram_log_plain(TAG, "Starting mesh mode on T-Dongle-S3");
+    start_mesh_mode();
+#else
+    geogram_log_plain(TAG, "[FEATURE_MESH=0] mesh mode disabled for diagnostics");
+#endif
+#endif
+
+#if BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+    // Get hardware handles
+    epaper_1in54_handle_t display = model_get_display();
+    shtc3_handle_t env_sensor = model_get_env_sensor();
+    pcf85063_handle_t rtc = model_get_rtc();
+
+    // Store handles for callbacks
+    s_rtc_handle = rtc;
+    s_display_handle = display;
+
+    if (display == NULL) {
+        ESP_LOGE(TAG, "Failed to get display handle");
+        return;
+    }
+
+    // Initialize power button for shutdown on long press
+    button_config_t pwr_btn_config = {
+        .gpio = BTN_PIN_POWER,
+        .active_low = true,
+        .debounce_ms = 30,
+        .long_press_ms = 2000,  // 2 second long press for shutdown
+    };
+    ret = button_create(&pwr_btn_config, power_button_callback, NULL, &s_power_button);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to create power button: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Power button initialized (long press to shutdown)");
+    }
+
+    ESP_LOGI(TAG, "E-paper display: %dx%d",
+             epaper_1in54_get_width(display),
+             epaper_1in54_get_height(display));
+
+    // Initialize LVGL with e-paper display
+    ret = lvgl_port_init(display);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize LVGL: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    // Initialize UI
+    ret = geogram_ui_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize UI: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    // Initial display refresh
+    geogram_ui_show_status("Starting...");
+    geogram_ui_refresh(true);  // Full refresh on startup
+
+    // Initialize NOSTR keys early (needed for AP SSID with callsign)
+    ret = nostr_keys_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize NOSTR keys: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Station callsign: %s", nostr_keys_get_callsign());
+    }
+
+    // Initialize WiFi
+    ret = geogram_wifi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
+        geogram_ui_show_status("WiFi Init Failed");
+        geogram_ui_refresh(false);
+    } else {
+        // Try to connect with saved credentials, otherwise start AP mode
+        if (!try_saved_credentials()) {
+            start_ap_mode();
+        }
+    }
+
+    // Start sensor reading task
+    if (env_sensor != NULL) {
+        xTaskCreate(sensor_task, "sensor_task", 4096, env_sensor, 5, NULL);
+    }
+
+    // Start RTC update task
+    if (rtc != NULL) {
+        xTaskCreate(rtc_task, "rtc_task", 2048, rtc, 4, NULL);
+    }
+
+#endif  // BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+
+#if ((BOARD_MODEL == MODEL_ESP32C3_MINI) && !defined(CONFIG_GEOGRAM_MESH_ENABLED)) || (BOARD_MODEL == MODEL_KV4P)
+    // Standalone WiFi AP mode for KV4P and for minimal ESP32 boards when mesh
+    // is disabled. KV4P mesh disconnect event kills the HTTP server, making
+    // the device unreachable — keep KV4P in standalone AP+STA mode.
+
+    // Initialize NOSTR keys (needed for AP SSID with callsign)
+    ret = nostr_keys_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize NOSTR keys: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Station callsign: %s", nostr_keys_get_callsign());
+    }
+
+    // Initialize WiFi
+    ret = geogram_wifi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
+#if HAS_LED
+        led_set_state(LED_STATE_ERROR);
+#endif
+    } else {
+        // Start WiFi AP mode
+        geogram_wifi_ap_config_t ap_config = {};
+        strncpy(ap_config.ssid, "geogram", sizeof(ap_config.ssid) - 1);
+        ap_config.password[0] = '\0';  // Open network
+        ap_config.channel = 1;
+        ap_config.max_connections = 4;
+        ap_config.callback = NULL;
+
+        ret = geogram_wifi_start_ap(&ap_config);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "WiFi AP started: geogram");
+
+            // Try to auto-connect STA with saved WiFi credentials.
+            // Delay 5 s so the AP and DHCP server are fully stable before STA
+            // scanning disrupts the radio.
+            {
+                char saved_ssid[33] = {0};
+                char saved_pass[65] = {0};
+                if (geogram_wifi_load_credentials(saved_ssid, saved_pass) == ESP_OK
+                    && strlen(saved_ssid) > 0) {
+                    ESP_LOGI(TAG, "Will auto-connect to saved WiFi in 5 s: %s", saved_ssid);
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+                    ESP_LOGI(TAG, "Auto-connecting to saved WiFi: %s", saved_ssid);
+                    geogram_wifi_connect_sta(saved_ssid, saved_pass);
+                }
+            }
+
+            // Start DNS server for captive portal
+            uint32_t ap_ip = 0;
+            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+                dns_server_start(ap_ip);
+            }
+
+            // Initialize Station API and HTTP server
+            station_init();
+            http_server_start_ex(NULL, true);
+            ESP_LOGI(TAG, "HTTP server started");
+
+            // BlueAPRS: observer+broadcaster BLE (no GATT, no connections)
+            ESP_LOGI(TAG, "Free heap before BlueAPRS: %lu",
+                     (unsigned long)esp_get_free_heap_size());
+            {
+                esp_err_t ble_ret = ble_aprs_init(kv4p_ble_aprs_rx, NULL);
+                if (ble_ret == ESP_OK) {
+                    aprs_store_set_rx_notify(kv4p_aprs_to_ble, NULL);
+                    ESP_LOGI(TAG, "BlueAPRS active (free heap: %lu)",
+                             (unsigned long)esp_get_free_heap_size());
+                } else {
+                    ESP_LOGW(TAG, "BlueAPRS failed: %s (continuing without)",
+                             esp_err_to_name(ble_ret));
+                }
+            }
+
+            // Telnet disabled on KV4P — heap too tight with BLE+WiFi APSTA+APRS
+            ESP_LOGI(TAG, "Telnet disabled on KV4P (use serial console)");
+
+#if HAS_LED
+            led_set_state(LED_STATE_OK);
+#endif
+        } else {
+            ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(ret));
+#if HAS_LED
+            led_set_state(LED_STATE_ERROR);
+#endif
+        }
+    }
+#endif  // Minimal ESP32 boards and !CONFIG_GEOGRAM_MESH_ENABLED
+
+#if BOARD_MODEL == MODEL_HELTEC_V3
+    // Heltec V3: OLED display + SX1262 LoRa + WiFi AP
+
+    // Get device handles
+    ssd1306_handle_t display = model_get_display();
+    sx1262_handle_t lora = model_get_lora();
+
+    // Show boot splash on OLED
+    if (display) {
+        ssd1306_clear(display);
+        ssd1306_draw_string(display, 16, 0, "== GEOGRAM ==", true);
+        ssd1306_draw_string(display, 22, 12, "v" GEOGRAM_VERSION, true);
+        ssd1306_draw_string(display, 0, 28, BOARD_NAME, true);
+        if (lora) {
+            ssd1306_draw_string(display, 0, 40, "LoRa: OK", true);
+        } else {
+            ssd1306_draw_string(display, 0, 40, "LoRa: FAIL", true);
+        }
+        ssd1306_draw_string(display, 0, 52, "Starting WiFi...", true);
+        ssd1306_display(display);
+    }
+
+    // Brief LED flash to indicate boot
+    model_led_on();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    model_led_off();
+
+    // Initialize NOSTR keys (needed for AP SSID with callsign)
+    ret = nostr_keys_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize NOSTR keys: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Station callsign: %s", nostr_keys_get_callsign());
+    }
+
+    // Initialize WiFi
+    ret = geogram_wifi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
+        if (display) {
+            ssd1306_clear(display);
+            ssd1306_draw_string(display, 0, 28, "WiFi FAILED", true);
+            ssd1306_display(display);
+        }
+    } else {
+        // Build SSID with callsign
+        char ap_ssid[32];
+        const char *callsign = nostr_keys_get_callsign();
+        if (callsign && strlen(callsign) > 0) {
+            snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+        } else {
+            snprintf(ap_ssid, sizeof(ap_ssid), "geogram");
+        }
+
+        // Start WiFi AP mode
+        geogram_wifi_ap_config_t ap_config = {};
+        strncpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid) - 1);
+        ap_config.password[0] = '\0';
+        ap_config.channel = 1;
+        ap_config.max_connections = 4;
+        ap_config.callback = NULL;
+
+        ret = geogram_wifi_start_ap(&ap_config);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "WiFi AP started: %s", ap_ssid);
+
+            // Start DNS server for captive portal
+            uint32_t ap_ip = 0;
+            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+                dns_server_start(ap_ip);
+            }
+
+            // Initialize Station API and HTTP server
+            station_init();
+            http_server_start_ex(NULL, true);
+            ESP_LOGI(TAG, "HTTP server started");
+
+            // Start Telnet server
+            if (telnet_server_start(TELNET_DEFAULT_PORT) == ESP_OK) {
+                ESP_LOGI(TAG, "Telnet server started on port %d", TELNET_DEFAULT_PORT);
+            }
+
+            // Update OLED with connection info
+            if (display) {
+                char ip_str[16];
+                geogram_wifi_get_ap_ip(ip_str);
+
+                ssd1306_clear(display);
+                ssd1306_draw_string(display, 0, 0, "== GEOGRAM ==", true);
+                ssd1306_draw_string(display, 0, 12, ap_ssid, true);
+                ssd1306_draw_string(display, 0, 24, ip_str, true);
+                if (lora) {
+                    ssd1306_draw_string(display, 0, 40, "LoRa: Ready", true);
+                }
+                ssd1306_draw_string(display, 0, 52, "v" GEOGRAM_VERSION, true);
+                ssd1306_display(display);
+            }
+
+            model_led_on();  // LED on = system ready
+        } else {
+            ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(ret));
+        }
+    }
+#endif  // BOARD_MODEL == MODEL_HELTEC_V3
+
+#if BOARD_MODEL == MODEL_HELTEC_V2 || BOARD_MODEL == MODEL_HELTEC_V1
+    // Heltec V1/V2: OLED display + SX1276 LoRa + WiFi AP
+
+    // Get device handles
+    ssd1306_handle_t display = model_get_display();
+    sx1276_handle_t lora = model_get_lora();
+
+    // Show boot splash on OLED
+    if (display) {
+        ssd1306_clear(display);
+        ssd1306_draw_string(display, 16, 0, "== GEOGRAM ==", true);
+        ssd1306_draw_string(display, 22, 12, "v" GEOGRAM_VERSION, true);
+        ssd1306_draw_string(display, 0, 28, BOARD_NAME, true);
+        if (lora) {
+            ssd1306_draw_string(display, 0, 40, "LoRa: OK", true);
+        } else {
+            ssd1306_draw_string(display, 0, 40, "LoRa: FAIL", true);
+        }
+        ssd1306_draw_string(display, 0, 52, "Starting WiFi...", true);
+        ssd1306_display(display);
+    }
+
+    // Brief LED flash to indicate boot
+    model_led_on();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    model_led_off();
+
+    // Initialize NOSTR keys (needed for AP SSID with callsign)
+    ret = nostr_keys_init();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to initialize NOSTR keys: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Station callsign: %s", nostr_keys_get_callsign());
+    }
+
+    // Initialize WiFi
+    ret = geogram_wifi_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
+        if (display) {
+            ssd1306_clear(display);
+            ssd1306_draw_string(display, 0, 28, "WiFi FAILED", true);
+            ssd1306_display(display);
+        }
+    } else {
+        // Build SSID with callsign
+        char ap_ssid[32];
+        const char *callsign = nostr_keys_get_callsign();
+        if (callsign && strlen(callsign) > 0) {
+            snprintf(ap_ssid, sizeof(ap_ssid), "geogram-%s", callsign);
+        } else {
+            snprintf(ap_ssid, sizeof(ap_ssid), "geogram");
+        }
+
+        // Start WiFi AP mode
+        geogram_wifi_ap_config_t ap_config = {};
+        strncpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid) - 1);
+        ap_config.password[0] = '\0';
+        ap_config.channel = 1;
+        ap_config.max_connections = 4;
+        ap_config.callback = NULL;
+
+        ret = geogram_wifi_start_ap(&ap_config);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "WiFi AP started: %s", ap_ssid);
+
+            // Start DNS server for captive portal
+            uint32_t ap_ip = 0;
+            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+                dns_server_start(ap_ip);
+            }
+
+            // Initialize Station API and HTTP server
+            station_init();
+            http_server_start_ex(NULL, true);
+            ESP_LOGI(TAG, "HTTP server started");
+
+            // Start Telnet server
+            if (telnet_server_start(TELNET_DEFAULT_PORT) == ESP_OK) {
+                ESP_LOGI(TAG, "Telnet server started on port %d", TELNET_DEFAULT_PORT);
+            }
+
+            // Update OLED with connection info
+            if (display) {
+                char ip_str[16];
+                geogram_wifi_get_ap_ip(ip_str);
+
+                ssd1306_clear(display);
+                ssd1306_draw_string(display, 0, 0, "== GEOGRAM ==", true);
+                ssd1306_draw_string(display, 0, 12, ap_ssid, true);
+                ssd1306_draw_string(display, 0, 24, ip_str, true);
+                if (lora) {
+                    ssd1306_draw_string(display, 0, 40, "LoRa: Ready", true);
+                }
+                ssd1306_draw_string(display, 0, 52, "v" GEOGRAM_VERSION, true);
+                ssd1306_display(display);
+            }
+
+            model_led_on();  // LED on = system ready
+        } else {
+            ESP_LOGE(TAG, "Failed to start WiFi AP: %s", esp_err_to_name(ret));
+        }
+    }
+#endif  // BOARD_MODEL == MODEL_HELTEC_V2 || MODEL_HELTEC_V1
+
+    // Main loop
+    ESP_LOGI(TAG, "Entering main loop...");
+
+#if BOARD_MODEL == MODEL_TDONGLE_S3
+    // T-Dongle-S3: main loop drives display + polls BLE device count
+    {
+        uint32_t last_count_ms = 0;
+        uint32_t last_igate_ms = 0;
+        while (1) {
+            tdongle_ui_update();
+
+            uint32_t now_ms = esp_log_timestamp();
+            // Update device count on display every ~5 seconds
+            if (now_ms - last_count_ms > 5000) {
+                tdongle_ui_set_device_count(ble_hello_device_count());
+                last_count_ms = now_ms;
+            }
+            // Announce ourselves as an iGate over BLE every ~2 min while online,
+            // so BLE-local stations know to pull their mail (?MAIL).
+            if (now_ms - last_igate_ms > 120000) {
+                last_igate_ms = now_ms;
+                if (aprsis_is_connected())
+                    ble_hello_broadcast(nostr_keys_get_callsign(), "?IGATE", "");
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    }
+#else
+    while (1) {
+#if BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
+        // Check for shutdown request (from power button long press)
+        if (s_shutdown_requested) {
+            s_shutdown_requested = false;
+            device_shutdown();
+            // If we get here, deep sleep failed - reset the flag
+        }
+#endif
+        vTaskDelay(pdMS_TO_TICKS(100));  // Check more frequently for responsiveness
+    }
+#endif
+}
