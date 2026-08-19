@@ -57,6 +57,7 @@ static char s_pass[64];
 #include "ili9342.h"
 #include "xprs_ui.h"
 #include "xprs_config.h"
+#include "xprs_api.h"
 #include "xprsindex.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
@@ -145,16 +146,28 @@ static volatile int s_logring_w, s_logring_r;
 static portMUX_TYPE s_logring_mux = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t s_log_orig;
 
+static uint32_t epoch_now(void);
+
 static int log_hook(const char *fmt, va_list ap)
 {
     va_list ap2;
     va_copy(ap2, ap);
     int out = s_log_orig ? s_log_orig(fmt, ap) : vprintf(fmt, ap);
 
-    char line[160];
-    int n = vsnprintf(line, sizeof line, fmt, ap2);
+    /* Stamp the line: epoch seconds under a synced clock, +ms-since-boot
+     * before that -- what makes /api/log machine readable (API-HTTP.md). */
+    char line[176];
+    int n;
+    uint32_t ep = epoch_now();
+    if (ep)
+        n = snprintf(line, sizeof line, "%lu ", (unsigned long)ep);
+    else
+        n = snprintf(line, sizeof line, "+%lu ",
+                     (unsigned long)(esp_timer_get_time() / 1000));
+    int m = vsnprintf(line + n, sizeof line - n, fmt, ap2);
     va_end(ap2);
-    if (n <= 0) return out;
+    if (m <= 0) return out;
+    n += m;
     if (n >= (int)sizeof line) {
         /* Truncated: the newline went with the tail. Put one back or the
          * next entry glues itself onto this line in the file. */
@@ -238,6 +251,7 @@ static volatile int s_idxq_w, s_idxq_r;   /* single writer set, single reader */
 static uint32_t s_idxq_dropped;
 
 static xprsidx_t *s_index;
+static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it */
 
 /* One pending history ask; a second one arriving while busy is dropped --
  * one replay in flight protects the channel (31.4). */
@@ -1421,6 +1435,7 @@ static void idx_task(void *arg)
     if (err == ESP_OK) {
         s_index = xprsindex_open("/idx/xprs");
         if (s_index) {
+            s_api_cfg.index = s_index;
             xprsindex_set_verifier(s_index, index_verifier);
             xprsidx_stats_t st;
             xprsindex_stats(s_index, &st);
@@ -1543,6 +1558,52 @@ static void settings_ok(int row)
         break;
     }
 }
+
+/* ── The HTTP API (spec/API-HTTP.md) ─────────────────────────────────────── */
+
+/* Air one already-validated wire on both bearers, and spool it as our own
+ * outgoing traffic (section 36.5: the author must be able to replay the
+ * author). Cheap: a UDP send and an ESP-NOW enqueue; no flash here. */
+static bool api_send_wire(const char *wire, int len)
+{
+    bool lan = xprslan_send(wire, len);
+    bool now = xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
+    if ((lan || now) && s_index && xcfg_get_bool("index_on", true))
+        xprsindex_add(s_index, wire, len, 0, true, (uint32_t)time(NULL));
+    return lan || now;
+}
+
+static int api_serve_json(char *buf, size_t cap)
+{
+    if (!s_index || !xcfg_get_bool("index_on", true)) {
+        buf[0] = 0;
+        return 0;
+    }
+    return snprintf(buf, cap, "\"index\",\"history\",\"mailbox\"");
+}
+
+static int api_features_json(char *buf, size_t cap)
+{
+    return snprintf(buf, cap,
+        "\"digipeater\":%s,\"bridge\":%s,\"igate\":%s,\"indexer\":%s,"
+        "\"share\":%s",
+        xcfg_get_bool("digi_on", false) ? "true" : "false",
+        xcfg_get_bool("bridge_on", true) ? "true" : "false",
+        xcfg_get_bool("igate_on", true) ? "true" : "false",
+        xcfg_get_bool("index_on", true) ? "true" : "false",
+        xcfg_share_running() ? "true" : "false");
+}
+
+static xprs_api_cfg_t s_api_cfg = {
+    .app = "xprs-esp32",
+    .board = "m5stack-core",
+    .send_wire = api_send_wire,
+    .serve_json = api_serve_json,
+    .features_json = api_features_json,
+    .log_cur = "/idx/log/cur.txt",
+    .log_prev = "/idx/log/prev.txt",
+    .tz = "+00:00",
+};
 
 /* Bridge the generic UI's flush callback onto this board's panel driver. */
 static void lcd_flush_adapter(int x1, int y1, int x2, int y2,
@@ -1856,6 +1917,13 @@ void app_main(void)
                  lcd) == ESP_OK) {
         if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
             ESP_LOGE(TAG, "UI task failed to start");
+        /* The API is the station's LAN face (spec/API-HTTP.md): always on
+         * when the network is. The config share joins the same server so
+         * its toggle opens and closes doors, not servers. */
+        s_api_cfg.callsign = s_call;
+        if (xcfg_get_bool("wifi_on", true) &&
+            xprs_api_start(&s_api_cfg) == ESP_OK)
+            xcfg_share_attach(xprs_api_httpd());
         xcfg_share_set_log("/idx/log/cur.txt", "/idx/log/prev.txt");
         if (xcfg_get_bool("share_on", false) &&
             xcfg_get_bool("wifi_on", true))

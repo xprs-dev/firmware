@@ -498,6 +498,7 @@ static void xi_to_public(const xi_rec_t *in, xprsidx_rec_t *out)
 static bool xi_may_serve(const xi_rec_t *r, const xprsidx_query_t *q)
 {
     if (!(r->flags & XI_F_MAIL)) return true;
+    if (q->trusted) return true;    /* the operator's own API, not the radio */
     if (!q->asker || !*q->asker) return false;
     return xi_ieq(q->asker, r->to) || xi_ieq(q->asker, r->from);
 }

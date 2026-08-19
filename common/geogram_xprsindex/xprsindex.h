@@ -163,6 +163,12 @@ typedef struct {
     const char *asker;
     uint32_t limit;         /* 0 = a sensible default */
     bool     newest_first;  /* the "most recent N" shape */
+    /**
+     * TRUE only for a caller that already owns the station -- the operator's
+     * own HTTP API on their own LAN (spec/API-HTTP.md). It bypasses the
+     * section 36 mail rule; anything answering the RADIO leaves it false.
+     */
+    bool     trusted;
 } xprsidx_query_t;
 
 typedef struct {

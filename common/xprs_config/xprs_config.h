@@ -58,6 +58,11 @@ esp_err_t xcfg_ini_apply(const char *text, size_t len);
  *  start; NULL paths disable it. */
 void xcfg_share_set_log(const char *current, const char *previous);
 
+/** Register the share's URIs on an existing server instead of owning one.
+ *  Call before xcfg_share_start(). With no attach, start() runs its own
+ *  server on port 80 as before. */
+void xcfg_share_attach(void *httpd_handle);
+
 esp_err_t xcfg_share_start(void);
 void      xcfg_share_stop(void);
 bool      xcfg_share_running(void);

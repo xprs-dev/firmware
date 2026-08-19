@@ -239,7 +239,16 @@ esp_err_t xcfg_ini_apply(const char *text, size_t len)
 /* ---- the browser editor ------------------------------------------------- */
 
 static httpd_handle_t s_httpd;
+static bool s_own_server;     /* we started it, we stop it */
+static bool s_registered;     /* the share's URIs are on the server */
 static const char *s_log_cur, *s_log_prev;
+
+void xcfg_share_attach(void *httpd_handle)
+{
+    if (s_registered) return;             /* attach before start */
+    s_httpd = (httpd_handle_t)httpd_handle;
+    s_own_server = false;
+}
 
 void xcfg_share_set_log(const char *current, const char *previous)
 {
@@ -375,15 +384,19 @@ static esp_err_t h_post_ini(httpd_req_t *req)
 
 esp_err_t xcfg_share_start(void)
 {
-    if (s_httpd) return ESP_OK;
-    httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.server_port = 80;
-    cfg.stack_size = 6144;
-    cfg.lru_purge_enable = true;
-    esp_err_t ret = httpd_start(&s_httpd, &cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "editor failed to start: %s", esp_err_to_name(ret));
-        return ret;
+    if (s_registered) return ESP_OK;
+    if (!s_httpd) {
+        httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
+        cfg.server_port = 80;
+        cfg.core_id = 1;      /* handlers read flash (docs/esp32.md) */
+        cfg.stack_size = 6144;
+        cfg.lru_purge_enable = true;
+        esp_err_t ret = httpd_start(&s_httpd, &cfg);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "editor failed to start: %s", esp_err_to_name(ret));
+            return ret;
+        }
+        s_own_server = true;
     }
     static const httpd_uri_t u_page = { .uri = "/", .method = HTTP_GET,
                                         .handler = h_page };
@@ -393,25 +406,36 @@ esp_err_t xcfg_share_start(void)
     static const httpd_uri_t u_post = { .uri = "/config.ini",
                                         .method = HTTP_POST,
                                         .handler = h_post_ini };
+    static const httpd_uri_t u_log = { .uri = "/log.txt", .method = HTTP_GET,
+                                       .handler = h_log };
     httpd_register_uri_handler(s_httpd, &u_page);
     httpd_register_uri_handler(s_httpd, &u_get);
     httpd_register_uri_handler(s_httpd, &u_post);
-    static const httpd_uri_t u_log = { .uri = "/log.txt", .method = HTTP_GET,
-                                       .handler = h_log };
     httpd_register_uri_handler(s_httpd, &u_log);
+    s_registered = true;
     ESP_LOGI(TAG, "config editor serving on port 80");
     return ESP_OK;
 }
 
 void xcfg_share_stop(void)
 {
-    if (!s_httpd) return;
-    httpd_stop(s_httpd);
-    s_httpd = NULL;
+    if (!s_registered) return;
+    if (s_own_server) {
+        httpd_stop(s_httpd);
+        s_httpd = NULL;
+        s_own_server = false;
+    } else {
+        /* A shared server keeps running; only the share's doors close. */
+        httpd_unregister_uri_handler(s_httpd, "/", HTTP_GET);
+        httpd_unregister_uri_handler(s_httpd, "/config.ini", HTTP_GET);
+        httpd_unregister_uri_handler(s_httpd, "/config.ini", HTTP_POST);
+        httpd_unregister_uri_handler(s_httpd, "/log.txt", HTTP_GET);
+    }
+    s_registered = false;
     ESP_LOGI(TAG, "config editor stopped");
 }
 
 bool xcfg_share_running(void)
 {
-    return s_httpd != NULL;
+    return s_registered;
 }

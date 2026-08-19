@@ -1,0 +1,417 @@
+/**
+ * @file xprs_api.c
+ * @brief The station's HTTP API (spec/API-HTTP.md).
+ */
+
+#include "xprs_api.h"
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include "esp_log.h"
+#include "esp_timer.h"
+#include "esp_system.h"
+#include "xprsindex.h"
+#include "xprs.h"
+#include <time.h>
+
+static const char *TAG = "xprs_api";
+
+static const xprs_api_cfg_t *s_cfg;
+static httpd_handle_t s_httpd;
+
+httpd_handle_t xprs_api_httpd(void) { return s_httpd; }
+
+/* ---- small helpers ------------------------------------------------------ */
+
+static void resp_json(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+}
+
+static esp_err_t resp_error(httpd_req_t *req, const char *status,
+                            const char *why)
+{
+    resp_json(req);
+    httpd_resp_set_status(req, status);
+    char buf[128];
+    int n = snprintf(buf, sizeof buf, "{\"ok\":false,\"error\":\"%s\"}", why);
+    return httpd_resp_send(req, buf, n);
+}
+
+/* JSON string escape into out; returns bytes written (excluding NUL). */
+static int jesc(char *out, size_t cap, const char *in, int inlen)
+{
+    size_t o = 0;
+    for (int i = 0; i < inlen && in[i]; i++) {
+        unsigned char c = (unsigned char)in[i];
+        if (o + 7 >= cap) break;
+        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = c; }
+        else if (c == '\n') { out[o++] = '\\'; out[o++] = 'n'; }
+        else if (c < 0x20) o += snprintf(out + o, cap - o, "\\u%04x", c);
+        else out[o++] = (char)c;
+    }
+    out[o] = 0;
+    return (int)o;
+}
+
+static bool time_synced(void) { return time(NULL) > 1700000000; }
+
+/* since/until: epoch seconds, or the packet's own YYYY-MM-DD_hh:mm:ss. */
+static uint32_t parse_when(const char *v)
+{
+    if (!v || !v[0]) return 0;
+    bool digits = true;
+    for (const char *c = v; *c; c++)
+        if (!isdigit((unsigned char)*c)) { digits = false; break; }
+    if (digits) return (uint32_t)strtoul(v, NULL, 10);
+    return xprsindex_ts_to_epoch(v, (int)strlen(v));
+}
+
+/* Base-callsign compare: "X1RD89-7" matches "X1RD89" (section 3.1). */
+static bool call_matches(const char *want, const char *have)
+{
+    size_t n = 0;
+    while (want[n] && want[n] != '-') n++;
+    if (strncasecmp(want, have, n) != 0) return false;
+    return have[n] == 0 || have[n] == '-';
+}
+
+/* ---- /api/status --------------------------------------------------------- */
+
+static esp_err_t h_status(httpd_req_t *req)
+{
+    char buf[512];
+    int n = snprintf(buf, sizeof buf,
+        "{\"ok\":true,\"app\":\"%s\",\"board\":\"%s\",\"callsign\":\"%s\","
+        "\"uptime_s\":%lu,\"heap_free\":%u,"
+        "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\"}",
+        s_cfg->app, s_cfg->board, s_cfg->callsign,
+        (unsigned long)(esp_timer_get_time() / 1000000),
+        (unsigned)esp_get_free_heap_size(),
+        time_synced() ? "true" : "false",
+        time_synced() ? (unsigned long)time(NULL) : 0,
+        s_cfg->tz ? s_cfg->tz : "+00:00");
+    if (s_cfg->index) {
+        xprsidx_stats_t st;
+        xprsindex_stats(s_cfg->index, &st);
+        n += snprintf(buf + n, sizeof buf - n,
+                      ",\"indexer\":{\"enabled\":true,\"count\":%lu,"
+                      "\"epoch\":\"%c\"}",
+                      (unsigned long)st.count, st.epoch);
+    }
+    n += snprintf(buf + n, sizeof buf - n, "}");
+    resp_json(req);
+    return httpd_resp_send(req, buf, n);
+}
+
+/* ---- /api/services ------------------------------------------------------- */
+
+static esp_err_t h_services(httpd_req_t *req)
+{
+    char serve[128] = "", feats[256] = "";
+    if (s_cfg->serve_json) s_cfg->serve_json(serve, sizeof serve);
+    if (s_cfg->features_json) s_cfg->features_json(feats, sizeof feats);
+    char buf[640];
+    int n = snprintf(buf, sizeof buf,
+        "{\"ok\":true,\"serve\":[%s],\"features\":{%s},"
+        "\"api\":[\"status\",\"services\",\"history\",\"mail\",\"send\","
+        "\"log\"]}",
+        serve, feats);
+    resp_json(req);
+    return httpd_resp_send(req, buf, n);
+}
+
+/* ---- /api/xprs/history and /api/xprs/mail -------------------------------- */
+
+typedef struct {
+    httpd_req_t *req;
+    int emitted;
+    int dir;              /* 0 any, 1 in, 2 out */
+    const char *mail_for; /* non-NULL: only mail held for this callsign */
+} hist_ctx_t;
+
+static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
+{
+    hist_ctx_t *c = (hist_ctx_t *)arg;
+    bool own = rec->flags & XI_F_OUTGOING;
+    if (c->dir == 1 && own) return true;
+    if (c->dir == 2 && !own) return true;
+    if (c->mail_for) {
+        if (!(rec->flags & XI_F_MAIL)) return true;
+        if (!call_matches(c->mail_for, rec->to)) return true;
+    }
+    const char *sig = !(rec->flags & XI_F_SIGNED)   ? "none"
+                      : (rec->flags & XI_F_VERIFIED) ? "verified"
+                                                      : "unverified";
+    char wire[2 * XPRSIDX_WIRE_MAX + 8];
+    jesc(wire, sizeof wire, rec->wire, rec->len);
+    char row[2 * XPRSIDX_WIRE_MAX + 192];
+    int n = snprintf(row, sizeof row,
+        "%s{\"ts\":%lu,\"bearer\":\"\",\"rssi\":%d,\"from\":\"%s\","
+        "\"to\":\"%s\",\"type\":\"%s\",\"sig\":\"%s\",\"own\":%s,"
+        "\"wire\":\"%s\"}",
+        c->emitted ? "," : "", (unsigned long)rec->ts, (int)rec->rssi,
+        rec->from, rec->to, xprsidx_type_name(rec->type), sig,
+        own ? "true" : "false", wire);
+    c->emitted++;
+    return httpd_resp_send_chunk(c->req, row, n) == ESP_OK;
+}
+
+static esp_err_t history_common(httpd_req_t *req, bool mail_only)
+{
+    if (!s_cfg->index) return resp_error(req, "404 Not Found", "no index");
+
+    char query[256] = {0}, p[48], call[48] = {0};
+    hist_ctx_t ctx = { .req = req };
+    xprsidx_query_t q = { .type = -1, .newest_first = true, .limit = 30,
+                          .trusted = true };
+    httpd_req_get_url_query_str(req, query, sizeof query);
+    if (httpd_query_key_value(query, "since", p, sizeof p) == ESP_OK)
+        q.since_ts = parse_when(p);
+    if (httpd_query_key_value(query, "until", p, sizeof p) == ESP_OK)
+        q.until_ts = parse_when(p);
+    if (httpd_query_key_value(query, "only", p, sizeof p) == ESP_OK)
+        q.type = xprsidx_type_code(p);
+    if (httpd_query_key_value(query, "limit", p, sizeof p) == ESP_OK)
+        q.limit = (uint32_t)strtoul(p, NULL, 10);
+    if (q.limit == 0 || q.limit > 200) q.limit = 200;
+    if (httpd_query_key_value(query, "call", p, sizeof p) == ESP_OK) {
+        snprintf(call, sizeof call, "%s", p);
+        q.from = call;
+    }
+    if (httpd_query_key_value(query, "dir", p, sizeof p) == ESP_OK)
+        ctx.dir = p[0] == 'i' ? 1 : p[0] == 'o' ? 2 : 0;
+    char mailcall[48] = {0};
+    if (mail_only) {
+        if (httpd_query_key_value(query, "call", mailcall,
+                                  sizeof mailcall) != ESP_OK || !mailcall[0])
+            return resp_error(req, "400 Bad Request", "mail needs call=");
+        ctx.mail_for = mailcall;
+        q.from = NULL;               /* call names the RECIPIENT here */
+    }
+
+    xprsidx_stats_t st;
+    xprsindex_stats(s_cfg->index, &st);
+    char head[128];
+    int n = snprintf(head, sizeof head,
+                     "{\"ok\":true,\"held\":%lu,\"time\":\"%s\",\"rows\":[",
+                     (unsigned long)st.count,
+                     time_synced() ? "synced" : "unsynced");
+    resp_json(req);
+    httpd_resp_send_chunk(req, head, n);
+
+    /* Take the store for the read and hand it straight back -- the writer
+     * keeps accepting into RAM meanwhile (docs/esp32.md). */
+    xprsindex_pause_writes(s_cfg->index, true);
+    xprsindex_query(s_cfg->index, &q, hist_emit, &ctx);
+    xprsindex_pause_writes(s_cfg->index, false);
+
+    char tail[48];
+    n = snprintf(tail, sizeof tail, "],\"count\":%d}", ctx.emitted);
+    httpd_resp_send_chunk(req, tail, n);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+static esp_err_t h_history(httpd_req_t *req)
+{
+    return history_common(req, false);
+}
+static esp_err_t h_mail(httpd_req_t *req)
+{
+    return history_common(req, true);
+}
+
+/* ---- /api/xprs/send ------------------------------------------------------ */
+
+static esp_err_t h_send(httpd_req_t *req)
+{
+    if (!s_cfg->send_wire)
+        return resp_error(req, "404 Not Found", "no transmitter");
+
+    char body[600];
+    int total = 0;
+    while (total < req->content_len && total < (int)sizeof body - 1) {
+        int r = httpd_req_recv(req, body + total, sizeof body - 1 - total);
+        if (r <= 0) return resp_error(req, "400 Bad Request", "short body");
+        total += r;
+    }
+    body[total] = 0;
+
+    /* Either JSON {"wire":"..."} or the packet as plain text. */
+    char wire[XPRS_MAX_WIRE + 1];
+    const char *w = body;
+    char *j = strstr(body, "\"wire\"");
+    if (j) {
+        j = strchr(j + 6, '"');
+        if (!j) return resp_error(req, "400 Bad Request", "bad json");
+        j++;
+        int o = 0;
+        while (*j && *j != '"' && o < (int)sizeof wire - 1) {
+            if (*j == '\\' && j[1]) j++;
+            wire[o++] = *j++;
+        }
+        wire[o] = 0;
+        w = wire;
+    }
+    int wlen = (int)strlen(w);
+    while (wlen > 0 && (w[wlen - 1] == '\n' || w[wlen - 1] == '\r')) wlen--;
+
+    /* Validation only, section 4: the caller composed it, the caller owns
+     * it -- including the callsign it wrote into f:. */
+    if (wlen <= 0 || wlen > XPRS_MAX_WIRE)
+        return resp_error(req, "400 Bad Request", "length");
+    if (strncmp(w, "t:", 2) != 0)
+        return resp_error(req, "400 Bad Request", "must start with t:");
+    xprs_t pk;
+    if (!xprs_parse(w, wlen, &pk))
+        return resp_error(req, "400 Bad Request", "does not parse");
+    char from[16];
+    if (!xprs_get_str(&pk, "f", from, sizeof from))
+        return resp_error(req, "400 Bad Request", "no f:");
+
+    if (!s_cfg->send_wire(w, wlen))
+        return resp_error(req, "503 Service Unavailable", "no bearer took it");
+
+    char id[XPRS_ID_LEN];
+    xprs_id(&pk, id);
+    char esc[2 * XPRS_MAX_WIRE + 8];
+    jesc(esc, sizeof esc, w, wlen);
+    char out[2 * XPRS_MAX_WIRE + 64];
+    int n = snprintf(out, sizeof out,
+                     "{\"ok\":true,\"id\":\"%s\",\"wire\":\"%s\"}", id, esc);
+    resp_json(req);
+    return httpd_resp_send(req, out, n);
+}
+
+/* ---- /api/log ------------------------------------------------------------ */
+
+/* Emit one log line as JSON. The stored line starts with the timestamp the
+ * hook stamped: epoch digits, or +ms-since-boot. */
+static bool log_emit(httpd_req_t *req, const char *line, int len, bool first)
+{
+    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) len--;
+    if (len <= 0) return true;
+
+    char tbuf[20] = "0";
+    int i = 0;
+    if (line[0] == '+' || isdigit((unsigned char)line[0])) {
+        int o = 0;
+        while (i < len && o < (int)sizeof tbuf - 1 && line[i] != ' ')
+            tbuf[o++] = line[i++];
+        tbuf[o] = 0;
+        while (i < len && line[i] == ' ') i++;
+    }
+    char m[360];
+    jesc(m, sizeof m, line + i, len - i);
+    char row[420];
+    int n;
+    if (tbuf[0] == '+')
+        n = snprintf(row, sizeof row, "%s{\"t\":\"%s\",\"m\":\"%s\"}",
+                     first ? "" : ",", tbuf, m);
+    else
+        n = snprintf(row, sizeof row, "%s{\"t\":%s,\"m\":\"%s\"}",
+                     first ? "" : ",", tbuf, m);
+    return httpd_resp_send_chunk(req, row, n) == ESP_OK;
+}
+
+/* Walk one file backwards in fixed blocks, newest line first. */
+static int log_reversed(httpd_req_t *req, const char *path, int budget,
+                        bool *first)
+{
+    FILE *f = path ? fopen(path, "rb") : NULL;
+    if (!f) return 0;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
+    long pos = ftell(f);
+
+    char carry[200];
+    int carry_n = 0, sent = 0;
+    char blk[512 + sizeof carry];
+    while (pos > 0 && budget > 0) {
+        int n = pos > 512 ? 512 : (int)pos;
+        pos -= n;
+        if (fseek(f, pos, SEEK_SET) != 0) break;
+        if (fread(blk, 1, n, f) != (size_t)n) break;
+        memcpy(blk + n, carry, carry_n);
+        int total = n + carry_n;
+
+        int end = total, i = total;
+        while (i > 0 && budget > 0) {
+            i--;
+            if (blk[i] != '\n') continue;
+            if (end > i + 1) {
+                if (!log_emit(req, blk + i + 1, end - i - 1, *first)) budget = 0;
+                else { *first = false; sent++; budget--; }
+            }
+            end = i;
+        }
+        if (pos == 0) {
+            if (end > 0 && budget > 0 &&
+                log_emit(req, blk, end, *first)) {
+                *first = false; sent++; budget--;
+            }
+        } else {
+            carry_n = end > (int)sizeof carry ? (int)sizeof carry : end;
+            memcpy(carry, blk + end - carry_n, carry_n);
+        }
+    }
+    fclose(f);
+    return sent;
+}
+
+static esp_err_t h_log(httpd_req_t *req)
+{
+    char query[64] = {0}, p[16];
+    int limit = 50;
+    httpd_req_get_url_query_str(req, query, sizeof query);
+    if (httpd_query_key_value(query, "limit", p, sizeof p) == ESP_OK)
+        limit = atoi(p);
+    if (limit <= 0 || limit > 500) limit = 500;
+
+    resp_json(req);
+    char head[80];
+    int n = snprintf(head, sizeof head,
+                     "{\"ok\":true,\"time\":\"%s\",\"lines\":[",
+                     time_synced() ? "synced" : "unsynced");
+    httpd_resp_send_chunk(req, head, n);
+    bool first = true;
+    int sent = log_reversed(req, s_cfg->log_cur, limit, &first);
+    if (sent < limit)
+        log_reversed(req, s_cfg->log_prev, limit - sent, &first);
+    httpd_resp_send_chunk(req, "]}", 2);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+/* ---- start ---------------------------------------------------------------- */
+
+esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
+{
+    if (s_httpd) return ESP_OK;
+    if (!cfg || !cfg->app || !cfg->callsign) return ESP_ERR_INVALID_ARG;
+    s_cfg = cfg;
+
+    httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
+    hc.server_port = 80;
+    hc.core_id = 1;          /* handlers read flash; keep off the radio core */
+    hc.stack_size = 6144;
+    hc.max_uri_handlers = 16;
+    hc.lru_purge_enable = true;
+    esp_err_t ret = httpd_start(&s_httpd, &hc);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "API failed to start: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    static const httpd_uri_t uris[] = {
+        { .uri = "/api/status", .method = HTTP_GET, .handler = h_status },
+        { .uri = "/api/services", .method = HTTP_GET, .handler = h_services },
+        { .uri = "/api/xprs/history", .method = HTTP_GET, .handler = h_history },
+        { .uri = "/api/xprs/mail", .method = HTTP_GET, .handler = h_mail },
+        { .uri = "/api/xprs/send", .method = HTTP_POST, .handler = h_send },
+        { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
+    };
+    for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
+        httpd_register_uri_handler(s_httpd, &uris[i]);
+    ESP_LOGI(TAG, "HTTP API up on port 80 (spec/API-HTTP.md)");
+    return ESP_OK;
+}
