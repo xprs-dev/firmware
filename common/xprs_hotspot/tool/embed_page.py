@@ -22,6 +22,16 @@ if marker in js:
 
 html = html.replace('/*CRYPTO*/', js)
 
+# The logo font comes verbatim from the old chat page -- one theme, one font.
+import re
+old = open('/home/brito/code/xprs/xprs-esp32/common/geogram_http/'
+           'chat_page.c').read()
+m = re.search(r'"(@font-face\{[^\n]*?format\(\'woff2\'\);'
+              r'font-display:swap\})', old)
+if m:
+    font = m.group(1).replace('\\"', '"').replace('\\\\', '\\')
+    html = html.replace('/*FONTFACE*/', font)
+
 
 def c_escape(s):
     out = []

@@ -1,56 +1,107 @@
 <!doctype html>
 <!-- The hotspot chat page. SOURCE OF TRUTH: edit this file, then regenerate
-     chat_page.c with tool/embed_page.py (kept beside it). The page is served
-     from flash as a C string; everything is inline because a captive-portal
-     WebView has no internet, no secure context and often no localStorage.
-     The crypto is the XPRS section 9.1.2 short-Schnorr, validated against
-     the spec's worked example (spec/XPRS.md). -->
+     chat_page.c with tool/embed_page.py. Theme and logo font are the old
+     geogram/XPRS chat's (geogram_http/chat_page.c), bubbles lean Telegram.
+     Identity is created silently on first visit; the menu lets a user show
+     the npub, export the nsec, import another, or start fresh. The crypto
+     is the XPRS 9.1.2 short-Schnorr, validated against the spec's worked
+     example. Everything inline: captive WebViews have no internet, no
+     secure context, often no localStorage. -->
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>XPRS chat</title>
+<title>XPRS</title>
 <style>
-body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#ddd;
-     display:flex;flex-direction:column;height:100vh}
-#top{background:#ff8c00;color:#000;padding:.5em .8em;font-weight:700;
-     display:flex;justify-content:space-between;align-items:center}
-#top small{font-weight:400}
-#msgs{flex:1;overflow-y:auto;padding:.6em}
-.m{margin:.25em 0;padding:.45em .6em;background:#1b1b1b;border-radius:6px;
-   word-wrap:break-word}
-.m.own{background:#0b2b12}
-.m .h{font-size:.75em;color:#8a8;display:flex;justify-content:space-between}
-.m .h .bad{color:#e66}
-#bar{display:flex;gap:.4em;padding:.5em;background:#000}
-#txt{flex:1;font:inherit;padding:.5em;background:#1b1b1b;color:#eee;
-     border:1px solid #333;border-radius:6px}
-button{font:inherit;padding:.5em 1em;background:#ff8c00;border:0;
-       border-radius:6px;font-weight:700}
-#setup{padding:1.2em;max-width:26em;margin:auto}
-#setup input{width:100%;font:inherit;padding:.5em;margin:.4em 0;
-     background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:6px}
-#foot{font-size:.7em;color:#666;padding:.2em .8em;background:#000}
-#foot a{color:#997}
-.hide{display:none}
+/*FONTFACE*/
+:root{--accent:#ffa86a;--bg:#101010;--text:#f0f0f0;
+      --border:rgba(255,240,224,.125);--muted:#888}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+     background:var(--bg);color:var(--text);font-size:14px;
+     display:flex;flex-direction:column}
+.header{border-bottom:1px solid var(--border);height:40px;padding:0 12px;
+        display:flex;align-items:center;gap:12px;position:relative}
+.header .logo{font-family:'Wartext',sans-serif;font-size:40px;
+        color:var(--accent);letter-spacing:5px;margin-top:-15px}
+.menu{margin-left:auto;position:relative}
+.my-callsign{color:var(--accent);font-size:12px;font-weight:bold;
+        margin-right:8px}
+.menu-btn{background:transparent;border:1px solid var(--border);
+        color:var(--text);padding:6px 8px;border-radius:4px;cursor:pointer;
+        font-size:16px;line-height:1}
+.menu-panel{position:absolute;right:0;top:38px;background:#151515;
+        border:1px solid var(--border);border-radius:6px;min-width:200px;
+        display:none;z-index:2;box-shadow:0 8px 20px rgba(0,0,0,.35)}
+.menu-panel.open{display:block}
+.menu-panel button{width:100%;background:transparent;border:0;
+        color:var(--text);padding:10px 12px;text-align:left;cursor:pointer;
+        font-size:13px}
+.menu-panel button:hover{background:rgba(255,255,255,.06)}
+.messages{flex:1;overflow-y:auto;padding:12px;display:flex;
+        flex-direction:column;gap:8px}
+.msg{max-width:85%}
+.msg .meta{font-size:11px;margin-bottom:2px}
+.msg .author{color:var(--accent);font-weight:bold}
+.msg .time{color:var(--muted);margin-left:6px}
+.msg .bubble{display:inline-block;background:#1b1b1b;
+        border:1px solid var(--border);border-radius:12px;
+        padding:8px 12px;word-wrap:break-word;text-align:left;
+        max-width:100%}
+.msg.local{align-self:flex-end;text-align:right}
+.msg.local .bubble{background:#2a1c10;border-color:rgba(255,168,106,.35);
+        border-bottom-right-radius:4px}
+.msg.remote{align-self:flex-start;text-align:left}
+.msg.remote .bubble{border-bottom-left-radius:4px}
+.badge{display:inline-block;font-size:9px;font-weight:bold;
+        padding:1px 5px;border-radius:3px;margin-left:6px}
+.badge.ok{background:#1b5e20;color:#81c784}
+.badge.bad{background:#b71c1c;color:#ef9a9a}
+.input-area{border-top:1px solid var(--border);padding:8px;display:flex;
+        gap:6px;align-items:center}
+.input-area input{flex:1;min-width:0;background:transparent;
+        border:1px solid var(--border);border-radius:4px;padding:8px;
+        color:var(--text);font-size:16px;outline:none}
+.input-area input:focus{border-color:var(--accent)}
+.input-area button{flex-shrink:0;font-family:'Wartext',sans-serif;
+        font-size:18px;font-weight:bold;background:var(--accent);
+        color:var(--bg);border:none;border-radius:4px;padding:4px 12px;
+        cursor:pointer}
+.status-bar{border-top:1px solid var(--border);padding:6px 12px;
+        font-size:10px;color:var(--muted);display:flex;
+        justify-content:space-between}
+.status-bar a{color:var(--muted)}
+.snackbar{visibility:hidden;min-width:250px;background:#333;color:#fff;
+        text-align:center;border-radius:4px;padding:12px;position:fixed;
+        z-index:10;left:50%;bottom:60px;transform:translateX(-50%);
+        font-size:14px}
+.snackbar.show{visibility:visible;animation:fadein .3s,fadeout .3s 2.7s}
+@keyframes fadein{from{bottom:0;opacity:0}to{bottom:60px;opacity:1}}
+@keyframes fadeout{from{bottom:60px;opacity:1}to{bottom:0;opacity:0}}
 </style></head><body>
-<div id="top"><span id="call">XPRS</span><small id="stat">connecting</small></div>
-<div id="setup" class="hide">
-  <h3>Your identity</h3>
-  <p>Messages are signed with a key that stays in this browser. Make a new
-     one, or paste an existing nsec to keep your callsign.</p>
-  <button onclick="genKey()">Create new identity</button>
-  <p>or</p>
-  <input id="nsecin" placeholder="nsec1...">
-  <button onclick="importKey()">Import nsec</button>
-  <p id="seterr" style="color:#e66"></p>
+<div class="header">
+  <span class="logo">XPRS</span>
+  <div class="menu">
+    <span class="my-callsign" id="call"></span>
+    <button class="menu-btn" onclick="toggleMenu()">&#9776;</button>
+    <div class="menu-panel" id="menu">
+      <button onclick="showNpub()">Show my npub</button>
+      <button onclick="exportNsec()">Export nsec</button>
+      <button onclick="importNsec()">Import another nsec</button>
+      <button onclick="newIdentity()">New identity</button>
+    </div>
+  </div>
 </div>
-<div id="msgs" class="hide"></div>
-<div id="bar" class="hide">
-  <input id="txt" maxlength="180" placeholder="message"
+<div class="messages" id="msgs"></div>
+<div class="input-area">
+  <input id="txt" maxlength="180" placeholder="Message"
          onkeydown="if(event.key==='Enter')sendMsg()">
-  <button onclick="sendMsg()">Send</button>
+  <button onclick="sendMsg()">&gt;</button>
 </div>
-<div id="foot">XPRS station &middot; <a href="/config">settings</a> &middot;
-  <a href="/api/services">services</a> &middot; <span id="me"></span></div>
+<div class="status-bar">
+  <span>XPRS station &middot; <a href="/config">settings</a></span>
+  <span id="stat">connecting</span>
+</div>
+<div class="snackbar" id="snack"></div>
 <script>
 "use strict";
 /*CRYPTO*/
@@ -67,38 +118,43 @@ function stSet(k,v){
   try{document.cookie=k+'='+encodeURIComponent(v)+'; max-age=31536000; path=/';}catch(e){}
   mem[k]=v;}
 
-// ---- identity ----
+function snack(t){
+  var s=document.getElementById('snack');
+  s.textContent=t;s.className='snackbar show';
+  setTimeout(function(){s.className='snackbar';},3000);}
+function toggleMenu(){
+  var m=document.getElementById('menu');
+  m.className=m.className.indexOf('open')>=0?'menu-panel':'menu-panel open';}
+
+// ---- identity: made silently on first visit; the menu changes it ----
 var priv=null,npub='',mycall='';
-function haveKey(){return priv!==null;}
 function useKey(bytes){
   priv=bytes;
   npub=npubEncode(pubkeyX(priv));
   mycall=callsignFromNpub(npub);
   stSet('xprs_nsec',nsecEncode(priv));
   document.getElementById('call').textContent=mycall;
-  document.getElementById('me').textContent=npub.slice(0,14)+'...';
-  show(true);
 }
-function genKey(){
+function randKey(){
   var b=new Uint8Array(32);
   if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(b);
   else for(var i=0;i<32;i++)b[i]=Math.floor(Math.random()*256);
-  if(b2n(b)===0n||b2n(b)>=N){genKey();return;}
-  useKey(b);
-}
-function importKey(){
-  var v=document.getElementById('nsecin').value.trim();
-  var b=nsecDecode(v);
-  if(!b||b2n(b)===0n||b2n(b)>=N){
-    document.getElementById('seterr').textContent='That is not a valid nsec.';
-    return;}
-  useKey(b);
-}
-function show(chat){
-  document.getElementById('setup').className=chat?'hide':'';
-  document.getElementById('msgs').className=chat?'':'hide';
-  document.getElementById('bar').className=chat?'':'hide';
-}
+  return (b2n(b)===0n||b2n(b)>=N)?randKey():b;}
+function showNpub(){toggleMenu();prompt('Your public key (share freely):',npub);}
+function exportNsec(){toggleMenu();
+  prompt('Your SECRET key. Anyone holding it IS '+mycall+':',nsecEncode(priv));}
+function importNsec(){toggleMenu();
+  var v=prompt('Paste an nsec to become that identity:');
+  if(!v)return;
+  var b=nsecDecode(v.trim());
+  if(!b||b2n(b)===0n||b2n(b)>=N){snack('That is not a valid nsec');return;}
+  useKey(b);identSent=0;seen={};
+  document.getElementById('msgs').innerHTML='';
+  snack('Now chatting as '+mycall);load();}
+function newIdentity(){toggleMenu();
+  useKey(randKey());identSent=0;seen={};
+  document.getElementById('msgs').innerHTML='';
+  snack('New identity: '+mycall);load();}
 
 // ---- XPRS wires ----
 function tsNow(){
@@ -109,7 +165,6 @@ function aux32(){var b=new Uint8Array(32);
   if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(b);
   else for(var i=0;i<32;i++)b[i]=Math.floor(Math.random()*256);return b;}
 function signWire(canonical){
-  // sig: before " m:" when present, else appended (mirrors xprsid_sign)
   var sig=' sig:'+b85enc(xprsSign(canonical,b2n(priv),aux32()));
   var i=canonical.indexOf(' m:');
   if(i>=0)return canonical.slice(0,i)+sig+canonical.slice(i);
@@ -151,34 +206,42 @@ function sendIdentity(){
 function sendMsg(){
   var t=document.getElementById('txt');
   var text=t.value.trim();
-  if(!text||!haveKey())return;
+  if(!text||!priv)return;
   text=text.replace(/[\x00-\x1f]/g,' ');
   sendIdentity();
   var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+' m:'+text);
-  if(wire.length>250){
-    document.getElementById('stat').textContent='too long';
-    return;}
+  if(wire.length>250){snack('Message too long');return;}
   t.value='';
   postWire(wire,function(ok){
-    document.getElementById('stat').textContent=ok?'sent':'send failed';
+    if(!ok)snack('Send failed');
     setTimeout(load,400);});
 }
 
-// ---- receiving: poll the station's archive ----
+// ---- receiving ----
+// A chat shows people talking. Machine payloads also travel as t:message
+// (announce digests and the like): no spaces, pipes, long hashes. Skip them.
+function isMachine(text){
+  if(text.indexOf('|')>=0&&text.indexOf(' ')<0)return true;
+  if(text.length>40&&text.indexOf(' ')<0)return true;
+  return false;}
 var seen={};
 function render(row){
   var w=row.wire||'';
   if(seen[w])return;seen[w]=1;
   var mi=w.indexOf(' m:');
   var text=mi>=0?w.slice(mi+3):'';
-  if(!text)return;
+  if(!text||isMachine(text))return;
+  var own=row.from===mycall;
   var d=document.createElement('div');
-  d.className='m'+(row.from===mycall?' own':'');
+  d.className='msg '+(own?'local':'remote');
   var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';
-  var sig=row.sig==='verified'?' &#10003;':(row.sig==='none'?' <span class=bad>unsigned</span>':'');
-  d.innerHTML='<div class="h"><span></span><span>'+when+sig+'</span></div><div></div>';
-  d.children[0].children[0].textContent=row.from;
-  d.children[1].textContent=text;
+  var badge=row.sig==='verified'?'<span class="badge ok">signed</span>'
+           :(row.sig==='none'?'<span class="badge bad">unsigned</span>':'');
+  d.innerHTML='<div class="meta"><span class="author"></span>'+
+    '<span class="time">'+when+'</span>'+badge+'</div>'+
+    '<div class="bubble"></div>';
+  d.querySelector('.author').textContent=row.from;
+  d.querySelector('.bubble').textContent=text;
   var box=document.getElementById('msgs');
   box.appendChild(d);
   box.scrollTop=box.scrollHeight;
@@ -191,21 +254,21 @@ function load(){
     x.onload=function(){
       try{
         var d=JSON.parse(x.responseText);
-        var rows=(d.rows||[]).slice().reverse();  // oldest first for append
+        var rows=(d.rows||[]).slice().reverse();
         for(var i=0;i<rows.length;i++)render(rows[i]);
         document.getElementById('stat').textContent=
-          (d.held!==undefined?d.held+' held':'ok');
+          (d.held!==undefined?d.held+' packets held':'ok');
       }catch(e){}
     };
     x.send();
   }catch(e){}
 }
 
-// ---- boot ----
+// ---- boot: an identity exists before the first keystroke ----
 (function(){
   var saved=stGet('xprs_nsec');
-  if(saved){var b=nsecDecode(saved);if(b){useKey(b);}}
-  if(!haveKey())show(false);
+  var b=saved?nsecDecode(saved):null;
+  useKey(b||randKey());
   load();
   setInterval(load,3000);
 })();
