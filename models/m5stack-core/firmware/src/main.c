@@ -325,6 +325,40 @@ typedef struct {
 static flow_t s_flow[FLOW_MAX];
 static int s_flow_n;
 
+/* The chat ring: t:message packets with a human m: body, for the Chat
+ * panel. Fed from both directions -- what the radios heard and what the
+ * API sent. */
+#define CHAT_MAX 8
+typedef struct {
+    char     from[10];
+    char     text[120];
+    uint32_t ep;          /* epoch when heard, 0 when the clock was not up */
+} chat_t;
+static chat_t s_chat[CHAT_MAX];
+static int s_chat_n;      /* total ever; ring position = n % CHAT_MAX */
+
+static void chat_note(const xprs_t *p)
+{
+    char from[10], text[120];
+    char type[16];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "message") != 0) return;
+    if (!xprs_get_str(p, "f", from, sizeof from)) return;
+    if (!xprs_get_str(p, "m", text, sizeof text) || !text[0]) return;
+    /* The same message arrives more than once -- our own send plus the
+     * relay's re-air, or both bearers. One line per saying. */
+    for (int i = 0; i < CHAT_MAX; i++) {
+        if (s_chat[i].from[0] && strcmp(s_chat[i].from, from) == 0 &&
+            strcmp(s_chat[i].text, text) == 0)
+            return;
+    }
+    chat_t *c = &s_chat[s_chat_n % CHAT_MAX];
+    snprintf(c->from, sizeof c->from, "%s", from);
+    snprintf(c->text, sizeof c->text, "%s", text);
+    c->ep = epoch_now();
+    s_chat_n++;
+}
+
 /* Statistics for the Stats panel, on the WALL CLOCK so they survive a
  * reboot: 10-minute buckets covering a day and daily buckets covering a
  * month, both rings persisted to /idx/stats.bin by idx_task and reloaded
@@ -425,6 +459,8 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         snprintf(s_ask.bearer, sizeof s_ask.bearer, "%s", bearer);
         s_ask.pending = true;                 /* published last */
     } while (0);
+
+    chat_note(&sp);
 
     uint32_t ep = epoch_now();
     if (ep) {
@@ -751,7 +787,7 @@ static void inet_probe_task(void *arg)
 #define BTN_B GPIO_NUM_38
 #define BTN_C GPIO_NUM_37
 
-#define UI_PANEL_COUNT 7
+#define UI_PANEL_COUNT 8
 #define UI_INRANGE_SEC 300
 
 static int s_panel;
@@ -842,7 +878,7 @@ static void ui_render(void)
             nb++;
         }
         xui_radar_blips(blips, nb);
-        xui_set_title("Links 1/7");
+        xui_set_title("Links 1/8");
         break;
     }
     case 1: {   /* Flow: the packets going past, newest first */
@@ -864,7 +900,7 @@ static void ui_render(void)
         }
         xui_flow_rows(rows, nr);
         list_n = nr;
-        xui_set_title("Flow 2/7");
+        xui_set_title("Flow 2/8");
         break;
     }
     case 2: {   /* Traffic: counters, one per row, explained when selected */
@@ -921,7 +957,7 @@ static void ui_render(void)
         #undef TROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Traffic 3/7");
+        xui_set_title("Traffic 3/8");
         break;
     }
     case 3: {   /* Devices: everyone in reach, detail on selection */
@@ -959,7 +995,7 @@ static void ui_render(void)
         }
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Devices 4/7");
+        xui_set_title("Devices 4/8");
         break;
     }
     case 4: {   /* Node: this station's facts, full values on selection */
@@ -1017,7 +1053,7 @@ static void ui_render(void)
         #undef NROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Node 5/7");
+        xui_set_title("Node 5/8");
         break;
     }
     case 5: {   /* Settings: OK (button A) toggles the selected row */
@@ -1120,7 +1156,44 @@ static void ui_render(void)
         #undef SROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Settings 6/7");
+        xui_set_title("Settings 6/8");
+        break;
+    }
+    case 7: {   /* Chat: the human messages passing through this station */
+        static const char *const hdr[3] = { "From", "Message", "When" };
+        static const int cw[3] = { 68, 176, 76 };
+        xui_table_setup(3, hdr, cw);
+
+        static xui_row_t tr[XUI_TAB_ROWS];
+        int nr = 0;
+        uint32_t nowep = epoch_now();
+        for (int i = 0; i < CHAT_MAX && nr < XUI_TAB_ROWS; i++) {
+            int idx = s_chat_n - 1 - i;
+            if (idx < 0) break;
+            chat_t *c = &s_chat[idx % CHAT_MAX];
+            if (!c->from[0]) continue;
+            xui_row_t *r = &tr[nr++];
+            snprintf(r->cell[0], sizeof r->cell[0], "%s", c->from);
+            snprintf(r->cell[1], sizeof r->cell[1], "%.22s", c->text);
+            if (c->ep && nowep) {
+                uint32_t age = nowep - c->ep;
+                if (age < 60)
+                    snprintf(r->cell[2], sizeof r->cell[2], "%lus",
+                             (unsigned long)age);
+                else if (age < 3600)
+                    snprintf(r->cell[2], sizeof r->cell[2], "%lum",
+                             (unsigned long)(age / 60));
+                else
+                    snprintf(r->cell[2], sizeof r->cell[2], "%luh",
+                             (unsigned long)(age / 3600));
+            } else {
+                r->cell[2][0] = 0;
+            }
+            snprintf(r->detail, sizeof r->detail, "%s: %s", c->from, c->text);
+        }
+        xui_table_rows(tr, nr);
+        list_n = nr;
+        xui_set_title("Chat 8/8");
         break;
     }
     default: {  /* Stats: 10-minute, hourly or daily bars; arrows switch */
@@ -1188,7 +1261,7 @@ static void ui_render(void)
         xui_stats_set(1, t1, rxv, np);
         xui_stats_set(2, t2, txv, np);
         list_n = 0;
-        xui_set_title("Stats 7/7");
+        xui_set_title("Stats 7/8");
         break;
     }
     }
@@ -1636,6 +1709,7 @@ static bool api_send_wire(const char *wire, int len)
         char type[16];
         xprs_type(&p, type, sizeof type);
         if (strcmp(type, "identity") == 0) identity_heard(&p);
+        chat_note(&p);   /* our hotspot users' messages show on the LCD too */
     }
 
     bool lan = xprslan_send(wire, len);
