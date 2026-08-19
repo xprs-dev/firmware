@@ -42,6 +42,29 @@ static esp_err_t h_404(httpd_req_t *req, httpd_err_code_t err)
     return ESP_FAIL;   /* tells httpd to close the socket */
 }
 
+esp_err_t xprs_hotspot_serve_page(httpd_handle_t server)
+{
+    static bool registered;
+    if (!server) return ESP_ERR_INVALID_ARG;
+    if (registered) return ESP_OK;
+    registered = true;
+
+    static const httpd_uri_t u_root = { .uri = "/", .method = HTTP_GET,
+                                        .handler = h_page };
+    /* Captive-portal detection gets the PAGE, not a redirect: that is what
+     * makes the sign-in popup BE the chat (the old firmware's discovery). */
+    static const httpd_uri_t u_204 = { .uri = "/generate_204",
+                                       .method = HTTP_GET, .handler = h_page };
+    static const httpd_uri_t u_apple = { .uri = "/hotspot-detect.html",
+                                         .method = HTTP_GET,
+                                         .handler = h_page };
+    httpd_register_uri_handler(server, &u_root);
+    httpd_register_uri_handler(server, &u_204);
+    httpd_register_uri_handler(server, &u_apple);
+    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, h_404);
+    return ESP_OK;
+}
+
 esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server)
 {
     if (!ssid || !ssid[0] || !server) return ESP_ERR_INVALID_ARG;
@@ -87,18 +110,5 @@ esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server)
                  IP2STR(&ip.ip));
     }
 
-    static const httpd_uri_t u_root = { .uri = "/", .method = HTTP_GET,
-                                        .handler = h_page };
-    /* Captive-portal detection gets the PAGE, not a redirect: that is what
-     * makes the sign-in popup BE the chat (the old firmware's discovery). */
-    static const httpd_uri_t u_204 = { .uri = "/generate_204",
-                                       .method = HTTP_GET, .handler = h_page };
-    static const httpd_uri_t u_apple = { .uri = "/hotspot-detect.html",
-                                         .method = HTTP_GET,
-                                         .handler = h_page };
-    httpd_register_uri_handler(server, &u_root);
-    httpd_register_uri_handler(server, &u_204);
-    httpd_register_uri_handler(server, &u_apple);
-    httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, h_404);
-    return ESP_OK;
+    return xprs_hotspot_serve_page(server);
 }

@@ -33,6 +33,13 @@ extern "C" {
  */
 esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server);
 
+/**
+ * Register just the chat page (/, the captive-detection URIs and the 404
+ * redirect) on @p server, without any AP -- the same page answers on the
+ * LAN side. xprs_hotspot_start() calls this itself; calling both is safe.
+ */
+esp_err_t xprs_hotspot_serve_page(httpd_handle_t server);
+
 #ifdef __cplusplus
 }
 #endif

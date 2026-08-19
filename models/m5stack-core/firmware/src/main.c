@@ -1945,6 +1945,10 @@ void app_main(void)
         /* The walk-up hotspot rides the same server. With a STA up the AP
          * shares its channel (one radio), so ESP-NOW is untouched; alone it
          * sits on the ESP-NOW fallback channel. */
+        /* The chat page answers on the LAN side whether or not the AP is
+         * up -- easier to test, and a station without the hotspot is still
+         * a chat server for its network. */
+        if (xprs_api_httpd()) xprs_hotspot_serve_page(xprs_api_httpd());
         if (xcfg_get_bool("ap_on", true) && xprs_api_httpd()) {
             char ssid[33];
             const char *want = xcfg_get("ap_ssid", NULL);
