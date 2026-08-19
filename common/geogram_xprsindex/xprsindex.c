@@ -119,7 +119,7 @@ typedef struct __attribute__((packed)) {
     int8_t   rssi;
     uint8_t  flags;
     uint8_t  type;
-    uint8_t  _pad;
+    uint8_t  bearer;   /* xprsidx_bearer_t; 0 in records from before it */
     uint16_t len;
     char     id[8];
     char     from[XPRSIDX_CALL_LEN];
@@ -486,6 +486,7 @@ static void xi_to_public(const xi_rec_t *in, xprsidx_rec_t *out)
     out->index = in->index;
     out->ts    = in->ts;
     out->rssi  = in->rssi;
+    out->bearer = in->bearer;
     out->flags = in->flags;
     out->type  = in->type;
     out->len   = in->len;
@@ -698,7 +699,8 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
 }
 
 static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
-                          int rssi, bool outgoing, uint32_t ts_now)
+                          int rssi, bool outgoing, uint32_t ts_now,
+                          int bearer)
 {
     if (!st || !st->ready || !wire || len <= 0) return false;
     if (len > XPRSIDX_WIRE_MAX) return false;
@@ -734,6 +736,7 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     r.index = st->next_index;
     r.rssi  = (int8_t)rssi;
     r.type  = (uint8_t)code;
+    r.bearer = (uint8_t)(bearer >= 0 && bearer <= 255 ? bearer : 0);
     r.len   = (uint16_t)len;
     r.flags = 0;
     if (r.to[0]) r.flags |= XI_F_MAIL;
@@ -1074,11 +1077,31 @@ static void xi_writer_task(void *arg)
 bool xprsindex_add(xprsidx_t *st, const char *wire, int len,
                    int rssi, bool outgoing, uint32_t ts_now)
 {
+    return xprsindex_add2(st, wire, len, rssi, outgoing, ts_now,
+                          XI_B_UNKNOWN);
+}
+
+bool xprsindex_add2(xprsidx_t *st, const char *wire, int len,
+                    int rssi, bool outgoing, uint32_t ts_now, int bearer)
+{
     if (!st) return false;
     XI_LOCK(st);
-    bool ok = xi_add_locked(st, wire, len, rssi, outgoing, ts_now);
+    bool ok = xi_add_locked(st, wire, len, rssi, outgoing, ts_now, bearer);
     XI_UNLOCK(st);
     return ok;
+}
+
+const char *xprsidx_bearer_name(int code)
+{
+    switch (code) {
+    case XI_B_ESPNOW: return "espnow";
+    case XI_B_LAN:    return "lan";
+    case XI_B_BLE:    return "ble";
+    case XI_B_LORA:   return "lora";
+    case XI_B_RNS:    return "rns";
+    case XI_B_TCP:    return "tcp";
+    default:          return "";
+    }
 }
 
 size_t xprsindex_query(xprsidx_t *st, const xprsidx_query_t *q,

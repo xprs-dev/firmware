@@ -93,6 +93,16 @@ const char *xprsidx_type_name(int code);
 /** Code for a name; XI_T_OTHER when unknown. */
 int xprsidx_type_code(const char *name);
 
+/** Bearer codes: which lane a record was heard on. One byte on disk, in
+ *  what used to be an explicit pad -- old records read XI_B_UNKNOWN. */
+typedef enum {
+    XI_B_UNKNOWN = 0, XI_B_ESPNOW, XI_B_LAN, XI_B_BLE, XI_B_LORA,
+    XI_B_RNS, XI_B_TCP,
+} xprsidx_bearer_t;
+
+/** Name for a bearer code ("espnow"), or "" for unknown. Never NULL. */
+const char *xprsidx_bearer_name(int code);
+
 /** Record flags. */
 #define XI_F_MAIL      0x01   /* carries d: — held, never served to others */
 #define XI_F_OUTGOING  0x02   /* this station originated or relayed it */
@@ -141,6 +151,7 @@ typedef struct {
     int8_t   rssi;                      /* dBm, 0 if unknown */
     uint8_t  flags;
     uint8_t  type;                      /* xprsidx_type_t */
+    uint8_t  bearer;                    /* xprsidx_bearer_t */
     uint16_t len;                       /* bytes of wire */
     char     id[XPRSIDX_ID_LEN];        /* section 5 identifier */
     char     from[XPRSIDX_CALL_LEN];    /* f: */
@@ -213,6 +224,10 @@ bool       xprsindex_ready(const xprsidx_t *st);
  */
 bool xprsindex_add(xprsidx_t *st, const char *wire, int len,
                    int rssi, bool outgoing, uint32_t ts_now);
+
+/** xprsindex_add with the bearer recorded (xprsidx_bearer_t). */
+bool xprsindex_add2(xprsidx_t *st, const char *wire, int len,
+                    int rssi, bool outgoing, uint32_t ts_now, int bearer);
 
 /**
  * Stream matching records. Ascending index unless @p q asks for newest_first.

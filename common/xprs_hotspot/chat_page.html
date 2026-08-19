@@ -39,6 +39,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
         color:var(--text);padding:10px 12px;text-align:left;cursor:pointer;
         font-size:13px}
 .menu-panel button:hover{background:rgba(255,255,255,.06)}
+#content{flex:1;display:flex;min-height:0}
+#side{width:150px;border-right:1px solid var(--border);overflow-y:auto;
+      padding:8px 0;flex-shrink:0}
+#side .room{padding:8px 12px;cursor:pointer;font-size:13px;color:var(--muted);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#side .room.on{color:var(--accent);border-left:2px solid var(--accent);
+      background:rgba(255,168,106,.06)}
+#side .roomhead{padding:8px 12px 2px;font-size:10px;color:#555;
+      text-transform:uppercase;letter-spacing:1px}
+#chatcol{flex:1;display:flex;flex-direction:column;min-width:0}
+@media (max-width:640px) and (orientation:portrait){
+  #content{flex-direction:column}
+  #side{width:auto;border-right:0;border-bottom:1px solid var(--border);
+        display:flex;overflow-x:auto;overflow-y:hidden;padding:4px 8px;
+        gap:4px;align-items:center}
+  #side .roomhead{display:none}
+  #side .room{padding:5px 10px;border:1px solid var(--border);
+        border-radius:12px;flex-shrink:0}
+  #side .room.on{border-color:var(--accent);border-left-width:1px}
+}
 .messages{flex:1;overflow-y:auto;padding:12px;display:flex;
         flex-direction:column;gap:8px}
 .msg{max-width:85%}
@@ -104,17 +124,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
     </div>
   </div>
 </div>
-<div class="messages" id="msgs"></div>
-<div class="status-bar">
-  <span id="stat">connecting</span>
-  <span>XPRS station &middot; <a href="/config">settings</a></span>
-</div>
-<div id="replybar"><span id="replyinfo"></span>
-  <button class="x" onclick="cancelReply()">&#10005;</button></div>
-<div class="input-area">
-  <input id="txt" maxlength="180" placeholder="Message"
-         onkeydown="if(event.key==='Enter')sendMsg()">
-  <button onclick="sendMsg()">&gt;</button>
+<div id="content">
+  <div id="side"></div>
+  <div id="chatcol">
+    <div class="messages" id="msgs"></div>
+    <div class="status-bar">
+      <span id="stat">connecting</span>
+      <span>XPRS station &middot; <a href="/config">settings</a></span>
+    </div>
+    <div id="replybar"><span id="replyinfo"></span>
+      <button class="x" onclick="cancelReply()">&#10005;</button></div>
+    <div class="input-area">
+      <input id="txt" maxlength="180" placeholder="Message"
+             onkeydown="if(event.key==='Enter')sendMsg()">
+      <button onclick="sendMsg()">&gt;</button>
+    </div>
+  </div>
 </div>
 <div class="snackbar" id="snack"></div>
 <script>
@@ -229,14 +254,18 @@ function sendMsg(){
     if(replyTo.root)thread=' root:'+replyTo.root;
     thread+=' r:'+replyTo.id;
   }
-  var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+thread+' m:'+text);
+  var where='';
+  if(curRoom==='local')where=' scope:local';
+  else if(curRoom.slice(0,3)==='dm:')where=' d:'+curRoom.slice(3);
+  var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+where+thread+' m:'+text);
   if(wire.length>250){snack('Message too long');return;}
   t.value='';
   cancelReply();
   /* On the screen immediately -- the archive round trip (index writer +
    * the next poll) takes seconds, and a sender should not wait on it.
    * The wire is archived verbatim, so marking it seen dedups the echo. */
-  render({from:mycall,ts:Math.floor(Date.now()/1000),sig:'verified',wire:wire});
+  render({from:mycall,ts:Math.floor(Date.now()/1000),sig:'verified',
+          to:curRoom.slice(0,3)==='dm:'?curRoom.slice(3):'',wire:wire});
   postWire(wire,function(ok){
     if(!ok)snack('Send failed');});
 }
@@ -267,8 +296,69 @@ function cancelReply(){
   document.getElementById('replybar').className='';}
 
 var clearedBefore=parseInt(stGet('xprs_cleared')||'0',10)||0;
+
+/* Rooms (XPRS 13.11): Local is the scope:local conversation -- the packets
+ * honest stations keep off LoRa, radio and the internet. Global is the
+ * default scope, which goes anywhere. A packet with d: naming a person is a
+ * 1:1 and gets its own room. */
+var curRoom=stGet('xprs_room')||'local';
+var allRows=[];              /* every row heard, for room switches */
+var dmPeers={};              /* callsign -> true */
+function baseCall(c){var i=c.indexOf('-');return i<0?c:c.slice(0,i);}
+function roomOf(row){
+  var w=row.wire||'';
+  var to=row.to||'';
+  if(to&&to[0]!=='#'){
+    if(baseCall(to)===baseCall(mycall))return 'dm:'+baseCall(row.from);
+    if(baseCall(row.from)===baseCall(mycall))return 'dm:'+baseCall(to);
+    return null;             /* somebody else's 1:1: not our room */
+  }
+  return / scope:local(?: |$)/.test(w)?'local':'global';
+}
+function roomLabel(r){
+  return r==='local'?'Local':r==='global'?'Global':r.slice(3);}
+function renderSide(){
+  var el=document.getElementById('side');
+  var htmlp='<div class="roomhead">Rooms</div>';
+  var rooms=['local','global'];
+  var peers=Object.keys(dmPeers).sort();
+  var extra=peers.length?'<div class="roomhead">People</div>':'';
+  el.innerHTML=htmlp+
+    rooms.map(function(r){return '<div class="room'+(curRoom===r?' on':'')+
+      '" data-r="'+r+'">'+roomLabel(r)+'</div>';}).join('')+
+    extra+
+    peers.map(function(p){var r='dm:'+p;
+      return '<div class="room'+(curRoom===r?' on':'')+
+      '" data-r="'+r+'">'+p+'</div>';}).join('');
+  var items=el.getElementsByClassName('room');
+  for(var i=0;i<items.length;i++)
+    items[i].onclick=(function(r){return function(){switchRoom(r);};})(
+      items[i].getAttribute('data-r'));
+}
+function switchRoom(r){
+  curRoom=r;stSet('xprs_room',r);
+  cancelReply();
+  seen={};
+  document.getElementById('msgs').innerHTML='';
+  renderSide();
+  for(var i=0;i<allRows.length;i++)render(allRows[i]);
+  document.getElementById('txt').placeholder=
+    r==='local'?'Message (stays local)':
+    r==='global'?'Message (goes everywhere)':'Message to '+r.slice(3);
+}
+function openDm(call){
+  var p=baseCall(call);
+  if(p===baseCall(mycall))return;
+  dmPeers[p]=true;
+  switchRoom('dm:'+p);
+}
 function render(row){
   var w=row.wire||'';
+  var room=roomOf(row);
+  if(room===null)return;
+  if(room.slice(0,3)==='dm:')dmPeers[room.slice(3)]=true;
+  if(allRows.indexOf(row)<0)allRows.push(row);
+  if(room!==curRoom){renderSide();return;}
   if(seen[w])return;seen[w]=1;
   var mi=w.indexOf(' m:');
   var text=mi>=0?w.slice(mi+3):'';
@@ -293,7 +383,11 @@ function render(row){
     d.innerHTML='<div class="meta"><span class="author"></span>'+
       '<span class="time">'+when+'</span>'+badge+rbtn+'</div>'+
       '<div class="bubble"></div>';
-    d.querySelector('.author').textContent=row.from;
+    var au=d.querySelector('.author');
+    au.textContent=row.from;
+    au.style.cursor='pointer';
+    au.title='Message '+row.from+' directly';
+    au.onclick=function(){openDm(row.from);};
   }
   d.querySelector('.reply-btn').onclick=function(){startReply(id);};
   var bub=d.querySelector('.bubble');
@@ -343,6 +437,8 @@ function load(){
   var saved=stGet('xprs_nsec');
   var b=saved?nsecDecode(saved):null;
   useKey(b||randKey());
+  renderSide();
+  switchRoom(curRoom);
   load();
   setInterval(load,3000);
 })();

@@ -248,6 +248,7 @@ static struct {
     char    wire[XPRSIDX_WIRE_MAX + 1];
     int16_t len;
     int8_t  rssi;
+    uint8_t bearer;   /* xprsidx_bearer_t */
 } s_idxq[IDXQ_N];
 static volatile int s_idxq_w, s_idxq_r;   /* single writer set, single reader */
 static uint32_t s_idxq_dropped;
@@ -265,7 +266,7 @@ static struct {
 } s_ask;
 static volatile bool s_wipe_req;   /* Settings asked for the archive to go */
 
-static void idx_enqueue(const char *wire, int len, int rssi)
+static void idx_enqueue(const char *wire, int len, int rssi, uint8_t bearer)
 {
     if (!s_index || !xcfg_get_bool("index_on", true)) return;
     if (len > XPRSIDX_WIRE_MAX) return;
@@ -275,7 +276,15 @@ static void idx_enqueue(const char *wire, int len, int rssi)
     s_idxq[w].wire[len] = 0;
     s_idxq[w].len = (int16_t)len;
     s_idxq[w].rssi = (int8_t)(rssi < -127 ? -127 : rssi);
+    s_idxq[w].bearer = bearer;
     s_idxq_w = nw;
+}
+
+static uint8_t bearer_code(const char *name)
+{
+    if (strcmp(name, "espnow") == 0) return XI_B_ESPNOW;
+    if (strcmp(name, "lan") == 0)    return XI_B_LAN;
+    return XI_B_UNKNOWN;
 }
 
 /* What the index calls to decide whether a stored packet is really from who
@@ -437,7 +446,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 
     /* Every heard packet is offered to the index; ping/pong and duplicates
      * are its problem to refuse, not ours to guess. */
-    idx_enqueue(wire, len, rssi);
+    idx_enqueue(wire, len, rssi, bearer_code(bearer));
 
     /* A history ask addressed to us (or to the whole channel) is copied for
      * idx_task; everything with a cost happens there. */
@@ -1597,8 +1606,8 @@ static void idx_task(void *arg)
         while (s_idxq_r != s_idxq_w) {
             int r = s_idxq_r;
             if (s_index && xcfg_get_bool("index_on", true))
-                xprsindex_add(s_index, s_idxq[r].wire, s_idxq[r].len,
-                              s_idxq[r].rssi, false, 0);
+                xprsindex_add2(s_index, s_idxq[r].wire, s_idxq[r].len,
+                               s_idxq[r].rssi, false, 0, s_idxq[r].bearer);
             s_idxq_r = (r + 1) % IDXQ_N;
         }
 
@@ -1756,7 +1765,8 @@ static bool api_send_wire(const char *wire, int len)
     bool lan = xprslan_send(wire, len);
     bool now = xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
     if ((lan || now) && s_index && xcfg_get_bool("index_on", true))
-        xprsindex_add(s_index, wire, len, 0, true, (uint32_t)time(NULL));
+        xprsindex_add2(s_index, wire, len, 0, true, (uint32_t)time(NULL),
+                       lan ? XI_B_LAN : XI_B_ESPNOW);
     return lan || now;
 }
 

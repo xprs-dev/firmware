@@ -149,10 +149,11 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     jesc(wire, sizeof wire, rec->wire, rec->len);
     static char row[2 * XPRSIDX_WIRE_MAX + 192];
     int n = snprintf(row, sizeof row,
-        "%s{\"ts\":%lu,\"bearer\":\"\",\"rssi\":%d,\"from\":\"%s\","
+        "%s{\"ts\":%lu,\"bearer\":\"%s\",\"rssi\":%d,\"from\":\"%s\","
         "\"to\":\"%s\",\"type\":\"%s\",\"sig\":\"%s\",\"own\":%s,"
         "\"wire\":\"%s\"}",
-        c->emitted ? "," : "", (unsigned long)rec->ts, (int)rec->rssi,
+        c->emitted ? "," : "", (unsigned long)rec->ts,
+        xprsidx_bearer_name(rec->bearer), (int)rec->rssi,
         rec->from, rec->to, xprsidx_type_name(rec->type), sig,
         own ? "true" : "false", wire);
     c->emitted++;
