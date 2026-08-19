@@ -22,7 +22,12 @@ extern "C" {
 #define NOSTR_PUBLIC_KEY_LEN    32      // x-only public key for Schnorr/BIP-340 (32 bytes)
 #define NOSTR_NPUB_LEN          64      // bech32-encoded npub (npub1 + ~58 chars)
 #define NOSTR_NSEC_LEN          64      // bech32-encoded nsec
-#define NOSTR_CALLSIGN_LEN      7       // X3XXXX + null terminator
+// X3 + up to five characters + null terminator. A callsign is not a fixed
+// length (spec section 3): a holder shows two to five characters of their key,
+// so the longest form a station can be handed is X3XXXXX. This board still
+// derives four for itself -- it has nobody to choose for it -- but it must be
+// able to hold what it hears from a phone.
+#define NOSTR_CALLSIGN_LEN      8
 
 /**
  * @brief NOSTR key pair structure
@@ -32,7 +37,7 @@ typedef struct {
     uint8_t public_key[NOSTR_PUBLIC_KEY_LEN];       // Raw x-only public key bytes
     char npub[NOSTR_NPUB_LEN];                      // Bech32 encoded public key
     char nsec[NOSTR_NSEC_LEN];                      // Bech32 encoded private key
-    char callsign[NOSTR_CALLSIGN_LEN];              // Derived callsign (X3XXXX)
+    char callsign[NOSTR_CALLSIGN_LEN];              // Derived callsign (X3 + 2..5 chars)
 } nostr_keys_t;
 
 /**

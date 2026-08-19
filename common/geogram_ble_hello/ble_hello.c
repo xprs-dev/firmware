@@ -233,8 +233,11 @@ static int      s_rdedup_cnt;
 static rdedup_t s_shown[SHOWN_MAX];
 static int      s_shown_cnt;
 
+/* Longest callsign body on the air: X1 + five characters (spec section 3). */
+#define HEARD_CALL_MAX 7
+
 /* Heard-callsign registry (uppercased, NUL-terminated, SSID stripped). */
-typedef struct { char call[8]; uint32_t t; } heard_t;
+typedef struct { char call[HEARD_CALL_MAX + 1]; uint32_t t; } heard_t;
 static heard_t s_heard[HEARD_MAX];
 static int     s_heard_cnt;
 
@@ -372,12 +375,18 @@ static void shown_mark(uint32_t hash)
 }
 
 /* Remember a callsign heard over BLE (uppercase, strip any "-SSID"). Updates
- * the timestamp if already known; evicts the oldest entry when full. */
+ * the timestamp if already known; evicts the oldest entry when full.
+ *
+ * The longest callsign on the air is X1 + five characters (spec section 3), so
+ * HEARD_CALL_MAX is 7 and `call` needs 8 with the NUL. There is no slack: it
+ * fits exactly, which is why the bound is named rather than written as a
+ * literal in the loop. */
 static void heard_add(const char *raw, int rawlen)
 {
-    char call[8];
+    char call[HEARD_CALL_MAX + 1];
     int n = 0;
-    for (int i = 0; i < rawlen && raw[i] && raw[i] != '-' && n < 7; i++) {
+    for (int i = 0;
+         i < rawlen && raw[i] && raw[i] != '-' && n < HEARD_CALL_MAX; i++) {
         char c = raw[i];
         if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
         /* APRS callsign charset only — guards against junk in manufacturer data */
