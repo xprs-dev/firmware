@@ -218,19 +218,13 @@ function sendMsg(){
 }
 
 // ---- receiving ----
-// A chat shows people talking. Machine payloads also travel as t:message
-// (announce digests and the like): no spaces, pipes, long hashes. Skip them.
-function isMachine(text){
-  if(text.indexOf('|')>=0&&text.indexOf(' ')<0)return true;
-  if(text.length>40&&text.indexOf(' ')<0)return true;
-  return false;}
 var seen={};
 function render(row){
   var w=row.wire||'';
   if(seen[w])return;seen[w]=1;
   var mi=w.indexOf(' m:');
   var text=mi>=0?w.slice(mi+3):'';
-  if(!text||isMachine(text))return;
+  if(!text)return;
   var own=row.from===mycall;
   var d=document.createElement('div');
   d.className='msg '+(own?'local':'remote');
