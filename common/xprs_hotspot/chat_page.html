@@ -96,6 +96,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
         padding:1px 5px;border-radius:3px;margin-left:6px}
 .badge.ok{background:#1b5e20;color:#81c784}
 .badge.bad{background:#b71c1c;color:#ef9a9a}
+.mood{font-size:10px;font-style:italic;color:var(--accent);margin-left:4px}
 .input-area{border-top:1px solid var(--border);padding:8px;display:flex;
         gap:6px;align-items:center}
 .input-area input{flex:1;min-width:0;background:transparent;
@@ -266,7 +267,10 @@ function sendMsg(){
   var where='';
   if(curRoom==='local')where=' scope:local';
   else if(curRoom.slice(0,3)==='dm:')where=' d:'+curRoom.slice(3);
-  var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+where+thread+' m:'+text);
+  /* The Social feed publishes a status (27): kept and read later, not a
+   * conversation. A reply to a status is itself a status carrying r:. */
+  var typ=curRoom==='social'?'t:status':'t:message';
+  var wire=signWire(typ+' f:'+mycall+' ts:'+tsNow()+where+thread+' m:'+text);
   if(wire.length>250){snack('Message too long');return;}
   t.value='';
   cancelReply();
@@ -402,6 +406,8 @@ function baseCall(c){var i=c.indexOf('-');return i<0?c:c.slice(0,i);}
 function roomOf(row){
   var w=row.wire||'';
   var to=row.to||'';
+  /* A status (27) is a feed post, not a conversation: its own timeline. */
+  if((row.type||'')==='status'||w.indexOf('t:status ')===0)return 'social';
   if(to&&to[0]!=='#'){
     if(baseCall(to)===baseCall(mycall))return 'dm:'+baseCall(row.from);
     if(baseCall(row.from)===baseCall(mycall))return 'dm:'+baseCall(to);
@@ -410,7 +416,8 @@ function roomOf(row){
   return / scope:local(?: |$)/.test(w)?'local':'global';
 }
 function roomLabel(r){
-  return r==='local'?'Local':r==='global'?'Global':r.slice(3);}
+  return r==='local'?'Local':r==='global'?'Global':
+         r==='social'?'Social':r.slice(3);}
 function renderSide(){
   var el=document.getElementById('side');
   var htmlp='<div class="roomhead">Rooms</div>';
@@ -420,6 +427,9 @@ function renderSide(){
   el.innerHTML=htmlp+
     rooms.map(function(r){return '<div class="room'+(curRoom===r?' on':'')+
       '" data-r="'+r+'">'+roomLabel(r)+'</div>';}).join('')+
+    '<div class="roomhead">Feed</div>'+
+    '<div class="room'+(curRoom==='social'?' on':'')+
+      '" data-r="social">Social</div>'+
     extra+
     peers.map(function(p){var r='dm:'+p;
       return '<div class="room'+(curRoom===r?' on':'')+
@@ -438,7 +448,9 @@ function switchRoom(r){
   for(var i=0;i<allRows.length;i++)render(allRows[i]);
   document.getElementById('txt').placeholder=
     r==='local'?'Message (stays local)':
-    r==='global'?'Message (goes everywhere)':'Message to '+r.slice(3);
+    r==='global'?'Message (goes everywhere)':
+    r==='social'?'Status update (published to everyone)':
+    'Message to '+r.slice(3);
 }
 function openDm(call){
   var p=baseCall(call);
@@ -474,6 +486,9 @@ function render(row){
   var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';
   var badge=row.sig==='verified'?'<span class="badge ok">signed</span>'
            :(row.sig==='none'?'<span class="badge bad">unsigned</span>':'');
+  /* mood: (27.1) is decoration: one italic word beside the post. */
+  var mm=w.match(/ mood:([a-z]+) /);
+  if(mm)badge+='<span class="mood">'+mm[1]+'</span>';
   var extras='<span class="likes"></span>'+
     '<button class="dots" title="Message options">&#8942;</button>';
   if(own){
@@ -529,7 +544,7 @@ function load(){
         var rows=(d.rows||[]).slice().reverse();
         for(var i=0;i<rows.length;i++){
           var t=rows[i].type||'';
-          if(t==='message'||t==='reaction')render(rows[i]);
+          if(t==='message'||t==='reaction'||t==='status')render(rows[i]);
         }
         document.getElementById('stat').textContent=
           (d.held!==undefined?d.held+' packets held':'ok');
