@@ -373,6 +373,40 @@ maintains the generated one at the project root and that is what the build uses.
 The fragment had asked for `MSYS_1=6` and no central role for who knows how
 long, and the build had 12 and central enabled.
 
+### A component that spawns a task must be asked before it dies
+
+`xprsindex_open()` creates the store's writer task and hands it the store
+pointer. `xprsindex_close()` freed that pointer -- and for months nothing
+noticed, because nothing ever closed a store on a running board. The day the
+M5Stack gained "Wipe archive" (close, delete the files, reopen), the first
+wipe was a PANIC: the writer woke on its 2 s drain timer and walked freed
+memory.
+
+The rule: **any close/deinit of a struct that a task holds needs a shutdown
+handshake, not a free.** The store now does it in three lines each side --
+`close()` raises `st->closing` and waits; the writer task checks the flag at
+the top of every drain cycle, marks `st->writer_gone`, and `vTaskDelete(NULL)`s
+itself; only then does `close()` free. The wait is bounded (three drain
+periods) so a wedged writer cannot hang the caller forever.
+
+Two things made this cheap to find instead of a mystery:
+
+- **The rotating log said PANIC in its first line.** `/log.txt` (and
+  `/api/log`) begin every boot with the reset reason, and the heartbeat
+  showed the exact second the wipe ran. One curl, no serial, no guessing --
+  this is what the log was built for, and it paid for itself on its third
+  day.
+- The wipe runs on `idx_task`, the one task allowed near the storage, so the
+  failure was a clean use-after-free rather than the FatFs cross-task
+  corruption of the section above -- one bug, not two.
+
+And an operator's note for the scripted kind: the serial debug keys
+(`U`/`D`/`K` on the Settings panel) keep their focus and selection between
+test sessions. Two "identical" key sequences an hour apart landed on
+different rows -- one of them on Restart. Back out to a known state (send
+more `U`s than the list has rows) before navigating by count, or use the
+purpose-made key (`W` = wipe) instead of driving the menu.
+
 ### Task stacks are heap, and these are the measured floors
 
 Every stack on this board comes out of the same ~15 KB, so they get trimmed --
