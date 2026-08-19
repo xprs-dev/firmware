@@ -343,10 +343,17 @@ typedef struct {
     char     text[120];
     char     id[XPRS_ID_LEN];   /* section 5, so replies can find us */
     char     r[XPRS_ID_LEN];    /* parent id when this is a reply (6.4) */
+    uint8_t  kind;        /* 0 global, 1 scope:local, 2 direct (d:) */
     uint32_t ep;          /* epoch when heard, 0 when the clock was not up */
 } chat_t;
 static chat_t s_chat[CHAT_MAX];
 static int s_chat_n;      /* total ever; ring position = n % CHAT_MAX */
+
+/* LVGL's FontAwesome glyph bytes, without dragging lvgl.h into main.c:
+ * HOME f015, GPS f124, ENVELOPE f0e0 -- the same values xprs_ui renders. */
+#define LV_SYMBOL_HOME     "\xEF\x80\x95"
+#define LV_SYMBOL_GPS      "\xEF\x84\xA4"
+#define LV_SYMBOL_ENVELOPE "\xEF\x83\xA0"
 
 static void chat_note(const xprs_t *p)
 {
@@ -368,6 +375,14 @@ static void chat_note(const xprs_t *p)
     snprintf(c->text, sizeof c->text, "%s", text);
     xprs_id(p, c->id);
     if (!xprs_get_str(p, "r", c->r, sizeof c->r)) c->r[0] = 0;
+    char sc[12], dst[16];
+    if (xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#')
+        c->kind = 2;                                   /* a 1:1 */
+    else if (xprs_get_str(p, "scope", sc, sizeof sc) &&
+             strcmp(sc, "local") == 0)
+        c->kind = 1;                                   /* the local room */
+    else
+        c->kind = 0;                                   /* global, the default */
     c->ep = epoch_now();
     s_chat_n++;
 }
@@ -430,7 +445,11 @@ static int s_sel[8];      /* per-panel selected row (arrows move it) */
  * list, then it becomes OK; climbing back out above the top row hands the
  * Menu key back. */
 static bool s_set_focus;
-static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */      /* total ever, ring position = s_flow_n % FLOW_MAX */
+static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */
+/* Rotate: C on the home panel starts a 30 s tour of Home, Stats, Chat;
+ * any button ends it and hands the wheel back. */
+static bool s_rotate;
+static uint64_t s_rotate_next_us;      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
@@ -1187,6 +1206,11 @@ static void ui_render(void)
             if (!c->from[0]) continue;
             xui_row_t *r = &tr[nr++];
             snprintf(r->cell[0], sizeof r->cell[0], "%s", c->from);
+            /* The room at a glance (13.11): a house for scope:local, a
+             * pin for the global default, an envelope for a 1:1. */
+            const char *ric = c->kind == 1 ? LV_SYMBOL_HOME
+                              : c->kind == 2 ? LV_SYMBOL_ENVELOPE
+                                             : LV_SYMBOL_GPS;
             if (c->r[0]) {
                 /* A reply, compactly: @who-it-answers, then the text. The
                  * parent's callsign when this ring still holds it, its
@@ -1199,10 +1223,11 @@ static void ui_render(void)
                         pfrom = s_chat[j].from;
                         break;
                     }
-                snprintf(r->cell[1], sizeof r->cell[1], "@%s %.14s",
-                         pfrom, c->text);
+                snprintf(r->cell[1], sizeof r->cell[1], "%s @%.7s %.9s",
+                         ric, pfrom, c->text);
             } else {
-                snprintf(r->cell[1], sizeof r->cell[1], "%.22s", c->text);
+                snprintf(r->cell[1], sizeof r->cell[1], "%s %.19s",
+                         ric, c->text);
             }
             if (c->ep && nowep) {
                 uint32_t age = nowep - c->ep;
@@ -1338,7 +1363,7 @@ static void ui_render(void)
     else if (s_panel != 0)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else
-        xui_set_keys("Menu", "", "");
+        xui_set_keys("Menu", "", s_rotate ? "Stop" : "Rotate");
 }
 
 /* ── idx_task: the indexer's writer, announcer and replayer (core 1) ────── */
@@ -1865,6 +1890,7 @@ static void ui_task(void *arg)
             }
         } else {
             if (a_held_ms >= 30 && !a_long_fired) {
+                if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
                 if (s_panel == 5 && s_set_focus) {
                     /* Inside the Settings list, A is OK. */
                     settings_ok(s_sel[5]);
@@ -1882,6 +1908,7 @@ static void ui_task(void *arg)
         /* B and C: up / down. On every list panel they walk the rows and
          * the strip below shows the selected row's detail. */
         if (btn_pressed(&bb)) {
+            if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
             if (s_panel == 5) {
                 if (s_set_focus && s_sel[5] > 0) s_sel[5]--;
                 else s_set_focus = false;   /* above the top row: back out */
@@ -1893,8 +1920,16 @@ static void ui_task(void *arg)
             force = true;
             ESP_LOGI(TAG, "button B: up (sel %d)", s_sel[s_panel]);
         }
-        if (btn_pressed(&bc)) {
-            if (s_panel == 5) {
+        if (btn_pressed(&bc) && s_panel == 0 && !s_rotate) {
+            /* The right button on the home screen starts the tour. */
+            s_rotate = true;
+            s_rotate_next_us = esp_timer_get_time() + 30000000ULL;
+            s_panel = 6;                 /* Stats first, Chat, back home */
+            force = true;
+            ESP_LOGI(TAG, "rotate: on");
+        } else if (btn_pressed(&bc)) {
+            if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
+            else if (s_panel == 5) {
                 if (!s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
                 else s_sel[5]++;             /* render clamps to the list */
             } else if (s_panel == 6) {
@@ -1945,6 +1980,11 @@ static void ui_task(void *arg)
         if (ch == 'W') s_wipe_req = true;   /* scripted archive wipe */
 
         uint64_t now_us = esp_timer_get_time();
+        if (s_rotate && now_us >= s_rotate_next_us) {
+            s_rotate_next_us = now_us + 30000000ULL;
+            s_panel = s_panel == 0 ? 6 : s_panel == 6 ? 7 : 0;
+            force = true;
+        }
         if (force || now_us >= next_render_us) {
             ui_render();
             /* Scope and flow settle every 10 s; the counter panels at 2 s. */
