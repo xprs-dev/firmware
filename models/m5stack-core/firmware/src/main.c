@@ -56,6 +56,7 @@ static char s_pass[64];
 #include "lwip/sockets.h"
 #include "ili9342.h"
 #include "ili9342.h"
+#include "xprs_station.h"
 #include "xprs_ui.h"
 #include "xprs_config.h"
 #include "xprs_api.h"
@@ -149,8 +150,6 @@ static volatile int s_logring_w, s_logring_r;
 static portMUX_TYPE s_logring_mux = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t s_log_orig;
 
-static uint32_t epoch_now(void);
-
 static int log_hook(const char *fmt, va_list ap)
 {
     va_list ap2;
@@ -161,7 +160,7 @@ static int log_hook(const char *fmt, va_list ap)
      * before that -- what makes /api/log machine readable (API-HTTP.md). */
     char line[176];
     int n;
-    uint32_t ep = epoch_now();
+    uint32_t ep = xst_epoch_now();
     if (ep)
         n = snprintf(line, sizeof line, "%lu ", (unsigned long)ep);
     else
@@ -304,19 +303,6 @@ static int index_verifier(const char *wire, int len, const char *from)
 
 static uint32_t s_heard_count;
 
-/* ── Who we have heard, by name — the display's device list ─────────────── */
-
-/* The bearer's own peer table is MAC-keyed and nameless; the UI wants
- * callsigns. Harvested from the f: field of everything heard, one row per
- * callsign, freshest wins. Metadata only, like everything the screen shows. */
-#define SEEN_MAX 16
-typedef struct {
-    char     call[10];
-    char     bearer[7];        /* "espnow" or "lan" */
-    int      rssi;             /* 0 for LAN */
-    uint32_t last_ms;
-} seen_t;
-static seen_t s_seen[SEEN_MAX];
 static uint32_t s_last_rx_ms;
 static char s_last_call[10];
 
@@ -335,20 +321,6 @@ typedef struct {
 static flow_t s_flow[FLOW_MAX];
 static int s_flow_n;
 
-/* The chat ring: t:message packets with a human m: body, for the Chat
- * panel. Fed from both directions -- what the radios heard and what the
- * API sent. */
-#define CHAT_MAX 8
-typedef struct {
-    char     from[10];
-    char     text[120];
-    char     id[XPRS_ID_LEN];   /* section 5, so replies can find us */
-    char     r[XPRS_ID_LEN];    /* parent id when this is a reply (6.4) */
-    uint8_t  kind;        /* 0 global, 1 scope:local, 2 direct (d:) */
-    uint32_t ep;          /* epoch when heard, 0 when the clock was not up */
-} chat_t;
-static chat_t s_chat[CHAT_MAX];
-static int s_chat_n;      /* total ever; ring position = n % CHAT_MAX */
 
 /* LVGL's FontAwesome glyph bytes, without dragging lvgl.h into main.c:
  * HOME f015, GPS f124, ENVELOPE f0e0 -- the same values xprs_ui renders. */
@@ -356,91 +328,8 @@ static int s_chat_n;      /* total ever; ring position = n % CHAT_MAX */
 #define LV_SYMBOL_GPS      "\xEF\x84\xA4"
 #define LV_SYMBOL_ENVELOPE "\xEF\x83\xA0"
 
-static void chat_note(const xprs_t *p)
-{
-    char from[10], text[120];
-    char type[16];
-    xprs_type(p, type, sizeof type);
-    if (strcmp(type, "message") != 0) return;
-    if (!xprs_get_str(p, "f", from, sizeof from)) return;
-    if (!xprs_get_str(p, "m", text, sizeof text) || !text[0]) return;
-    /* The same message arrives more than once -- our own send plus the
-     * relay's re-air, or both bearers. One line per saying. */
-    for (int i = 0; i < CHAT_MAX; i++) {
-        if (s_chat[i].from[0] && strcmp(s_chat[i].from, from) == 0 &&
-            strcmp(s_chat[i].text, text) == 0)
-            return;
-    }
-    chat_t *c = &s_chat[s_chat_n % CHAT_MAX];
-    snprintf(c->from, sizeof c->from, "%s", from);
-    snprintf(c->text, sizeof c->text, "%s", text);
-    xprs_id(p, c->id);
-    if (!xprs_get_str(p, "r", c->r, sizeof c->r)) c->r[0] = 0;
-    char sc[12], dst[16];
-    if (xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#')
-        c->kind = 2;                                   /* a 1:1 */
-    else if (xprs_get_str(p, "scope", sc, sizeof sc) &&
-             strcmp(sc, "local") == 0)
-        c->kind = 1;                                   /* the local room */
-    else
-        c->kind = 0;                                   /* global, the default */
-    c->ep = epoch_now();
-    s_chat_n++;
-}
 
-/* Statistics for the Stats panel, on the WALL CLOCK so they survive a
- * reboot: 10-minute buckets covering a day and daily buckets covering a
- * month, both rings persisted to /idx/stats.bin by idx_task and reloaded
- * at boot. Before NTP syncs nothing is banked -- a bucket keyed by a wrong
- * clock would poison the ring it lands in. Aggregation upward: packets
- * add, distinct-device counts take the busiest sub-bucket (a device seen
- * in two buckets is one device, not two, so summing would lie). */
-#define SB10_N   144            /* 10-minute buckets: one day */
-#define SBDAY_N  30             /* daily buckets: one month */
-#define STAT_DEVS 12
-typedef struct {
-    uint32_t rx, tx;
-    uint16_t dev, pad;
-} sbucket_t;
-static sbucket_t s_sb10[SB10_N];
-static uint32_t  s_sb10_id[SB10_N];     /* absolute period each slot holds */
-static sbucket_t s_sbday[SBDAY_N];
-static uint32_t  s_sbday_id[SBDAY_N];
-static int s_tz_off;                    /* seconds east of UTC, from config */
-
-/* Distinct devices in the LIVE 10-minute bucket only. */
-static uint32_t s_cur_devh[STAT_DEVS];
-static int      s_cur_devn;
-static uint32_t s_cur_slot;
-
-static uint32_t epoch_now(void)
-{
-    time_t t = time(NULL);
-    return t > 1700000000 ? (uint32_t)t : 0;   /* 0 until NTP has spoken */
-}
-
-static sbucket_t *stat10(uint32_t ep)
-{
-    uint32_t slot = ep / 600;
-    int i = (int)(slot % SB10_N);
-    if (s_sb10_id[i] != slot) {
-        memset(&s_sb10[i], 0, sizeof s_sb10[i]);
-        s_sb10_id[i] = slot;
-    }
-    if (s_cur_slot != slot) { s_cur_slot = slot; s_cur_devn = 0; }
-    return &s_sb10[i];
-}
-
-static sbucket_t *statday(uint32_t ep)
-{
-    uint32_t slot = (uint32_t)((int64_t)ep + s_tz_off) / 86400;
-    int i = (int)(slot % SBDAY_N);
-    if (s_sbday_id[i] != slot) {
-        memset(&s_sbday[i], 0, sizeof s_sbday[i]);
-        s_sbday_id[i] = slot;
-    }
-    return &s_sbday[i];
-}
+static int s_tz_off;      /* seconds east of UTC, from config (Node clock) */
 static int s_sel[8];      /* per-panel selected row (arrows move it) */
 /* Settings is modal: A stays the Menu key until the arrows dive into the
  * list, then it becomes OK; climbing back out above the top row hands the
@@ -493,25 +382,9 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_ask.pending = true;                 /* published last */
     } while (0);
 
-    chat_note(&sp);
-
-    uint32_t ep = epoch_now();
-    if (ep) {
-        sbucket_t *b = stat10(ep);
-        sbucket_t *d = statday(ep);
-        b->rx++;
-        d->rx++;
-        uint32_t chh = 5381;
-        for (const char *c = call; *c; c++) chh = chh * 33 + (uint8_t)*c;
-        bool known = false;
-        for (int i = 0; i < s_cur_devn; i++)
-            if (s_cur_devh[i] == chh) { known = true; break; }
-        if (!known && s_cur_devn < STAT_DEVS) {
-            s_cur_devh[s_cur_devn++] = chh;
-            b->dev = (uint16_t)s_cur_devn;
-            if (b->dev > d->dev) d->dev = b->dev;
-        }
-    }
+    /* Chat ring + rx/device stats + devices list live in xprs_station now,
+     * shared with every board that has a screen. */
+    xst_ingest_parsed(&sp, bearer, rssi);
 
     flow_t *fl = &s_flow[s_flow_n % FLOW_MAX];
     snprintf(fl->call, sizeof fl->call, "%s", call);
@@ -527,20 +400,6 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     fl->ms = now;
     s_flow_n++;
 
-    int slot = -1, oldest = 0;
-    for (int i = 0; i < SEEN_MAX; i++) {
-        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0) {
-            slot = i;
-            break;
-        }
-        if (!s_seen[i].call[0]) { if (slot < 0) slot = i; }
-        else if (s_seen[i].last_ms < s_seen[oldest].last_ms) oldest = i;
-    }
-    if (slot < 0) slot = oldest;
-    snprintf(s_seen[slot].call, sizeof s_seen[slot].call, "%s", call);
-    snprintf(s_seen[slot].bearer, sizeof s_seen[slot].bearer, "%s", bearer);
-    s_seen[slot].rssi = rssi;
-    s_seen[slot].last_ms = now;
 }
 
 /* ── Network state the UI shows ─────────────────────────────────────────── */
@@ -825,27 +684,6 @@ static void inet_probe_task(void *arg)
 
 static int s_panel;
 
-/* Distance from signal strength, the way the phones estimate BLE range:
- * log-distance path loss, d = 10^((A - rssi) / (10 n)). For ESP-NOW at
- * 2.4 GHz between these boards, A (RSSI at 1 m) is about -40 dBm and the
- * indoor exponent about 2.7. An estimate, honestly rough -- walls, bodies
- * and antennas bend it -- but the same packet at -46 and at -85 are a room
- * and a street apart, and that is what the scope shows. */
-static float est_distance_m(int rssi)
-{
-    if (!rssi) return -1.0f;
-    return powf(10.0f, ((-40.0f - (float)rssi) / 27.0f));
-}
-
-static int seen_in_range(void)
-{
-    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    int n = 0;
-    for (int i = 0; i < SEEN_MAX; i++) {
-        if (s_seen[i].call[0] && (now - s_seen[i].last_ms) / 1000 < UI_INRANGE_SEC) n++;
-    }
-    return n;
-}
 
 static void ui_render(void)
 {
@@ -861,16 +699,7 @@ static void ui_render(void)
         uint32_t lrx = 0, ltx = 0, lcancel = 0;
         xprsnow_tx_stats(&issued, &done, &failed);
         xprslan_stats(&lrx, &ltx, &lcancel);
-        static uint32_t tx_prev;
-        static bool tx_primed;
-        uint32_t tx_total = done + ltx;
-        uint32_t ep = epoch_now();
-        if (tx_primed && tx_total > tx_prev && ep) {
-            stat10(ep)->tx += tx_total - tx_prev;
-            statday(ep)->tx += tx_total - tx_prev;
-        }
-        if (ep || !tx_primed) tx_prev = tx_total;
-        tx_primed = true;
+        xst_tx_total(done + ltx);
     }
 
     body[0] = 0;
@@ -901,14 +730,12 @@ static void ui_render(void)
 
         /* The scope: everybody in reach, at their estimated distance. */
         xui_blip_t blips[XUI_BLIP_MAX];
-        int nb = 0;
-        for (int i = 0; i < SEEN_MAX && nb < XUI_BLIP_MAX; i++) {
-            if (!s_seen[i].call[0]) continue;
-            if ((now - s_seen[i].last_ms) / 1000 >= UI_INRANGE_SEC) continue;
-            snprintf(blips[nb].label, sizeof blips[nb].label, "%s",
-                     s_seen[i].call);
-            blips[nb].meters = est_distance_m(s_seen[i].rssi);
-            nb++;
+        xst_dev_t devs[XUI_BLIP_MAX];
+        int nb = xst_devices(devs, XUI_BLIP_MAX, UI_INRANGE_SEC);
+        for (int i = 0; i < nb; i++) {
+            snprintf(blips[i].label, sizeof blips[i].label, "%s",
+                     devs[i].call);
+            blips[i].meters = xst_est_distance_m(devs[i].rssi);
         }
         xui_radar_blips(blips, nb);
         xui_set_title("Links 1/8");
@@ -927,7 +754,7 @@ static void ui_render(void)
             snprintf(r->to, sizeof r->to, "%s", fl->to);
             snprintf(r->type, sizeof r->type, "%s", fl->type);
             snprintf(r->link, sizeof r->link, "%s", fl->link);
-            r->dist_m = fl->rssi ? est_distance_m(fl->rssi) : -1.0f;
+            r->dist_m = fl->rssi ? xst_est_distance_m(fl->rssi) : -1.0f;
             r->age_s = (now - fl->ms) / 1000;
             snprintf(r->text, sizeof r->text, "%s", fl->text);
         }
@@ -999,28 +826,27 @@ static void ui_render(void)
         xui_table_setup(4, hdr, cw);
 
         static xui_row_t tr[XUI_TAB_ROWS];
-        int nr = 0;
-        for (int i = 0; i < SEEN_MAX && nr < XUI_TAB_ROWS; i++) {
-            if (!s_seen[i].call[0]) continue;
-            uint32_t age = (now - s_seen[i].last_ms) / 1000;
-            if (age >= UI_INRANGE_SEC) continue;
-            xui_row_t *r = &tr[nr++];
-            snprintf(r->cell[0], sizeof r->cell[0], "%s", s_seen[i].call);
-            snprintf(r->cell[1], sizeof r->cell[1], "%s", s_seen[i].bearer);
-            if (s_seen[i].rssi) {
-                int m = (int)(est_distance_m(s_seen[i].rssi) + 0.5f);
+        xst_dev_t devs[XUI_TAB_ROWS];
+        int nr = xst_devices(devs, XUI_TAB_ROWS, UI_INRANGE_SEC);
+        for (int i = 0; i < nr; i++) {
+            uint32_t age = (now - devs[i].last_ms) / 1000;
+            xui_row_t *r = &tr[i];
+            snprintf(r->cell[0], sizeof r->cell[0], "%s", devs[i].call);
+            snprintf(r->cell[1], sizeof r->cell[1], "%s", devs[i].bearer);
+            if (devs[i].rssi) {
+                int m = (int)(xst_est_distance_m(devs[i].rssi) + 0.5f);
                 snprintf(r->cell[2], sizeof r->cell[2], "~%dm", m);
                 snprintf(r->detail, sizeof r->detail,
                          "%s via %s: %d dBm, about %d m away. "
                          "Heard %lu s ago.",
-                         s_seen[i].call, s_seen[i].bearer,
-                         s_seen[i].rssi, m, (unsigned long)age);
+                         devs[i].call, devs[i].bearer,
+                         devs[i].rssi, m, (unsigned long)age);
             } else {
                 snprintf(r->cell[2], sizeof r->cell[2], "-");
                 snprintf(r->detail, sizeof r->detail,
                          "%s via %s: distance unknown on this link. "
                          "Heard %lu s ago.",
-                         s_seen[i].call, s_seen[i].bearer,
+                         devs[i].call, devs[i].bearer,
                          (unsigned long)age);
             }
             snprintf(r->cell[3], sizeof r->cell[3], "%lus",
@@ -1150,7 +976,7 @@ static void ui_render(void)
              "The device's friendly name. Set it through the config "
              "share above.");
         {
-            uint32_t tep = epoch_now();
+            uint32_t tep = xst_epoch_now();
             char tval[26];
             if (tep) {
                 time_t lt = (time_t)((int64_t)tep + s_tz_off);
@@ -1198,14 +1024,12 @@ static void ui_render(void)
         xui_table_setup(3, hdr, cw);
 
         static xui_row_t tr[XUI_TAB_ROWS];
-        int nr = 0;
-        uint32_t nowep = epoch_now();
-        for (int i = 0; i < CHAT_MAX && nr < XUI_TAB_ROWS; i++) {
-            int idx = s_chat_n - 1 - i;
-            if (idx < 0) break;
-            chat_t *c = &s_chat[idx % CHAT_MAX];
-            if (!c->from[0]) continue;
-            xui_row_t *r = &tr[nr++];
+        xst_chat_t rows[XUI_TAB_ROWS];
+        int nr = xst_chat(rows, XUI_TAB_ROWS);
+        uint32_t nowep = xst_epoch_now();
+        for (int i = 0; i < nr; i++) {
+            xst_chat_t *c = &rows[i];
+            xui_row_t *r = &tr[i];
             snprintf(r->cell[0], sizeof r->cell[0], "%s", c->from);
             /* The room at a glance (13.11): a house for scope:local, a
              * pin for the global default, an envelope for a 1:1. */
@@ -1217,13 +1041,9 @@ static void ui_render(void)
                  * parent's callsign when this ring still holds it, its
                  * section 5 id otherwise -- same rule as the spec's "marked
                  * as answering a message it does not hold". */
-                const char *pfrom = c->r;
-                for (int j = 0; j < CHAT_MAX; j++)
-                    if (s_chat[j].from[0] &&
-                        strcmp(s_chat[j].id, c->r) == 0) {
-                        pfrom = s_chat[j].from;
-                        break;
-                    }
+                xst_chat_t parent;
+                const char *pfrom =
+                    xst_chat_find(c->r, &parent) ? parent.from : c->r;
                 snprintf(r->cell[1], sizeof r->cell[1], "%s @%.7s %.9s",
                          ric, pfrom, c->text);
             } else {
@@ -1245,15 +1065,10 @@ static void ui_render(void)
                 r->cell[2][0] = 0;
             }
             if (c->r[0]) {
-                const char *pfrom = c->r;
-                const char *ptext = NULL;
-                for (int j = 0; j < CHAT_MAX; j++)
-                    if (s_chat[j].from[0] &&
-                        strcmp(s_chat[j].id, c->r) == 0) {
-                        pfrom = s_chat[j].from;
-                        ptext = s_chat[j].text;
-                        break;
-                    }
+                xst_chat_t parent;
+                int have = xst_chat_find(c->r, &parent);
+                const char *pfrom = have ? parent.from : c->r;
+                const char *ptext = have ? parent.text : NULL;
                 if (ptext)
                     snprintf(r->detail, sizeof r->detail,
                              "%s replying to %s (\"%.30s\"): %.90s",
@@ -1273,62 +1088,12 @@ static void ui_render(void)
         break;
     }
     default: {  /* Stats: 10-minute, hourly or daily bars; arrows switch */
-        uint16_t dev[SBDAY_N], rxv[SBDAY_N], txv[SBDAY_N];
-        int np = 0;
-        uint32_t ep = epoch_now();
-        const char *suffix = "";
-        if (!ep) {
-            suffix = " (waiting for time)";
-        } else if (s_stats_view == 0) {
-            /* Last 24 ten-minute buckets: four hours. */
-            suffix = " / 10 min (4 h)";
-            uint32_t slot = ep / 600;
-            np = 24;
-            for (int k = 0; k < np; k++) {
-                uint32_t sl = slot - (np - 1 - k);
-                int i = (int)(sl % SB10_N);
-                bool live = s_sb10_id[i] == sl;
-                dev[k] = live ? s_sb10[i].dev : 0;
-                rxv[k] = live ? (uint16_t)s_sb10[i].rx : 0;
-                txv[k] = live ? (uint16_t)s_sb10[i].tx : 0;
-            }
-        } else if (s_stats_view == 1) {
-            /* Last 24 hours, each the sum of its six buckets. */
-            suffix = " / hour (24 h)";
-            uint32_t hour = ep / 3600;
-            np = 24;
-            for (int k = 0; k < np; k++) {
-                uint32_t hk = hour - (np - 1 - k);
-                uint32_t rx = 0, tx = 0;
-                uint16_t dv = 0;
-                for (int j = 0; j < 6; j++) {
-                    uint32_t sl = hk * 6 + j;
-                    int i = (int)(sl % SB10_N);
-                    if (s_sb10_id[i] != sl) continue;
-                    rx += s_sb10[i].rx;
-                    tx += s_sb10[i].tx;
-                    if (s_sb10[i].dev > dv) dv = s_sb10[i].dev;
-                }
-                dev[k] = dv;
-                rxv[k] = (uint16_t)(rx > 65535 ? 65535 : rx);
-                txv[k] = (uint16_t)(tx > 65535 ? 65535 : tx);
-            }
-        } else {
-            /* Last 30 days. */
-            suffix = " / day (30 d)";
-            uint32_t dslot = (uint32_t)((int64_t)ep + s_tz_off) / 86400;
-            np = 30;
-            for (int k = 0; k < np; k++) {
-                uint32_t sl = dslot - (np - 1 - k);
-                int i = (int)(sl % SBDAY_N);
-                bool live = s_sbday_id[i] == sl;
-                dev[k] = live ? s_sbday[i].dev : 0;
-                rxv[k] = live ? (uint16_t)(s_sbday[i].rx > 65535 ? 65535
-                                           : s_sbday[i].rx) : 0;
-                txv[k] = live ? (uint16_t)(s_sbday[i].tx > 65535 ? 65535
-                                           : s_sbday[i].tx) : 0;
-            }
-        }
+        uint16_t dev[XST_SBDAY_N], rxv[XST_SBDAY_N], txv[XST_SBDAY_N];
+        int np = xst_stats_series(s_stats_view, dev, rxv, txv, XST_SBDAY_N);
+        const char *suffix = !np ? " (waiting for time)"
+                             : s_stats_view == 0 ? " / 10 min (4 h)"
+                             : s_stats_view == 1 ? " / hour (24 h)"
+                                                 : " / day (30 d)";
         char t0[48], t1[48], t2[48];
         snprintf(t0, sizeof t0, "Devices heard%s", suffix);
         snprintf(t1, sizeof t1, "Packets received%s", suffix);
@@ -1342,7 +1107,7 @@ static void ui_render(void)
     }
     }
     xui_set_body(body);
-    xui_set_device_count(seen_in_range());
+    xui_set_device_count(xst_devices_in_range(UI_INRANGE_SEC));
 
     /* Every list panel keeps its own selection: clamp it to what is on the
      * screen, and take the first row when rows appear after the panel was
@@ -1549,46 +1314,6 @@ static void idx_answer_history(void)
     idx_result(bearer, from, cmdid, s_page.more ? 206 : 200);
 }
 
-/* The stats rings, serialised whole: under 3 KB, written every ten minutes
- * by idx_task (the only task allowed near the storage) and read back at
- * boot -- a reboot no longer forgets the day. */
-#define STATS_MAGIC 0x31545358u   /* "XST1" */
-typedef struct {
-    uint32_t  magic;
-    sbucket_t sb10[SB10_N];
-    uint32_t  sb10_id[SB10_N];
-    sbucket_t sbday[SBDAY_N];
-    uint32_t  sbday_id[SBDAY_N];
-} stats_blob_t;
-
-static void stats_load(void)
-{
-    FILE *f = fopen("/idx/stats.bin", "rb");
-    if (!f) return;
-    static stats_blob_t bl;
-    bool ok = fread(&bl, sizeof bl, 1, f) == 1 && bl.magic == STATS_MAGIC;
-    fclose(f);
-    if (!ok) return;
-    memcpy(s_sb10, bl.sb10, sizeof s_sb10);
-    memcpy(s_sb10_id, bl.sb10_id, sizeof s_sb10_id);
-    memcpy(s_sbday, bl.sbday, sizeof s_sbday);
-    memcpy(s_sbday_id, bl.sbday_id, sizeof s_sbday_id);
-    ESP_LOGI(TAG, "stats reloaded from flash");
-}
-
-static void stats_save(void)
-{
-    FILE *f = fopen("/idx/stats.bin", "wb");
-    if (!f) return;
-    static stats_blob_t bl;
-    bl.magic = STATS_MAGIC;
-    memcpy(bl.sb10, s_sb10, sizeof s_sb10);
-    memcpy(bl.sb10_id, s_sb10_id, sizeof s_sb10_id);
-    memcpy(bl.sbday, s_sbday, sizeof s_sbday);
-    memcpy(bl.sbday_id, s_sbday_id, sizeof s_sbday_id);
-    fwrite(&bl, sizeof bl, 1, f);
-    fclose(f);
-}
 
 static void idx_task(void *arg)
 {
@@ -1620,7 +1345,7 @@ static void idx_task(void *arg)
                  esp_err_to_name(err));
     }
 
-    stats_load();
+    xst_stats_load("/idx/stats.bin");
     mkdir("/idx/log", 0777);
     esp_task_wdt_add(NULL);   /* a wedged storage task becomes a logged reboot */
 
@@ -1659,9 +1384,9 @@ static void idx_task(void *arg)
 
         /* The stats rings hit the flash every ten minutes -- losing at most
          * ten minutes of bars to a power pull. */
-        if (epoch_now() && now_s - last_stats_save_s >= 600) {
+        if (xst_epoch_now() && now_s - last_stats_save_s >= 600) {
             last_stats_save_s = now_s;
-            stats_save();
+            xst_stats_save("/idx/stats.bin");
         }
 
         /* The heartbeat esp32.md prescribes: a writer that stops is visible
@@ -1785,7 +1510,7 @@ static bool api_send_wire(const char *wire, int len)
         char type[16];
         xprs_type(&p, type, sizeof type);
         if (strcmp(type, "identity") == 0) identity_heard(&p);
-        chat_note(&p);   /* our hotspot users' messages show on the LCD too */
+        xst_chat_note(&p);   /* our hotspot users' messages show on the LCD too */
     }
 
     bool lan = xprslan_send(wire, len);
@@ -2132,6 +1857,7 @@ void app_main(void)
                  xcfg_get("ntp", "pool.ntp.org"),
                  s_tz_off / 3600, abs(s_tz_off / 60) % 60);
     }
+    xst_init(s_call, s_tz_off);
 
     /* The LAN bearer first, deliberately: its task is what pumps every bearer's
      * re-air queue and beacon, ESP-NOW included. Starting ESP-NOW without it
