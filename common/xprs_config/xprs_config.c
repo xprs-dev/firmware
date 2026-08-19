@@ -36,6 +36,8 @@ static cfg_entry_t s_cfg[] = {
     { "igate_on",  {0}, false },
     { "index_on",  {0}, false },
     { "ntp",       {0}, false },
+    { "ap_on",     {0}, false },
+    { "ap_ssid",   {0}, false },
     { "tz",        {0}, false },
 };
 #define CFG_N (sizeof(s_cfg) / sizeof(s_cfg[0]))
@@ -145,6 +147,11 @@ int xcfg_ini_render(char *buf, size_t cap)
         "; This browser editor itself.\n"
         "enabled = %s\n"
         "\n"
+        "[hotspot]\n"
+        "; The walk-up WiFi: an open network whose sign-in page is the chat.\n"
+        "enabled = %s\n"
+        "ssid = %s\n"
+        "\n"
         "[time]\n"
         "; NTP server (community pool by default) and the timezone as an\n"
         "; offset from UTC, e.g. +01:00 or -05:30. The offset places the\n"
@@ -161,6 +168,8 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("igate_on", true) ? "yes" : "no",
         xcfg_get_bool("index_on", true) ? "yes" : "no",
         xcfg_get_bool("share_on", false) ? "yes" : "no",
+        xcfg_get_bool("ap_on", true) ? "yes" : "no",
+        xcfg_get("ap_ssid", ""),
         xcfg_get("ntp", "pool.ntp.org"),
         xcfg_get("tz", "+00:00"));
 }
@@ -178,6 +187,8 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "bridge",  "enabled",  "bridge_on" },
     { "igate",   "enabled",  "igate_on" },
     { "indexer", "enabled",  "index_on" },
+    { "hotspot", "enabled",  "ap_on" },
+    { "hotspot", "ssid",     "ap_ssid" },
     { "time",    "server",   "ntp" },
     { "time",    "tz",       "tz" },
 };
@@ -398,7 +409,7 @@ esp_err_t xcfg_share_start(void)
         }
         s_own_server = true;
     }
-    static const httpd_uri_t u_page = { .uri = "/", .method = HTTP_GET,
+    static const httpd_uri_t u_page = { .uri = "/config", .method = HTTP_GET,
                                         .handler = h_page };
     static const httpd_uri_t u_get  = { .uri = "/config.ini",
                                         .method = HTTP_GET,
@@ -426,7 +437,7 @@ void xcfg_share_stop(void)
         s_own_server = false;
     } else {
         /* A shared server keeps running; only the share's doors close. */
-        httpd_unregister_uri_handler(s_httpd, "/", HTTP_GET);
+        httpd_unregister_uri_handler(s_httpd, "/config", HTTP_GET);
         httpd_unregister_uri_handler(s_httpd, "/config.ini", HTTP_GET);
         httpd_unregister_uri_handler(s_httpd, "/config.ini", HTTP_POST);
         httpd_unregister_uri_handler(s_httpd, "/log.txt", HTTP_GET);

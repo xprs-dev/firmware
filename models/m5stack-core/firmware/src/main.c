@@ -58,6 +58,7 @@ static char s_pass[64];
 #include "xprs_ui.h"
 #include "xprs_config.h"
 #include "xprs_api.h"
+#include "xprs_hotspot.h"
 #include "xprsindex.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
@@ -1071,6 +1072,9 @@ static void ui_render(void)
                      "(WiFi, name, nsec)%s.",
                      s_ip_str[0] ? "" : " -- needs WiFi first");
         SROW("Config share", xcfg_share_running() ? "On" : "Off", det);
+        SROW("Hotspot", xcfg_get_bool("ap_on", true) ? "On" : "Off",
+             "The walk-up WiFi: an open network whose sign-in page is the "
+             "chat. OK toggles; applies after restart.");
         SROW("Name", xcfg_get("name", "--"),
              "The device's friendly name. Set it through the config "
              "share above.");
@@ -1550,7 +1554,10 @@ static void settings_ok(int row)
             xcfg_set_bool("share_on", true);
         }
         break;
-    case 9:
+    case 7:
+        xcfg_set_bool("ap_on", !xcfg_get_bool("ap_on", true));
+        break;
+    case 10:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -1566,6 +1573,17 @@ static void settings_ok(int row)
  * author). Cheap: a UDP send and an ESP-NOW enqueue; no flash here. */
 static bool api_send_wire(const char *wire, int len)
 {
+    /* An identity submitted through the API teaches this station its key
+     * exactly as a heard one would -- the hotspot chat's users introduce
+     * themselves this way, and without it their signatures would sit
+     * unverified on the very station they are talking through. */
+    xprs_t p;
+    if (xprs_parse(wire, len, &p)) {
+        char type[16];
+        xprs_type(&p, type, sizeof type);
+        if (strcmp(type, "identity") == 0) identity_heard(&p);
+    }
+
     bool lan = xprslan_send(wire, len);
     bool now = xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
     if ((lan || now) && s_index && xcfg_get_bool("index_on", true))
@@ -1586,12 +1604,13 @@ static int api_features_json(char *buf, size_t cap)
 {
     return snprintf(buf, cap,
         "\"digipeater\":%s,\"bridge\":%s,\"igate\":%s,\"indexer\":%s,"
-        "\"share\":%s",
+        "\"share\":%s,\"hotspot\":%s",
         xcfg_get_bool("digi_on", false) ? "true" : "false",
         xcfg_get_bool("bridge_on", true) ? "true" : "false",
         xcfg_get_bool("igate_on", true) ? "true" : "false",
         xcfg_get_bool("index_on", true) ? "true" : "false",
-        xcfg_share_running() ? "true" : "false");
+        xcfg_share_running() ? "true" : "false",
+        xcfg_get_bool("ap_on", true) ? "true" : "false");
 }
 
 static xprs_api_cfg_t s_api_cfg = {
@@ -1921,9 +1940,22 @@ void app_main(void)
          * when the network is. The config share joins the same server so
          * its toggle opens and closes doors, not servers. */
         s_api_cfg.callsign = s_call;
-        if (xcfg_get_bool("wifi_on", true) &&
-            xprs_api_start(&s_api_cfg) == ESP_OK)
+        if (xprs_api_start(&s_api_cfg) == ESP_OK)
             xcfg_share_attach(xprs_api_httpd());
+        /* The walk-up hotspot rides the same server. With a STA up the AP
+         * shares its channel (one radio), so ESP-NOW is untouched; alone it
+         * sits on the ESP-NOW fallback channel. */
+        if (xcfg_get_bool("ap_on", true) && xprs_api_httpd()) {
+            char ssid[33];
+            const char *want = xcfg_get("ap_ssid", NULL);
+            if (want && want[0]) snprintf(ssid, sizeof ssid, "%s", want);
+            else snprintf(ssid, sizeof ssid, "XPRS-%s", s_call);
+            xprs_hotspot_start(ssid, xprs_api_httpd());
+            ESP_LOGI(TAG, "heap after hotspot: %u (largest %u)",
+                     (unsigned)esp_get_free_heap_size(),
+                     (unsigned)heap_caps_get_largest_free_block(
+                         MALLOC_CAP_8BIT));
+        }
         xcfg_share_set_log("/idx/log/cur.txt", "/idx/log/prev.txt");
         if (xcfg_get_bool("share_on", false) &&
             xcfg_get_bool("wifi_on", true))

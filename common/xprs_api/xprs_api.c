@@ -145,9 +145,9 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     const char *sig = !(rec->flags & XI_F_SIGNED)   ? "none"
                       : (rec->flags & XI_F_VERIFIED) ? "verified"
                                                       : "unverified";
-    char wire[2 * XPRSIDX_WIRE_MAX + 8];
+    static char wire[2 * XPRSIDX_WIRE_MAX + 8];
     jesc(wire, sizeof wire, rec->wire, rec->len);
-    char row[2 * XPRSIDX_WIRE_MAX + 192];
+    static char row[2 * XPRSIDX_WIRE_MAX + 192];
     int n = snprintf(row, sizeof row,
         "%s{\"ts\":%lu,\"bearer\":\"\",\"rssi\":%d,\"from\":\"%s\","
         "\"to\":\"%s\",\"type\":\"%s\",\"sig\":\"%s\",\"own\":%s,"
@@ -230,14 +230,39 @@ static esp_err_t h_send(httpd_req_t *req)
     if (!s_cfg->send_wire)
         return resp_error(req, "404 Not Found", "no transmitter");
 
-    char body[600];
+    /* Static: httpd has ONE worker task, so one request at a time, and its
+     * stack is no place for three buffers this size (docs/esp32.md). */
+    static char body[600];
     int total = 0;
-    while (total < req->content_len && total < (int)sizeof body - 1) {
-        int r = httpd_req_recv(req, body + total, sizeof body - 1 - total);
-        if (r <= 0) return resp_error(req, "400 Bad Request", "short body");
-        total += r;
+    if (req->method == HTTP_GET) {
+        /* The captive-WebView fallback: ?wire=<urlencoded packet>. Some
+         * sign-in popups cannot POST at all (the old chat page's lesson). */
+        static char query[600];
+        if (httpd_req_get_url_query_str(req, query, sizeof query) != ESP_OK ||
+            httpd_query_key_value(query, "wire", body, sizeof body) != ESP_OK)
+            return resp_error(req, "400 Bad Request", "need wire=");
+        /* httpd_query_key_value leaves %xx and + in place. */
+        char *o = body;
+        for (const char *c = body; *c; c++) {
+            if (*c == '+') { *o++ = ' '; continue; }
+            if (*c == '%' && c[1] && c[2]) {
+                char hx[3] = { c[1], c[2], 0 };
+                *o++ = (char)strtol(hx, NULL, 16);
+                c += 2;
+                continue;
+            }
+            *o++ = *c;
+        }
+        *o = 0;
+        total = (int)(o - body);
+    } else {
+        while (total < req->content_len && total < (int)sizeof body - 1) {
+            int r = httpd_req_recv(req, body + total, sizeof body - 1 - total);
+            if (r <= 0) return resp_error(req, "400 Bad Request", "short body");
+            total += r;
+        }
+        body[total] = 0;
     }
-    body[total] = 0;
 
     /* Either JSON {"wire":"..."} or the packet as plain text. */
     char wire[XPRS_MAX_WIRE + 1];
@@ -276,9 +301,9 @@ static esp_err_t h_send(httpd_req_t *req)
 
     char id[XPRS_ID_LEN];
     xprs_id(&pk, id);
-    char esc[2 * XPRS_MAX_WIRE + 8];
+    static char esc[2 * XPRS_MAX_WIRE + 8];
     jesc(esc, sizeof esc, w, wlen);
-    char out[2 * XPRS_MAX_WIRE + 64];
+    static char out[2 * XPRS_MAX_WIRE + 64];
     int n = snprintf(out, sizeof out,
                      "{\"ok\":true,\"id\":\"%s\",\"wire\":\"%s\"}", id, esc);
     resp_json(req);
@@ -408,6 +433,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/xprs/history", .method = HTTP_GET, .handler = h_history },
         { .uri = "/api/xprs/mail", .method = HTTP_GET, .handler = h_mail },
         { .uri = "/api/xprs/send", .method = HTTP_POST, .handler = h_send },
+        { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)

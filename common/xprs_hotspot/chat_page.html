@@ -1,0 +1,212 @@
+<!doctype html>
+<!-- The hotspot chat page. SOURCE OF TRUTH: edit this file, then regenerate
+     chat_page.c with tool/embed_page.py (kept beside it). The page is served
+     from flash as a C string; everything is inline because a captive-portal
+     WebView has no internet, no secure context and often no localStorage.
+     The crypto is the XPRS section 9.1.2 short-Schnorr, validated against
+     the spec's worked example (spec/XPRS.md). -->
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XPRS chat</title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#ddd;
+     display:flex;flex-direction:column;height:100vh}
+#top{background:#ff8c00;color:#000;padding:.5em .8em;font-weight:700;
+     display:flex;justify-content:space-between;align-items:center}
+#top small{font-weight:400}
+#msgs{flex:1;overflow-y:auto;padding:.6em}
+.m{margin:.25em 0;padding:.45em .6em;background:#1b1b1b;border-radius:6px;
+   word-wrap:break-word}
+.m.own{background:#0b2b12}
+.m .h{font-size:.75em;color:#8a8;display:flex;justify-content:space-between}
+.m .h .bad{color:#e66}
+#bar{display:flex;gap:.4em;padding:.5em;background:#000}
+#txt{flex:1;font:inherit;padding:.5em;background:#1b1b1b;color:#eee;
+     border:1px solid #333;border-radius:6px}
+button{font:inherit;padding:.5em 1em;background:#ff8c00;border:0;
+       border-radius:6px;font-weight:700}
+#setup{padding:1.2em;max-width:26em;margin:auto}
+#setup input{width:100%;font:inherit;padding:.5em;margin:.4em 0;
+     background:#1b1b1b;color:#eee;border:1px solid #333;border-radius:6px}
+#foot{font-size:.7em;color:#666;padding:.2em .8em;background:#000}
+#foot a{color:#997}
+.hide{display:none}
+</style></head><body>
+<div id="top"><span id="call">XPRS</span><small id="stat">connecting</small></div>
+<div id="setup" class="hide">
+  <h3>Your identity</h3>
+  <p>Messages are signed with a key that stays in this browser. Make a new
+     one, or paste an existing nsec to keep your callsign.</p>
+  <button onclick="genKey()">Create new identity</button>
+  <p>or</p>
+  <input id="nsecin" placeholder="nsec1...">
+  <button onclick="importKey()">Import nsec</button>
+  <p id="seterr" style="color:#e66"></p>
+</div>
+<div id="msgs" class="hide"></div>
+<div id="bar" class="hide">
+  <input id="txt" maxlength="180" placeholder="message"
+         onkeydown="if(event.key==='Enter')sendMsg()">
+  <button onclick="sendMsg()">Send</button>
+</div>
+<div id="foot">XPRS station &middot; <a href="/config">settings</a> &middot;
+  <a href="/api/services">services</a> &middot; <span id="me"></span></div>
+<script>
+"use strict";
+/*CRYPTO*/
+
+// ---- storage: localStorage -> cookie -> memory (captive WebViews) ----
+var mem={};
+function stGet(k){
+  try{var v=localStorage.getItem(k);if(v!==null)return v;}catch(e){}
+  var m=document.cookie.match(new RegExp('(?:^|; )'+k+'=([^;]*)'));
+  if(m)return decodeURIComponent(m[1]);
+  return mem[k]!==undefined?mem[k]:null;}
+function stSet(k,v){
+  try{localStorage.setItem(k,v);}catch(e){}
+  try{document.cookie=k+'='+encodeURIComponent(v)+'; max-age=31536000; path=/';}catch(e){}
+  mem[k]=v;}
+
+// ---- identity ----
+var priv=null,npub='',mycall='';
+function haveKey(){return priv!==null;}
+function useKey(bytes){
+  priv=bytes;
+  npub=npubEncode(pubkeyX(priv));
+  mycall=callsignFromNpub(npub);
+  stSet('xprs_nsec',nsecEncode(priv));
+  document.getElementById('call').textContent=mycall;
+  document.getElementById('me').textContent=npub.slice(0,14)+'...';
+  show(true);
+}
+function genKey(){
+  var b=new Uint8Array(32);
+  if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(b);
+  else for(var i=0;i<32;i++)b[i]=Math.floor(Math.random()*256);
+  if(b2n(b)===0n||b2n(b)>=N){genKey();return;}
+  useKey(b);
+}
+function importKey(){
+  var v=document.getElementById('nsecin').value.trim();
+  var b=nsecDecode(v);
+  if(!b||b2n(b)===0n||b2n(b)>=N){
+    document.getElementById('seterr').textContent='That is not a valid nsec.';
+    return;}
+  useKey(b);
+}
+function show(chat){
+  document.getElementById('setup').className=chat?'hide':'';
+  document.getElementById('msgs').className=chat?'':'hide';
+  document.getElementById('bar').className=chat?'':'hide';
+}
+
+// ---- XPRS wires ----
+function tsNow(){
+  var d=new Date(),p=function(n){return (n<10?'0':'')+n;};
+  return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+
+    '_'+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds());}
+function aux32(){var b=new Uint8Array(32);
+  if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(b);
+  else for(var i=0;i<32;i++)b[i]=Math.floor(Math.random()*256);return b;}
+function signWire(canonical){
+  // sig: before " m:" when present, else appended (mirrors xprsid_sign)
+  var sig=' sig:'+b85enc(xprsSign(canonical,b2n(priv),aux32()));
+  var i=canonical.indexOf(' m:');
+  if(i>=0)return canonical.slice(0,i)+sig+canonical.slice(i);
+  return canonical+sig;}
+
+// ---- sending: POST -> GET -> Image() (hostile WebViews) ----
+function postWire(wire,cb){
+  var done=false;
+  function fin(ok){if(!done){done=true;if(cb)cb(ok);}}
+  try{
+    var x=new XMLHttpRequest();
+    x.open('POST','/api/xprs/send',true);
+    x.timeout=4000;
+    x.onload=function(){fin(x.status===200);};
+    x.onerror=x.ontimeout=function(){getFallback(wire,fin);};
+    x.send(JSON.stringify({wire:wire}));
+  }catch(e){getFallback(wire,fin);}
+}
+function getFallback(wire,fin){
+  try{
+    var x=new XMLHttpRequest();
+    x.open('GET','/api/xprs/send?wire='+encodeURIComponent(wire),true);
+    x.timeout=4000;
+    x.onload=function(){fin(x.status===200);};
+    x.onerror=x.ontimeout=function(){
+      try{new Image().src='/api/xprs/send?wire='+encodeURIComponent(wire);}catch(e){}
+      fin(true);};
+    x.send();
+  }catch(e){fin(false);}
+}
+
+var identSent=0;
+function sendIdentity(){
+  var now=Date.now();
+  if(now-identSent<86400000)return;
+  identSent=now;
+  postWire(signWire('t:identity f:'+mycall+' ts:'+tsNow()+' k:'+npub),null);
+}
+function sendMsg(){
+  var t=document.getElementById('txt');
+  var text=t.value.trim();
+  if(!text||!haveKey())return;
+  text=text.replace(/[\x00-\x1f]/g,' ');
+  sendIdentity();
+  var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+' m:'+text);
+  if(wire.length>250){
+    document.getElementById('stat').textContent='too long';
+    return;}
+  t.value='';
+  postWire(wire,function(ok){
+    document.getElementById('stat').textContent=ok?'sent':'send failed';
+    setTimeout(load,400);});
+}
+
+// ---- receiving: poll the station's archive ----
+var seen={};
+function render(row){
+  var w=row.wire||'';
+  if(seen[w])return;seen[w]=1;
+  var mi=w.indexOf(' m:');
+  var text=mi>=0?w.slice(mi+3):'';
+  if(!text)return;
+  var d=document.createElement('div');
+  d.className='m'+(row.from===mycall?' own':'');
+  var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';
+  var sig=row.sig==='verified'?' &#10003;':(row.sig==='none'?' <span class=bad>unsigned</span>':'');
+  d.innerHTML='<div class="h"><span></span><span>'+when+sig+'</span></div><div></div>';
+  d.children[0].children[0].textContent=row.from;
+  d.children[1].textContent=text;
+  var box=document.getElementById('msgs');
+  box.appendChild(d);
+  box.scrollTop=box.scrollHeight;
+}
+function load(){
+  try{
+    var x=new XMLHttpRequest();
+    x.open('GET','/api/xprs/history?only=message&limit=50',true);
+    x.timeout=4000;
+    x.onload=function(){
+      try{
+        var d=JSON.parse(x.responseText);
+        var rows=(d.rows||[]).slice().reverse();  // oldest first for append
+        for(var i=0;i<rows.length;i++)render(rows[i]);
+        document.getElementById('stat').textContent=
+          (d.held!==undefined?d.held+' held':'ok');
+      }catch(e){}
+    };
+    x.send();
+  }catch(e){}
+}
+
+// ---- boot ----
+(function(){
+  var saved=stGet('xprs_nsec');
+  if(saved){var b=nsecDecode(saved);if(b){useKey(b);}}
+  if(!haveKey())show(false);
+  load();
+  setInterval(load,3000);
+})();
+</script></body></html>

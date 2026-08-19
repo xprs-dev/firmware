@@ -96,7 +96,7 @@ void xui_radar_blips(const xui_blip_t *blips, int n);
 
 /* ---- Generic selectable table ------------------------------------------- */
 
-#define XUI_TAB_ROWS 10
+#define XUI_TAB_ROWS 12
 #define XUI_TAB_COLS 5
 
 typedef struct {
