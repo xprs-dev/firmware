@@ -41,6 +41,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
         flex-direction:column;gap:8px}
 .msg{max-width:85%}
 .msg .meta{font-size:11px;margin-bottom:2px}
+.msg .meta.under{margin-bottom:0;margin-top:2px}
 .msg .author{color:var(--accent);font-weight:bold}
 .msg .time{color:var(--muted);margin-left:6px}
 .msg .bubble{display:inline-block;background:#1b1b1b;
@@ -84,6 +85,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
     <span class="my-callsign" id="call"></span>
     <button class="menu-btn" onclick="toggleMenu()">&#9776;</button>
     <div class="menu-panel" id="menu">
+      <button onclick="clearChat()">Clear chat view</button>
       <button onclick="showNpub()">Show my npub</button>
       <button onclick="exportNsec()">Export nsec</button>
       <button onclick="importNsec()">Import another nsec</button>
@@ -222,26 +224,43 @@ function sendMsg(){
 
 // ---- receiving ----
 var seen={};
+var clearedBefore=parseInt(stGet('xprs_cleared')||'0',10)||0;
 function render(row){
   var w=row.wire||'';
   if(seen[w])return;seen[w]=1;
   var mi=w.indexOf(' m:');
   var text=mi>=0?w.slice(mi+3):'';
   if(!text)return;
+  if(clearedBefore&&(row.ts||0)<clearedBefore)return;   /* user hit Clear */
   var own=row.from===mycall;
   var d=document.createElement('div');
   d.className='msg '+(own?'local':'remote');
   var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';
   var badge=row.sig==='verified'?'<span class="badge ok">signed</span>'
            :(row.sig==='none'?'<span class="badge bad">unsigned</span>':'');
-  d.innerHTML='<div class="meta"><span class="author"></span>'+
-    '<span class="time">'+when+'</span>'+badge+'</div>'+
-    '<div class="bubble"></div>';
-  d.querySelector('.author').textContent=row.from;
+  if(own){
+    /* Own messages: the balloon speaks for itself -- no callsign, and the
+     * timestamp sits quietly underneath. */
+    d.innerHTML='<div class="bubble"></div>'+
+      '<div class="meta under"><span class="time">'+when+'</span>'+badge+'</div>';
+  }else{
+    d.innerHTML='<div class="meta"><span class="author"></span>'+
+      '<span class="time">'+when+'</span>'+badge+'</div>'+
+      '<div class="bubble"></div>';
+    d.querySelector('.author').textContent=row.from;
+  }
   d.querySelector('.bubble').textContent=text;
   var box=document.getElementById('msgs');
   box.appendChild(d);
   box.scrollTop=box.scrollHeight;
+}
+function clearChat(){
+  toggleMenu();
+  clearedBefore=Math.floor(Date.now()/1000);
+  stSet('xprs_cleared',''+clearedBefore);
+  seen={};
+  document.getElementById('msgs').innerHTML='';
+  snack('Chat view cleared');
 }
 function load(){
   try{

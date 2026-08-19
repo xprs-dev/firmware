@@ -138,6 +138,12 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(xi_zone_t) == 16, "zone entry must be 16 bytes");
 
 struct xprsidx_s {
+    /* Shutdown handshake: close() raises `closing`, the writer task sees it,
+     * marks `writer_gone` and deletes itself; only then may the store be
+     * freed. Without this a close was a use-after-free the moment the writer
+     * woke -- a PANIC the M5Stack's archive wipe found. */
+    volatile bool closing;
+    volatile bool writer_gone;
     char     dir[64];
     bool     ready;
     char     epoch;
@@ -607,10 +613,19 @@ xprsidx_t *xprsindex_open(const char *dir)
 void xprsindex_close(xprsidx_t *st)
 {
     if (!st) return;
+#ifndef XPRSIDX_HOST_TEST
+    /* The writer task holds this pointer; freeing under it was a PANIC.
+     * Ask it out and wait -- it checks every drain period. */
+    st->closing = true;
+    for (int i = 0; i < (XI_DRAIN_EVERY_MS * 3) / 50 && !st->writer_gone; i++)
+        vTaskDelay(pdMS_TO_TICKS(50));
+#endif
+    XI_LOCK(st);
     xi_zone_flush(st);
     xi_tail_close(st);
     xi_read_close(st);
     if (st->active_fp) fclose(st->active_fp);
+    XI_UNLOCK(st);
     free(st);
 }
 
@@ -1015,6 +1030,10 @@ static void xi_writer_task(void *arg)
     xprsidx_t *st = (xprsidx_t *)arg;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(XI_DRAIN_EVERY_MS));
+        if (st->closing) {                /* close() wants the store back */
+            st->writer_gone = true;
+            vTaskDelete(NULL);
+        }
         if (st->paused) continue;         /* a reader has the card */
 
         int n = 0;

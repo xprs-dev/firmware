@@ -51,6 +51,7 @@ static char s_pass[64];
 
 #include <math.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
 #include "ili9342.h"
@@ -262,6 +263,7 @@ static struct {
     int  len;
     char bearer[7];
 } s_ask;
+static volatile bool s_wipe_req;   /* Settings asked for the archive to go */
 
 static void idx_enqueue(const char *wire, int len, int rssi)
 {
@@ -1096,6 +1098,23 @@ static void ui_render(void)
                      xcfg_get("ntp", "pool.ntp.org"));
             SROW("Time", tval, det);
         }
+        {
+            char wdet[160];
+            if (s_index) {
+                xprsidx_stats_t wst;
+                xprsindex_stats(s_index, &wst);
+                snprintf(wdet, sizeof wdet,
+                         "Delete every packet this station holds -- the "
+                         "chats it hosts included. %lu held now. OK wipes "
+                         "at once; there is no undo.",
+                         (unsigned long)wst.count);
+            } else {
+                snprintf(wdet, sizeof wdet,
+                         "Delete every packet this station holds. "
+                         "Storage not mounted.");
+            }
+            SROW("Wipe archive", "--", wdet);
+        }
         SROW("Restart", "--",
              "OK restarts the station so pending changes take effect.");
         #undef SROW
@@ -1511,6 +1530,38 @@ static void idx_task(void *arg)
                      (unsigned long)st2.verified, (unsigned long)st2.forged);
         }
 
+        /* Settings asked for the archive to be deleted: close the store,
+         * remove its files, reopen empty -- all here, the one task allowed
+         * near the storage. The chats this station hosts are gone; the log
+         * and the statistics stay. */
+        if (s_wipe_req) {
+            s_wipe_req = false;
+            if (s_index) {
+                xprsindex_close(s_index);
+                s_index = NULL;
+                s_api_cfg.index = NULL;
+            }
+            static const char *const dirs[] = { "/idx/xprs/t", "/idx/xprs" };
+            for (int di = 0; di < 2; di++) {
+                DIR *d = opendir(dirs[di]);
+                if (!d) continue;
+                struct dirent *e;
+                char path[320];   /* dir + d_name, however long FatFs makes it */
+                while ((e = readdir(d)) != NULL) {
+                    if (e->d_name[0] == '.') continue;
+                    snprintf(path, sizeof path, "%s/%s", dirs[di], e->d_name);
+                    remove(path);
+                }
+                closedir(d);
+            }
+            s_index = xprsindex_open("/idx/xprs");
+            if (s_index) {
+                xprsindex_set_verifier(s_index, index_verifier);
+                s_api_cfg.index = s_index;
+            }
+            ESP_LOGW(TAG, "archive wiped from the Settings panel");
+        }
+
         /* The log ring hits the flash every 10 s -- a freeze leaves the
          * last moments readable at /log.txt on the config share. */
         if (now_s - last_logflush_s >= 10) {
@@ -1558,6 +1609,9 @@ static void settings_ok(int row)
         xcfg_set_bool("ap_on", !xcfg_get_bool("ap_on", true));
         break;
     case 10:
+        s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
+        break;
+    case 11:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -1759,9 +1813,11 @@ static void ui_task(void *arg)
             force = true;
         }
         if (ch == 'K' && s_panel == 5 && s_set_focus) {
+            ESP_LOGI(TAG, "serial OK on settings row %d", s_sel[5]);
             settings_ok(s_sel[5]);
             force = true;
         }
+        if (ch == 'W') s_wipe_req = true;   /* scripted archive wipe */
 
         uint64_t now_us = esp_timer_get_time();
         if (force || now_us >= next_render_us) {
