@@ -247,24 +247,60 @@ void xcfg_share_set_log(const char *current, const char *previous)
     s_log_prev = previous;
 }
 
-/* Stream one file into the response in small chunks -- the httpd task's
- * stack is no place for a file, and neither is the heap. */
-static void send_file_chunked(httpd_req_t *req, const char *path)
+/* Stream one file LINE-REVERSED: blocks read back to front, lines inside
+ * each combined buffer emitted last-first, the partial line at a block's
+ * start carried into the next round. Small fixed buffers -- the httpd
+ * task's stack is no place for a file, and neither is the heap. */
+static void send_file_reversed(httpd_req_t *req, const char *path)
 {
     FILE *f = path ? fopen(path, "rb") : NULL;
     if (!f) return;
-    char buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) break;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+    long pos = ftell(f);
+
+    char carry[200];
+    int carry_n = 0;
+    char blk[512 + sizeof carry];
+    while (pos > 0) {
+        int n = pos > 512 ? 512 : (int)pos;
+        pos -= n;
+        if (fseek(f, pos, SEEK_SET) != 0) break;
+        if (fread(blk, 1, n, f) != (size_t)n) break;
+        memcpy(blk + n, carry, carry_n);
+        int total = n + carry_n;
+
+        /* Emit whole lines from the back; what precedes the first newline
+         * belongs to a line that starts in an earlier block. */
+        int end = total;
+        int i = total;
+        while (i > 0) {
+            i--;
+            if (blk[i] != '\n') continue;
+            if (end > i + 1)
+                httpd_resp_send_chunk(req, blk + i + 1, end - i - 1);
+            httpd_resp_send_chunk(req, "\n", 1);
+            end = i;
+        }
+        if (pos == 0) {
+            if (end > 0) {
+                httpd_resp_send_chunk(req, blk, end);
+                httpd_resp_send_chunk(req, "\n", 1);
+            }
+        } else {
+            carry_n = end > (int)sizeof carry ? (int)sizeof carry : end;
+            /* Keep the TAIL of the partial line if it overflows the carry. */
+            memcpy(carry, blk + end - carry_n, carry_n);
+        }
+    }
     fclose(f);
 }
 
 static esp_err_t h_log(httpd_req_t *req)
 {
+    /* Newest first: the current file backwards, then the previous one. */
     httpd_resp_set_type(req, "text/plain");
-    send_file_chunked(req, s_log_prev);
-    send_file_chunked(req, s_log_cur);
+    send_file_reversed(req, s_log_cur);
+    send_file_reversed(req, s_log_prev);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 static esp_timer_handle_t s_restart_timer;

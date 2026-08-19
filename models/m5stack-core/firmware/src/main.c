@@ -155,13 +155,29 @@ static int log_hook(const char *fmt, va_list ap)
     int n = vsnprintf(line, sizeof line, fmt, ap2);
     va_end(ap2);
     if (n <= 0) return out;
-    if (n >= (int)sizeof line) n = sizeof line - 1;
+    if (n >= (int)sizeof line) {
+        /* Truncated: the newline went with the tail. Put one back or the
+         * next entry glues itself onto this line in the file. */
+        n = sizeof line - 1;
+        line[n - 1] = '\n';
+    }
 
+    /* The UART likes its colours; a log file does not. Strip the ANSI
+     * escapes and carriage returns on the way into the ring. */
     portENTER_CRITICAL(&s_logring_mux);
+    bool in_esc = false;
     for (int i = 0; i < n; i++) {
+        char c = line[i];
+        if (in_esc) {
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))
+                in_esc = false;
+            continue;
+        }
+        if (c == 0x1b) { in_esc = true; continue; }
+        if (c == '\r') continue;
         int nw = (s_logring_w + 1) % LOGRING_N;
         if (nw == s_logring_r) break;          /* full: drop the tail */
-        s_logring[s_logring_w] = line[i];
+        s_logring[s_logring_w] = c;
         s_logring_w = nw;
     }
     portEXIT_CRITICAL(&s_logring_mux);
