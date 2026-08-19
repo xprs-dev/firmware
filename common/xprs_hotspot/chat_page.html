@@ -212,9 +212,12 @@ function sendMsg(){
   var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+' m:'+text);
   if(wire.length>250){snack('Message too long');return;}
   t.value='';
+  /* On the screen immediately -- the archive round trip (index writer +
+   * the next poll) takes seconds, and a sender should not wait on it.
+   * The wire is archived verbatim, so marking it seen dedups the echo. */
+  render({from:mycall,ts:Math.floor(Date.now()/1000),sig:'verified',wire:wire});
   postWire(wire,function(ok){
-    if(!ok)snack('Send failed');
-    setTimeout(load,400);});
+    if(!ok)snack('Send failed');});
 }
 
 // ---- receiving ----
