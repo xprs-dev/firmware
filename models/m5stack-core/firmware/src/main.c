@@ -332,6 +332,8 @@ static int s_flow_n;
 typedef struct {
     char     from[10];
     char     text[120];
+    char     id[XPRS_ID_LEN];   /* section 5, so replies can find us */
+    char     r[XPRS_ID_LEN];    /* parent id when this is a reply (6.4) */
     uint32_t ep;          /* epoch when heard, 0 when the clock was not up */
 } chat_t;
 static chat_t s_chat[CHAT_MAX];
@@ -355,6 +357,8 @@ static void chat_note(const xprs_t *p)
     chat_t *c = &s_chat[s_chat_n % CHAT_MAX];
     snprintf(c->from, sizeof c->from, "%s", from);
     snprintf(c->text, sizeof c->text, "%s", text);
+    xprs_id(p, c->id);
+    if (!xprs_get_str(p, "r", c->r, sizeof c->r)) c->r[0] = 0;
     c->ep = epoch_now();
     s_chat_n++;
 }
@@ -1174,7 +1178,23 @@ static void ui_render(void)
             if (!c->from[0]) continue;
             xui_row_t *r = &tr[nr++];
             snprintf(r->cell[0], sizeof r->cell[0], "%s", c->from);
-            snprintf(r->cell[1], sizeof r->cell[1], "%.22s", c->text);
+            if (c->r[0]) {
+                /* A reply, compactly: @who-it-answers, then the text. The
+                 * parent's callsign when this ring still holds it, its
+                 * section 5 id otherwise -- same rule as the spec's "marked
+                 * as answering a message it does not hold". */
+                const char *pfrom = c->r;
+                for (int j = 0; j < CHAT_MAX; j++)
+                    if (s_chat[j].from[0] &&
+                        strcmp(s_chat[j].id, c->r) == 0) {
+                        pfrom = s_chat[j].from;
+                        break;
+                    }
+                snprintf(r->cell[1], sizeof r->cell[1], "@%s %.14s",
+                         pfrom, c->text);
+            } else {
+                snprintf(r->cell[1], sizeof r->cell[1], "%.22s", c->text);
+            }
             if (c->ep && nowep) {
                 uint32_t age = nowep - c->ep;
                 if (age < 60)
@@ -1189,7 +1209,28 @@ static void ui_render(void)
             } else {
                 r->cell[2][0] = 0;
             }
-            snprintf(r->detail, sizeof r->detail, "%s: %s", c->from, c->text);
+            if (c->r[0]) {
+                const char *pfrom = c->r;
+                const char *ptext = NULL;
+                for (int j = 0; j < CHAT_MAX; j++)
+                    if (s_chat[j].from[0] &&
+                        strcmp(s_chat[j].id, c->r) == 0) {
+                        pfrom = s_chat[j].from;
+                        ptext = s_chat[j].text;
+                        break;
+                    }
+                if (ptext)
+                    snprintf(r->detail, sizeof r->detail,
+                             "%s replying to %s (\"%.30s\"): %.90s",
+                             c->from, pfrom, ptext, c->text);
+                else
+                    snprintf(r->detail, sizeof r->detail,
+                             "%s replying to %s: %.120s",
+                             c->from, pfrom, c->text);
+            } else {
+                snprintf(r->detail, sizeof r->detail, "%s: %s",
+                         c->from, c->text);
+            }
         }
         xui_table_rows(tr, nr);
         list_n = nr;

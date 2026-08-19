@@ -44,6 +44,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 .msg{max-width:85%}
 .msg .meta{font-size:11px;margin-bottom:2px}
 .msg .meta.under{margin-bottom:0;margin-top:2px}
+.msg .reply-btn{background:transparent;border:0;color:var(--muted);
+        cursor:pointer;font-size:11px;padding:0 4px}
+.msg .quote{font-size:11px;color:var(--muted);border-left:2px solid
+        var(--accent);padding:2px 6px;margin-bottom:3px;text-align:left}
+#replybar{display:none;border-top:1px solid var(--border);padding:4px 12px;
+        font-size:11px;color:var(--muted);background:#161310;
+        align-items:center;gap:8px}
+#replybar.on{display:flex}
+#replybar .x{margin-left:auto;background:transparent;border:0;
+        color:var(--muted);cursor:pointer;font-size:14px}
 .msg .author{color:var(--accent);font-weight:bold}
 .msg .time{color:var(--muted);margin-left:6px}
 .msg .bubble{display:inline-block;background:#1b1b1b;
@@ -96,6 +106,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
   </div>
 </div>
 <div class="messages" id="msgs"></div>
+<div id="replybar"><span id="replyinfo"></span>
+  <button class="x" onclick="cancelReply()">&#10005;</button></div>
 <div class="input-area">
   <input id="txt" maxlength="180" placeholder="Message"
          onkeydown="if(event.key==='Enter')sendMsg()">
@@ -213,9 +225,15 @@ function sendMsg(){
   if(!text||!priv)return;
   text=text.replace(/[\x00-\x1f]/g,' ');
   sendIdentity();
-  var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+' m:'+text);
+  var thread='';
+  if(replyTo){
+    if(replyTo.root)thread=' root:'+replyTo.root;
+    thread+=' r:'+replyTo.id;
+  }
+  var wire=signWire('t:message f:'+mycall+' ts:'+tsNow()+thread+' m:'+text);
   if(wire.length>250){snack('Message too long');return;}
   t.value='';
+  cancelReply();
   /* On the screen immediately -- the archive round trip (index writer +
    * the next poll) takes seconds, and a sender should not wait on it.
    * The wire is archived verbatim, so marking it seen dedups the echo. */
@@ -226,6 +244,29 @@ function sendMsg(){
 
 // ---- receiving ----
 var seen={};
+// Section 5 identifier: sha256 over the wire with sig: and via: removed,
+// first six hex characters. What r: and root: point at.
+function wireId(w){
+  var canon=w.replace(/ sig:[!-~]{60}/,'').replace(/ via:[A-Za-z0-9,\-]+/,'');
+  return hex(sha256(s2b(canon))).slice(0,6);}
+
+// Replying (XPRS 6.4): r: names the parent; below the first level root:
+// names the thread. idmap lets the quote show who said what.
+var idmap={};
+var replyTo=null;   /* {id, root, from, snip} */
+function startReply(id){
+  var p=idmap[id];
+  replyTo={id:id,
+           root:(p&&p.root)||(p&&p.r)||'',
+           from:p?p.from:id, snip:p?p.text.slice(0,40):''};
+  document.getElementById('replyinfo').textContent=
+    'Replying to '+replyTo.from+': '+replyTo.snip;
+  document.getElementById('replybar').className='on';
+  document.getElementById('txt').focus();}
+function cancelReply(){
+  replyTo=null;
+  document.getElementById('replybar').className='';}
+
 var clearedBefore=parseInt(stGet('xprs_cleared')||'0',10)||0;
 function render(row){
   var w=row.wire||'';
@@ -235,23 +276,39 @@ function render(row){
   if(!text)return;
   if(clearedBefore&&(row.ts||0)<clearedBefore)return;   /* user hit Clear */
   var own=row.from===mycall;
+  var id=wireId(w);
+  var rm=w.match(/ r:([0-9a-f]{6})/);
+  var rootm=w.match(/ root:([0-9a-f]{6})/);
+  idmap[id]={from:row.from,text:text,r:rm?rm[1]:'',
+             root:rootm?rootm[1]:''};
   var d=document.createElement('div');
   d.className='msg '+(own?'local':'remote');
   var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';
   var badge=row.sig==='verified'?'<span class="badge ok">signed</span>'
            :(row.sig==='none'?'<span class="badge bad">unsigned</span>':'');
+  var rbtn='<button class="reply-btn" title="Reply">&#8617;</button>';
   if(own){
-    /* Own messages: the balloon speaks for itself -- no callsign, and the
-     * timestamp sits quietly underneath. */
     d.innerHTML='<div class="bubble"></div>'+
-      '<div class="meta under"><span class="time">'+when+'</span>'+badge+'</div>';
+      '<div class="meta under"><span class="time">'+when+'</span>'+badge+rbtn+'</div>';
   }else{
     d.innerHTML='<div class="meta"><span class="author"></span>'+
-      '<span class="time">'+when+'</span>'+badge+'</div>'+
+      '<span class="time">'+when+'</span>'+badge+rbtn+'</div>'+
       '<div class="bubble"></div>';
     d.querySelector('.author').textContent=row.from;
   }
-  d.querySelector('.bubble').textContent=text;
+  d.querySelector('.reply-btn').onclick=function(){startReply(id);};
+  var bub=d.querySelector('.bubble');
+  if(rm){
+    /* A receiver that never heard the parent still shows the reply,
+     * marked as answering a message it does not hold (6.4). */
+    var par=idmap[rm[1]];
+    var q=document.createElement('div');
+    q.className='quote';
+    q.textContent=par?(par.from+': '+par.text.slice(0,60))
+                     :('replying to '+rm[1]);
+    bub.appendChild(q);
+  }
+  bub.appendChild(document.createTextNode(text));
   var box=document.getElementById('msgs');
   box.appendChild(d);
   box.scrollTop=box.scrollHeight;
