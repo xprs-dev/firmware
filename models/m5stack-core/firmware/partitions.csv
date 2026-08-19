@@ -6,4 +6,7 @@ phy_init, data, phy,     0xf000,  0x1000
 factory,  app,  factory, 0x10000, 0x180000
 # Everything the indexer stores: a wear-levelled FAT filling the rest
 # of the 16MB flash. NVS and the app do not move, so nothing is lost.
-storage,  data, fat,     0x190000, 0xE00000
+storage,  data, fat,     0x190000, 0xDF0000
+# Where a panic writes its last words: task, PC, backtrace. Read at the next
+# boot and put into the rotating log, so a freeze names its culprit.
+coredump, data, coredump, 0xF80000, 0x10000

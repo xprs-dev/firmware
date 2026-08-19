@@ -66,6 +66,7 @@ static char s_pass[64];
 #include "esp_sntp.h"
 #include "esp_heap_caps.h"
 #include "esp_task_wdt.h"
+#include "esp_core_dump.h"
 #include "esp_system.h"
 
 static const char *TAG = "m5xprs";
@@ -2032,6 +2033,19 @@ void app_main(void)
         esp_reset_reason_t r = esp_reset_reason();
         ESP_LOGW(TAG, "reset reason: %s (%d)",
                  r < sizeof why / sizeof why[0] && why[r] ? why[r] : "?", r);
+        if (r == ESP_RST_PANIC || r == ESP_RST_TASK_WDT ||
+            r == ESP_RST_INT_WDT) {
+            /* The panic's UART print dies with the reboot; the core dump
+             * does not. One line here names the task that hung. */
+            esp_core_dump_summary_t *cd =
+                malloc(sizeof(esp_core_dump_summary_t));
+            if (cd) {
+                if (esp_core_dump_get_summary(cd) == ESP_OK)
+                    ESP_LOGW(TAG, "crash was in task \"%s\" at PC 0x%08lx",
+                             cd->exc_task, (unsigned long)cd->exc_pc);
+                free(cd);
+            }
+        }
     }
 
     /* A task that stops feeding this reboots the board with TASK WDT in the

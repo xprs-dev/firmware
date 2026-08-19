@@ -12,7 +12,7 @@ CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_10=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_LV_MEM_SIZE_KILOBYTES=36
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
 # The XPRS index names segments seg_<10 digits>.bin -- longer than 8.3, so
 # without long-filename support every write fails while the accept counter
 # still climbs. The dongle runs LFN_HEAP for the same reason.
@@ -20,3 +20,7 @@ CONFIG_FATFS_LFN_HEAP=y
 # Phone browsers send >512B of headers (UA + Accept + our nsec cookie);
 # the default answers them 431 'Header fields are too long'.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# A TASK WDT freeze reboots the board before the UART panic print can be
+# read; the core dump keeps the culprit's name for the next boot.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
