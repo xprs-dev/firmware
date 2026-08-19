@@ -476,6 +476,20 @@ field read on untouched, reporting "unknown"). `xprsindex_add2()` takes the
 code; the plain `add()` writes unknown. The HTTP API's `bearer` row field
 comes from it.
 
+The approved wires, verbatim from a live run (a Chat-wapp local message
+archived on the M5Stack across the LAN):
+
+```
+t:message f:X16JK8 ts:2026-08-19_14:37:08 scope:local sig:<60> m:hello from the Chat wapp, locally
+t:message f:X9WEB ts:2026-08-19_14:58:01 m:round two global
+```
+
+Three clients, one grammar: the Flutter Chat wapp writes them through
+`hal_xprs_send` (host-validated, host-signed, scope rules per bearer), the
+hotspot web page through `POST /api/xprs/send`, and the LCD's Chat panel
+reads them out of the same archive with a house/pin/envelope icon for
+local/global/direct.
+
 **LoRa is the operator's call.** The spec (13.11.1) leaves whether a LoRa
 link counts as a local bearer to the station owner -- a building mesh is
 local, a forty-kilometre shot is not -- with NOT-local as the default. When a
