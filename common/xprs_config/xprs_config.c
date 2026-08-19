@@ -239,6 +239,34 @@ esp_err_t xcfg_ini_apply(const char *text, size_t len)
 /* ---- the browser editor ------------------------------------------------- */
 
 static httpd_handle_t s_httpd;
+static const char *s_log_cur, *s_log_prev;
+
+void xcfg_share_set_log(const char *current, const char *previous)
+{
+    s_log_cur = current;
+    s_log_prev = previous;
+}
+
+/* Stream one file into the response in small chunks -- the httpd task's
+ * stack is no place for a file, and neither is the heap. */
+static void send_file_chunked(httpd_req_t *req, const char *path)
+{
+    FILE *f = path ? fopen(path, "rb") : NULL;
+    if (!f) return;
+    char buf[512];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        if (httpd_resp_send_chunk(req, buf, n) != ESP_OK) break;
+    fclose(f);
+}
+
+static esp_err_t h_log(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "text/plain");
+    send_file_chunked(req, s_log_prev);
+    send_file_chunked(req, s_log_cur);
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
 static esp_timer_handle_t s_restart_timer;
 
 static void restart_cb(void *arg)
@@ -332,6 +360,9 @@ esp_err_t xcfg_share_start(void)
     httpd_register_uri_handler(s_httpd, &u_page);
     httpd_register_uri_handler(s_httpd, &u_get);
     httpd_register_uri_handler(s_httpd, &u_post);
+    static const httpd_uri_t u_log = { .uri = "/log.txt", .method = HTTP_GET,
+                                       .handler = h_log };
+    httpd_register_uri_handler(s_httpd, &u_log);
     ESP_LOGI(TAG, "config editor serving on port 80");
     return ESP_OK;
 }

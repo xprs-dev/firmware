@@ -53,6 +53,11 @@ esp_err_t xcfg_ini_apply(const char *text, size_t len);
 
 /** Start/stop the browser editor (HTTP, port 80). Serves GET / (editor
  *  page), GET /config.ini (raw) and POST /config.ini (apply + restart). */
+/** Tell the editor where the rotating log lives; GET /log.txt then streams
+ *  the previous file followed by the current one. Call before or after
+ *  start; NULL paths disable it. */
+void xcfg_share_set_log(const char *current, const char *previous);
+
 esp_err_t xcfg_share_start(void);
 void      xcfg_share_stop(void);
 bool      xcfg_share_running(void);

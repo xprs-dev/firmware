@@ -50,6 +50,7 @@ static char s_ssid[32];   /* sized to wifi_config_t */
 static char s_pass[64];
 
 #include <math.h>
+#include <sys/stat.h>
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
 #include "ili9342.h"
@@ -61,6 +62,8 @@ static char s_pass[64];
 #include "wear_levelling.h"
 #include "esp_sntp.h"
 #include "esp_heap_caps.h"
+#include "esp_task_wdt.h"
+#include "esp_system.h"
 
 static const char *TAG = "m5xprs";
 
@@ -127,6 +130,80 @@ static int sign_wire(char *wire, int len, int cap)
 {
     const nostr_keys_t *k = nostr_keys_get();
     return k ? xprsid_sign(wire, len, cap, k->private_key) : len;
+}
+
+/* ── The rotating log: every ESP_LOG line, kept for the post-mortem ─────── */
+
+/* The hook runs on WHOEVER logs, so it does only what is free: format into
+ * a small buffer and copy into this ring under a spinlock. idx_task -- the
+ * only task allowed near the storage -- drains it to /idx/log/cur.txt and
+ * rotates to prev.txt at 64 KB, so a freeze or a crash leaves at most two
+ * files and the truth of the last minutes on the flash. */
+#define LOGRING_N 6144
+static char s_logring[LOGRING_N];
+static volatile int s_logring_w, s_logring_r;
+static portMUX_TYPE s_logring_mux = portMUX_INITIALIZER_UNLOCKED;
+static vprintf_like_t s_log_orig;
+
+static int log_hook(const char *fmt, va_list ap)
+{
+    va_list ap2;
+    va_copy(ap2, ap);
+    int out = s_log_orig ? s_log_orig(fmt, ap) : vprintf(fmt, ap);
+
+    char line[160];
+    int n = vsnprintf(line, sizeof line, fmt, ap2);
+    va_end(ap2);
+    if (n <= 0) return out;
+    if (n >= (int)sizeof line) n = sizeof line - 1;
+
+    portENTER_CRITICAL(&s_logring_mux);
+    for (int i = 0; i < n; i++) {
+        int nw = (s_logring_w + 1) % LOGRING_N;
+        if (nw == s_logring_r) break;          /* full: drop the tail */
+        s_logring[s_logring_w] = line[i];
+        s_logring_w = nw;
+    }
+    portEXIT_CRITICAL(&s_logring_mux);
+    return out;
+}
+
+#define LOG_ROTATE_BYTES (64 * 1024)
+static FILE *s_logfile;
+static long  s_logfile_len;
+
+/* idx_task only. Append what the ring holds, rotate at the cap. */
+static void log_drain(void)
+{
+    char chunk[512];
+    for (;;) {
+        int n = 0;
+        portENTER_CRITICAL(&s_logring_mux);
+        while (s_logring_r != s_logring_w && n < (int)sizeof chunk) {
+            chunk[n++] = s_logring[s_logring_r];
+            s_logring_r = (s_logring_r + 1) % LOGRING_N;
+        }
+        portEXIT_CRITICAL(&s_logring_mux);
+        if (n == 0) break;
+
+        if (!s_logfile) {
+            s_logfile = fopen("/idx/log/cur.txt", "ab");
+            if (!s_logfile) return;
+            s_logfile_len = ftell(s_logfile);
+        }
+        fwrite(chunk, 1, n, s_logfile);
+        s_logfile_len += n;
+    }
+    if (s_logfile) {
+        fflush(s_logfile);
+        fsync(fileno(s_logfile));
+        if (s_logfile_len >= LOG_ROTATE_BYTES) {
+            fclose(s_logfile);
+            s_logfile = NULL;
+            remove("/idx/log/prev.txt");
+            rename("/idx/log/cur.txt", "/idx/log/prev.txt");
+        }
+    }
 }
 
 /* ── The index: everything heard, kept and answerable (XPRS 36) ─────────── */
@@ -1263,6 +1340,7 @@ static void idx_answer_history(void)
              s_page.n == 1 ? "" : "s", s_page.more ? ", more held" : "");
     for (int i = 0; i < s_page.n; i++) {
         vTaskDelay(pdMS_TO_TICKS(1500));
+        esp_task_wdt_reset();
         idx_air(bearer, s_page.wire[i], s_page.len[i]);
     }
     vTaskDelay(pdMS_TO_TICKS(1500));
@@ -1340,8 +1418,11 @@ static void idx_task(void *arg)
     }
 
     stats_load();
+    mkdir("/idx/log", 0777);
+    esp_task_wdt_add(NULL);   /* a wedged storage task becomes a logged reboot */
 
     uint32_t last_announce_s = 0;
+    uint32_t last_logflush_s = 0;
     uint32_t last_stats_save_s = 0;
     for (;;) {
         /* Drain what the radios heard. */
@@ -1395,6 +1476,14 @@ static void idx_task(void *arg)
                      (unsigned long)st2.verified, (unsigned long)st2.forged);
         }
 
+        /* The log ring hits the flash every 10 s -- a freeze leaves the
+         * last moments readable at /log.txt on the config share. */
+        if (now_s - last_logflush_s >= 10) {
+            last_logflush_s = now_s;
+            log_drain();
+        }
+
+        esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(250));
     }
 }
@@ -1479,6 +1568,8 @@ static void ui_task(void *arg)
         .pin_bit_mask = (1ULL << BTN_A) | (1ULL << BTN_B) | (1ULL << BTN_C),
     };
     gpio_config(&io);
+
+    esp_task_wdt_add(NULL);   /* a frozen UI becomes a logged reboot */
 
     uint64_t next_render_us = 0;
     int a_held_ms = 0;
@@ -1586,6 +1677,7 @@ static void ui_task(void *arg)
         }
 
         xui_update();
+        esp_task_wdt_reset();
 
         /* At 100 Hz tick a small delay can round to zero and starve IDLE0 —
          * same guard the T-Dongle carries. */
@@ -1606,6 +1698,40 @@ void app_main(void)
     xcfg_init();
     snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", WIFI_SSID));
     snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", WIFI_PASS));
+
+    /* The rotating log first, so everything after this lands in it, and
+     * the reset reason first of all -- it is the one fact a freeze leaves
+     * behind. */
+    s_log_orig = esp_log_set_vprintf(log_hook);
+    {
+        static const char *const why[] = {
+            [ESP_RST_UNKNOWN] = "unknown", [ESP_RST_POWERON] = "power-on",
+            [ESP_RST_EXT] = "external pin", [ESP_RST_SW] = "software",
+            [ESP_RST_PANIC] = "PANIC", [ESP_RST_INT_WDT] = "INTERRUPT WDT",
+            [ESP_RST_TASK_WDT] = "TASK WDT", [ESP_RST_WDT] = "other WDT",
+            [ESP_RST_DEEPSLEEP] = "deep-sleep wake",
+            [ESP_RST_BROWNOUT] = "BROWNOUT", [ESP_RST_SDIO] = "SDIO",
+        };
+        esp_reset_reason_t r = esp_reset_reason();
+        ESP_LOGW(TAG, "reset reason: %s (%d)",
+                 r < sizeof why / sizeof why[0] && why[r] ? why[r] : "?", r);
+    }
+
+    /* A task that stops feeding this reboots the board with TASK WDT in the
+     * log -- a stuck station becomes a diagnosable one. 90 s: longer than
+     * any honest pause (a full history replay feeds it mid-way). */
+    {
+        esp_task_wdt_config_t wdt = {
+            .timeout_ms = 90000,
+            .idle_core_mask = 0,
+            .trigger_panic = true,
+        };
+        /* IDF starts the TWDT itself, so reshape it -- calling init first
+         * works too but prints an error into the very log this exists to
+         * keep clean. */
+        if (esp_task_wdt_reconfigure(&wdt) != ESP_OK)
+            esp_task_wdt_init(&wdt);
+    }
 
     if (nostr_keys_init() != ESP_OK || !nostr_keys_available()) {
         ESP_LOGE(TAG, "no signing key — this station cannot take part in §23.7, "
@@ -1714,6 +1840,7 @@ void app_main(void)
                  lcd) == ESP_OK) {
         if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
             ESP_LOGE(TAG, "UI task failed to start");
+        xcfg_share_set_log("/idx/log/cur.txt", "/idx/log/prev.txt");
         if (xcfg_get_bool("share_on", false) &&
             xcfg_get_bool("wifi_on", true))
             xcfg_share_start();
