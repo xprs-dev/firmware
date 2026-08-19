@@ -64,8 +64,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 .msg{max-width:85%}
 .msg .meta{font-size:11px;margin-bottom:2px}
 .msg .meta.under{margin-bottom:0;margin-top:2px}
-.msg .reply-btn{background:transparent;border:0;color:var(--muted);
-        cursor:pointer;font-size:11px;padding:0 4px}
+.msg .dots{background:transparent;border:0;color:var(--muted);
+        cursor:pointer;font-size:13px;padding:0 5px}
+.msg .likes{color:#e0708a;font-size:11px;margin-left:6px}
+#msgmenu{position:fixed;background:#151515;border:1px solid var(--border);
+        border-radius:6px;z-index:20;display:none;min-width:170px;
+        box-shadow:0 8px 20px rgba(0,0,0,.35)}
+#msgmenu button{width:100%;background:transparent;border:0;color:var(--text);
+        padding:10px 12px;text-align:left;cursor:pointer;font-size:13px}
+#msgmenu button:hover{background:rgba(255,255,255,.06)}
 .msg .quote{font-size:11px;color:var(--muted);border-left:2px solid
         var(--accent);padding:2px 6px;margin-bottom:3px;text-align:left}
 #replybar{display:none;border-top:1px solid var(--border);padding:4px 12px;
@@ -121,6 +128,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
       <button onclick="exportNsec()">Export nsec</button>
       <button onclick="importNsec()">Import another nsec</button>
       <button onclick="newIdentity()">New identity</button>
+      <button onclick="toggleSound()" id="sndbtn">Sound: on</button>
     </div>
   </div>
 </div>
@@ -142,6 +150,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
   </div>
 </div>
 <div class="snackbar" id="snack"></div>
+<div id="msgmenu"></div>
 <script>
 "use strict";
 /*CRYPTO*/
@@ -295,6 +304,91 @@ function cancelReply(){
   replyTo=null;
   document.getElementById('replybar').className='';}
 
+/* New-message notice: a short beep (WebAudio -- no secure context needed,
+ * but it must be unlocked by a user gesture), a title counter cleared on
+ * focus, and a vibration where the device has one. */
+var sndOn=stGet('xprs_sound')!=='0';
+var audioCtx=null,unread=0,baseTitle=document.title;
+function unlockAudio(){
+  if(!audioCtx){
+    try{audioCtx=new (window.AudioContext||window.webkitAudioContext)();}catch(e){}}
+  if(audioCtx&&audioCtx.state==='suspended')audioCtx.resume();}
+document.addEventListener('click',unlockAudio);
+document.addEventListener('keydown',unlockAudio);
+function beep(){
+  if(!sndOn||!audioCtx)return;
+  try{
+    var o=audioCtx.createOscillator(),g=audioCtx.createGain();
+    o.frequency.value=880;o.type='sine';
+    g.gain.setValueAtTime(.15,audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+.15);
+    o.connect(g);g.connect(audioCtx.destination);
+    o.start();o.stop(audioCtx.currentTime+.15);
+  }catch(e){}}
+function notice(){
+  beep();
+  if(navigator.vibrate)try{navigator.vibrate(80);}catch(e){}
+  if(document.hidden||!document.hasFocus()){
+    unread++;document.title='('+unread+') '+baseTitle;}}
+window.addEventListener('focus',function(){
+  unread=0;document.title=baseTitle;});
+function toggleSound(){
+  sndOn=!sndOn;stSet('xprs_sound',sndOn?'1':'0');
+  document.getElementById('sndbtn').textContent='Sound: '+(sndOn?'on':'off');
+  toggleMenu();}
+
+/* ---- likes (XPRS 6.5): add:like / remove:like on a message's id ---- */
+var likes={};        /* msgId -> {callsign:1} */
+var domById={};      /* msgId -> bubble meta element to refresh */
+var myLikes={};      /* msgId -> 1 (mine, for toggling) */
+function likeCount(id){var n=0;for(var k in likes[id]||{})n++;return n;}
+function refreshLikes(id){
+  var el=domById[id];if(!el)return;
+  var n=likeCount(id);
+  el.textContent=n?('\u2665 '+n):'';}
+function applyReaction(row){
+  var w=row.wire||'';
+  var rm=w.match(/ r:([0-9a-f]{6})/);
+  if(!rm)return;
+  var id=rm[1],from=baseCall(row.from||'');
+  if(!likes[id])likes[id]={};
+  if(/ add:like/.test(w)){likes[id][from]=1;}
+  else if(/ remove:like/.test(w)){delete likes[id][from];}
+  if(from===baseCall(mycall))myLikes[id]=/ add:like/.test(w)?1:0;
+  refreshLikes(id);}
+function sendLike(id){
+  var verb=myLikes[id]?'remove':'add';
+  myLikes[id]=verb==='add'?1:0;
+  if(!likes[id])likes[id]={};
+  if(verb==='add')likes[id][baseCall(mycall)]=1;
+  else delete likes[id][baseCall(mycall)];
+  refreshLikes(id);
+  var par=idmap[id];
+  var sc=(par&&par.scopeLocal)?' scope:local':'';
+  var wire=signWire('t:reaction f:'+mycall+' ts:'+tsNow()+sc+' '+verb+':like r:'+id);
+  postWire(wire,null);}
+
+/* ---- the per-message menu ---- */
+function showMsgMenu(ev,id,from,own){
+  var m=document.getElementById('msgmenu');
+  var items='<button onclick="menuAct(\'reply\',\''+id+'\',\''+from+'\')">Reply</button>'+
+    '<button onclick="menuAct(\'like\',\''+id+'\',\''+from+'\')">'+
+      (myLikes[id]?'Unlike':'Like \u2665')+'</button>';
+  if(!own)items+='<button onclick="menuAct(\'dm\',\''+id+'\',\''+from+'\')">Message '+from+'</button>';
+  m.innerHTML=items;
+  m.style.display='block';
+  var x=Math.min(ev.clientX,window.innerWidth-180);
+  var y=Math.min(ev.clientY,window.innerHeight-140);
+  m.style.left=x+'px';m.style.top=y+'px';
+  ev.stopPropagation();}
+document.addEventListener('click',function(){
+  document.getElementById('msgmenu').style.display='none';});
+function menuAct(act,id,from){
+  document.getElementById('msgmenu').style.display='none';
+  if(act==='reply')startReply(id);
+  else if(act==='like')sendLike(id);
+  else if(act==='dm')openDm(from);}
+
 var clearedBefore=parseInt(stGet('xprs_cleared')||'0',10)||0;
 
 /* Rooms (XPRS 13.11): Local is the scope:local conversation -- the packets
@@ -354,6 +448,10 @@ function openDm(call){
 }
 function render(row){
   var w=row.wire||'';
+  if((row.type||'')==='reaction'||w.indexOf('t:reaction ')===0){
+    if(!seen[w]){seen[w]=1;applyReaction(row);}
+    return;
+  }
   var room=roomOf(row);
   if(room===null)return;
   if(room.slice(0,3)==='dm:')dmPeers[room.slice(3)]=true;
@@ -369,27 +467,33 @@ function render(row){
   var rm=w.match(/ r:([0-9a-f]{6})/);
   var rootm=w.match(/ root:([0-9a-f]{6})/);
   idmap[id]={from:row.from,text:text,r:rm?rm[1]:'',
-             root:rootm?rootm[1]:''};
+             root:rootm?rootm[1]:'',
+             scopeLocal:/ scope:local(?: |$)/.test(w)};
   var d=document.createElement('div');
   d.className='msg '+(own?'local':'remote');
   var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';
   var badge=row.sig==='verified'?'<span class="badge ok">signed</span>'
            :(row.sig==='none'?'<span class="badge bad">unsigned</span>':'');
-  var rbtn='<button class="reply-btn" title="Reply">&#8617;</button>';
+  var extras='<span class="likes"></span>'+
+    '<button class="dots" title="Message options">&#8942;</button>';
   if(own){
     d.innerHTML='<div class="bubble"></div>'+
-      '<div class="meta under"><span class="time">'+when+'</span>'+badge+rbtn+'</div>';
+      '<div class="meta under"><span class="time">'+when+'</span>'+badge+extras+'</div>';
   }else{
     d.innerHTML='<div class="meta"><span class="author"></span>'+
-      '<span class="time">'+when+'</span>'+badge+rbtn+'</div>'+
+      '<span class="time">'+when+'</span>'+badge+extras+'</div>'+
       '<div class="bubble"></div>';
     var au=d.querySelector('.author');
     au.textContent=row.from;
     au.style.cursor='pointer';
     au.title='Message '+row.from+' directly';
     au.onclick=function(){openDm(row.from);};
+    notice();   /* somebody else spoke: beep, vibrate, count in the title */
   }
-  d.querySelector('.reply-btn').onclick=function(){startReply(id);};
+  domById[id]=d.querySelector('.likes');
+  refreshLikes(id);
+  d.querySelector('.dots').onclick=function(ev){
+    showMsgMenu(ev,id,row.from,own);};
   var bub=d.querySelector('.bubble');
   if(rm){
     /* A receiver that never heard the parent still shows the reply,
@@ -417,13 +521,16 @@ function clearChat(){
 function load(){
   try{
     var x=new XMLHttpRequest();
-    x.open('GET','/api/xprs/history?only=message&limit=50',true);
+    x.open('GET','/api/xprs/history?limit=80',true);
     x.timeout=4000;
     x.onload=function(){
       try{
         var d=JSON.parse(x.responseText);
         var rows=(d.rows||[]).slice().reverse();
-        for(var i=0;i<rows.length;i++)render(rows[i]);
+        for(var i=0;i<rows.length;i++){
+          var t=rows[i].type||'';
+          if(t==='message'||t==='reaction')render(rows[i]);
+        }
         document.getElementById('stat').textContent=
           (d.held!==undefined?d.held+' packets held':'ok');
       }catch(e){}
