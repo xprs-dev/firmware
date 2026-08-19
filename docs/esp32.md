@@ -461,6 +461,28 @@ Consequences that have already bitten:
   Reticulum (that is UDP 42671, `geogram_lanwatch`, listen only) and not the
   internet.
 
+## Scoped rooms (XPRS 13.11) on a station
+
+The hotspot chat groups traffic into rooms by SCOPE, not by which bearer
+happened to carry a packet: the Local room is the `scope:local` conversation,
+Global is the unmarked default, and a `d:`-addressed message is a 1:1 room.
+Sending in Local appends `scope:local` to the wire; the station's bearers
+(ESP-NOW, LAN) are all local-class, so nothing else changes on this board.
+
+Where the bearer DOES matter it is now recorded: `geogram_xprsindex` keeps a
+one-byte bearer code per record (`xprsidx_bearer_t`, written into what was an
+explicit pad byte -- the record stays 320 bytes and stores written before the
+field read on untouched, reporting "unknown"). `xprsindex_add2()` takes the
+code; the plain `add()` writes unknown. The HTTP API's `bearer` row field
+comes from it.
+
+**LoRa is the operator's call.** The spec (13.11.1) leaves whether a LoRa
+link counts as a local bearer to the station owner -- a building mesh is
+local, a forty-kilometre shot is not -- with NOT-local as the default. When a
+LoRa-equipped board lands here, that choice belongs in config.ini
+(`[lora] local = yes/no`, default no) next to the other switches, and the
+relay/room logic reads it rather than hard-coding either answer.
+
 ## Validating on the device
 
 - **Opening `/dev/ttyACM0` reboots the board.** `monitor-capture.sh` asserts DTR
