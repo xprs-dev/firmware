@@ -79,9 +79,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
         font-size:18px;font-weight:bold;background:var(--accent);
         color:var(--bg);border:none;border-radius:4px;padding:4px 12px;
         cursor:pointer}
-.status-bar{border-top:1px solid var(--border);padding:6px 12px;
-        font-size:10px;color:var(--muted);display:flex;
-        justify-content:space-between}
+.status-bar{padding:4px 12px;font-size:10px;color:var(--muted);
+        display:flex;justify-content:space-between}
 .status-bar a{color:var(--muted)}
 .snackbar{visibility:hidden;min-width:250px;background:#333;color:#fff;
         text-align:center;border-radius:4px;padding:12px;position:fixed;
@@ -106,16 +105,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
   </div>
 </div>
 <div class="messages" id="msgs"></div>
+<div class="status-bar">
+  <span id="stat">connecting</span>
+  <span>XPRS station &middot; <a href="/config">settings</a></span>
+</div>
 <div id="replybar"><span id="replyinfo"></span>
   <button class="x" onclick="cancelReply()">&#10005;</button></div>
 <div class="input-area">
   <input id="txt" maxlength="180" placeholder="Message"
          onkeydown="if(event.key==='Enter')sendMsg()">
   <button onclick="sendMsg()">&gt;</button>
-</div>
-<div class="status-bar">
-  <span>XPRS station &middot; <a href="/config">settings</a></span>
-  <span id="stat">connecting</span>
 </div>
 <div class="snackbar" id="snack"></div>
 <script>
