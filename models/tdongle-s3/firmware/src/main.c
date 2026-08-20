@@ -41,7 +41,9 @@
 #include "host/util/util.h"
 
 #include "model_init.h"
-#include "tdongle_ui.h"
+#include "st7735.h"
+#include "xprs_station.h"
+#include "xprs_ui_mini.h"
 #include "tweetnacl.h"
 
 /* APRS-IS iGate: WiFi STA + APRS-IS client (reused generic components). */
@@ -1240,8 +1242,17 @@ static void api_start(void)
 static void heartbeat_task(void *arg)
 {
     (void)arg;
+    int stats_tick = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(15000));
+        /* The stats rings to the card every ~10 min, so a reboot does not
+         * forget the day. This task runs on core 1 and is the only writer
+         * of this file (the storage discipline in docs/esp32.md). */
+        if (++stats_tick >= 40) {
+            stats_tick = 0;
+            if (sdcard_is_mounted() && xst_epoch_now())
+                xst_stats_save("/sdcard/xprs/stats.bin");
+        }
         uint32_t qwait = 0, qdrop = 0;
         xprsindex_queue_stats(s_xprs_index, &qwait, &qdrop);
         xprsidx_stats_t xs;
@@ -1325,6 +1336,11 @@ static void xprs_from_bearer(const char *wire, int len, int rssi,
             } else if (strcmp(type, "identity") == 0) {
                 xprs_identity_heard(&hp);
             }
+            /* The screen's stores (xprs_station): every hearing counts,
+             * relayed copies included, exactly as the m5stack banks them. */
+            xst_ingest_parsed(&hp, bearer == XPRS_BEARER_LAN ? "lan"
+                                                             : "espnow",
+                              rssi);
             /* §23.7 is NOT dispatched here. It lives on the heard callback,
              * which sees the duplicate airing step 4 depends on — see
              * xprs_heard_on_now. Dispatching from both would hand the state
@@ -2167,6 +2183,10 @@ static void handle_xprs(const uint8_t *payload, int len, int rssi,
     if (!from[0]) return;                                  /* unattributable */
     if (strcasecmp(from, s_aprs_call) == 0) return;        /* our own echo */
 
+    /* The screen's stores: devices, chat, rx/device stats (xprs_station,
+     * shared with the m5stack). Cheap ring writes, so from this task too. */
+    xst_ingest_parsed(&p, "ble", rssi);
+
     /* Keep it, and offer it to the other bearer. The index refuses what must
      * not be stored (ping/pong, duplicates) and holds mail privately; the LAN
      * bearer appends via:, honours the §13.1 hop budget, waits a random moment
@@ -2593,11 +2613,16 @@ static void start_scan(void)
     else ESP_LOGI(TAG, "extended scanning…");
 }
 
-/* ---- status / reach dashboard UI (metadata only; reuses tdongle_ui) ------ */
-/* The display body is a BLE/LAN coverage dashboard (NEVER message content).
- * The BOOT button cycles it: counts -> BLE callsigns -> LAN callsigns.
- * name = the callsign the node broadcasts in its (plaintext) announce app_data;
- * every announce heard over BLE5 feeds the in-reach peer registry. */
+/* ---- the screen: three views, rotating hands-off ------------------------- */
+/* Devices -> Stats -> Chat on a 10 s dwell (xprs_ui_mini). The one button
+ * (BOOT, GPIO0) is barely reachable in most mountings, so the tour runs by
+ * itself: a short press advances now, a long press (>= 700 ms) freezes the
+ * current view until the next long press. The console offers the same:
+ * `view <1..3>` and `dump` (a FRAMEDUMP screenshot).
+ *
+ * name = the callsign a Reticulum announce advertised in its plaintext
+ * app_data; those sightings are not XPRS wires, so they enter the devices
+ * list through xst_dev_note rather than the ingest path. */
 typedef struct {
     char name[CALLSIGN_MAX];
     uint8_t prefix[4];
@@ -2605,20 +2630,14 @@ typedef struct {
 static QueueHandle_t s_ui_q;
 
 /* T-Dongle-S3 pushbutton = the BOOT strap pin (GPIO0, active low; no BTN_* in
- * geogram_model_tdongle_s3 — the board has no other button). */
+ * geogram_model_tdongle_s3 -- the board has no other button). */
 #define UI_BTN_GPIO    GPIO_NUM_0
-#define UI_VIEW_COUNT  3            /* counts, BLE list, LAN list */
 #define UI_INRANGE_SEC 300          /* "in reach" = heard in the last 5 min */
+#define UI_DWELL_MS    10000        /* per-view stop on the rotating tour */
 
-/* BLE reach registry: Reticulum announce peers, dest-hash keyed (the mesh
- * route-beacon neighbors live in blemesh_table; the render merges both).
- * Written only by ui_task (via s_ui_q), read only by ui_task. */
-#define UI_PEER_MAX 16
-static struct { uint8_t p[4]; uint32_t t; char name[CALLSIGN_MAX]; } s_ui_peers[UI_PEER_MAX];
+static volatile int s_ui_force = -1;   /* console `view <n>`: 0..2, -1 idle */
 
-/* Called from the NimBLE host task — only enqueues (LVGL is single-task). [name]
- * is the announce's plaintext app_data (the device callsign); falls back to the
- * dest-hash prefix in hex when no name was advertised. */
+/* Called from the NimBLE host task -- only enqueues (LVGL is single-task). */
 static void ui_log_packet(const uint8_t *dest_hash, int hops, int rssi,
                           const char *name)
 {
@@ -2634,106 +2653,72 @@ static void ui_log_packet(const uint8_t *dest_hash, int hops, int rssi,
     xQueueSend(s_ui_q, &m, 0);   /* drop if full; the next announce refreshes */
 }
 
-/* Case-insensitive "is [name] already in the list" (dedup helper). */
-static bool ui_name_listed(char names[][CALLSIGN_MAX], int n, const char *name)
+/* Rebuild the visible view from the xprs_station snapshots. ui_task only. */
+static void ui_render(void)
 {
-    for (int k = 0; k < n; k++)
-        if (strcasecmp(names[k], name) == 0) return true;
-    return false;
-}
-
-/* Collect the DISTINCT callsigns currently in BLE reach: RNS announce peers
- * merged with the street-mesh beacon neighbors (a phone shows up on both, and
- * announces SEVERAL destinations under one callsign — dedup by name,
- * case-insensitive). Returns the count (<= max). */
-static int ble_reach_gather(char names[][CALLSIGN_MAX], int max)
-{
-    uint32_t now = now_sec();
-    int n = 0;
-    for (int i = 0; i < UI_PEER_MAX && n < max; i++) {
-        if (!s_ui_peers[i].t || now - s_ui_peers[i].t >= UI_INRANGE_SEC) continue;
-        if (ui_name_listed(names, n, s_ui_peers[i].name)) continue;
-        snprintf(names[n], CALLSIGN_MAX, "%s", s_ui_peers[i].name);
-        n++;
+    /* TX totals into the stats rings, whichever view is up: what the radio
+     * finished with on each bearer, plus what this station relayed. */
+    {
+        uint32_t nissued = 0, ndone = 0, nfail = 0;
+        uint32_t lrx = 0, ltx = 0, lcancel = 0;
+        xprsnow_tx_stats(&nissued, &ndone, &nfail);
+        xprslan_stats(&lrx, &ltx, &lcancel);
+        xst_tx_total(ndone + ltx + s_relayed_count);
     }
-    for (int i = 0; i < blemesh_neighbor_count() && n < max; i++) {
+
+    /* Street-mesh beacon neighbours are sightings too. */
+    uint32_t now = now_sec();
+    for (int i = 0; i < blemesh_neighbor_count(); i++) {
         const blemesh_neighbor_t *nb = blemesh_neighbor_at(i);
         if (!nb || now - nb->last_heard >= UI_INRANGE_SEC) continue;
-        if (ui_name_listed(names, n, nb->callsign)) continue;
-        snprintf(names[n], CALLSIGN_MAX, "%s", nb->callsign);
-        n++;
+        xst_dev_note(nb->callsign, "ble", 0);
     }
-    return n;
-}
 
-/* Append " name" entries to [body] until it is full (label wraps the rest). */
-static void append_names(char *body, int cap, char names[][CALLSIGN_MAX], int n)
-{
-    int used = strlen(body);
-    for (int i = 0; i < n; i++) {
-        int w = snprintf(body + used, cap - used, "%s%s",
-                         i ? "  " : "", names[i]);
-        if (w <= 0 || used + w >= cap - 1) break;
-        used += w;
-    }
-}
-
-/* Rebuild the dashboard body for [view] + the rotating bottom-left line.
- * Runs in ui_task only (all tdongle_ui calls are deferred-safe anyway). */
-static void ui_render(int view, int *rot)
-{
-    static char names[UI_PEER_MAX + BLEMESH_NEIGH_MAX][CALLSIGN_MAX];
-    static lanwatch_peer_t lan[LANWATCH_PEERS_MAX];
-    int nble = ble_reach_gather(names, UI_PEER_MAX + BLEMESH_NEIGH_MAX);
-    int nlan = lanwatch_peers(lan, LANWATCH_PEERS_MAX, UI_INRANGE_SEC);
-
-    char body[224];
-    if (view == 1) {                       /* BLE callsigns in reach */
-        snprintf(body, sizeof(body), "BLE in reach (%d):\n%s",
-                 nble, nble ? "" : "--");
-        append_names(body, sizeof(body), names, nble);
-    } else if (view == 2) {                /* WiFi/LAN callsigns in reach */
-        snprintf(body, sizeof(body), "LAN in reach (%d):\n%s",
-                 nlan, nlan ? "" : "--");
-        for (int i = 0; i < nlan; i++) {   /* nameless peer -> its IP tail */
-            if (!lan[i].callsign[0]) {
-                const uint8_t *q = (const uint8_t *)&lan[i].ip; /* net order */
-                snprintf(lan[i].callsign, sizeof(lan[i].callsign),
-                         ".%u.%u", (unsigned)q[2], (unsigned)q[3]);
-            }
+    switch (xum_view()) {
+    case XUM_VIEW_DEVICES: {
+        xst_dev_t devs[XUM_DEV_ROWS];
+        xum_dev_t rows[XUM_DEV_ROWS];
+        uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        int n = xst_devices(devs, XUM_DEV_ROWS, UI_INRANGE_SEC);
+        for (int i = 0; i < n; i++) {
+            snprintf(rows[i].call, sizeof rows[i].call, "%s", devs[i].call);
+            snprintf(rows[i].bearer, sizeof rows[i].bearer, "%s",
+                     devs[i].bearer);
+            rows[i].dist_m = devs[i].rssi
+                ? (int)(xst_est_distance_m(devs[i].rssi) + 0.5f) : -1;
+            rows[i].age_s = (int)((now_ms - devs[i].last_ms) / 1000);
         }
-        int used = strlen(body);
-        for (int i = 0; i < nlan; i++) {
-            int w = snprintf(body + used, sizeof(body) - used, "%s%s",
-                             i ? "  " : "", lan[i].callsign);
-            if (w <= 0 || used + w >= (int)sizeof(body) - 1) break;
-            used += w;
-        }
-    } else {                               /* default: reach counts */
-        snprintf(body, sizeof(body),
-                 "In reach\nBLE devices: %d\nLAN devices: %d", nble, nlan);
+        xum_devices(rows, n);
+        break;
     }
-    tdongle_ui_set_body(body);
-    tdongle_ui_set_device_count(nble);
-
-    /* Bottom-left rotates through the in-reach BLE callsigns, then a relay
-     * tally — readable at a glance even from the counts view. */
-    char line[24];
-    int sel = (*rot)++ % (nble + 1);
-    if (sel < nble)
-        snprintf(line, sizeof(line), "%s", names[sel]);
-    else
-        snprintf(line, sizeof(line), "relayed %u", (unsigned)s_relayed_count);
-    tdongle_ui_set_info(line);
+    case XUM_VIEW_STATS: {
+        uint16_t dev[XUM_STATS_POINTS], rxv[XUM_STATS_POINTS],
+                 txv[XUM_STATS_POINTS];
+        int np = xst_stats_series(1, dev, rxv, txv, XUM_STATS_POINTS);
+        xum_stats(dev, rxv, txv, np, "hour");
+        break;
+    }
+    default: {  /* chat */
+        xst_chat_t rows[XUM_CHAT_ROWS];
+        xum_chat_t out[XUM_CHAT_ROWS];
+        int n = xst_chat(rows, XUM_CHAT_ROWS);
+        for (int i = 0; i < n; i++) {
+            snprintf(out[i].from, sizeof out[i].from, "%s", rows[i].from);
+            snprintf(out[i].text, sizeof out[i].text, "%.60s", rows[i].text);
+            out[i].kind = rows[i].kind;
+        }
+        xum_chat(out, n);
+        break;
+    }
+    }
+    xum_set_count(xst_devices_in_range(UI_INRANGE_SEC));
 }
 
-/* Owns ALL LVGL/tdongle_ui calls. Drains the queue into the peer registry,
- * polls the button, and refreshes the three zones (top=uptime by tdongle_ui,
- * body=reach dashboard, bottom=rotating callsign/relayed + BLE count). */
+/* Owns ALL LVGL calls: drains the announce queue into the devices list,
+ * polls the button, rotates the tour and refreshes the visible view. */
 static void ui_task(void *arg)
 {
     (void)arg;
-    /* BOOT button: input + pull-up, plain debounced polling (no ISR needed). */
     gpio_config_t btn = {
         .pin_bit_mask = 1ULL << UI_BTN_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -2743,45 +2728,58 @@ static void ui_task(void *arg)
     };
     gpio_config(&btn);
 
-    int last_ui = 0, rot = 0, view = 0;
-    int btn_low = 0;
-    bool btn_fired = false, dirty = true;
+    int64_t last_render_us = 0, dwell_at_us = esp_timer_get_time();
+    int64_t press_us = 0;
+    bool pressed = false, long_fired = false, held = false, dirty = true;
     for (;;) {
         ui_msg_t m;
-        while (xQueueReceive(s_ui_q, &m, 0) == pdTRUE) {
-            uint32_t t = now_sec();
-            int slot = -1, oldest = 0;
-            for (int i = 0; i < UI_PEER_MAX; i++) {
-                if (memcmp(s_ui_peers[i].p, m.prefix, 4) == 0 && s_ui_peers[i].t) { slot = i; break; }
-                if (s_ui_peers[i].t == 0) { slot = i; break; }
-                if (s_ui_peers[i].t < s_ui_peers[oldest].t) oldest = i;
-            }
-            if (slot < 0) slot = oldest;
-            memcpy(s_ui_peers[slot].p, m.prefix, 4);
-            s_ui_peers[slot].t = t ? t : 1;
-            snprintf(s_ui_peers[slot].name, sizeof(s_ui_peers[slot].name), "%s", m.name);
-        }
+        while (xQueueReceive(s_ui_q, &m, 0) == pdTRUE)
+            xst_dev_note(m.name, "ble", 0);
 
-        /* Button poll (~10 ms period): 3 consecutive lows = pressed, fire once
-         * per press, re-arm on release. Cycles the dashboard view. */
+        int64_t now_us = esp_timer_get_time();
+
+        /* Button (~10 ms poll): release before 700 ms = advance the tour
+         * now; holding past 700 ms = freeze/unfreeze the current view. */
         if (gpio_get_level(UI_BTN_GPIO) == 0) {
-            if (++btn_low >= 3 && !btn_fired) {
-                btn_fired = true;
-                view = (view + 1) % UI_VIEW_COUNT;
+            if (!pressed) { pressed = true; long_fired = false;
+                            press_us = now_us; }
+            else if (!long_fired && now_us - press_us >= 700000) {
+                long_fired = true;
+                held = !held;
+                xum_set_held(held);
                 dirty = true;
             }
-        } else {
-            btn_low = 0;
-            btn_fired = false;
+        } else if (pressed) {
+            pressed = false;
+            if (!long_fired && now_us - press_us >= 30000) {
+                xum_show((xum_view() + 1) % XUM_VIEW_COUNT);
+                dwell_at_us = now_us;
+                dirty = true;
+            }
         }
 
-        int now = (int)now_sec();
-        if (dirty || now - last_ui >= 2) {   /* refresh ~every 2s + on press */
-            dirty = false;
-            last_ui = now;
-            ui_render(view, &rot);
+        /* Console `view <n>` jumps the tour and resets the dwell. */
+        int forced = s_ui_force;
+        if (forced >= 0) {
+            s_ui_force = -1;
+            xum_show(forced % XUM_VIEW_COUNT);
+            dwell_at_us = now_us;
+            dirty = true;
         }
-        tdongle_ui_update();
+
+        /* The tour: next view every UI_DWELL_MS unless held. */
+        if (!held && now_us - dwell_at_us >= (int64_t)UI_DWELL_MS * 1000) {
+            xum_show((xum_view() + 1) % XUM_VIEW_COUNT);
+            dwell_at_us = now_us;
+            dirty = true;
+        }
+
+        if (dirty || now_us - last_render_us >= 2000000) {
+            dirty = false;
+            last_render_us = now_us;
+            ui_render();
+        }
+        xum_update();
         /* At the default 100 Hz tick pdMS_TO_TICKS(5) rounds to 0 ticks, so
          * vTaskDelay would never block and this task would starve IDLE0 (task
          * watchdog). Always delay at least one tick so the idle task can run. */
@@ -3370,6 +3368,12 @@ static void console_handle(char *line)
                          s_aprs_call[0] ? s_aprs_call : "TDONGLE", to, tf, sp + 1);
         if (n <= 0 || n >= (int)sizeof wire) { printf("too long\n"); return; }
         xprs_air(wire, n, SUBTYPE_APRS);        /* messages ride 0x41 */
+        xprslan_send(wire, n);                  /* and the other bearers, */
+        xprsnow_send(wire, n);                  /* like the identity does */
+        {   /* our own words show in the Chat view (no echo comes back) */
+            xprs_t lp;
+            if (xprs_parse(wire, n, &lp)) xst_chat_note(&lp);
+        }
         printf("queued %dB to %s\n", n, to);
         return;
     }
@@ -3456,7 +3460,24 @@ static void console_handle(char *line)
         console_recv_begin(line + 5);
         return;
     }
-    printf("commands: status | msg <to> <text> | xmsg <to> <text> | "
+    if (strncmp(line, "view ", 5) == 0) {
+        int v = atoi(line + 5);
+        if (v >= 1 && v <= XUM_VIEW_COUNT) {
+            s_ui_force = v - 1;
+            printf("view %d\n", v);
+        } else {
+            printf("usage: view <1..%d> (devices, stats, chat)\n",
+                   XUM_VIEW_COUNT);
+        }
+        return;
+    }
+    if (strcmp(line, "dump") == 0) {
+        /* FRAMEDUMP over this console -- tools/scripts/framedump.py
+         * decodes it into a PNG (--cmd "dump\n"). */
+        xum_framedump();
+        return;
+    }
+    printf("commands: status | view <1..3> | dump | msg <to> <text> | xmsg <to> <text> | "
            "xping <call> | xid <wire> | beacon | xbeacon | ack <am> | "
            "sendfile <to> <path> | transfers\n");
 }
@@ -3535,6 +3556,13 @@ static void heap_mark(const char *stage)
                                                         MALLOC_CAP_8BIT));
 }
 
+/* xum's flush onto the board's panel driver -- the whole board glue. */
+static void lcd_flush_adapter(int x1, int y1, int x2, int y2,
+                              const uint16_t *px, void *ctx)
+{
+    st7735_flush((st7735_handle_t)ctx, x1, y1, x2, y2, px);
+}
+
 void app_main(void)
 {
     heap_mark("boot");
@@ -3560,11 +3588,16 @@ void app_main(void)
                  (unsigned)heap_caps_get_largest_free_block(
                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
+    /* The screen's stores exist before anything can be heard; the callsign
+     * firms up in igate_start() and is set below. */
+    xst_init("", 0);
+
     /* model_init() initialises NVS + the ST7735 LCD. */
     if (model_init() != ESP_OK) {
         ESP_LOGW(TAG, "model_init failed (no display?)");
-    } else {
-        tdongle_ui_init(model_get_lcd());
+    } else if (xum_init(ST7735_WIDTH, ST7735_HEIGHT, lcd_flush_adapter,
+                        model_get_lcd()) != ESP_OK) {
+        ESP_LOGW(TAG, "mini UI failed to start (no RAM for the buffer?)");
     }
 
     s_relay_mtx = xSemaphoreCreateMutex();
@@ -3596,12 +3629,14 @@ void app_main(void)
     /* Start the dashboard UI task (owns all LVGL calls). */
     heap_mark("before ui_task");
     s_ui_q = xQueueCreate(12, sizeof(ui_msg_t));
-    xTaskCreate(ui_task, "ui", 4096, NULL, 4, NULL);
+    if (xTaskCreate(ui_task, "ui", 5120, NULL, 4, NULL) != pdPASS)
+        ESP_LOGE(TAG, "ui task did NOT start");
 
     /* WiFi STA + APRS-IS iGate, started BEFORE the BLE host runs so the uplink
      * queue exists for the first frames heard during the WiFi connect window. */
     heap_mark("before igate");
     igate_start();
+    xst_set_call(s_aprs_call[0] ? s_aprs_call : "TDONGLE");
 
     /* Street mesh: identity from the iGate callsign (NVS). SD card (if present)
      * persists parked store-and-forward mail across reboots; RAM-only without. */
@@ -3625,6 +3660,7 @@ void app_main(void)
      * cost the other firmware its ability to transmit at all. */
     if (sdcard_is_mounted()) {
         s_xprs_index = xprsindex_open("/sdcard/xprs");
+        xst_stats_load("/sdcard/xprs/stats.bin");
         if (xprsindex_ready(s_xprs_index)) {
             xprsidx_stats_t xs;
             xprsindex_stats(s_xprs_index, &xs);
