@@ -42,6 +42,13 @@
 
 #include "model_init.h"
 #include "st7735.h"
+#include "esp_app_desc.h"
+#include "esp_heap_caps.h"
+#include "esp_ota_ops.h"
+#include "fw_secrets.h"     /* gitignored; see fw_secrets.h.example */
+#include "xprs_auth.h"
+#include "xprs_config.h"
+#include "xprs_ota.h"
 #include "xprs_station.h"
 #include "xprs_ui_mini.h"
 #include "tweetnacl.h"
@@ -955,6 +962,75 @@ static void xprs_seen_remember(uint32_t idh)
     s_xseen_rr++;
 }
 
+/* ── Updating without a ladder (XPRS.md 25.8) ─────────────────────────── */
+
+/* Air one wire on the bearer named, for the updater's answers. */
+static void ota_air(const char *bearer, const char *wire, int len)
+{
+    char w[XPRS_MAX_WIRE + 1];
+    if (len > XPRS_MAX_WIRE) return;
+    memcpy(w, wire, len);
+    w[len] = 0;
+    len = xprs_sign_wire(w, len, (int)sizeof w);
+    if (!bearer || strcmp(bearer, "ble") == 0) xprs_air(w, len, SUBTYPE_XPRS);
+    else if (strcmp(bearer, "espnow") == 0)    xprsnow_send(w, len);
+    else                                       xprslan_send(w, len);
+}
+
+/* The card is the one thing an install must not fight. */
+static void ota_quiesce(bool quiet)
+{
+    if (s_xprs_index) xprsindex_pause_writes(s_xprs_index, quiet);
+    if (quiet) ESP_LOGW(TAG, "storage paused: installing firmware");
+    else       ESP_LOGI(TAG, "storage resumed");
+}
+
+/* One answer to a command, signed, on the bearer it arrived on. */
+static void ota_answer(const char *to, const char *bearer, const char *id,
+                       int code, const char *msg)
+{
+    if (!to || !to[0] || !id || !id[0]) return;
+    char ts[32];
+    xprs_time_field(ts, sizeof ts);
+    char w[XPRS_MAX_WIRE + 1];
+    int n = snprintf(w, sizeof w, "t:result f:%s d:%s %s r:%s code:%d",
+                     s_aprs_call[0] ? s_aprs_call : "TDONGLE", to, ts, id, code);
+    if (msg && msg[0] && n > 0 && n < (int)sizeof w)
+        n += snprintf(w + n, sizeof w - n, " m:%s", msg);
+    if (n <= 0 || n >= (int)sizeof w) return;
+    ota_air(bearer, w, n);
+}
+
+/* A cmd:update heard on any bearer. The gate first: unsigned or
+ * unverifiable dies here unanswered, a stranger we can identify gets 403,
+ * a stale one 408, a repeat re-airs its first answer (25.4). */
+static void xprs_update_maybe(const xprs_t *p, const char *bearer)
+{
+    char type[16], cmd[16];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "command") != 0) return;
+    if (!xprs_get_str(p, "cmd", cmd, sizeof cmd) ||
+        strcmp(cmd, "update") != 0) return;
+
+    char id[8] = "", from[16] = "";
+    int prev = 0;
+    xauth_verdict_t v = xauth_check(p, s_aprs_call, id, from, &prev);
+    if (v == XAUTH_SILENT) return;
+    if (v == XAUTH_REPEAT) { ota_answer(from, bearer, id, prev, NULL); return; }
+    if (v == XAUTH_403) { ota_answer(from, bearer, id, 403,
+                                     "not on the allow list"); return; }
+    if (v == XAUTH_408) { ota_answer(from, bearer, id, 408, NULL); return; }
+
+    char ver[24] = "", url[160] = "";
+    xprs_get_str(p, "ver", ver, sizeof ver);
+    xprs_get_str(p, "url", url, sizeof url);
+    xota_code_t code = xota_request(ver[0] ? ver : NULL, url[0] ? url : NULL,
+                                    from, bearer, id);
+    xauth_remember(id, (int)code);
+    ota_answer(from, bearer, id, (int)code,
+               code == XOTA_BUSY ? "updating already" : NULL);
+}
+
 /* XPRS.md 36.10: a serve:archive announcement from a station that was
  * away -- ask it for the window we missed, on the bearer it spoke on
  * (0 = BLE5, else xprslan/xprsnow). The reply is ordinary heard traffic. */
@@ -1279,11 +1355,105 @@ static esp_err_t api_xprs_key_get(httpd_req_t *req)
     return ESP_OK;
 }
 
+static httpd_handle_t s_api;
+
+/* Everything a person would have climbed a ladder to read (25.8). */
+static esp_err_t api_diag_get(httpd_req_t *req)
+{
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    char *out = malloc(760);
+    if (!out) return httpd_resp_send_500(req);
+    const esp_app_desc_t *d = esp_app_get_description();
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    if (run) esp_ota_get_state_partition(run, &st);
+    int n = snprintf(out, 760,
+        "{\"ok\":true,\"board\":\"tdongle-s3\",\"callsign\":\"%s\","
+        "\"fw\":{\"version\":\"%s\",\"project\":\"%s\",\"idf\":\"%s\","
+        "\"built\":\"%s %s\"},"
+        "\"boot\":{\"reason\":%d,\"uptime_s\":%u},"
+        "\"heap\":{\"free\":%u,\"largest\":%u,\"min_ever\":%u},"
+        "\"part\":{\"running\":\"%s\",\"state\":%d,\"rollback\":%s},"
+        "\"ota\":{\"busy\":%s,\"pct\":%d},"
+        "\"sd\":%s}",
+        s_aprs_call[0] ? s_aprs_call : "TDONGLE",
+        d ? d->version : "?", d ? d->project_name : "?", d ? d->idf_ver : "?",
+        d ? d->date : "?", d ? d->time : "?",
+        (int)esp_reset_reason(), (unsigned)now_sec(),
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                                   MALLOC_CAP_8BIT),
+        (unsigned)esp_get_minimum_free_heap_size(),
+        run ? run->label : "?", (int)st,
+        esp_ota_check_rollback_is_possible() ? "true" : "false",
+        xota_busy() ? "true" : "false", xota_progress(),
+        sdcard_is_mounted() ? "true" : "false");
+    esp_err_t rc = httpd_resp_send(req, out, n);
+    free(out);
+    return rc;
+}
+
+/* The push door: the caller already holds the image. Same verification as
+ * the pull path, and the same gate in front of it. */
+static esp_err_t api_update_post(httpd_req_t *req)
+{
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    char ver[24] = "", sig[80] = "";
+    char *auth = malloc(300);
+    if (!auth) return httpd_resp_send_500(req);
+    auth[0] = 0;
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Version", ver, sizeof ver);
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Sig", sig, sizeof sig);
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, 300);
+    char who[16] = "";
+    xauth_verdict_t v = xauth_check_http(auth, s_aprs_call, NULL, who);
+    free(auth);
+    if (v != XAUTH_OK) {
+        ESP_LOGW(TAG, "update refused: %s",
+                 v == XAUTH_403 ? "signer not allowed" :
+                 v == XAUTH_408 ? "stale or no clock" : "unsigned");
+        httpd_resp_set_status(req, v == XAUTH_408 ? "408 Request Timeout"
+                                                  : "403 Forbidden");
+        return httpd_resp_sendstr(req, "this station takes updates only from "
+                                       "its owner\n");
+    }
+    if (!ver[0] || !sig[0] || req->content_len <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return httpd_resp_sendstr(req, "need version, signature and an image\n");
+    }
+    if (xota_push_begin(ver, (size_t)req->content_len, sig) != ESP_OK) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return httpd_resp_sendstr(req, "busy, or it does not fit\n");
+    }
+    char *buf = malloc(1024);
+    if (!buf) { xota_push_abort(); return httpd_resp_send_500(req); }
+    int left = req->content_len;
+    while (left > 0) {
+        int want = left > 1024 ? 1024 : left;
+        int got = httpd_req_recv(req, buf, want);
+        if (got <= 0 || xota_push_write(buf, (size_t)got) != ESP_OK) {
+            free(buf);
+            xota_push_abort();
+            httpd_resp_set_status(req, "400 Bad Request");
+            return httpd_resp_sendstr(req, "transfer died\n");
+        }
+        left -= got;
+    }
+    free(buf);
+    ESP_LOGW(TAG, "%s pushed %s (%d bytes)", who, ver, (int)req->content_len);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"installing\":true}");
+    if (xota_push_finish() != ESP_OK)
+        ESP_LOGE(TAG, "push refused at the last step -- nothing installed");
+    return ESP_OK;
+}
+
 static void api_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 5120;
-    cfg.max_uri_handlers = 6;
+    cfg.max_uri_handlers = 8;
     cfg.max_open_sockets = 4;
     cfg.lru_purge_enable = true;
     httpd_handle_t srv = NULL;
@@ -1300,7 +1470,15 @@ static void api_start(void)
     static const httpd_uri_t uk = { .uri = "/api/xprs/key", .method = HTTP_GET,
                                     .handler = api_xprs_key_get, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &uk);
-    ESP_LOGI(TAG, "HTTP API up: GET /api/xprs, /api/xprs/dir");
+    static const httpd_uri_t udg = { .uri = "/api/diag", .method = HTTP_GET,
+                                     .handler = api_diag_get, .user_ctx = NULL };
+    httpd_register_uri_handler(srv, &udg);
+    static const httpd_uri_t uup = { .uri = "/api/update", .method = HTTP_POST,
+                                     .handler = api_update_post, .user_ctx = NULL };
+    httpd_register_uri_handler(srv, &uup);
+    s_api = srv;
+    ESP_LOGI(TAG, "HTTP API up: /api/xprs, /api/xprs/dir, /api/diag, "
+                  "POST /api/update");
 }
 
 static void heartbeat_task(void *arg)
@@ -1400,6 +1578,8 @@ static void xprs_from_bearer(const char *wire, int len, int rssi,
             } else if (strcmp(type, "identity") == 0) {
                 xprs_identity_heard(&hp);
             }
+            xprs_update_maybe(&hp, bearer == XPRS_BEARER_LAN ? "lan"
+                                                             : "espnow");
             xprs_catchup_maybe(&hp, bearer);
             /* The screen's stores (xprs_station): every hearing counts,
              * relayed copies included, exactly as the m5stack banks them. */
@@ -2250,6 +2430,7 @@ static void handle_xprs(const uint8_t *payload, int len, int rssi,
     if (!from[0]) return;                                  /* unattributable */
     if (strcasecmp(from, s_aprs_call) == 0) return;        /* our own echo */
 
+    xprs_update_maybe(&p, "ble");
     xprs_catchup_maybe(&p, 0);
     /* The screen's stores: devices, chat, rx/device stats (xprs_station,
      * shared with the m5stack). Cheap ring writes, so from this task too. */
@@ -2558,6 +2739,16 @@ static void relay_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1500));
         s_relay_ticks++;
+        /* An install, if one was asked for: minutes of flash work on the
+         * one task here with a big stack, on core 1, off the radios. */
+        xota_poll();
+        /* Rollback self-test (25.8): two minutes of the API listening, a
+         * bearer up and no panic behind us, then this image is trusted. */
+        if (s_relay_ticks == 80) {
+            if (s_api && (xprslan_is_active() || s_mesh_up) &&
+                esp_reset_reason() != ESP_RST_PANIC) xota_mark_healthy();
+            else xota_mark_unhealthy();
+        }
         uint32_t t = now_sec();
         gatt_mesh_tick();   /* MSP session timeouts (politeness/stall) */
         xprs_catchup_air(); /* parked 36.10 ask: signed on THIS stack */
@@ -3706,6 +3897,28 @@ void app_main(void)
     heap_mark("before igate");
     igate_start();
     xst_set_call(s_aprs_call[0] ? s_aprs_call : "TDONGLE");
+
+    /* Updating without a ladder (XPRS.md 25.8). The config holds the key
+     * that may approve an image and the npubs that may command this
+     * station; both are seeded once from the compiled-in defaults and are
+     * the operator's afterwards -- changeable with a cable, so a lost key
+     * is a ladder and never a brick. */
+    xcfg_init();
+    if (!xcfg_get("fwkey", "")[0] && FW_DEFAULT_KEY[0])
+        xcfg_set("fwkey", FW_DEFAULT_KEY);
+    if (!xcfg_get("own1", "")[0] && FW_DEFAULT_OWNER[0])
+        xcfg_set("own1", FW_DEFAULT_OWNER);
+    {
+        static xota_cfg_t oc;
+        oc.board = "tdongle-s3";
+        oc.callsign = s_aprs_call;
+        oc.air = ota_air;
+        oc.quiesce = ota_quiesce;
+        xota_start(&oc);
+    }
+    /* Did the bootloader put us back? Then say so: a failed update
+     * reporting its own failure, with nobody on the roof. */
+    xota_report_rollback();
 
     /* Street mesh: identity from the iGate callsign (NVS). SD card (if present)
      * persists parked store-and-forward mail across reboots; RAM-only without. */
