@@ -74,10 +74,11 @@ static esp_err_t display_init(int *w, int *h, void **ctx)
         .dc_pin = TDECK_TFT_DC,
         .rst_pin = TDECK_TFT_RST,
         .bl_pin = TDECK_TFT_BL,
-        /* 20 MHz while the board is new. Through the S3's GPIO matrix a
-         * faster clock wants dummy-bit compensation, and a panel that draws
-         * confetti is indistinguishable from a panel that is wired wrong. */
-        .clock_hz = 20 * 1000 * 1000,
+        /* 40 MHz: what LilyGO's own TFT_eSPI setup runs this panel at, so
+         * the glass is known to take it. Brought up at 20 and raised once
+         * the picture was proven -- through the S3's GPIO matrix a bad
+         * clock draws confetti, which looks just like bad wiring. */
+        .clock_hz = 40 * 1000 * 1000,
     };
     esp_err_t err = st7789_init(&cfg, &s_lcd);
     if (err != ESP_OK) return err;

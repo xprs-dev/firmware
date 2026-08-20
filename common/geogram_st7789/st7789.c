@@ -84,6 +84,8 @@ static void init_sequence(st7789_handle_t h)
     lcd_cmd(h, 0x11);                 /* SLPOUT */
     vTaskDelay(pdMS_TO_TICKS(120));
 
+    lcd_cmd(h, 0x13);                 /* NORON: normal display mode */
+
     /* Memory access. MV|MX turns the native 240x320 portrait panel into the
      * 320x240 landscape the UI is drawn for; the RGB bit stays clear because
      * the ST7789 is RGB-ordered where the ILI9342C was BGR. */
@@ -91,30 +93,47 @@ static void init_sequence(st7789_handle_t h)
 
     /* 16-bit colour. */
     { uint8_t d[] = {0x55}; lcd_cmd_data(h, 0x3A, d, 1); }
+    vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* Porch control. */
+    /* ── The panel's own numbers, not the ST7789's generic ones ──────────
+     *
+     * Everything from here to DISPON is the JLX240 panel datasheet as
+     * LilyGO ships it (TFT_eSPI Setup210_LilyGo_T_Deck.h -> INIT_SEQUENCE_2),
+     * and the difference is not subtle. Generic ST7789 gamma on this glass
+     * crushes the midtones, and the midtones are exactly where anti-aliasing
+     * lives: the half-lit pixels along a letter's diagonal or a radar circle
+     * get snapped to background or foreground, so a correctly anti-aliased
+     * frame arrives at the eye looking jagged. The pixels were always right
+     * -- a framedump of the same screen is smooth -- the transfer curve
+     * carrying them was not.
+     *
+     * Another ST7789 board may well want its own tables; this is where they
+     * would become a config field rather than a constant.
+     */
+
+    /* Frame rate / porch. */
     { uint8_t d[] = {0x0C,0x0C,0x00,0x33,0x33}; lcd_cmd_data(h, 0xB2, d, 5); }
-    /* Gate control. */
-    { uint8_t d[] = {0x35};                     lcd_cmd_data(h, 0xB7, d, 1); }
+    /* Gate control: VGH/VGL. 0x75, not the generic 0x35. */
+    { uint8_t d[] = {0x75};                     lcd_cmd_data(h, 0xB7, d, 1); }
     /* VCOM. */
-    { uint8_t d[] = {0x19};                     lcd_cmd_data(h, 0xBB, d, 1); }
+    { uint8_t d[] = {0x1A};                     lcd_cmd_data(h, 0xBB, d, 1); }
     /* LCM control. */
     { uint8_t d[] = {0x2C};                     lcd_cmd_data(h, 0xC0, d, 1); }
     /* VDV/VRH enable, VRH, VDV. */
     { uint8_t d[] = {0x01};                     lcd_cmd_data(h, 0xC2, d, 1); }
-    { uint8_t d[] = {0x12};                     lcd_cmd_data(h, 0xC3, d, 1); }
+    { uint8_t d[] = {0x13};                     lcd_cmd_data(h, 0xC3, d, 1); }
     { uint8_t d[] = {0x20};                     lcd_cmd_data(h, 0xC4, d, 1); }
-    /* Frame rate: 60 Hz. */
+    /* Frame rate control in normal mode. */
     { uint8_t d[] = {0x0F};                     lcd_cmd_data(h, 0xC6, d, 1); }
     /* Power control. */
     { uint8_t d[] = {0xA4,0xA1};                lcd_cmd_data(h, 0xD0, d, 2); }
 
-    /* Gamma. */
-    { uint8_t d[] = {0xD0,0x04,0x0D,0x11,0x13,0x2B,0x3F,
-                     0x54,0x4C,0x18,0x0D,0x0B,0x1F,0x23};
+    /* Gamma, positive and negative. */
+    { uint8_t d[] = {0xD0,0x0D,0x14,0x0D,0x0D,0x09,0x38,
+                     0x44,0x4E,0x3A,0x17,0x18,0x2F,0x30};
       lcd_cmd_data(h, 0xE0, d, 14); }
-    { uint8_t d[] = {0xD0,0x04,0x0C,0x11,0x13,0x2C,0x3F,
-                     0x44,0x51,0x2F,0x1F,0x1F,0x20,0x23};
+    { uint8_t d[] = {0xD0,0x09,0x0F,0x08,0x07,0x14,0x37,
+                     0x44,0x4D,0x38,0x15,0x16,0x2C,0x3E};
       lcd_cmd_data(h, 0xE1, d, 14); }
 
     lcd_cmd(h, 0x21);                 /* INVON -- see st7789_invert() */
