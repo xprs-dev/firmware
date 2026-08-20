@@ -69,7 +69,42 @@ feature toggles `wifi_on`, `espnow_on`, `digi_on`, `bridge_on`, `igate_on`,
 `index_on`, `ap_on`. A board without the config share keeps the same keys
 in NVS.
 
-## 6. Discipline
+## 6. Updating and diagnosing without a cable
+
+A station on a roof updates over the air or stays on the version it was
+carried up with (XPRS.md 25.8). What that needs on the device:
+
+- Two app slots and rollback (`otadata` + `ota_0` + `ota_1`,
+  `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`), so a new image that cannot
+  come up is replaced by the one that could. Never a `factory` slot: it
+  only helps when otadata is corrupt, and it goes stale.
+- `common/xprs_ota` for the install and `common/xprs_auth` for the
+  question that comes first -- may this signer make this station act
+  (25.4). Both are board-agnostic; a board supplies its id, its callsign,
+  a way to air an answer and a way to quiesce its storage.
+- A pinned publisher key and an owner allow-list (`fwkey`, `own1..own4`
+  in config, seeded from a gitignored `fw_secrets.h`). Both re-writable
+  with a cable: a lost key is a ladder, never a brick.
+- `/api/diag`, `/api/log` and `/api/coredump`, so the questions a person
+  would climb up to answer can be asked from the ground.
+
+**Not every board can host the pull path, and this is measured.** The
+m5stack-core is an original ESP32 running LVGL beside WiFi, a FAT
+archive, an indexer and a captive portal, and it lives at about 8-15 KB
+of free heap. An HTTP client for a 1.4 MB image does not fit in that
+comfortably: the updater's own 8 KB task took the whole margin (ENOMEM in
+the LAN bearer, the index unable to open its files), and buying the
+memory back by trimming LVGL's pool to 24 KB starved the renderer into
+missing its watchdog every seventy seconds. The board keeps its 32 KB
+pool and its stability.
+
+So the rule for a new board: **an OTA host needs roughly 25 KB of free
+heap at rest, or it needs to receive its image rather than fetch it.**
+The T-Dongle S3 has the room (671 KB spare in its slot, 13 MB of unused
+flash, no LVGL pool contention, ~22 KB free); the m5stack takes a push
+over its own access point instead, which costs no HTTP client at all.
+
+## 7. Discipline
 
 docs/esp32.md is binding and measured: core 0 belongs to the radios, core
 1 to anything that blocks (SD writes, the index writer, httpd); big task

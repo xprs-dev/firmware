@@ -15,12 +15,12 @@ CONFIG_LV_FONT_MONTSERRAT_10=y
 # and was the same size as the labels around it.
 CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-# 24, not 32. This board runs LVGL beside WiFi, a FAT archive, the captive
-# portal AND now an HTTP client for updates, and it was down to about 4 KB
-# of free heap -- too little for an install to allocate a socket. The UI is
-# labels, one table and three bar charts; 24 KB is measured to be enough
-# for it and hands 8 KB back to everything else.
-CONFIG_LV_MEM_SIZE_KILOBYTES=24
+# 32, and measured: 24 was tried, to hand 8 KB back to an HTTP client for
+# updates, and the renderer began missing its watchdog every seventy
+# seconds -- the panels are labels, a table and three charts, and they need
+# this pool. The conclusion is not "tune the number" but "this board is not
+# the one that hosts a pull-OTA": see docs/device.md.
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
 # The XPRS index names segments seg_<10 digits>.bin -- longer than 8.3, so
 # without long-filename support every write fails while the accept counter
 # still climbs. The dongle runs LFN_HEAP for the same reason.
