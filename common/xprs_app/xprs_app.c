@@ -990,30 +990,29 @@ static void ui_render(void)
             }
         }
 
-        char d[48];
-        snprintf(d, sizeof d, "Ch %u - %d station%s", xprsnow_channel(),
-                 n_now, n_now == 1 ? "" : "s");
-        xui_home_row(0, "ESP-NOW", xprsnow_is_active(), d);
+        /* A count, and nothing else: the dot already says whether the link
+         * is up, and the addresses and channel numbers that used to sit
+         * under each name live on the This-device panel. A link the board
+         * does not have takes no row at all -- an empty name hides it. */
+        char d[8];
+        int row = 0;
+        snprintf(d, sizeof d, "%d", n_now);
+        xui_home_row(row++, "ESP-NOW", xprsnow_is_active(), d);
 
-        if (s_ip_str[0])
-            snprintf(d, sizeof d, "%s - %d", s_ip_str, n_lan);
-        else
-            snprintf(d, sizeof d, "%s", s_ssid[0] ? "Joining..." : "Down");
-        xui_home_row(1, "WiFi / LAN", s_ip_str[0] != 0, d);
+        snprintf(d, sizeof d, "%d", n_lan);
+        xui_home_row(row++, "WiFi / LAN", s_ip_str[0] != 0,
+                     s_ip_str[0] ? d : "");
 
-        if (!s_ip_str[0])       snprintf(d, sizeof d, "No address");
-        else if (!s_inet_known) snprintf(d, sizeof d, "Probing...");
-        else if (s_inet_up)     snprintf(d, sizeof d, "Up - %d relayed",
-                                         n_inet);
-        else                    snprintf(d, sizeof d, "Down");
-        xui_home_row(2, "Internet", s_inet_known && s_inet_up, d);
+        snprintf(d, sizeof d, "%d", n_inet);
+        xui_home_row(row++, "Internet", s_inet_known && s_inet_up,
+                     s_inet_known && s_inet_up ? d : "");
 
-        if (xprslora_is_active())
-            snprintf(d, sizeof d, "868 MHz - %d station%s", n_lora,
-                     n_lora == 1 ? "" : "s");
-        else
-            snprintf(d, sizeof d, "No radio");
-        xui_home_row(3, "LoRa", xprslora_is_active(), d);
+        /* Only a board with the radio says anything about it. */
+        if (s_board->lora) {
+            snprintf(d, sizeof d, "%d", n_lora);
+            xui_home_row(row++, "LoRa", xprslora_is_active(), d);
+        }
+        for (; row < XUI_HOME_ROWS; row++) xui_home_row(row, "", false, "");
 
         xui_home_counts(nb, s_heard_count);
 
@@ -1029,7 +1028,7 @@ static void ui_render(void)
         xui_set_title("Radar 1/7");
         break;
     }
-    case 4: {   /* Flow: the packets going past, newest first */
+    case 4: {   /* Traffic: the packets going past, newest first */
         xui_flow_t rows[XUI_FLOW_ROWS];
         int nr = 0;
         for (int i = 0; i < FLOW_MAX && nr < XUI_FLOW_ROWS; i++) {
@@ -1048,7 +1047,7 @@ static void ui_render(void)
         }
         xui_flow_rows(rows, nr);
         list_n = nr;
-        xui_set_title("Flow 5/7");
+        xui_set_title("Traffic 5/7");
         break;
     }
     case 3: {   /* Devices: everyone in reach, detail on selection */

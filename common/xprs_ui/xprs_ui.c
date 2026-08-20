@@ -126,6 +126,18 @@ static lv_obj_t *s_chat_send;
 static int s_rail_w;
 static int s_msgs_h;
 static char s_call_txt[12];
+static char s_uptime_txt[12];
+
+/* The right corner: "(uptime) <panel>" as one line. */
+static void title_render(void)
+{
+    if (!s_title_label) return;
+    if (s_uptime_txt[0])
+        lv_label_set_text_fmt(s_title_label, "(%s) %s", s_uptime_txt,
+                              s_title);
+    else
+        lv_label_set_text(s_title_label, s_title);
+}
 static volatile bool s_call_dirty;
 static char s_input_text[128];
 static bool s_input_focused;
@@ -269,18 +281,18 @@ void xui_update(void)
         uint32_t h = (total_sec / 3600) % 24;
         uint32_t m = (total_sec / 60) % 60;
         uint32_t s = total_sec % 60;
-        /* The callsign owns the corner: whose station this is beats the
-         * name of the wire format it speaks. */
-        const char *who = s_call_txt[0] ? s_call_txt : "XPRS";
-        if (days == 0) {
-            snprintf(buf, sizeof buf, "%s  up %02lu:%02lu:%02lu", who,
+        /* Left corner: the callsign, alone -- whose station this is. The
+         * uptime moved in with the panel title on the right, where it
+         * reads as one status line rather than crowding the name. */
+        lv_label_set_text(s_status_label,
+                          s_call_txt[0] ? s_call_txt : "XPRS");
+        if (days == 0)
+            snprintf(s_uptime_txt, sizeof s_uptime_txt, "%02lu:%02lu:%02lu",
                      (unsigned long)h, (unsigned long)m, (unsigned long)s);
-        } else {
-            snprintf(buf, sizeof buf, "%s  up %lu day%s %02lu h", who,
-                     (unsigned long)days, days == 1 ? "" : "s",
-                     (unsigned long)h);
-        }
-        lv_label_set_text(s_status_label, buf);
+        else
+            snprintf(s_uptime_txt, sizeof s_uptime_txt, "%lud %02luh",
+                     (unsigned long)days, (unsigned long)h);
+        title_render();
     }
     if (s_call_dirty) {
         s_call_dirty = false;
@@ -298,7 +310,7 @@ void xui_update(void)
     }
     if (s_title_dirty) {
         s_title_dirty = false;
-        if (s_title_label) lv_label_set_text(s_title_label, s_title);
+        title_render();
     }
     if (s_pulse_pending && s_rx_dot) {
         s_pulse_pending = false;
@@ -393,34 +405,42 @@ static void build_ui(void)
     lv_obj_set_style_pad_all(s_home, 10, 0);
     lv_obj_clear_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* One tight line per link: dot, name, count against the right edge of
+     * the column. The chatter that used to live under each name (channel,
+     * IP address) belongs to the This-device panel; here a link is three
+     * facts -- exists, up, how many stations -- and rows for hardware the
+     * board does not carry are simply not shown. */
     for (int i = 0; i < XUI_HOME_ROWS; i++) {
-        int y = 4 + i * 33;   /* four rows where three used to sit */
+        int y = 6 + i * 19;
 
         s_home_dot[i] = lv_obj_create(s_home);
         lv_obj_remove_style_all(s_home_dot[i]);
-        lv_obj_set_size(s_home_dot[i], 16, 16);
+        lv_obj_set_size(s_home_dot[i], 8, 8);
         lv_obj_set_style_radius(s_home_dot[i], LV_RADIUS_CIRCLE, 0);
         lv_obj_set_style_bg_color(s_home_dot[i],
                                   lv_palette_main(LV_PALETTE_GREY), 0);
         lv_obj_set_style_bg_opa(s_home_dot[i], LV_OPA_COVER, 0);
-        lv_obj_align(s_home_dot[i], LV_ALIGN_TOP_LEFT, 0, y);
+        lv_obj_align(s_home_dot[i], LV_ALIGN_TOP_LEFT, 0, y + 3);
+        lv_obj_add_flag(s_home_dot[i], LV_OBJ_FLAG_HIDDEN);
 
         s_home_name[i] = lv_label_create(s_home);
         lv_label_set_text(s_home_name[i], "");
-        lv_obj_set_style_text_font(s_home_name[i], &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(s_home_name[i], &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(s_home_name[i], lv_color_white(), 0);
         lv_label_set_long_mode(s_home_name[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_width(s_home_name[i], s_home_col_w);
-        lv_obj_align(s_home_name[i], LV_ALIGN_TOP_LEFT, 26, y);
+        lv_obj_set_width(s_home_name[i], s_home_col_w - 34);
+        lv_obj_align(s_home_name[i], LV_ALIGN_TOP_LEFT, 14, y);
 
         s_home_detail[i] = lv_label_create(s_home);
         lv_label_set_text(s_home_detail[i], "");
         lv_obj_set_style_text_font(s_home_detail[i], &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(s_home_detail[i],
                                     lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
-        lv_label_set_long_mode(s_home_detail[i], LV_LABEL_LONG_DOT);
-        lv_obj_set_width(s_home_detail[i], s_home_col_w);
-        lv_obj_align(s_home_detail[i], LV_ALIGN_TOP_LEFT, 26, y + 17);
+        lv_obj_set_style_text_align(s_home_detail[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_label_set_long_mode(s_home_detail[i], LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(s_home_detail[i], 24);
+        lv_obj_align(s_home_detail[i], LV_ALIGN_TOP_LEFT,
+                     s_home_col_w - 22, y);
     }
 
     /* ---- The radar, right half: a PPI scope like a tower console ---- */
@@ -1001,13 +1021,24 @@ void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n)
 
 void xui_home_row(int idx, const char *name, bool up, const char *detail)
 {
-    if (idx < 0 || idx >= XUI_HOME_ROWS || !s_home) return;
-    lv_label_set_text(s_home_name[idx], name ? name : "");
-    lv_label_set_text(s_home_detail[idx], detail ? detail : "");
+    if (idx < 0 || idx >= XUI_HOME_ROWS) return;
+    if (!s_home_name[idx]) return;
+    /* No hardware, no row: a board without the link hands "" and the line
+     * disappears instead of announcing what it cannot do. */
+    if (!name || !name[0]) {
+        lv_obj_add_flag(s_home_dot[idx], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_home_name[idx], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_home_detail[idx], LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(s_home_dot[idx], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_home_name[idx], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_home_detail[idx], LV_OBJ_FLAG_HIDDEN);
     lv_obj_set_style_bg_color(s_home_dot[idx],
                               up ? lv_palette_main(LV_PALETTE_GREEN)
-                                 : lv_palette_main(LV_PALETTE_GREY),
-                              0);
+                                 : lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_label_set_text(s_home_name[idx], name);
+    lv_label_set_text(s_home_detail[idx], detail ? detail : "");
 }
 
 void xui_set_call(const char *call)
