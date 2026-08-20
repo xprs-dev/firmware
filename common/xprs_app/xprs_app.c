@@ -1092,7 +1092,7 @@ static void ui_render(void)
         }
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Reachable devices 4/7");
+        xui_set_title("Reachable 4/7");
         break;
     }
     case 5: {   /* This device: the station's facts, full values on selection */
