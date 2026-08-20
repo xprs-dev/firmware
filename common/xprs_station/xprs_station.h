@@ -47,6 +47,12 @@ typedef struct {
     char     r[XPRS_ID_LEN];     /* parent id when this is a reply (6.4) */
     uint8_t  kind;               /* 0 global, 1 scope:local, 2 direct (d:),
                                   * 3 a published status (section 27) */
+    uint8_t  urg;                /* urg: as a rank, 0 low .. 3 urgent
+                                  * (XPRS 13.5). What survives a full ring. */
+    uint32_t seq;                /* arrival order. The ring no longer fills
+                                  * in slot order -- the least urgent row
+                                  * gives way, wherever it sits -- so this
+                                  * is what says which saying came last. */
     uint32_t ep;                 /* epoch when heard, 0 before NTP */
 } xst_chat_t;
 
@@ -105,6 +111,26 @@ bool xst_catchup_due(const char *call, int absent_sec);
  * n=2.7): honestly rough, but -46 and -85 are a room and a street apart.
  * -1 when rssi is 0 (bearer without RSSI). */
 float xst_est_distance_m(int rssi);
+
+/* ── The conversation, kept ───────────────────────────────────────────
+ *
+ * The chat ring is small and lives in RAM, so every reboot used to show an
+ * empty conversation. These put it on storage -- whichever storage the
+ * board has, since the caller names the path: an SD card where there is
+ * one, the internal flash where there is not.
+ *
+ * It is deliberately NOT the packet index. The index keeps everything and
+ * is mostly machine chatter -- on a busy pair of stations, receipts and
+ * catch-up commands outnumber human sayings by fifty to one and push them
+ * out of any recent-window query. A conversation is small, precious and
+ * worth its own few kilobytes.
+ *
+ * Save from ONE task that may block on flash (the indexer's writer, core
+ * 1), never from a bearer callback. xst_chat_dirty() says when it is worth
+ * doing; it clears on read. */
+bool xst_chat_dirty(void);
+void xst_chat_load(const char *path);
+void xst_chat_save(const char *path);
 
 /* Stats persistence, whole-blob (magic XST1, same format the m5stack has
  * been writing). The caller picks the path and the task; the write must

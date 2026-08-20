@@ -33,6 +33,11 @@ def main():
     ap.add_argument("--port", default="/dev/ttyUSB0")
     ap.add_argument("--baud", type=int, default=115200)
     ap.add_argument("--cmd", default="S")
+    # Keys to send BEFORE the dump trigger, e.g. --pre 2 to select a panel.
+    # In one connection, because opening the port resets the board -- doing
+    # it as two runs dumps a frame from a board that is still booting.
+    ap.add_argument("--pre", default="")
+    ap.add_argument("--pre-wait", type=float, default=2.5)
     ap.add_argument("--boot-wait", type=float, default=0)
     ap.add_argument("--timeout", type=float, default=30)
     args = ap.parse_args()
@@ -44,6 +49,13 @@ def main():
         while time.time() - t0 < args.boot_wait:
             ser.read(4096)
     ser.reset_input_buffer()
+    if args.pre:
+        for ch in args.pre.replace("\\e", "\x1b"):
+            ser.write(ch.encode())
+            ser.flush()
+            time.sleep(0.2)
+        time.sleep(args.pre_wait)
+        ser.reset_input_buffer()
     ser.write(args.cmd.replace("\\n", "\n").encode())
     ser.flush()
 

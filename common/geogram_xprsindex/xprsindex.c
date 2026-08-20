@@ -746,6 +746,22 @@ static void xi_decl_note(xprsidx_t *st, const xprs_t *p, const char *from)
     XI_LOGI("mailbox declaration: holding for %s", from);
 }
 
+/* The record's urg: as a rank, 0..3 (section 13.5). Absent means normal --
+ * the level the format itself calls ordinary. Parsed from the stored wire,
+ * so records written before this existed rank correctly too. */
+static int xi_rec_urg(const xi_rec_t *r)
+{
+    xprs_t p;
+    if (!xprs_parse(r->wire, r->len, &p)) return 1;
+    int vlen = 0;
+    const char *v = xprs_get(&p, "urg", &vlen);
+    if (!v) return 1;
+    if (vlen == 3 && memcmp(v, "low", 3) == 0) return 0;
+    if (vlen == 4 && memcmp(v, "high", 4) == 0) return 2;
+    if (vlen == 6 && memcmp(v, "urgent", 6) == 0) return 3;
+    return 1;
+}
+
 /* The record's own until:, or 0. Parsed from the stored wire. */
 static uint32_t xi_rec_until(const xi_rec_t *r)
 {
@@ -776,11 +792,31 @@ static bool xi_evict_locked(xprsidx_t *st)
     if (f) {
         xi_rec_t r;
         while (fread(&r, sizeof r, 1, f) == 1) {
-            if (!r.len || !(r.flags & XI_F_MAIL)) continue;   /* class 1 */
+            if (!r.len) continue;
             uint32_t until = xi_rec_until(&r);
             if (until && now && now > until) continue;        /* expired */
-            /* Class 2 and 3 both carry forward; class 3 (declared) always,
-             * class 2 only while the store is not drowning in mail. */
+
+            /* What survives a full store, in the order section 13.5 asks
+             * for: mail is carried because somebody is waiting for it, and
+             * of the rest only what its sender marked as mattering. `low`
+             * is the first thing dropped and `urgent` the last -- a
+             * carrier choosing by arrival order alone is what urg: exists
+             * to prevent. A station is free to distrust the marking; this
+             * one trusts it, and the airtime budget elsewhere is what
+             * stops everybody marking everything urgent. */
+            bool keep = (r.flags & XI_F_MAIL) != 0;
+            if (!keep) {
+                int urg = xi_rec_urg(&r);
+                keep = urg >= 2;                              /* high, urgent */
+                /* A human saying, kept a rung lower than the machine
+                 * chatter around it: an observation repeats every minute,
+                 * a message was said once. */
+                if (!keep && urg >= 1 &&
+                    (r.type == XI_T_MESSAGE || r.type == XI_T_STATUS))
+                    keep = true;
+            }
+            if (!keep) continue;
+
             (void)xi_declared(st, r.to);
             r.index = st->next_index++;
             st->count++;

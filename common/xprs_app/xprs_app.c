@@ -1688,6 +1688,9 @@ static void idx_task(void *arg)
     }
 
     xst_stats_load("/idx/stats.bin");
+    /* The conversation, from whichever storage this board has: an SD card
+     * where there is one, the internal flash where there is not. */
+    xst_chat_load("/idx/chat.bin");
     mkdir("/idx/log", 0777);
     esp_task_wdt_add(NULL);   /* a wedged storage task becomes a logged reboot */
 
@@ -1789,6 +1792,12 @@ static void idx_task(void *arg)
             }
             s_outbox.full = false;
         }
+
+        /* A saying is worth a write of its own: they are rare, and losing
+         * the last one to a power pull is exactly the complaint this store
+         * exists to answer. The flag makes it one write per conversation
+         * turn rather than one per tick. */
+        if (xst_chat_dirty()) xst_chat_save("/idx/chat.bin");
 
         /* The stats rings hit the flash every ten minutes -- losing at most
          * ten minutes of bars to a power pull. */

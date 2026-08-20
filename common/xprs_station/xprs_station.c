@@ -28,6 +28,8 @@ static xst_dev_t s_seen[XST_SEEN_MAX];
 /* ── The chat ring ──────────────────────────────────────────────────── */
 static xst_chat_t s_chat[XST_CHAT_MAX];
 static int s_chat_n;              /* total ever; ring pos = n % MAX */
+static bool s_chat_dirty;         /* something to write to storage */
+static uint32_t s_chat_seq;       /* arrival counter, survives eviction */
 
 /* ── Statistics on the wall clock ───────────────────────────────────── */
 #define STAT_DEVS 12
@@ -153,6 +155,15 @@ void xst_chat_note(const xprs_t *p)
     else
         row.kind = 0;                                  /* global, default */
     row.ep = xst_epoch_now();
+    {   /* XPRS 13.5: what a carrier sorts by when the store is full. */
+        char u[10];
+        row.urg = 1;                                   /* normal by default */
+        if (xprs_get_str(p, "urg", u, sizeof u)) {
+            if (strcmp(u, "low") == 0) row.urg = 0;
+            else if (strcmp(u, "high") == 0) row.urg = 2;
+            else if (strcmp(u, "urgent") == 0) row.urg = 3;
+        }
+    }
 
     LOCK();
     /* The same message arrives more than once -- our own send plus the
@@ -164,8 +175,35 @@ void xst_chat_note(const xprs_t *p)
             return;
         }
     }
-    s_chat[s_chat_n % XST_CHAT_MAX] = row;
+    /* Which slot this saying takes when the ring is full.
+     *
+     * Arrival order alone would drop a warning to make room for chatter,
+     * which is the choice urg: exists to prevent (13.5). So the victim is
+     * the LEAST urgent among what is here, and the oldest of those -- a
+     * `low` goes before a `normal`, and `urgent` only goes when the whole
+     * ring is urgent. It is a request, not an instruction: a station that
+     * marked everything urgent would simply lose the benefit of ordering,
+     * which is its own answer. */
+    int slot;
+    if (s_chat_n < XST_CHAT_MAX) {
+        slot = s_chat_n;
+    } else {
+        slot = 0;
+        for (int i = 1; i < XST_CHAT_MAX; i++) {
+            if (s_chat[i].urg < s_chat[slot].urg ||
+                (s_chat[i].urg == s_chat[slot].urg &&
+                 s_chat[i].ep < s_chat[slot].ep)) {
+                slot = i;
+            }
+        }
+        /* Everything already here outranks the newcomer: it takes the
+         * least-urgent slot anyway rather than being silently dropped --
+         * the ring is a window on the conversation, not an archive. */
+    }
+    row.seq = (uint32_t)++s_chat_seq;
+    s_chat[slot] = row;
     s_chat_n++;
+    s_chat_dirty = true;
     UNLOCK();
 }
 
@@ -271,16 +309,89 @@ int xst_chat(xst_chat_t *out, int max)
 {
     int n = 0;
     LOCK();
-    int total = s_chat_n < XST_CHAT_MAX ? s_chat_n : XST_CHAT_MAX;
-    for (int k = 0; k < total && n < max; k++) {
-        /* newest first: walk backwards from the last written slot */
-        int i = (s_chat_n - 1 - k) % XST_CHAT_MAX;
-        if (i < 0) i += XST_CHAT_MAX;
+    /* Newest first, by seq rather than by slot: a full ring gives up its
+     * least urgent row wherever that sits, so slot order stopped meaning
+     * arrival order. Insertion sort over 40 rows, once per render. */
+    for (int i = 0; i < XST_CHAT_MAX; i++) {
         if (!s_chat[i].from[0]) continue;
-        out[n++] = s_chat[i];
+        int at = n;
+        while (at > 0 && out[at - 1].seq < s_chat[i].seq) at--;
+        if (at >= max) continue;
+        if (n < max) n++;
+        for (int k = n - 1; k > at; k--) out[k] = out[k - 1];
+        out[at] = s_chat[i];
     }
     UNLOCK();
     return n;
+}
+
+/* ── The conversation on storage ─────────────────────────────────────── */
+
+bool xst_chat_dirty(void)
+{
+    LOCK();
+    bool d = s_chat_dirty;
+    s_chat_dirty = false;
+    UNLOCK();
+    return d;
+}
+
+/* One blob: a magic, then the live rows. Small enough (a few KB) that
+ * rewriting the whole thing beats any append-and-compact scheme, and rare
+ * enough -- only when somebody says something -- that the flash does not
+ * care. */
+#define XST_CHAT_MAGIC 0x43485431u   /* "CHT1" */
+
+void xst_chat_save(const char *path)
+{
+    if (!path || !*path) return;
+    /* static, like the loader's: forty of these is nearly 7 KB and the task
+     * that calls this has eight. A buffer that fits everywhere except the
+     * stack it is standing on is how the last three crashes started. */
+    static xst_chat_t rows[XST_CHAT_MAX];
+    int n = xst_chat(rows, XST_CHAT_MAX);      /* newest first */
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        ESP_LOGW(TAG, "chat: cannot write %s", path);
+        return;
+    }
+    uint32_t magic = XST_CHAT_MAGIC;
+    fwrite(&magic, sizeof magic, 1, f);
+    fwrite(&n, sizeof n, 1, f);
+    if (n > 0) fwrite(rows, sizeof rows[0], (size_t)n, f);
+    fclose(f);
+    ESP_LOGI(TAG, "chat: %d saying%s saved", n, n == 1 ? "" : "s");
+}
+
+void xst_chat_load(const char *path)
+{
+    if (!path || !*path) return;
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    uint32_t magic = 0;
+    int n = 0;
+    if (fread(&magic, sizeof magic, 1, f) != 1 || magic != XST_CHAT_MAGIC ||
+        fread(&n, sizeof n, 1, f) != 1 || n < 0 || n > XST_CHAT_MAX) {
+        fclose(f);
+        ESP_LOGW(TAG, "chat: %s is not a conversation this version wrote",
+                 path);
+        return;
+    }
+    static xst_chat_t rows[XST_CHAT_MAX];
+    int got = (int)fread(rows, sizeof rows[0], (size_t)n, f);
+    fclose(f);
+
+    LOCK();
+    /* The file holds them newest first; the ring wants oldest first so the
+     * sequence numbers come out in the order they were said. */
+    for (int i = got - 1; i >= 0; i--) {
+        rows[i].seq = (uint32_t)++s_chat_seq;
+        s_chat[s_chat_n % XST_CHAT_MAX] = rows[i];
+        s_chat_n++;
+    }
+    s_chat_dirty = false;      /* just read it; nothing new to write */
+    UNLOCK();
+    ESP_LOGI(TAG, "chat: %d saying%s read back", got, got == 1 ? "" : "s");
 }
 
 int xst_chat_find(const char *id, xst_chat_t *out)
