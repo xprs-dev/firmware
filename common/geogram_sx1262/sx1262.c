@@ -70,6 +70,7 @@ static const char *TAG = "sx1262";
 #define SX1262_REG_OCP                      0x08E7
 
 struct sx1262_dev {
+    bool bus_owned;              /* we initialised SPI2, so we free it */
     sx1262_spi_config_t spi_config;
     sx1262_lora_config_t lora_config;
     spi_device_handle_t spi;
@@ -83,14 +84,22 @@ struct sx1262_dev {
 // SPI helpers
 // ============================================================================
 
+/* CS is manual because two of the command windows hold it across more than
+ * one SPI transaction. On a SHARED bus (the T-Deck hangs the display, the SD
+ * slot and this radio off one SPI2) that is only safe while nobody else can
+ * get a transaction in between -- so the bus is acquired for exactly the
+ * CS-low window. On a private bus acquire is nearly free, so there is no
+ * separate code path for it. */
 static void sx1262_cs_low(sx1262_handle_t handle)
 {
+    spi_device_acquire_bus(handle->spi, portMAX_DELAY);
     gpio_set_level((gpio_num_t)handle->spi_config.cs_pin, 0);
 }
 
 static void sx1262_cs_high(sx1262_handle_t handle)
 {
     gpio_set_level((gpio_num_t)handle->spi_config.cs_pin, 1);
+    spi_device_release_bus(handle->spi);
 }
 
 static esp_err_t sx1262_wait_busy(sx1262_handle_t handle)
@@ -372,7 +381,11 @@ esp_err_t sx1262_create(const sx1262_spi_config_t *spi_config, sx1262_handle_t *
             .intr_type = GPIO_INTR_POSEDGE,
         };
         gpio_config(&dio1_conf);
-        gpio_install_isr_service(0);
+        /* INVALID_STATE = somebody (a trackball, a button) got here first,
+         * which is fine -- the service is shared by design. */
+        esp_err_t ir = gpio_install_isr_service(0);
+        if (ir != ESP_OK && ir != ESP_ERR_INVALID_STATE)
+            ESP_LOGW(TAG, "ISR service: %s", esp_err_to_name(ir));
         gpio_isr_handler_add((gpio_num_t)spi_config->dio1_pin, sx1262_dio1_isr, dev);
     }
 
@@ -383,10 +396,17 @@ esp_err_t sx1262_create(const sx1262_spi_config_t *spi_config, sx1262_handle_t *
     buscfg.sclk_io_num = spi_config->sck_pin;
     buscfg.quadwp_io_num = -1;
     buscfg.quadhd_io_num = -1;
-    buscfg.max_transfer_sz = 256 + 8;
+    /* Big enough for a display flush, not just a radio frame: on a shared
+     * bus whoever initialises first sets the ceiling for everybody, and a
+     * radio that capped it at 264 bytes would quietly break the panel's
+     * 30 KB slices if it happened to win the race. */
+    buscfg.max_transfer_sz = 32768;
 
     esp_err_t ret = spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    if (ret != ESP_OK) {
+    dev->bus_owned = ret == ESP_OK;
+    /* INVALID_STATE = the bus is already up (the display got there first on
+     * a shared bus). Ours to join, not to own. */
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
         ESP_LOGE(TAG, "SPI bus init failed: %s", esp_err_to_name(ret));
         vSemaphoreDelete(dev->tx_done_sem);
         free(dev);
@@ -402,7 +422,8 @@ esp_err_t sx1262_create(const sx1262_spi_config_t *spi_config, sx1262_handle_t *
     ret = spi_bus_add_device(SPI2_HOST, &devcfg, &dev->spi);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI device add failed: %s", esp_err_to_name(ret));
-        spi_bus_free(SPI2_HOST);
+        /* Never free a bus somebody else is using. */
+        if (dev->bus_owned) spi_bus_free(SPI2_HOST);
         vSemaphoreDelete(dev->tx_done_sem);
         free(dev);
         return ret;
@@ -525,7 +546,7 @@ esp_err_t sx1262_delete(sx1262_handle_t handle)
     if (handle->spi) {
         spi_bus_remove_device(handle->spi);
     }
-    spi_bus_free(SPI2_HOST);
+    if (handle->bus_owned) spi_bus_free(SPI2_HOST);
 
     if (handle->tx_done_sem) {
         vSemaphoreDelete(handle->tx_done_sem);

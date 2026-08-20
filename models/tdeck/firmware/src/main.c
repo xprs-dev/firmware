@@ -6,11 +6,11 @@
  * ST7789 sharing its SPI bus with a card slot and a radio, a trackball, and a
  * keyboard that is really another ESP32 answering on I2C.
  *
- * WHAT THIS BOARD WILL DO AND DOES NOT YET. There is an SX1262 on 868 MHz
- * behind TDECK_RADIO_CS, and it is left alone on purpose: XPRS has no LoRa
- * bearer yet, and a radio nobody can send through is not worth the risk of
- * sharing a bus badly. Its chip select is driven HIGH at boot so it keeps out
- * of the panel's way, and that is the whole of the relationship for now.
+ * The SX1262 on 868 MHz is the board's third bearer, behind the same relay
+ * discipline as ESP-NOW and the LAN (geogram_xprslora). It shares the SPI
+ * bus with the panel, which is why its chip select is parked HIGH before
+ * anything drives the bus, and why the sx1262 driver holds the bus for
+ * exactly its chip-select windows.
  */
 
 #include <stdbool.h>
@@ -210,9 +210,25 @@ static int keyboard_key(void)
 
 /* ── This board ─────────────────────────────────────────────────────────── */
 
+/* The radio: LilyGO wires DIO2 as the RF switch and a TCXO on DIO3, and a
+ * build without both is deaf while looking perfectly healthy. */
+static const xprslora_cfg_t k_tdeck_lora = {
+    .sck_pin = TDECK_SPI_SCLK,
+    .mosi_pin = TDECK_SPI_MOSI,
+    .miso_pin = TDECK_SPI_MISO,
+    .cs_pin = TDECK_RADIO_CS,
+    .rst_pin = TDECK_RADIO_RST,
+    .busy_pin = TDECK_RADIO_BUSY,
+    .dio1_pin = TDECK_RADIO_DIO1,
+    .freq_hz = 868000000u,
+    .tx_power_dbm = 14,
+    .use_tcxo = true,
+    .use_dio2_rf_switch = true,
+};
+
 static const xapp_board_t k_tdeck = {
     .board_id = TDECK_BOARD_ID,
-    .banner = "ESP-NOW + LAN; the 868 MHz radio waits for a bearer",
+    .banner = "ESP-NOW + LAN + LoRa 868",
     .wifi_ssid = WIFI_SSID,
     .wifi_pass = WIFI_PASS,
     .espnow_channel = ESPNOW_FALLBACK_CHANNEL,
@@ -221,6 +237,7 @@ static const xapp_board_t k_tdeck = {
     .input_init = input_init,
     .input_poll = input_poll,
     .raw_key = keyboard_key,
+    .lora = &k_tdeck_lora,
 };
 
 void app_main(void)

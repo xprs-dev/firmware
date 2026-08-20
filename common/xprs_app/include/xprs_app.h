@@ -23,6 +23,7 @@
 
 #include <stdint.h>
 #include "esp_err.h"
+#include "xprslora.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +77,13 @@ typedef struct {
      * table. A board with buttons and no keyboard leaves it NULL.
      */
     int (*raw_key)(void);
+
+    /**
+     * The board's LoRa radio, or NULL for a board without one. The station
+     * brings it up as a third bearer beside ESP-NOW and the LAN: same wire,
+     * same relay rules, real range.
+     */
+    const xprslora_cfg_t *lora;
 } xapp_board_t;
 
 /** Run the station. Does not return: it is the body of app_main().

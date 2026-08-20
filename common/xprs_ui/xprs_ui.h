@@ -198,10 +198,10 @@ void xui_chat_rooms(const xui_room_t *rooms, int n, int sel);
 /** The conversation, oldest first. Rebuilds the bubbles. UI task only. */
 void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header);
 
-/** The composer. [text] is what has been typed so far; when it is empty
- *  [placeholder] is shown muted instead. [focused] draws the accent border
- *  that says keystrokes are going here. UI task only. */
-void xui_chat_input(const char *text, const char *placeholder, bool focused);
+/** The composer: a "> " prompt, what has been typed so far, and a caret
+ *  that blinks while [focused] -- the terminal idiom for "type here", which
+ *  needs no reading. UI task only. */
+void xui_chat_input(const char *text, bool focused);
 
 #ifdef __cplusplus
 }

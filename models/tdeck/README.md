@@ -1,7 +1,10 @@
 # LilyGO T-Deck
 
 An XPRS station on a T-Deck: ESP32-S3, a 320x240 ST7789, a trackball, an I2C
-QWERTY keyboard, and an SX1262 on 868 MHz that is not used yet.
+QWERTY keyboard, and an SX1262 on 868 MHz -- the station's third bearer,
+behind the same relay rules as ESP-NOW and the LAN (`common/geogram_xprslora`).
+Validated deck-to-deck on the bench: the same signed packet arriving once by
+WiFi and once by RF, the RF copy wearing an RSSI and an SNR.
 
 The station itself is `common/xprs_app`, shared with the M5Stack. What lives
 here is the board: `src/board.h` is the pin map, `src/main.c` is the panel, the
@@ -79,11 +82,6 @@ The S3 has room the original ESP32 did not, which is why PSRAM is left off
 
 ## Not done yet
 
-- **LoRa.** The SX1262 is on the shared SPI bus with its chip select parked
-  HIGH so it keeps out of the panel's way. XPRS has no LoRa bearer at all yet;
-  when it gets one, `common/geogram_sx1262` needs work first -- it hardcodes
-  `SPI2_HOST`, treats an already-initialised bus as an error, and uses manual
-  CS, none of which is safe on a bus it shares.
 - **Touch.** The GT911 is on the I2C bus. The eight-panel UI has no touch
   targets, so there is nothing for it to do until there is.
 - **The T-Deck Plus** is this board plus a GPS and a battery gauge: a build

@@ -35,6 +35,7 @@
 #include "xprs.h"
 #include "xprsnow.h"
 #include "xprslan.h"
+#include "xprslora.h"
 #include "xprsid.h"
 #include "xprschan.h"
 #include "nostr_keys.h"
@@ -284,6 +285,7 @@ static uint8_t bearer_code(const char *name)
 {
     if (strcmp(name, "espnow") == 0) return XI_B_ESPNOW;
     if (strcmp(name, "lan") == 0)    return XI_B_LAN;
+    if (strcmp(name, "lora") == 0)   return XI_B_LORA;
     return XI_B_UNKNOWN;
 }
 
@@ -467,6 +469,8 @@ static void on_espnow(const char *wire, int len, const uint8_t mac[6], int rssi)
     if (xcfg_get_bool("igate_on", true)) xprslan_offer(wire, len);
     /* Digipeater: re-air on the radio itself, for stations past our reach. */
     if (xcfg_get_bool("digi_on", false)) xprsnow_offer(wire, len);
+    /* And toward the long-range radio, which reaches who WiFi cannot. */
+    if (xcfg_get_bool("bridge_on", true)) xprslora_offer(wire, len);
 }
 
 /* Every hearing on ESP-NOW, duplicates included.
@@ -493,8 +497,33 @@ static void on_lan(const char *wire, int len, uint32_t ip)
              (unsigned)(ip & 0xFF), (unsigned)((ip >> 8) & 0xFF),
              (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 24) & 0xFF),
              len, wire);
-    /* Bridge: carry LAN traffic onto the radio. */
-    if (xcfg_get_bool("bridge_on", true)) xprsnow_offer(wire, len);
+    /* Bridge: carry LAN traffic onto the radios. */
+    if (xcfg_get_bool("bridge_on", true)) {
+        xprsnow_offer(wire, len);
+        xprslora_offer(wire, len);
+    }
+}
+
+static void on_lora(const char *wire, int len, int rssi)
+{
+    s_heard_count++;
+    seen_note(wire, len, "lora", rssi);
+    xprs_t p;
+    if (xprs_parse(wire, len, &p)) {
+        char type[16];
+        xprs_type(&p, type, sizeof type);
+        if (strcmp(type, "identity") == 0) identity_heard(&p);
+    }
+    ESP_LOGI(TAG, "lora   %19d dBm %3dB  %s", rssi, len, wire);
+    /* What arrived over kilometres goes toward the LAN and the local radio
+     * under the same iGate rule ESP-NOW uses -- and never back onto LoRa
+     * here: the bearer's own digipeat path owns that decision, with its
+     * jitter and its cancel window. */
+    if (xcfg_get_bool("igate_on", true)) {
+        xprslan_offer(wire, len);
+        xprsnow_offer(wire, len);
+    }
+    if (xcfg_get_bool("digi_on", false)) xprslora_offer(wire, len);
 }
 
 /* ── What we say ────────────────────────────────────────────────────────── */
@@ -1299,8 +1328,11 @@ static void ui_render(void)
             if (rows[i].ep && nowep && nowep >= rows[i].ep) {
                 uint32_t age = nowep - rows[i].ep;
                 unsigned h = (unsigned)(age / 3600);
+                /* "now", not "7s": a seconds counter changes every render,
+                 * and the changing text is what forces the bubble rebuild
+                 * the fragmentation guard below exists to avoid. */
                 if (age < 60)
-                    snprintf(m->when, sizeof m->when, "%us", (unsigned)age);
+                    snprintf(m->when, sizeof m->when, "now");
                 else if (age < 3600)
                     snprintf(m->when, sizeof m->when, "%um",
                              (unsigned)(age / 60));
@@ -1318,15 +1350,26 @@ static void ui_render(void)
                          : s_room == RM_GLOBAL ? "Global"
                          : s_room == RM_SOCIAL ? "Social"
                                                : s_peer[s_room - RM_FIXED];
-        xui_chat_msgs(mm, mn, head);
 
-        /* The placeholder says where the words are about to go, which is
-         * the one thing a person must not have to remember. */
-        const char *ph = s_room == RM_LOCAL  ? "Message (stays local)"
-                       : s_room == RM_GLOBAL ? "Message (goes everywhere)"
-                       : s_room == RM_SOCIAL ? "Status update"
-                                             : "Message to this station";
-        xui_chat_input(s_compose, ph, true);
+        /* Rebuild the bubbles only when the conversation actually changed.
+         * A rebuild frees and reallocates every bubble from LVGL's pool,
+         * and doing that every two seconds for hours fragments the pool
+         * until an allocation fails -- which in LVGL is not a failure but
+         * an endless spin, i.e. the hang this line exists to prevent. */
+        static uint32_t last_sig;
+        uint32_t sig = 2166136261u;
+        for (const unsigned char *b = (const unsigned char *)mm;
+             b < (const unsigned char *)(mm + mn); b++)
+            sig = (sig ^ *b) * 16777619u;
+        for (const char *c = head; *c; c++)
+            sig = (sig ^ (unsigned char)*c) * 16777619u;
+        sig ^= (uint32_t)mn;
+        if (sig != last_sig) {
+            last_sig = sig;
+            xui_chat_msgs(mm, mn, head);
+        }
+
+        xui_chat_input(s_compose, true);
 
         xui_set_title("Chat 8/8");
         break;
@@ -1906,7 +1949,9 @@ static bool api_send_wire(const char *wire, int len)
 
     bool lan = xprslan_send(wire, len);
     bool now = xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
-    if ((lan || now) && s_index && xcfg_get_bool("index_on", true))
+    bool lra = xprslora_is_active() && xprslora_send(wire, len);
+    (void)lra;
+    if ((lan || now || lra) && s_index && xcfg_get_bool("index_on", true))
         xprsindex_add2(s_index, wire, len, 0, true, (uint32_t)time(NULL),
                        lan ? XI_B_LAN : XI_B_ESPNOW);
     return lan || now;
@@ -2287,6 +2332,15 @@ void xapp_run(const xapp_board_t *board)
         xprsnow_set_beacon(espnow_beacon, 60, 5);
         xprschan_init(s_call, &k_chan_ops);
         air_identity();
+    }
+
+    /* The LoRa radio, on the boards that have one. After the LAN bearer,
+     * whose task is what pumps this one's queue too. */
+    if (board->lora) {
+        if (xprslora_start(s_call, board->lora) == ESP_OK)
+            xprslora_set_rx_cb(on_lora);
+        else
+            ESP_LOGE(TAG, "LoRa radio failed to start -- carrying on without");
     }
 
     /* 6 KB, not 3: once a minute this task calls air_identity(), and signing
