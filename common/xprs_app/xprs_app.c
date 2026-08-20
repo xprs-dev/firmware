@@ -367,6 +367,14 @@ static void ota_quiesce(bool quiet)
     else       ESP_LOGI(TAG, "storage resumed");
 }
 
+/* A cmd:update waiting for the task that may afford to verify it. */
+static struct {
+    char wire[XPRSIDX_WIRE_MAX + 1];
+    int  len;
+    char bearer[8];
+    volatile bool pending;
+} s_upd;
+
 /* One answer to a command, on the bearer it arrived on -- a reply aired
  * somewhere else is a reply the asker never hears. Signed, because a
  * result is evidence and an unsigned one proves nothing (9.1). */
@@ -445,23 +453,20 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!xprs_get_str(&sp, "cmd", cmd, sizeof cmd) ||
             strcmp(cmd, "update") != 0) break;
 
-        char id[8] = "", from[16] = "";
-        int prev = 0;
-        xauth_verdict_t v = xauth_check(&sp, s_call, id, from, &prev);
-        if (v == XAUTH_SILENT) break;             /* never answered */
-        if (v == XAUTH_REPEAT) { ota_answer(from, bearer, id, prev, NULL); break; }
-        if (v == XAUTH_403) { ota_answer(from, bearer, id, 403,
-                                         "not on the allow list"); break; }
-        if (v == XAUTH_408) { ota_answer(from, bearer, id, 408, NULL); break; }
-
-        char ver[24] = "", url[160] = "";
-        xprs_get_str(&sp, "ver", ver, sizeof ver);
-        xprs_get_str(&sp, "url", url, sizeof url);
-        xota_code_t code = xota_request(ver[0] ? ver : NULL,
-                                        url[0] ? url : NULL, from, bearer, id);
-        xauth_remember(id, (int)code);
-        ota_answer(from, bearer, id, (int)code,
-                   code == XOTA_BUSY ? "updating already" : NULL);
+        /* Park it, verify it on idx_task. A signature check is secp256k1:
+         * kilobytes of stack and milliseconds of work, and this runs on a
+         * bearer callback. esp32.md has a section on exactly this mistake
+         * -- the receive task decides WHETHER (parse, dedupe: all RAM) and
+         * a core-1 task does the signature and the reply. */
+        char dst[16] = "";
+        if (!xprs_get_str(&sp, "d", dst, sizeof dst) || !dst[0]) break;
+        if (strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        if (s_upd.pending) break;
+        memcpy(s_upd.wire, wire, len);
+        s_upd.wire[len] = 0;
+        s_upd.len = len;
+        snprintf(s_upd.bearer, sizeof s_upd.bearer, "%s", bearer);
+        s_upd.pending = true;
     } while (0);
 
     /* A serve:archive announcement from a station that was away: ask it
@@ -1836,6 +1841,37 @@ static void idx_task(void *arg)
 
         if (s_ask.pending && s_index && xcfg_get_bool("index_on", true))
             idx_answer_history();
+
+        /* The verify, the decision and the answer for a parked update --
+         * on this task because it can afford the curve work. */
+        if (s_upd.pending) {
+            s_upd.pending = false;
+            xprs_t up;
+            if (xprs_parse(s_upd.wire, s_upd.len, &up)) {
+                char id[8] = "", from[16] = "";
+                int prev = 0;
+                xauth_verdict_t v = xauth_check(&up, s_call, id, from, &prev);
+                if (v == XAUTH_REPEAT)
+                    ota_answer(from, s_upd.bearer, id, prev, NULL);
+                else if (v == XAUTH_403)
+                    ota_answer(from, s_upd.bearer, id, 403,
+                               "not on the allow list");
+                else if (v == XAUTH_408)
+                    ota_answer(from, s_upd.bearer, id, 408, NULL);
+                else if (v == XAUTH_OK) {
+                    char ver[24] = "", url[160] = "";
+                    xprs_get_str(&up, "ver", ver, sizeof ver);
+                    xprs_get_str(&up, "url", url, sizeof url);
+                    xota_code_t code = xota_request(ver[0] ? ver : NULL,
+                                                    url[0] ? url : NULL,
+                                                    from, s_upd.bearer, id);
+                    xauth_remember(id, (int)code);
+                    ota_answer(from, s_upd.bearer, id, (int)code,
+                               code == XOTA_BUSY ? "updating already" : NULL);
+                }
+                /* XAUTH_SILENT: nothing at all, deliberately. */
+            }
+        }
 
         /* An install, if one was asked for: minutes of flash work on the
          * task that already owns the card. */

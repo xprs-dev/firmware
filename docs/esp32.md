@@ -367,6 +367,68 @@ Free heap after BLE init went **11,432 -> 29,408**, largest block 7,680 -> 21,50
 With that, reachability is 137/137, the iGate connects for the first time, and
 every HTTP endpoint answers including the SD-backed ones.
 
+### The reclaim went missing, and nothing said so
+
+Two years of this page had the table above, and the day the dongle grew an
+updater the board would not answer HTTP at all. The updater was blamed first
+(it had put a signature check on the receive task, which was a real bug and
+is fixed), but the numbers did not add up: the pre-updater build was only
+2,912 bytes of static RAM better off, and that cannot be the difference
+between a working HTTP server and none.
+
+`sdkconfig.defaults` was missing every line of the reclaim. The host task
+stack was 8192 -- the "was" column. `MSYS_2_BLOCK_COUNT` and
+`TRANSPORT_ACL_FROM_LL_COUNT` were absent, so the build had 24 of each. The
+settings were lost somewhere in a repo move, no test covers a Kconfig value,
+and the board ran for months on the margin they used to provide, which is
+why 2,912 bytes was enough to end it.
+
+What that looked like, and why it is worth recognising on sight: the station
+kept gossiping perfectly over ESP-NOW and BLE while being completely
+unreachable on the LAN. From the air it looked healthy. WiFi associated and
+dropped every few seconds (`reason: 15`, the four-way handshake timing out),
+`xprslan` logged `sendto failed: errno 12`, and the minimum-ever free heap
+sat at **64 bytes**.
+
+Measured on the T-Dongle-S3, boot to steady state:
+
+| | before | after |
+|---|---|---|
+| free heap, steady | 2,788 | 11,116 |
+| minimum ever | 64 | 1,264 |
+| largest block | 960 | 3,584 |
+| `/api/diag` | accepts TCP, never answers | answers |
+
+Four changes got that back, in order of how much they returned:
+
+1. **The reclaim table above, restored.** It was measured on this board and
+   it still holds.
+2. **`api_start()` moved ahead of BLE mesh, the SD card and the bearers.**
+   Its 5 KB task stack is heap like any other. Asked for last it saw 5,312
+   bytes free and a 2,816-byte largest block and `httpd_start()` failed;
+   asked for before the three hogs it sees one 31 KB block. Nothing can
+   arrive in the gap -- WiFi has no address for another second.
+3. **One response buffer, claimed at boot and shared.** Every handler used
+   to `malloc` its own 2 KB per request, at the exact moment in the board's
+   life when 2 KB contiguous does not exist. `esp_http_server` runs handlers
+   on a single task, so one buffer is enough, and if it cannot be had the
+   server does not start -- an honestly missing server beats one that
+   accepts connections and says nothing.
+4. **lwip's TCP windows, 5,744 -> 2,880 each.** `rns_tcp_start()` opens one
+   socket to one hub with a 4 KB task stack and cost 12,676 bytes; the other
+   8.7 KB was that socket's two windows.
+
+And the LVGL pool went 32 KB -> 16 KB, but only after `lv_mem_monitor()` was
+added to `xprs_ui_mini` and reported 26% of 32 KB used, steady across all
+three views. The M5Stack's 320x240 dashboard uses ~20 KB and a trim to 24 KB
+there caused a 70-second reboot loop. Per board, per screen, measured every
+time -- the number is not portable and neither is the confidence.
+
+**The lesson that generalises:** a heap this tight has no alarm. It has a
+minimum-ever counter, and nothing reads it until something breaks. The
+`alive` line prints `min=` for exactly this reason; a board whose minimum
+has three digits is already broken and has not noticed.
+
 **The file that matters is `esp32/sdkconfig.tdongle_s3`**, not
 `boards/sdkconfig.tdongle_s3`. The board fragment is a defaults seed; PlatformIO
 maintains the generated one at the project root and that is what the build uses.

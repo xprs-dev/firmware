@@ -1,0 +1,20 @@
+menu "XPRS firmware updates"
+
+config XPRS_OTA_PULL
+    bool "Let the station fetch its own image over HTTP"
+    default y
+    help
+        With this on, the station can be told a channel or a URL and will
+        go and get the image itself (cmd:update with no bytes attached).
+        That convenience costs static RAM: esp_http_client and the TLS
+        stack it drags in are linked in permanently, whether an update is
+        running or not.
+
+        Measured on the T-Dongle-S3, which lives at roughly 13 KB free
+        with the radios up, that cost is enough to leave the HTTP server
+        unable to start at boot. Turn this off on such a board: the push
+        door (POST /api/update, and the mesh lane behind it) still works,
+        so the image is carried to the station instead of fetched by it.
+        docs/device.md section 6 states the rule and the number.
+
+endmenu

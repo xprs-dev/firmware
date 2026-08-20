@@ -8,8 +8,10 @@
 #include <time.h>
 
 #include "esp_app_desc.h"
+#if CONFIG_XPRS_OTA_PULL
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#endif
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_task_wdt.h"
@@ -194,14 +196,17 @@ const char *xota_version(void)
 int  xota_progress(void) { return s_pct; }
 bool xota_busy(void)     { return s_busy; }
 
+/* Both doors hash the image as it streams past; only one of them exists
+ * in any given build. */
+static mbedtls_sha256_context s_sha;
+
+#if CONFIG_XPRS_OTA_PULL
 /* ── the stream tap ──────────────────────────────────────────────────────
  * esp_https_ota_finish() sets the boot partition unconditionally and gives
  * no hook in between, so the refusal has to happen earlier. The decrypt
  * callback runs BEFORE each esp_ota_write: hash there, and abort instead of
  * finishing when the hash disagrees. The buffer it hands back must be
  * heap-allocated -- IDF frees it after the write. */
-static mbedtls_sha256_context s_sha;
-
 static esp_err_t ota_tap(decrypt_cb_arg_t *a, void *ctx)
 {
     (void)ctx;
@@ -461,6 +466,24 @@ void xota_poll(void)
         memset(&s_req, 0, sizeof s_req);
     }
 }
+
+#else  /* !CONFIG_XPRS_OTA_PULL -- a board that is given its image */
+
+void xota_poll(void)
+{
+    if (!s_pending) return;
+    s_pending = false;
+    /* Nothing to fetch with. Say so rather than going quiet: an operator
+     * who sent cmd:update to this station deserves to learn that this
+     * board is push-only, not to watch a command evaporate. */
+    ESP_LOGW(TAG, "asked to fetch an image; this build has no HTTP client");
+    if (s_req.cmd_id[0])
+        air_result(s_req.reply_to, s_req.bearer, s_req.cmd_id, 501,
+                   xota_version(), "push the image to me");
+    memset(&s_req, 0, sizeof s_req);
+}
+
+#endif /* CONFIG_XPRS_OTA_PULL */
 
 esp_err_t xota_start(const xota_cfg_t *cfg)
 {

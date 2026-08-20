@@ -257,6 +257,21 @@ void xum_update(void)
                  (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60),
                  (unsigned long)(up % 60));
         lv_label_set_text(s_title_label, t);
+
+        /* Once a minute, say how much of the LVGL pool this screen
+         * actually uses. The pool is static RAM taken from the heap's
+         * total before anything else runs, and on this board that heap is
+         * the scarcest thing there is -- so it gets sized from this line
+         * and never from a guess. docs/esp32.md says the same, and says
+         * it because a guess in the other direction once cost the
+         * M5Stack a 70-second reboot loop. */
+        if ((up % 60) == 0) {
+            lv_mem_monitor_t mm;
+            lv_mem_monitor(&mm);
+            ESP_LOGI(TAG, "lvmem free=%u (largest %u) frag=%u%% used=%u%%",
+                     (unsigned)mm.free_size, (unsigned)mm.free_biggest_size,
+                     (unsigned)mm.frag_pct, (unsigned)mm.used_pct);
+        }
     }
 
     lv_timer_handler();

@@ -16,7 +16,7 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 
 # Larger host-task stack: the gap callbacks run here and Ed25519 signing is
 # stack-heavy.
-CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
 
 # Select the T-Dongle-S3 board so the LCD/UI components compile (they are
 # guarded by CONFIG_GEOGRAM_BOARD_TDONGLE_S3 and would otherwise be empty).
@@ -73,8 +73,8 @@ CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 
 # Sixteen listening sockets and sixteen raw PCBs are far more than this station
 # opens: one hub connection, one HTTP server, one UDP bearer, one APRS-IS link.
-CONFIG_LWIP_MAX_LISTENING_TCP=8
-CONFIG_LWIP_MAX_ACTIVE_TCP=8
+CONFIG_LWIP_MAX_LISTENING_TCP=2
+CONFIG_LWIP_MAX_ACTIVE_TCP=4
 CONFIG_LWIP_MAX_UDP_PCBS=8
 CONFIG_LWIP_MAX_RAW_PCBS=4
 
@@ -88,18 +88,54 @@ CONFIG_BT_NIMBLE_ACL_BUF_COUNT=5
 # sends the bootloader back to the slot that worked. The 90 s task watchdog
 # (panic on trigger, already set) is what turns a hang into that reset.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-# Plain HTTP is deliberate. The image is authenticated by a signature over
-# the xprsfw1 line (25.8), checked before a byte reaches flash, so the
-# carrier needs no trust of its own -- and mbedtls TLS wants 20-40 KB of
-# peak heap, which the dongle (about 13 KB free) simply does not have.
-CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
-# esp_https_ota_finish() sets the boot partition unconditionally and offers
-# no hook in between, so the stream is hashed in the decrypt callback --
-# which runs BEFORE each esp_ota_write -- and a mismatch aborts instead.
-CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
+# This board is GIVEN its image; it never goes and gets one. The fetching
+# half of the updater links esp_http_client and the TLS stack behind it,
+# and those are resident whether an update is running or not. Measured on
+# this board: with them linked, boot reached the HTTP server with 5284
+# bytes free and 2816 in the largest block, the server failed to start,
+# and the station went deaf on the LAN while still gossiping happily over
+# ESP-NOW -- which is a nasty way to fail, because it looks healthy on the
+# air. Without them the push door does the same job: the operator carries
+# the bytes to the station (POST /api/update) instead of naming a URL.
+# docs/device.md section 6 has the rule; the m5stack keeps the puller.
+CONFIG_XPRS_OTA_PULL=n
 
 # A panic on this board used to leave nothing behind at all; the core dump
 # keeps the culprit's name for the next boot, and /api/coredump can hand the
 # ELF to espcoredump.py without a cable.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# LVGL's pool is static RAM: it comes off the top of the heap before a
+# single task runs, and on this board the heap is the scarcest thing there
+# is. Sized from lv_mem_monitor(), not from a guess -- this screen is
+# 160x80 with three plain views and reports 26% of 32 KB used (about
+# 8.4 KB), steady across all three, so 16 KB leaves roughly twice what it
+# takes. The M5Stack learned the other half of this rule the hard way: it
+# has a 320x240 dashboard using ~20 KB and a 32->24 KB trim there starved
+# the renderer into a 70-second reboot loop. The number is per board and
+# per screen, and it is measured every time.
+CONFIG_LV_MEM_SIZE_KILOBYTES=16
+
+# The NimBLE reclaim, restored. docs/esp32.md measured this table ON THIS
+# BOARD and recorded the result: free heap after BLE init 11,432 -> 29,408,
+# largest block 7,680 -> 21,504, reachability 1-of-86 pings -> 137-of-137.
+# The settings were absent from this file, so the build had the "was"
+# column and the board was living on a minimum-ever free heap of 64 bytes:
+# WiFi associated and dropped, and every HTTP handler that needed two
+# kilobytes got nothing. The defaults are sized for a busy central; this
+# station advertises, scans, and holds at most one connection.
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8
+CONFIG_BT_CTRL_BLE_MAX_ACT=3
+CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE=20
+
+# One TCP connection's send and receive windows are 5,744 bytes each by
+# default, and they are heap. Measured here: rns_tcp_start(), which opens a
+# single socket to one Reticulum hub and has a 4 KB task stack, cost 12,676
+# bytes -- the other 8.7 KB was that one socket. Four MSS each is still more
+# window than a hub link or a JSON endpoint ever fills, and the 1.5 MB
+# firmware push is a LAN transfer that stays comfortably ahead of the flash
+# writes behind it. Two listeners because there is one HTTP server.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880

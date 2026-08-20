@@ -1004,17 +1004,51 @@ static void ota_answer(const char *to, const char *bearer, const char *id,
 /* A cmd:update heard on any bearer. The gate first: unsigned or
  * unverifiable dies here unanswered, a stranger we can identify gets 403,
  * a stale one 408, a repeat re-airs its first answer (25.4). */
+/* A cmd:update, parked by whoever heard it. NOT verified here: a
+ * signature check is a secp256k1 operation, several kilobytes of stack and
+ * milliseconds of work, and the receive path is the NimBLE host task or a
+ * bearer task. esp32.md spent a whole section on this exact mistake --
+ * "the receive task decides WHETHER to answer (parse, dedupe, budget: all
+ * RAM), and a core-1 task does the query, the signature and every reply."
+ * The first cut of this file verified inline and the station stopped
+ * answering HTTP at all. */
+static struct {
+    char wire[XPRS_MAX_WIRE + 1];
+    int  len;
+    char bearer[10];
+    volatile bool pending;
+} s_upd;
+
+/* Cheap and RAM-only: is this an update command addressed to us? */
 static void xprs_update_maybe(const xprs_t *p, const char *bearer)
 {
-    char type[16], cmd[16];
+    char type[16], cmd[16], dst[16];
     xprs_type(p, type, sizeof type);
     if (strcmp(type, "command") != 0) return;
     if (!xprs_get_str(p, "cmd", cmd, sizeof cmd) ||
         strcmp(cmd, "update") != 0) return;
+    if (!xprs_get_str(p, "d", dst, sizeof dst) || !dst[0]) return;
+    if (strncasecmp(dst, s_aprs_call, strlen(s_aprs_call)) != 0) return;
+    if (s_upd.pending) return;                   /* one at a time */
+    int n = xprs_encode(p, s_upd.wire, sizeof s_upd.wire);
+    if (n <= 0) return;
+    s_upd.len = n;
+    snprintf(s_upd.bearer, sizeof s_upd.bearer, "%s", bearer ? bearer : "ble");
+    s_upd.pending = true;
+}
+
+/* The half that costs: verify, decide, answer. relay_task only (core 1). */
+static void xprs_update_answer(void)
+{
+    if (!s_upd.pending) return;
+    s_upd.pending = false;
+    xprs_t p;
+    if (!xprs_parse(s_upd.wire, s_upd.len, &p)) return;
+    const char *bearer = s_upd.bearer;
 
     char id[8] = "", from[16] = "";
     int prev = 0;
-    xauth_verdict_t v = xauth_check(p, s_aprs_call, id, from, &prev);
+    xauth_verdict_t v = xauth_check(&p, s_aprs_call, id, from, &prev);
     if (v == XAUTH_SILENT) return;
     if (v == XAUTH_REPEAT) { ota_answer(from, bearer, id, prev, NULL); return; }
     if (v == XAUTH_403) { ota_answer(from, bearer, id, 403,
@@ -1022,8 +1056,8 @@ static void xprs_update_maybe(const xprs_t *p, const char *bearer)
     if (v == XAUTH_408) { ota_answer(from, bearer, id, 408, NULL); return; }
 
     char ver[24] = "", url[160] = "";
-    xprs_get_str(p, "ver", ver, sizeof ver);
-    xprs_get_str(p, "url", url, sizeof url);
+    xprs_get_str(&p, "ver", ver, sizeof ver);
+    xprs_get_str(&p, "url", url, sizeof url);
     xota_code_t code = xota_request(ver[0] ? ver : NULL, url[0] ? url : NULL,
                                     from, bearer, id);
     xauth_remember(id, (int)code);
@@ -1202,6 +1236,24 @@ static void digi_record(uint32_t idh, uint32_t now)
  */
 /* ---- the query surface (XPRS.md §36.6) ---------------------------------- */
 
+/* The one response buffer this server ever uses.
+ *
+ * Every handler here used to malloc its own two kilobytes when a request
+ * arrived. That is the wrong end of the boot to ask from: by the time WiFi,
+ * NimBLE, the SD card and the bearers have taken theirs, this board's
+ * largest free block is a few hundred bytes, so the malloc failed and the
+ * server accepted the connection and then said nothing at all -- which is
+ * the exact row in the docs/esp32.md symptom table, and it reads from the
+ * outside like a dead station rather than a full one.
+ *
+ * So it is claimed once, here, while the heap is still one 31 KB block, and
+ * shared: esp_http_server runs its handlers on a single task, so there is
+ * never a second one in flight. If this allocation fails the server is not
+ * started at all, because a server that cannot answer is worse than an
+ * honest missing one. */
+#define API_BUF_SIZE 2048
+static char *s_api_buf;
+
 /*
  * GET /api/xprs?type=&recent=&since=&until=&days=&from=&asker=&limit=
  *
@@ -1273,11 +1325,7 @@ static esp_err_t api_xprs_get(httpd_req_t *req)
     q.asker = asker[0] ? asker : NULL;
     if (q.limit == 0 || q.limit > 200) q.limit = 30;
 
-    char *buf = malloc(2048);
-    if (!buf) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_FAIL;
-    }
+    char *buf = s_api_buf;
     xprsidx_stats_t st;
     xprsindex_stats(s_xprs_index, &st);
     xq_ctx_t ctx = { .buf = buf, .size = 2048, .len = 0, .first = true };
@@ -1301,7 +1349,6 @@ static esp_err_t api_xprs_get(httpd_req_t *req)
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send(req, buf, ctx.len);
-    free(buf);
     return ESP_OK;
 }
 
@@ -1315,7 +1362,7 @@ static esp_err_t api_xprs_dir_get(httpd_req_t *req)
 {
     int n = xprsindex_directory(s_xprs_index, s_dir, XPRS_DIR_MAX);
 
-    char *buf = malloc(1536);
+    char *buf = s_api_buf;
     if (!buf) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_FAIL;
@@ -1325,7 +1372,6 @@ static esp_err_t api_xprs_dir_get(httpd_req_t *req)
     httpd_resp_set_type(req, "text/plain");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_send(req, buf, len);
-    free(buf);
     return ESP_OK;
 }
 
@@ -1362,8 +1408,7 @@ static esp_err_t api_diag_get(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    char *out = malloc(760);
-    if (!out) return httpd_resp_send_500(req);
+    char *out = s_api_buf;
     const esp_app_desc_t *d = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
@@ -1390,7 +1435,6 @@ static esp_err_t api_diag_get(httpd_req_t *req)
         xota_busy() ? "true" : "false", xota_progress(),
         sdcard_is_mounted() ? "true" : "false");
     esp_err_t rc = httpd_resp_send(req, out, n);
-    free(out);
     return rc;
 }
 
@@ -1400,15 +1444,15 @@ static esp_err_t api_update_post(httpd_req_t *req)
 {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     char ver[24] = "", sig[80] = "";
-    char *auth = malloc(300);
-    if (!auth) return httpd_resp_send_500(req);
+    /* The auth header and the body chunks share the one buffer: the header
+     * is consumed into a verdict before the first chunk is read. */
+    char *auth = s_api_buf;
     auth[0] = 0;
     httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Version", ver, sizeof ver);
     httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Sig", sig, sizeof sig);
     httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, 300);
     char who[16] = "";
     xauth_verdict_t v = xauth_check_http(auth, s_aprs_call, NULL, who);
-    free(auth);
     if (v != XAUTH_OK) {
         ESP_LOGW(TAG, "update refused: %s",
                  v == XAUTH_403 ? "signer not allowed" :
@@ -1426,21 +1470,20 @@ static esp_err_t api_update_post(httpd_req_t *req)
         httpd_resp_set_status(req, "409 Conflict");
         return httpd_resp_sendstr(req, "busy, or it does not fit\n");
     }
-    char *buf = malloc(1024);
-    if (!buf) { xota_push_abort(); return httpd_resp_send_500(req); }
+    /* The verdict is already taken, so the header half of the buffer is
+     * free again; the body reads into the second half regardless. */
+    char *buf = s_api_buf + 512;
     int left = req->content_len;
     while (left > 0) {
         int want = left > 1024 ? 1024 : left;
         int got = httpd_req_recv(req, buf, want);
         if (got <= 0 || xota_push_write(buf, (size_t)got) != ESP_OK) {
-            free(buf);
             xota_push_abort();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "transfer died\n");
         }
         left -= got;
     }
-    free(buf);
     ESP_LOGW(TAG, "%s pushed %s (%d bytes)", who, ver, (int)req->content_len);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, "{\"ok\":true,\"installing\":true}");
@@ -1449,14 +1492,24 @@ static esp_err_t api_update_post(httpd_req_t *req)
     return ESP_OK;
 }
 
+
 static void api_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 5120;
+    /* Core 1. The push door writes flash, and a flash erase stops the cache
+     * for both cores -- doing that on an unaffined worker put it next to the
+     * BLE controller and the WiFi task (esp32.md, "the two processors"). */
+    cfg.core_id = 1;
     cfg.max_uri_handlers = 8;
     cfg.max_open_sockets = 4;
     cfg.lru_purge_enable = true;
     httpd_handle_t srv = NULL;
+    if (!s_api_buf) s_api_buf = malloc(API_BUF_SIZE);
+    if (!s_api_buf) {
+        ESP_LOGE(TAG, "no room for the API response buffer; not starting");
+        return;
+    }
     if (httpd_start(&srv, &cfg) != ESP_OK) {
         ESP_LOGW(TAG, "HTTP API failed to start");
         return;
@@ -2741,6 +2794,7 @@ static void relay_task(void *arg)
         s_relay_ticks++;
         /* An install, if one was asked for: minutes of flash work on the
          * one task here with a big stack, on core 1, off the radios. */
+        xprs_update_answer();   /* the verify and the answer, on core 1 */
         xota_poll();
         /* Rollback self-test (25.8): two minutes of the API listening, a
          * bearer up and no panic behind us, then this image is trusted. */
@@ -3898,6 +3952,23 @@ void app_main(void)
     igate_start();
     xst_set_call(s_aprs_call[0] ? s_aprs_call : "TDONGLE");
 
+    /* The HTTP server, claimed here rather than after the bearers.
+     *
+     * Its 5 KB task stack is heap like any other, and it used to be asked
+     * for last -- after WiFi, NimBLE and the SD card had each taken their
+     * tens of kilobytes. Measured on this board, it reached that point
+     * with 5,312 bytes free and 2,816 in the largest block, so
+     * httpd_start() failed and the station spent the whole session
+     * gossiping happily over ESP-NOW while being completely unreachable
+     * on the LAN -- the worst shape of failure, because from the air it
+     * looks healthy. Here the heap is still one 49 KB block.
+     *
+     * Nothing can arrive in the gap: the handlers read the card and the
+     * bearers, and WiFi does not have an address for another second.
+     * docs/esp32.md: take a big stack at boot or do not take it at all. */
+    heap_mark("before httpd");
+    api_start();
+
     /* Updating without a ladder (XPRS.md 25.8). The config holds the key
      * that may approve an image and the npubs that may command this
      * station; both are seeded once from the compiled-in defaults and are
@@ -3989,8 +4060,6 @@ void app_main(void)
         xprschan_init(s_aprs_call[0] ? s_aprs_call : "TDONGLE", &k_chan_ops);
     }
 
-    heap_mark("before httpd");
-    api_start();
     /* The Reticulum interface. One socket to one hub: the station is then
      * reachable from anywhere on the network rather than only from the room it
      * is in. It reconnects on its own, so it is started whether or not WiFi has
