@@ -11,6 +11,9 @@ CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 # Kconfig default; the bars use 12.
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_10=y
+# 20 for one number: the count of stations in reach is the Radar's headline
+# and was the same size as the labels around it.
+CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_LV_MEM_SIZE_KILOBYTES=32
 # The XPRS index names segments seg_<10 digits>.bin -- longer than 8.3, so

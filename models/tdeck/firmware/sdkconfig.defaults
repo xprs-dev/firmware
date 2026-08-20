@@ -19,6 +19,9 @@ CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 # Kconfig default; the bars use 12.
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_10=y
+# 20 for one number: the count of stations in reach is the Radar's headline
+# and was the same size as the labels around it.
+CONFIG_LV_FONT_MONTSERRAT_20=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # 48 KB, not the 32 the other boards use: the chat panel is built from LVGL
 # objects (a rail, and a bubble with a label inside it per message) rather

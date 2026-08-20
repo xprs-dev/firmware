@@ -773,6 +773,16 @@ static bool chat_active(void)   /* the interactive panel, not the table */
 static int  s_room;                       /* 0..2 fixed, else a peer index */
 static char s_peer[CHAT_PEERS_MAX][10];   /* callsigns offered for a 1:1  */
 static int  s_peer_n;
+
+/* ONE scratch copy of the chat ring, shared by everything on the UI task
+ * that needs to walk it -- the rail's peer list and the bubbles.
+ *
+ * Forty rows is 6.5 KB. On the stack it overflowed ui_task; as two separate
+ * function statics it was 13 KB of a board whose whole free heap is under
+ * twenty, and the M5Stack answered ESP_ERR_HTTPD_TASK and drew a black
+ * screen for want of it. The UI is a single task, so one copy is all there
+ * has ever been a need for. */
+static xst_chat_t s_chat_scratch[XST_CHAT_MAX];
 static bool s_room_unread[RM_FIXED + CHAT_PEERS_MAX];
 static char s_compose[121];               /* what has been typed          */
 static int  s_compose_n;
@@ -843,9 +853,7 @@ static void chat_refresh_peers(void)
         if (!seen) snprintf(s_peer[s_peer_n++], 10, "%s", b);
     }
 
-    /* static: 40 of these is ~6 KB, and ui_task's whole stack is 6144.
-     * The UI is one task, so one copy is enough. */
-    static xst_chat_t rows[XST_CHAT_MAX];
+    xst_chat_t *rows = s_chat_scratch;
     int cn = xst_chat(rows, XST_CHAT_MAX);
     for (int i = 0; i < cn && s_peer_n < CHAT_PEERS_MAX; i++) {
         if (rows[i].kind != 2) continue;
@@ -1288,7 +1296,7 @@ static void ui_render(void)
         /* The conversation. xst_chat gives newest first; a thread reads
          * the other way, so it is walked backwards into the array. */
         static xui_msg_t mm[XUI_CHAT_MSGS];
-        static xst_chat_t rows[XST_CHAT_MAX];   /* ~6 KB: see above */
+        xst_chat_t *rows = s_chat_scratch;
         int cn = xst_chat(rows, XST_CHAT_MAX);
         uint32_t nowep = xst_epoch_now();
         char me[10];
@@ -2340,6 +2348,7 @@ void xapp_run(const xapp_board_t *board)
     xTaskCreate(status_task, "status", 6144, NULL, 1, NULL);
     xTaskCreate(inet_probe_task, "inet", 3072, NULL, 1, NULL);
 
+
     /* The screen last: everything it reads already exists by now. The
      * board brings its own panel up and hands back its size. */
     int lcd_w = 0, lcd_h = 0;
@@ -2348,9 +2357,27 @@ void xapp_run(const xapp_board_t *board)
         xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK) {
         if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
             ESP_LOGE(TAG, "UI task failed to start");
-        /* The API is the station's LAN face (spec/API-HTTP.md): always on
-         * when the network is. The config share joins the same server so
-         * its toggle opens and closes doors, not servers. */
+    } else {
+        ESP_LOGE(TAG, "display init failed — running headless");
+    }
+
+    /* The station's LAN face: AFTER the screen, but no longer INSIDE it.
+     *
+     * The order is not a preference, it is the heap. The draw buffer is
+     * 19 KB in ONE piece and the HTTP server's needs are smaller and
+     * divisible, so the screen asks first -- docs/esp32.md's rule that the
+     * big claim goes early, while the heap is still whole. Starting the
+     * API first was tried and the panel went dark with 13 KB left.
+     *
+     * What DID have to change is the nesting: this used to sit inside the
+     * display's `if`, so a board whose panel failed answered nothing on the
+     * network either -- no API, no chat page, and no way to ask it what was
+     * wrong except the serial port. A station with no screen is still a
+     * station. */
+    {
+        /* The API (spec/API-HTTP.md): always on when the network is. The
+         * config share joins the same server so its toggle opens and closes
+         * doors, not servers. */
         s_api_cfg.callsign = s_call;
         if (xprs_api_start(&s_api_cfg) == ESP_OK)
             xcfg_share_attach(xprs_api_httpd());
@@ -2376,7 +2403,5 @@ void xapp_run(const xapp_board_t *board)
         if (xcfg_get_bool("share_on", false) &&
             xcfg_get_bool("wifi_on", true))
             xcfg_share_start();
-    } else {
-        ESP_LOGE(TAG, "display init failed — running headless");
     }
 }

@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "mbedtls/base64.h"
 
 static const char *TAG = "xprs_ui";
@@ -58,6 +59,7 @@ static lv_obj_t *s_home_name[XUI_HOME_ROWS];
 static lv_obj_t *s_home_detail[XUI_HOME_ROWS];
 static lv_obj_t *s_home_heard_label;
 static lv_obj_t *s_home_heard_caption;
+static lv_obj_t *s_home_heard_word;
 static lv_obj_t *s_rx_dot;
 static volatile bool s_pulse_pending;
 
@@ -127,16 +129,22 @@ static int s_rail_w;
 static int s_msgs_h;
 static char s_call_txt[12];
 static char s_uptime_txt[12];
+static lv_obj_t *s_clock_label;
 
 /* The right corner: "(uptime) <panel>" as one line. */
+/* "00:01:30 | Radar 1/7", and the clock does not wander.
+ *
+ * A right-aligned label grows leftwards as the text changes, so every tick
+ * that added or removed a digit shifted the whole line -- and at one tick a
+ * second that is a bar that never stops moving. The clock is its own label,
+ * pinned at a fixed x, and the title starts where the clock's widest
+ * reading ends. */
 static void title_render(void)
 {
     if (!s_title_label) return;
-    if (s_uptime_txt[0])
-        lv_label_set_text_fmt(s_title_label, "(%s) %s", s_uptime_txt,
-                              s_title);
-    else
-        lv_label_set_text(s_title_label, s_title);
+    lv_label_set_text(s_title_label, s_title);
+    if (s_clock_label)
+        lv_label_set_text(s_clock_label, s_uptime_txt);
 }
 static volatile bool s_call_dirty;
 static char s_input_text[128];
@@ -370,6 +378,21 @@ static void build_ui(void)
     lv_obj_set_style_text_color(s_status_label, lv_color_black(), 0);
     lv_obj_align(s_status_label, LV_ALIGN_LEFT_MID, 6, 0);
 
+    /* The clock sits at a fixed offset and the title after it, so neither
+     * moves when a digit changes. "00:00:00 | " is the widest the clock
+     * gets before it starts counting days. */
+    s_clock_label = lv_label_create(top);
+    lv_label_set_text(s_clock_label, "");
+    lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_clock_label, lv_color_black(), 0);
+    lv_obj_align(s_clock_label, LV_ALIGN_RIGHT_MID, -(s_w * 118 / 320), 0);
+
+    lv_obj_t *sep = lv_label_create(top);
+    lv_label_set_text(sep, "|");
+    lv_obj_set_style_text_font(sep, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(sep, lv_color_black(), 0);
+    lv_obj_align(sep, LV_ALIGN_RIGHT_MID, -(s_w * 106 / 320), 0);
+
     s_title_label = lv_label_create(top);
     lv_label_set_text(s_title_label, "");
     lv_obj_set_style_text_font(s_title_label, &lv_font_montserrat_12, 0);
@@ -569,10 +592,16 @@ static void build_ui(void)
     /* Packets-heard figure, under the link rows on the left. */
     s_home_heard_label = lv_label_create(s_home);
     lv_label_set_text(s_home_heard_label, "0");
-    lv_obj_set_style_text_font(s_home_heard_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_home_heard_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(s_home_heard_label,
                                 lv_color_make(255, 140, 0), 0);
     lv_obj_align(s_home_heard_label, LV_ALIGN_BOTTOM_LEFT, 0, -22);
+
+    s_home_heard_word = lv_label_create(s_home);
+    lv_label_set_text(s_home_heard_word, "devices");
+    lv_obj_set_style_text_font(s_home_heard_word, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_home_heard_word,
+                                lv_color_make(255, 140, 0), 0);
 
     s_home_heard_caption = lv_label_create(s_home);
     lv_label_set_text(s_home_heard_caption, "in reach");
@@ -743,10 +772,46 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
      * a busy station. */
     int buf_rows = s_h / 8;
     static lv_color_t *buf1;
-    buf1 = heap_caps_malloc(s_w * buf_rows * sizeof(lv_color_t),
-                            MALLOC_CAP_DMA);
-    if (!buf1) buf1 = malloc(s_w * buf_rows * sizeof(lv_color_t));
-    if (!buf1) return ESP_ERR_NO_MEM;
+    /* Take the biggest slice the heap will actually give, not the biggest
+     * we would like. An eighth of the screen is 19 KB in one piece, and on
+     * a board that has already paid for WiFi, an indexer and an HTTP server
+     * that allocation is refused -- which used to mean no draw buffer, no
+     * UI task, and a panel that stays black for want of 6 KB. A sixteenth
+     * costs one more flush per frame and nothing else. */
+    /* Leave the room the rest of the station still needs. Succeeding at
+     * 19 KB is not a win if the HTTP server behind us then cannot get its
+     * task stack -- the two failures look nothing alike and are the same
+     * shortage, and the board seesawed between a dark panel and a dead API
+     * depending only on which one asked first. So: never take more than a
+     * third of the largest block available. */
+    {
+        size_t biggest = heap_caps_get_largest_free_block(MALLOC_CAP_DMA);
+        size_t budget = biggest / 3;
+        while (buf_rows > 8 &&
+               (size_t)s_w * buf_rows * sizeof(lv_color_t) > budget) {
+            buf_rows /= 2;
+        }
+    }
+    for (;;) {
+        size_t want = (size_t)s_w * buf_rows * sizeof(lv_color_t);
+        buf1 = heap_caps_malloc(want, MALLOC_CAP_DMA);
+        if (!buf1) buf1 = malloc(want);
+        if (buf1 || buf_rows <= 8) break;
+        buf_rows /= 2;
+    }
+    if (!buf1) {
+        /* Say the number. A screen that fails here goes black and takes the
+         * whole UI with it, and "display init failed" alone sends the next
+         * person hunting a wiring fault that is really a heap. */
+        ESP_LOGE(TAG, "draw buffer: %u bytes refused (free %u, largest DMA %u)"
+                      " -- the panel stays dark",
+                 (unsigned)(s_w * buf_rows * sizeof(lv_color_t)),
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA));
+        return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGI(TAG, "draw buffer: %d rows (%u bytes)", buf_rows,
+             (unsigned)((size_t)s_w * buf_rows * sizeof(lv_color_t)));
     lv_disp_draw_buf_init(&s_draw_buf, buf1, NULL, s_w * buf_rows);
 
     lv_disp_drv_init(&s_disp_drv);
@@ -1051,9 +1116,19 @@ void xui_home_counts(int devices, uint32_t packets)
 {
     if (!s_home_heard_label) return;
     lv_label_set_text_fmt(s_home_heard_label, "%d", devices);
+    /* The word rides beside the number rather than under it, and moves to
+     * follow the number's width -- "5 devices" and "12 devices" both read
+     * as one phrase. */
+    lv_obj_update_layout(s_home_heard_label);
+    if (s_home_heard_word) {
+        lv_label_set_text(s_home_heard_word,
+                          devices == 1 ? "device" : "devices");
+        lv_obj_align_to(s_home_heard_word, s_home_heard_label,
+                        LV_ALIGN_OUT_RIGHT_BOTTOM, 4, -1);
+    }
     if (s_home_heard_caption)
-        lv_label_set_text_fmt(s_home_heard_caption,
-                              "in reach - %u pkts", (unsigned)packets);
+        lv_label_set_text_fmt(s_home_heard_caption, "in reach - %u pkts",
+                              (unsigned)packets);
 }
 
 void xui_home_heard(uint32_t heard)

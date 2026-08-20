@@ -345,11 +345,25 @@ bool xst_chat_dirty(void)
 void xst_chat_save(const char *path)
 {
     if (!path || !*path) return;
-    /* static, like the loader's: forty of these is nearly 7 KB and the task
-     * that calls this has eight. A buffer that fits everywhere except the
-     * stack it is standing on is how the last three crashes started. */
-    static xst_chat_t rows[XST_CHAT_MAX];
-    int n = xst_chat(rows, XST_CHAT_MAX);      /* newest first */
+
+    /* Streamed, one row at a time. A 40-row array is nearly 7 KB whichever
+     * memory it comes from: on the stack it overflowed the task, and as a
+     * static it took the same 7 KB out of the heap the LVGL draw buffer
+     * needs -- which on the smaller board meant the screen never came up.
+     * Only the ORDER needs collecting up front, and that is 40 bytes. */
+    uint8_t order[XST_CHAT_MAX];
+    int n = 0;
+    LOCK();
+    for (int i = 0; i < XST_CHAT_MAX; i++) {
+        if (!s_chat[i].from[0]) continue;
+        int at = n;
+        while (at > 0 && s_chat[order[at - 1]].seq < s_chat[i].seq) at--;
+        for (int k = n; k > at; k--) order[k] = order[k - 1];
+        order[at] = (uint8_t)i;
+        n++;
+    }
+    UNLOCK();
+
     FILE *f = fopen(path, "wb");
     if (!f) {
         ESP_LOGW(TAG, "chat: cannot write %s", path);
@@ -358,7 +372,13 @@ void xst_chat_save(const char *path)
     uint32_t magic = XST_CHAT_MAGIC;
     fwrite(&magic, sizeof magic, 1, f);
     fwrite(&n, sizeof n, 1, f);
-    if (n > 0) fwrite(rows, sizeof rows[0], (size_t)n, f);
+    for (int k = 0; k < n; k++) {
+        xst_chat_t row;
+        LOCK();
+        row = s_chat[order[k]];          /* one row, 168 bytes */
+        UNLOCK();
+        fwrite(&row, sizeof row, 1, f);
+    }
     fclose(f);
     ESP_LOGI(TAG, "chat: %d saying%s saved", n, n == 1 ? "" : "s");
 }
@@ -377,18 +397,25 @@ void xst_chat_load(const char *path)
                  path);
         return;
     }
-    static xst_chat_t rows[XST_CHAT_MAX];
-    int got = (int)fread(rows, sizeof rows[0], (size_t)n, f);
-    fclose(f);
-
-    LOCK();
-    /* The file holds them newest first; the ring wants oldest first so the
-     * sequence numbers come out in the order they were said. */
-    for (int i = got - 1; i >= 0; i--) {
-        rows[i].seq = (uint32_t)++s_chat_seq;
-        s_chat[s_chat_n % XST_CHAT_MAX] = rows[i];
+    /* Read from the back of the file forward: it holds them newest first
+     * and the ring wants oldest first, so the sequence numbers come out in
+     * the order the sayings were said. One row in flight, never forty. */
+    int got = 0;
+    for (int i = n - 1; i >= 0; i--) {
+        xst_chat_t row;
+        long off = (long)(sizeof(uint32_t) + sizeof(int)) +
+                   (long)i * (long)sizeof row;
+        if (fseek(f, off, SEEK_SET) != 0) break;
+        if (fread(&row, sizeof row, 1, f) != 1) break;
+        LOCK();
+        row.seq = (uint32_t)++s_chat_seq;
+        s_chat[s_chat_n % XST_CHAT_MAX] = row;
         s_chat_n++;
+        UNLOCK();
+        got++;
     }
+    fclose(f);
+    LOCK();
     s_chat_dirty = false;      /* just read it; nothing new to write */
     UNLOCK();
     ESP_LOGI(TAG, "chat: %d saying%s read back", got, got == 1 ? "" : "s");

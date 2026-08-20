@@ -3,6 +3,7 @@
 
 #include "xprslora.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -17,7 +18,14 @@
 
 static const char *TAG = "xprslora";
 
-static xb_t s_lora;
+/* Heap, not BSS, and only once the radio is really there.
+ *
+ * An xb_t carries the re-air queue (eight 250-byte packets), two 32-slot
+ * identifier rings and a peer table -- a few kilobytes that a board with no
+ * SX1262 was paying for a bearer it could never start. On the M5Stack that
+ * was the difference between an HTTP server that starts and one that
+ * answers ESP_ERR_HTTPD_TASK. */
+static xb_t *s_lora;
 static sx1262_handle_t s_radio;
 static SemaphoreHandle_t s_mutex;      /* several tasks air on one radio */
 static xprslora_rx_cb_t s_rx_cb;
@@ -62,7 +70,7 @@ static void lr_unlock(void *ctx) { (void)ctx; xSemaphoreGive(s_mutex); }
 static void lr_drain(void *ctx)
 {
     (void)ctx;
-    if (!s_rx_pending || !s_radio) return;
+    if (!s_rx_pending || !s_radio || !s_lora) return;
     s_rx_pending = false;
 
     /* static: this runs only on the one bearer task, and 251 bytes was a
@@ -82,7 +90,7 @@ static void lr_drain(void *ctx)
          * radio has. Low rate by the nature of the medium. */
         ESP_LOGI(TAG, "RX %u bytes at %d dBm SNR %d: %.48s",
                  (unsigned)info.len, info.rssi, info.snr, (const char *)buf);
-        xb_on_wire(&s_lora, (const char *)buf, info.len, 0, info.rssi);
+        xb_on_wire(s_lora, (const char *)buf, info.len, 0, info.rssi);
         break;   /* one buffer per IRQ; a second packet raises DIO1 again */
     }
 }
@@ -113,6 +121,12 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
 
     s_mutex = xSemaphoreCreateMutex();
     if (!s_mutex) return ESP_ERR_NO_MEM;
+    s_lora = calloc(1, sizeof *s_lora);
+    if (!s_lora) {
+        vSemaphoreDelete(s_mutex);
+        s_mutex = NULL;
+        return ESP_ERR_NO_MEM;
+    }
 
     sx1262_spi_config_t spi = {
         .mosi_pin = cfg->mosi_pin,
@@ -150,8 +164,8 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
         return err;
     }
 
-    xb_init(&s_lora, &k_lora_ops, callsign);
-    xb_register_ticked(&s_lora);
+    xb_init(s_lora, &k_lora_ops, callsign);
+    xb_register_ticked(s_lora);
     if (!xb_has_driver())
         ESP_LOGE(TAG, "no bearer task is pumping -- start the LAN bearer "
                       "first, or nothing will ever leave this radio");
@@ -170,18 +184,34 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
 void xprslora_set_rx_cb(xprslora_rx_cb_t cb)
 {
     s_rx_cb = cb;
-    xb_set_rx_cb(&s_lora, cb ? lr_rx_shim : NULL);
+    xb_set_rx_cb(s_lora, cb ? lr_rx_shim : NULL);
 }
 
-bool xprslora_send(const char *wire, int len)  { return xb_send(&s_lora, wire, len); }
-void xprslora_offer(const char *wire, int len) { xb_offer(&s_lora, wire, len); }
-bool xprslora_is_active(void)                  { return s_radio && xb_is_active(&s_lora); }
+bool xprslora_send(const char *wire, int len)
+{
+    return s_lora && xb_send(s_lora, wire, len);
+}
+void xprslora_offer(const char *wire, int len)
+{
+    if (s_lora) xb_offer(s_lora, wire, len);
+}
+bool xprslora_is_active(void)
+{
+    return s_radio && s_lora && xb_is_active(s_lora);
+}
 
 void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
                     uint32_t *dupes)
 {
-    if (rx) *rx = s_lora.rx_count;
-    if (tx) *tx = s_lora.tx_count;
-    if (cancelled) *cancelled = s_lora.cancelled;
-    if (dupes) *dupes = s_lora.dupes;
+    if (!s_lora) {
+        if (rx) *rx = 0;
+        if (tx) *tx = 0;
+        if (cancelled) *cancelled = 0;
+        if (dupes) *dupes = 0;
+        return;
+    }
+    if (rx) *rx = s_lora->rx_count;
+    if (tx) *tx = s_lora->tx_count;
+    if (cancelled) *cancelled = s_lora->cancelled;
+    if (dupes) *dupes = s_lora->dupes;
 }
