@@ -65,7 +65,9 @@ static void lr_drain(void *ctx)
     if (!s_rx_pending || !s_radio) return;
     s_rx_pending = false;
 
-    uint8_t buf[XB_WIRE_MAX + 1];
+    /* static: this runs only on the one bearer task, and 251 bytes was a
+     * meaningful slice of the stack it borrows. */
+    static uint8_t buf[XB_WIRE_MAX + 1];
     sx1262_rx_info_t info;
     while (sx1262_get_packet(s_radio, buf, XB_WIRE_MAX, &info) == ESP_OK &&
            info.len > 0) {

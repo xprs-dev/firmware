@@ -87,6 +87,11 @@ static int s_flow_sel = -1;
 static void flow_draw_cb(lv_event_t *e);
 static void chat_input_render(void);
 
+static void pulse_exec_cb(void *var, int32_t v)
+{
+    lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)v, LV_PART_MAIN);
+}
+
 /* Stats: three stacked hourly bar charts. */
 static lv_obj_t  *s_stats;
 static lv_obj_t  *s_stats_chart[XUI_STATS_CHARTS];
@@ -191,6 +196,23 @@ void xui_update(void)
 
     lv_timer_handler();
 
+    /* The pool, once a minute, because the two hangs this component has had
+     * were both the pool emptying and neither said a word first: LVGL's
+     * allocator SPINS when it fails. A number every minute turns "it hung
+     * around 400 s" into a slope somebody can read. */
+    {
+        static uint32_t next_mm_ms;
+        uint32_t now_ms2 = (uint32_t)(now_us / 1000);
+        if (now_ms2 >= next_mm_ms) {
+            next_mm_ms = now_ms2 + 60000;
+            lv_mem_monitor_t mm;
+            lv_mem_monitor(&mm);
+            ESP_LOGI(TAG, "lvmem free=%u (largest %u) frag=%u%% used=%u%%",
+                     (unsigned)mm.free_size, (unsigned)mm.free_biggest_size,
+                     mm.frag_pct, mm.used_pct);
+        }
+    }
+
     /* The caret blinks on the UI task's own clock -- half a second on, half
      * off, only while the chat is on screen. */
     if (s_chat && !lv_obj_has_flag(s_chat, LV_OBJ_FLAG_HIDDEN)) {
@@ -277,7 +299,15 @@ void xui_update(void)
         lv_anim_set_var(&an, s_rx_dot);
         lv_anim_set_values(&an, LV_OPA_COVER, LV_OPA_TRANSP);
         lv_anim_set_time(&an, 600);
-        lv_anim_set_exec_cb(&an, (lv_anim_exec_xcb_t)lv_obj_set_style_opa);
+        /* Through a real wrapper, never by casting lv_obj_set_style_opa to
+         * the two-argument callback type. The cast left the style SELECTOR
+         * argument as whatever the register held, and LVGL allocates a new
+         * style entry per distinct selector -- a permanent allocation per
+         * animation frame, per packet heard. That was the slow leak that
+         * emptied the pool in ~7 minutes of LoRa traffic and hung both
+         * boards inside LV_ASSERT_MALLOC's forever-spin; the compiler had
+         * been pointing at this line (-Wcast-function-type) all along. */
+        lv_anim_set_exec_cb(&an, pulse_exec_cb);
         lv_anim_start(&an);
     }
 

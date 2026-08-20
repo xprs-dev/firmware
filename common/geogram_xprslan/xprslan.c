@@ -221,7 +221,13 @@ esp_err_t xprslan_start(const char *callsign)
     /* 5 KB. Every datagram costs two SHA-256 derivations (the identifier here,
      * and again when the index decides on it), a BLE re-air and a log line, all
      * on this stack — 4 KB overflowed under a burst and took the board down. */
-    if (xTaskCreate(xprslan_task, "xprslan", 5120, NULL, 3, NULL) != pdPASS) {
+    /* 7168 since LoRa: this task pumps EVERY registered bearer, and 5120 was
+     * the floor measured when there were two. The third brought SX1262 SPI
+     * transfers, a 251-byte receive buffer and its own log lines onto this
+     * same stack, and a spike past the floor does not always trip the canary
+     * -- it can silently corrupt the heap next door, which presented as the
+     * UI task spinning inside an LVGL redraw ninety seconds later. */
+    if (xTaskCreate(xprslan_task, "xprslan", 7168, NULL, 3, NULL) != pdPASS) {
         XL_LOGW("task create failed");
         close(fd);
         s_fd = -1;
