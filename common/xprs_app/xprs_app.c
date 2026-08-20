@@ -61,6 +61,8 @@ static char s_pass[64];
 #include "xprs_ui.h"
 #include "xprs_config.h"
 #include "xprs_api.h"
+#include "xprs_auth.h"
+#include "xprs_ota.h"
 #include "xprs_hotspot.h"
 #include "xprsindex.h"
 #include "esp_vfs_fat.h"
@@ -355,6 +357,42 @@ static struct {
  * Defined with the rest of the chat panel, below. */
 static void chat_note_unread(const xprs_t *p);
 
+/* The card is the one thing an install must not fight: an erase of the
+ * other slot while the index is mid-write is how a station comes back with
+ * a corrupt archive on top of a corrupt update. */
+static void ota_quiesce(bool quiet)
+{
+    if (s_index) xprsindex_pause_writes(s_index, quiet);
+    if (quiet) ESP_LOGW(TAG, "storage paused: an update is being installed");
+    else       ESP_LOGI(TAG, "storage resumed");
+}
+
+/* One answer to a command, on the bearer it arrived on -- a reply aired
+ * somewhere else is a reply the asker never hears. Signed, because a
+ * result is evidence and an unsigned one proves nothing (9.1). */
+static void ota_answer(const char *to, const char *bearer, const char *id,
+                       int code, const char *msg)
+{
+    if (!to || !to[0] || !id || !id[0]) return;
+    char ts[24] = "";
+    time_t t = time(NULL);
+    if (t > 1700000000) {
+        struct tm tmv;
+        gmtime_r(&t, &tmv);
+        strftime(ts, sizeof ts, "%Y-%m-%d_%H:%M:%S", &tmv);
+    }
+    char w[XPRSIDX_WIRE_MAX + 1];
+    int n = snprintf(w, sizeof w, "t:result f:%s d:%s%s%s r:%s code:%d",
+                     s_call, to, ts[0] ? " ts:" : "", ts[0] ? ts : "",
+                     id, code);
+    if (msg && msg[0] && n > 0 && n < (int)sizeof w)
+        n += snprintf(w + n, sizeof w - n, " m:%s", msg);
+    if (n <= 0 || n >= (int)sizeof w) return;
+    n = sign_wire(w, n, sizeof w);
+    if (strcmp(bearer, "espnow") == 0) xprsnow_send(w, n);
+    else                               xprslan_send(w, n);
+}
+
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
     xprs_t sp;
@@ -394,6 +432,36 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_ask.len = len;
         snprintf(s_ask.bearer, sizeof s_ask.bearer, "%s", bearer);
         s_ask.pending = true;                 /* published last */
+    } while (0);
+
+    /* An update command (25.8). It is an actuation, so it goes through the
+     * gate before anything else: unsigned or unverifiable dies here without
+     * an answer, and a stranger we can identify gets a refusal rather than
+     * silence. Everything that costs time happens on the updater's task. */
+    do {
+        char type[16], cmd[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "cmd", cmd, sizeof cmd) ||
+            strcmp(cmd, "update") != 0) break;
+
+        char id[8] = "", from[16] = "";
+        int prev = 0;
+        xauth_verdict_t v = xauth_check(&sp, s_call, id, from, &prev);
+        if (v == XAUTH_SILENT) break;             /* never answered */
+        if (v == XAUTH_REPEAT) { ota_answer(from, bearer, id, prev, NULL); break; }
+        if (v == XAUTH_403) { ota_answer(from, bearer, id, 403,
+                                         "not on the allow list"); break; }
+        if (v == XAUTH_408) { ota_answer(from, bearer, id, 408, NULL); break; }
+
+        char ver[24] = "", url[160] = "";
+        xprs_get_str(&sp, "ver", ver, sizeof ver);
+        xprs_get_str(&sp, "url", url, sizeof url);
+        xota_code_t code = xota_request(ver[0] ? ver : NULL,
+                                        url[0] ? url : NULL, from, bearer, id);
+        xauth_remember(id, (int)code);
+        ota_answer(from, bearer, id, (int)code,
+                   code == XOTA_BUSY ? "updating already" : NULL);
     } while (0);
 
     /* A serve:archive announcement from a station that was away: ask it
@@ -625,6 +693,21 @@ static void status_task(void *arg)
          * comes back. Cheap, so it runs on the fast tick, not the log's. */
         xprschan_tick();
         if (++n % 120 == 0) air_identity();       /* every 60 s */
+
+        /* Rollback self-test (25.8). A new image is on probation until it
+         * has held together for two minutes: the API listening, a bearer
+         * up, an address when WiFi is wanted, storage mounted, and no panic
+         * behind us. Two minutes rather than thirty seconds because "the
+         * radios came up and then the heap ran out on the first signature"
+         * is exactly the failure this exists to catch. */
+        if (n == 240) {
+            bool healthy = xprs_api_httpd() != NULL &&
+                           (xprslan_is_active() || xprsnow_is_active()) &&
+                           (!xcfg_get_bool("wifi_on", true) || s_ip_str[0]) &&
+                           esp_reset_reason() != ESP_RST_PANIC;
+            if (healthy) xota_mark_healthy();
+            else         xota_mark_unhealthy();
+        }
         if (n % 30) continue;                     /* the rest every 15 s */
 
         uint32_t rx = 0, tx = 0, cancelled = 0, dropped = 0;
@@ -1744,8 +1827,8 @@ static void idx_task(void *arg)
             xprsindex_stats(s_index, &st);
             char w[XPRSIDX_WIRE_MAX + 1];
             int n = snprintf(w, sizeof w,
-                             "t:service f:%s serve:archive count:%lu",
-                             s_call, (unsigned long)st.count);
+                             "t:service f:%s serve:archive count:%lu fw:%s",
+                             s_call, (unsigned long)st.count, xota_version());
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
             xprslan_send(w, n);
@@ -2280,6 +2363,21 @@ void xapp_run(const xapp_board_t *board)
     if (xTaskCreatePinnedToCore(idx_task, "idx", 8192, NULL, 3, NULL, 1)
             != pdPASS)
         ESP_LOGE(TAG, "indexer task failed to start -- nothing will be kept");
+
+    /* The updater's stack, claimed in the same breath and for the same
+     * reason: 8 KB in one piece is not something to ask for after WiFi and
+     * the card have taken their share (25.8, and esp32.md's relay_task). */
+    {
+        static xota_cfg_t oc;
+        oc.board = s_board->board_id;
+        oc.callsign = s_call;
+        oc.air = idx_air;
+        oc.quiesce = ota_quiesce;
+        xota_start(&oc);
+    }
+    /* Did the bootloader put us back? Then the update that asked for this
+     * failed, and the station says so itself. */
+    xota_report_rollback();
 
     derive_callsign();
     /* §3: an X3 callsign derives from the signing key, so a receiver can

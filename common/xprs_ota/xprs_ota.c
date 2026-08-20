@@ -617,6 +617,17 @@ void xota_mark_healthy(void)
         air_result(to, bearer, id, 200, xota_version(), NULL);
 }
 
+void xota_mark_unhealthy(void)
+{
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st;
+    if (esp_ota_get_state_partition(run, &st) != ESP_OK) return;
+    if (st != ESP_OTA_IMG_PENDING_VERIFY) return;
+    ESP_LOGE(TAG, "this image did not come up -- going back to the one that did");
+    vTaskDelay(pdMS_TO_TICKS(400));
+    esp_ota_mark_app_invalid_rollback_and_reboot();
+}
+
 bool xota_report_rollback(void)
 {
     char id[8], to[16], bearer[10], ver[24];

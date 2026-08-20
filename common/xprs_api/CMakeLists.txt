@@ -4,4 +4,5 @@ idf_component_register(
     SRCS "xprs_api.c"
     INCLUDE_DIRS "."
     REQUIRES esp_http_server geogram_xprsindex geogram_xprs esp_timer log
+             xprs_auth xprs_ota app_update esp_app_format espcoredump esp_system
 )

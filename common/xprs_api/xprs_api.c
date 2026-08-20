@@ -4,6 +4,8 @@
  */
 
 #include "xprs_api.h"
+#include "xprs_auth.h"
+#include "xprs_ota.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,6 +13,10 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_system.h"
+#include "esp_app_desc.h"
+#include "esp_ota_ops.h"
+#include "esp_core_dump.h"
+#include "esp_heap_caps.h"
 #include "xprsindex.h"
 #include "xprs.h"
 #include <time.h>
@@ -411,6 +417,114 @@ static esp_err_t h_log(httpd_req_t *req)
 
 /* ---- start ---------------------------------------------------------------- */
 
+/* Everything a person on a ladder would have gone up to read (25.8, and
+ * docs/device.md): what is running, whether it is on probation, why it
+ * last restarted, what the heap has been down to, and where an install
+ * got to. Read-only, so no gate -- a station's health is not a secret. */
+static esp_err_t h_diag(httpd_req_t *req)
+{
+    resp_json(req);
+    static char out[900];
+    const esp_app_desc_t *d = esp_app_get_description();
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
+    if (run) esp_ota_get_state_partition(run, &st);
+
+    esp_core_dump_summary_t *cd = malloc(sizeof *cd);
+    bool have_cd = cd && esp_core_dump_get_summary(cd) == ESP_OK;
+
+    int n = snprintf(out, sizeof out,
+        "{\"ok\":true,"
+        "\"fw\":{\"version\":\"%s\",\"project\":\"%s\",\"idf\":\"%s\","
+        "\"built\":\"%s %s\"},"
+        "\"boot\":{\"reason\":%d,\"uptime_s\":%u},"
+        "\"heap\":{\"free\":%u,\"largest\":%u,\"min_ever\":%u},"
+        "\"part\":{\"running\":\"%s\",\"state\":%d,\"rollback\":%s},"
+        "\"ota\":{\"busy\":%s,\"pct\":%d}",
+        d ? d->version : "?", d ? d->project_name : "?",
+        d ? d->idf_ver : "?", d ? d->date : "?", d ? d->time : "?",
+        (int)esp_reset_reason(),
+        (unsigned)(esp_timer_get_time() / 1000000ULL),
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
+                                                   MALLOC_CAP_8BIT),
+        (unsigned)esp_get_minimum_free_heap_size(),
+        run ? run->label : "?", (int)st,
+        esp_ota_check_rollback_is_possible() ? "true" : "false",
+        xota_busy() ? "true" : "false", xota_progress());
+    if (have_cd && n > 0 && n < (int)sizeof out)
+        n += snprintf(out + n, sizeof out - n,
+                      ",\"crash\":{\"task\":\"%s\",\"pc\":\"0x%08lx\"}",
+                      cd->exc_task, (unsigned long)cd->exc_pc);
+    free(cd);
+    if (n > 0 && n < (int)sizeof out)
+        n += snprintf(out + n, sizeof out - n, "}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, out, n);
+}
+
+/* The push door: the caller already holds the image (a phone on this
+ * station's own access point, a laptop on the bench). Same verification as
+ * the pull path -- the approval is checked against what actually arrived,
+ * so a truncated or altered body is refused after the transfer and the
+ * running image is untouched.
+ *
+ * Headers: X-XPRS-Fw-Version, X-XPRS-Fw-Sig (60 base85), X-XPRS-Auth (a
+ * complete signed t:command from an allow-listed owner). */
+static esp_err_t h_update(httpd_req_t *req)
+{
+    resp_json(req);
+    char ver[24] = "", sig[80] = "";
+    static char auth[300];
+    auth[0] = 0;
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Version", ver, sizeof ver);
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Sig", sig, sizeof sig);
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, sizeof auth);
+
+    char who[16] = "";
+    xauth_verdict_t v = xauth_check_http(auth, s_cfg->callsign, NULL, who);
+    if (v != XAUTH_OK) {
+        ESP_LOGW(TAG, "update refused: %s",
+                 v == XAUTH_403 ? "signer not allowed" :
+                 v == XAUTH_408 ? "stale or no clock" : "unsigned");
+        return resp_error(req, v == XAUTH_408 ? "408 Request Timeout"
+                                              : "403 Forbidden",
+                          "this station takes updates only from its owner");
+    }
+    if (!ver[0] || !sig[0])
+        return resp_error(req, "400 Bad Request", "need version and signature");
+    if (req->content_len <= 0)
+        return resp_error(req, "400 Bad Request", "no image");
+
+    if (xota_push_begin(ver, (size_t)req->content_len, sig) != ESP_OK)
+        return resp_error(req, "409 Conflict", "busy, or the image does not fit");
+
+    static char buf[1024];
+    int left = req->content_len;
+    while (left > 0) {
+        int want = left > (int)sizeof buf ? (int)sizeof buf : left;
+        int got = httpd_req_recv(req, buf, want);
+        if (got <= 0) {
+            xota_push_abort();
+            return resp_error(req, "400 Bad Request", "transfer died");
+        }
+        if (xota_push_write(buf, (size_t)got) != ESP_OK) {
+            xota_push_abort();
+            return resp_error(req, "500 Internal Server Error", "write failed");
+        }
+        left -= got;
+    }
+    ESP_LOGW(TAG, "%s pushed %s (%d bytes)", who, ver, req->content_len);
+    /* Answers before it verifies-and-reboots, so the caller hears something:
+     * on success the connection simply dies with the restart, and the
+     * station says code:200 over the air once the image proves itself. */
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":true,\"installing\":true}");
+    if (xota_push_finish() != ESP_OK)
+        ESP_LOGE(TAG, "push refused at the last step -- image not installed");
+    return ESP_OK;
+}
+
 esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
 {
     if (s_httpd) return ESP_OK;
@@ -436,6 +550,8 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/xprs/send", .method = HTTP_POST, .handler = h_send },
         { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
+        { .uri = "/api/diag", .method = HTTP_GET, .handler = h_diag },
+        { .uri = "/api/update", .method = HTTP_POST, .handler = h_update },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(s_httpd, &uris[i]);

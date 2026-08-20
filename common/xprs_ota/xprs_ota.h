@@ -112,6 +112,15 @@ bool xota_busy(void);
 void xota_mark_healthy(void);
 
 /**
+ * The other half of the self-test: this image did NOT come up healthy.
+ * When it is still on probation the bootloader is asked to put the
+ * previous one back, immediately, rather than waiting for a watchdog.
+ * Does nothing when the running image is already valid -- a station that
+ * was merely having a bad afternoon must not reboot itself in a loop.
+ */
+void xota_mark_unhealthy(void);
+
+/**
  * Call early in boot. If the previous boot was an install that the
  * bootloader rolled back, this airs the parked `code:500 fw:<running>`
  * -- the failed update reporting its own failure, with nobody on the
