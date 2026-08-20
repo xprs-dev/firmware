@@ -332,7 +332,7 @@ static int s_flow_n;
 
 
 static int s_tz_off;      /* seconds east of UTC, from config (Node clock) */
-static int s_sel[8];      /* per-panel selected row (arrows move it) */
+static int s_sel[7];      /* per-panel selected row (7 = UI_PANEL_COUNT) */
 /* Settings is modal: A stays the Menu key until the arrows dive into the
  * list, then it becomes OK; climbing back out above the top row hands the
  * Menu key back. */
@@ -743,7 +743,10 @@ static void inet_probe_task(void *arg)
 /* The T-Dongle's dashboard, on a bigger panel: same bands, same rule —
  * metadata only, never message content. What moves through it is the
  * board's XAPP_KEY_* intents (xprs_app.h), not any particular button. */
-#define UI_PANEL_COUNT 8
+/* Seven panels, in the order a person reaches for them: the scope first,
+ * then talking, then the numbers, then the lists, then the machine itself.
+ * (Traffic's raw counters left the rotation -- /api/status still has them.) */
+#define UI_PANEL_COUNT 7
 #define UI_INRANGE_SEC 300
 
 static int s_panel;
@@ -764,7 +767,7 @@ typedef enum { RM_LOCAL = 0, RM_GLOBAL, RM_SOCIAL, RM_FIXED } room_kind_t;
 
 static bool chat_active(void)   /* the interactive panel, not the table */
 {
-    return s_panel == 7 && s_board && s_board->raw_key;
+    return s_panel == 1 && s_board && s_board->raw_key;
 }
 
 static int  s_room;                       /* 0..2 fixed, else a peer index */
@@ -916,6 +919,12 @@ static bool chat_queue_send(void)
  * consumed, which is what keeps the console commands from seeing it. */
 static bool chat_key(int ch)
 {
+    if (ch == 0x1b) {                        /* escape: drop the draft, go home */
+        s_compose[0] = 0;
+        s_compose_n = 0;
+        s_panel = 0;
+        return true;
+    }
     if (ch == 0x0d || ch == '\n') {          /* enter: send */
         if (!s_compose_n) return true;
         if (!chat_queue_send())
@@ -956,45 +965,71 @@ static void ui_render(void)
 
     body[0] = 0;
     xui_show_home(s_panel == 0);
-    xui_show_table(s_panel != 0 && s_panel != 6 && !chat_active());
-    xui_show_stats(s_panel == 6);
+    xui_show_table(s_panel != 0 && s_panel != 2 && !chat_active());
+    xui_show_stats(s_panel == 2);
     xui_show_chat(chat_active());
 
     switch (s_panel) {
-    case 0: {   /* Links: the graphic home panel */
+    case 0: {   /* Radar: the scope, and who is in reach on which link */
+        /* One station, one count. The devices store is keyed by callsign,
+         * so a station heard on three bearers is one row wearing the bearer
+         * it was LAST heard on -- which is what "reachable via" honestly
+         * means from here. */
+        xst_dev_t devs[XST_SEEN_MAX];
+        int nb = xst_devices(devs, XST_SEEN_MAX, UI_INRANGE_SEC);
+        int n_now = 0, n_lan = 0, n_lora = 0, n_inet = 0;
+        for (int i = 0; i < nb; i++) {
+            if (strcmp(devs[i].bearer, "espnow") == 0) n_now++;
+            else if (strcmp(devs[i].bearer, "lora") == 0) n_lora++;
+            else if (strcmp(devs[i].bearer, "lan") == 0) {
+                /* A LAN packet wearing via: was carried onto our network by
+                 * a gateway -- the nearest thing this station has to "heard
+                 * from the internet" until an internet bearer exists. */
+                if (devs[i].hops > 0) n_inet++;
+                else n_lan++;
+            }
+        }
+
         char d[48];
-        snprintf(d, sizeof d, "Ch %u, %d peers",
-                 xprsnow_channel(), xprsnow_peer_count(600));
+        snprintf(d, sizeof d, "Ch %u - %d station%s", xprsnow_channel(),
+                 n_now, n_now == 1 ? "" : "s");
         xui_home_row(0, "ESP-NOW", xprsnow_is_active(), d);
 
         if (s_ip_str[0])
-            snprintf(d, sizeof d, "%s", s_ip_str);
+            snprintf(d, sizeof d, "%s - %d", s_ip_str, n_lan);
         else
             snprintf(d, sizeof d, "%s", s_ssid[0] ? "Joining..." : "Down");
         xui_home_row(1, "WiFi / LAN", s_ip_str[0] != 0, d);
 
         if (!s_ip_str[0])       snprintf(d, sizeof d, "No address");
         else if (!s_inet_known) snprintf(d, sizeof d, "Probing...");
-        else                    snprintf(d, sizeof d, "%s",
-                                          s_inet_up ? "Reachable" : "Down");
+        else if (s_inet_up)     snprintf(d, sizeof d, "Up - %d relayed",
+                                         n_inet);
+        else                    snprintf(d, sizeof d, "Down");
         xui_home_row(2, "Internet", s_inet_known && s_inet_up, d);
 
-        xui_home_heard(s_heard_count);
+        if (xprslora_is_active())
+            snprintf(d, sizeof d, "868 MHz - %d station%s", n_lora,
+                     n_lora == 1 ? "" : "s");
+        else
+            snprintf(d, sizeof d, "No radio");
+        xui_home_row(3, "LoRa", xprslora_is_active(), d);
+
+        xui_home_counts(nb, s_heard_count);
 
         /* The scope: everybody in reach, at their estimated distance. */
         xui_blip_t blips[XUI_BLIP_MAX];
-        xst_dev_t devs[XUI_BLIP_MAX];
-        int nb = xst_devices(devs, XUI_BLIP_MAX, UI_INRANGE_SEC);
-        for (int i = 0; i < nb; i++) {
+        int nblip = nb > XUI_BLIP_MAX ? XUI_BLIP_MAX : nb;
+        for (int i = 0; i < nblip; i++) {
             snprintf(blips[i].label, sizeof blips[i].label, "%s",
                      devs[i].call);
             blips[i].meters = xst_est_distance_m(devs[i].rssi);
         }
-        xui_radar_blips(blips, nb);
-        xui_set_title("Links 1/8");
+        xui_radar_blips(blips, nblip);
+        xui_set_title("Radar 1/7");
         break;
     }
-    case 1: {   /* Flow: the packets going past, newest first */
+    case 4: {   /* Flow: the packets going past, newest first */
         xui_flow_t rows[XUI_FLOW_ROWS];
         int nr = 0;
         for (int i = 0; i < FLOW_MAX && nr < XUI_FLOW_ROWS; i++) {
@@ -1013,64 +1048,7 @@ static void ui_render(void)
         }
         xui_flow_rows(rows, nr);
         list_n = nr;
-        xui_set_title("Flow 2/8");
-        break;
-    }
-    case 2: {   /* Traffic: counters, one per row, explained when selected */
-        uint32_t rx = 0, tx = 0, cancelled = 0, dropped = 0;
-        uint32_t issued = 0, done = 0, failed = 0;
-        uint32_t lrx = 0, ltx = 0, lcancel = 0;
-        xprsnow_stats(&rx, &tx, &cancelled, &dropped);
-        xprsnow_tx_stats(&issued, &done, &failed);
-        xprslan_stats(&lrx, &ltx, &lcancel);
-
-        static const char *const hdr[2] = { "Counter", "Value" };
-        static const int cw[2] = { 170, 150 };
-        xui_table_setup(2, hdr, cw);
-
-        static xui_row_t tr[XUI_TAB_ROWS];
-        int nr = 0;
-        #define TROW(c0, det, fmt, ...) do { \
-            snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
-            snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], fmt, __VA_ARGS__); \
-            snprintf(tr[nr].detail, sizeof tr[nr].detail, "%s", det); \
-            nr++; } while (0)
-        TROW("ESP-NOW rx",
-             "Packets received over the ESP-NOW radio since boot.",
-             "%lu", (unsigned long)rx);
-        char det[160];
-        snprintf(det, sizeof det,
-                 "Completed / queued transmissions over ESP-NOW. "
-                 "Failed: %lu.", (unsigned long)failed);
-        TROW("ESP-NOW tx", det, "%lu/%lu",
-             (unsigned long)done, (unsigned long)issued);
-        snprintf(det, sizeof det,
-                 "Frames dropped: %lu. Radio-busy cancels: %lu.",
-                 (unsigned long)dropped, (unsigned long)cancelled);
-        TROW("ESP-NOW drop", det, "%lu",
-             (unsigned long)(dropped + cancelled));
-        TROW("LAN rx",
-             "Packets received over WiFi / LAN (UDP broadcast).",
-             "%lu", (unsigned long)lrx);
-        snprintf(det, sizeof det,
-                 "Packets sent over WiFi / LAN. Cancelled: %lu.",
-                 (unsigned long)lcancel);
-        TROW("LAN tx", det, "%lu", (unsigned long)ltx);
-        TROW("Heard",
-             "All XPRS packets heard on every link since boot.",
-             "%lu", (unsigned long)s_heard_count);
-        if (s_last_call[0]) {
-            snprintf(det, sizeof det, "%s was the last station heard, "
-                     "%lu s ago.", s_last_call,
-                     (unsigned long)((now - s_last_rx_ms) / 1000));
-            TROW("Last station", det, "%s", s_last_call);
-        } else {
-            TROW("Last station", "Nobody heard yet.", "%s", "--");
-        }
-        #undef TROW
-        xui_table_rows(tr, nr);
-        list_n = nr;
-        xui_set_title("Traffic 3/8");
+        xui_set_title("Flow 5/7");
         break;
     }
     case 3: {   /* Devices: everyone in reach, detail on selection */
@@ -1107,10 +1085,10 @@ static void ui_render(void)
         }
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Devices 4/8");
+        xui_set_title("Reachable devices 4/7");
         break;
     }
-    case 4: {   /* Node: this station's facts, full values on selection */
+    case 5: {   /* This device: the station's facts, full values on selection */
         static const char *const hdr[2] = { "Item", "Value" };
         static const int cw[2] = { 110, 210 };
         xui_table_setup(2, hdr, cw);
@@ -1165,10 +1143,10 @@ static void ui_render(void)
         #undef NROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Node 5/8");
+        xui_set_title("This device 6/7");
         break;
     }
-    case 5: {   /* Settings: OK (button A) toggles the selected row */
+    case 6: {   /* Settings: OK (button A) toggles the selected row */
         static const char *const hdr[2] = { "Setting", "State" };
         static const int cw[2] = { 170, 150 };
         xui_table_setup(2, hdr, cw);
@@ -1268,10 +1246,10 @@ static void ui_render(void)
         #undef SROW
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Settings 6/8");
+        xui_set_title("Settings 7/7");
         break;
     }
-    case 7: if (chat_active()) {
+    case 1: if (chat_active()) {
         /* The interactive chat: rooms down the left, the conversation as
          * bubbles, and a composer. Only reached on a board that can type. */
         chat_refresh_peers();
@@ -1371,7 +1349,7 @@ static void ui_render(void)
 
         xui_chat_input(s_compose, true);
 
-        xui_set_title("Chat 8/8");
+        xui_set_title("Chat 2/7");
         break;
     } else {
         static const char *const hdr[3] = { "From", "Message", "When" };
@@ -1439,7 +1417,7 @@ static void ui_render(void)
         }
         xui_table_rows(tr, nr);
         list_n = nr;
-        xui_set_title("Chat 8/8");
+        xui_set_title("Chat 2/7");
         break;
     }
     /* falls out of the else: both chat forms end here */
@@ -1458,7 +1436,7 @@ static void ui_render(void)
         xui_stats_set(1, t1, rxv, np);
         xui_stats_set(2, t2, txv, np);
         list_n = 0;
-        xui_set_title("Stats 7/8");
+        xui_set_title("Stats 3/7");
         break;
     }
     }
@@ -1471,7 +1449,7 @@ static void ui_render(void)
     if (s_panel != 0 && s_panel != 6 && !chat_active()) {
         if (s_sel[s_panel] >= list_n) s_sel[s_panel] = list_n - 1;
         if (s_sel[s_panel] < 0 && list_n > 0) s_sel[s_panel] = 0;
-        if (s_panel == 5 && !s_set_focus)
+        if (s_panel == 6 && !s_set_focus)
             xui_table_select(-1);   /* nothing armed until the arrows dive in */
         else
             xui_table_select(s_sel[s_panel]);
@@ -1483,7 +1461,7 @@ static void ui_render(void)
     if (chat_active())
         /* The ball picks the room; the keyboard does everything else. */
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
-    else if (s_panel == 5)
+    else if (s_panel == 6)
         xui_set_keys(s_set_focus ? "OK" : "Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else if (s_panel != 0)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
@@ -2022,9 +2000,9 @@ static void ui_task(void *arg)
             ESP_LOGI(TAG, "key: home");
         } else if (key == XAPP_KEY_NEXT || key == XAPP_KEY_PREV) {
             if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
-            if (key == XAPP_KEY_NEXT && s_panel == 5 && s_set_focus) {
+            if (key == XAPP_KEY_NEXT && s_panel == 6 && s_set_focus) {
                 /* Inside the Settings list, NEXT is OK. */
-                settings_ok(s_sel[5]);
+                settings_ok(s_sel[6]);
             } else {
                 s_panel = key == XAPP_KEY_NEXT
                         ? (s_panel + 1) % UI_PANEL_COUNT
@@ -2051,10 +2029,10 @@ static void ui_task(void *arg)
 
         if (key == XAPP_KEY_UP) {
             if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
-            if (s_panel == 5) {
-                if (s_set_focus && s_sel[5] > 0) s_sel[5]--;
+            if (s_panel == 6) {
+                if (s_set_focus && s_sel[6] > 0) s_sel[6]--;
                 else s_set_focus = false;   /* above the top row: back out */
-            } else if (s_panel == 6) {
+            } else if (s_panel == 2) {
                 s_stats_view = (s_stats_view + 2) % 3;
             } else if (s_panel != 0 && s_sel[s_panel] > 0) {
                 s_sel[s_panel]--;
@@ -2066,15 +2044,15 @@ static void ui_task(void *arg)
             /* Down on the home screen starts the tour. */
             s_rotate = true;
             s_rotate_next_us = esp_timer_get_time() + 30000000ULL;
-            s_panel = 6;                 /* Stats first, Chat, back home */
+            s_panel = 2;                 /* Stats first, Chat, back home */
             force = true;
             ESP_LOGI(TAG, "rotate: on");
         } else if (key == XAPP_KEY_DOWN) {
             if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
-            else if (s_panel == 5) {
-                if (!s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
-                else s_sel[5]++;             /* render clamps to the list */
-            } else if (s_panel == 6) {
+            else if (s_panel == 6) {
+                if (!s_set_focus) { s_set_focus = true; s_sel[6] = 0; }
+                else s_sel[6]++;             /* render clamps to the list */
+            } else if (s_panel == 2) {
                 s_stats_view = (s_stats_view + 1) % 3;
             } else if (s_panel != 0) {
                 s_sel[s_panel]++;
@@ -2105,6 +2083,7 @@ static void ui_task(void *arg)
          * are all upper case (S, U, D, K, W) and stay reachable. */
         if (ch > 0 && chat_active() &&
             (ch == 0x0d || ch == '\n' || ch == 0x08 || ch == 0x7f ||
+             ch == 0x1b ||
              (ch >= 0x20 && ch < 0x7f && !(ch >= 'A' && ch <= 'Z')))) {
             if (chat_key(ch)) { force = true; ch = 0; }
         }
@@ -2135,21 +2114,21 @@ static void ui_task(void *arg)
         }
         /* 'U'/'D' move the selection, 'K' is OK -- the buttons, scripted. */
         if (ch == 'U' && s_panel != 0) {
-            if (s_panel == 5 && (!s_set_focus || s_sel[5] == 0))
+            if (s_panel == 6 && (!s_set_focus || s_sel[6] == 0))
                 s_set_focus = false;
-            else if (s_panel == 6) s_stats_view = (s_stats_view + 2) % 3;
+            else if (s_panel == 2) s_stats_view = (s_stats_view + 2) % 3;
             else if (s_sel[s_panel] > 0) s_sel[s_panel]--;
             force = true;
         }
         if (ch == 'D' && s_panel != 0) {
-            if (s_panel == 5 && !s_set_focus) { s_set_focus = true; s_sel[5] = 0; }
-            else if (s_panel == 6) s_stats_view = (s_stats_view + 1) % 3;
+            if (s_panel == 6 && !s_set_focus) { s_set_focus = true; s_sel[6] = 0; }
+            else if (s_panel == 2) s_stats_view = (s_stats_view + 1) % 3;
             else s_sel[s_panel]++;
             force = true;
         }
-        if (ch == 'K' && s_panel == 5 && s_set_focus) {
-            ESP_LOGI(TAG, "serial OK on settings row %d", s_sel[5]);
-            settings_ok(s_sel[5]);
+        if (ch == 'K' && s_panel == 6 && s_set_focus) {
+            ESP_LOGI(TAG, "serial OK on settings row %d", s_sel[6]);
+            settings_ok(s_sel[6]);
             force = true;
         }
         if (ch == 'W') s_wipe_req = true;   /* scripted archive wipe */
@@ -2157,14 +2136,14 @@ static void ui_task(void *arg)
         uint64_t now_us = esp_timer_get_time();
         if (s_rotate && now_us >= s_rotate_next_us) {
             s_rotate_next_us = now_us + 30000000ULL;
-            s_panel = s_panel == 0 ? 6 : s_panel == 6 ? 7 : 0;
+            s_panel = s_panel == 0 ? 2 : s_panel == 2 ? 1 : 0;
             force = true;
         }
         if (force || now_us >= next_render_us) {
             ui_render();
             /* Scope and flow settle every 10 s; the counter panels at 2 s. */
             next_render_us = now_us +
-                ((s_panel == 0 || s_panel == 1 || s_panel == 6)
+                ((s_panel == 0 || s_panel == 4 || s_panel == 2)
                      ? 10000000ULL : 2000000ULL);
         }
 
@@ -2275,6 +2254,7 @@ void xapp_run(const xapp_board_t *board)
     }
     ESP_LOGI(TAG, "%s XPRS station %s — %s",
              board->board_id, s_call, board->banner);
+    xui_set_call(s_call);   /* the top bar names its owner, not the format */
 
     if (!xcfg_get_bool("wifi_on", true)) {
         /* ESP-NOW still needs the WiFi driver started, just not a network:

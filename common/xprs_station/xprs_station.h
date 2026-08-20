@@ -31,6 +31,9 @@ typedef struct {
     char     call[10];
     char     bearer[7];          /* "espnow", "lan", "ble" ... */
     int      rssi;               /* 0 when the bearer has none (LAN) */
+    uint8_t  hops;               /* via: entries when last heard; 0 = direct.
+                                  * What separates a neighbour from a station
+                                  * somebody's relay carried to us. */
     uint32_t last_ms;            /* esp_timer ms when last heard */
 } xst_dev_t;
 

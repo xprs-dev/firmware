@@ -46,6 +46,9 @@ A trackball is not a button: rolling it makes and breaks a contact several
 times per turn, so `main.c` counts contact CHANGES rather than debouncing a
 press, and divides them (`TDECK_TB_DIVIDER`) so one flick is not twenty rows.
 
+While a chat room is open the keyboard writes; Esc (or a long trackball
+click) drops the draft and returns to the Radar.
+
 The keyboard feeds the station's console handler, so every key a serial console
 understands works from the device: `S` takes a screenshot over serial, `1`-`8`
 jump to a panel, `U`/`D` move the selection, `K` is OK, `W` wipes the archive.

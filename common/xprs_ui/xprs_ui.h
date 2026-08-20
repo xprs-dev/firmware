@@ -64,7 +64,7 @@ void xui_framedump(void);
 
 /* ---- The home panel: link status + radar ------------------------------- */
 
-#define XUI_HOME_ROWS 3
+#define XUI_HOME_ROWS 4
 
 /** Show the graphic home panel (true) or the plain text body (false).
  *  UI task only. */
@@ -74,8 +74,14 @@ void xui_show_home(bool show);
  *  detail text beside it. UI task only. */
 void xui_home_row(int idx, const char *name, bool up, const char *detail);
 
-/** Big packets-heard figure on the home panel. UI task only. */
-void xui_home_heard(uint32_t heard);
+/** The home panel's headline: how many distinct stations are in reach, and
+ *  how many packets carried them there. UI task only. */
+void xui_home_counts(int devices, uint32_t packets);
+
+/** The station's callsign, shown in the top bar where the wordmark was --
+ *  who this screen belongs to matters more than what protocol it speaks.
+ *  Any task (deferred like the title). */
+void xui_set_call(const char *call);
 
 /** Flash the RX indicator -- call when a packet arrives (any task). */
 void xui_pulse(void);

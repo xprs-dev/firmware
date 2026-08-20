@@ -125,6 +125,8 @@ static lv_obj_t *s_chat_input_lbl;
 static lv_obj_t *s_chat_send;
 static int s_rail_w;
 static int s_msgs_h;
+static char s_call_txt[12];
+static volatile bool s_call_dirty;
 static char s_input_text[128];
 static bool s_input_focused;
 static bool s_caret_on;
@@ -267,15 +269,22 @@ void xui_update(void)
         uint32_t h = (total_sec / 3600) % 24;
         uint32_t m = (total_sec / 60) % 60;
         uint32_t s = total_sec % 60;
+        /* The callsign owns the corner: whose station this is beats the
+         * name of the wire format it speaks. */
+        const char *who = s_call_txt[0] ? s_call_txt : "XPRS";
         if (days == 0) {
-            snprintf(buf, sizeof buf, "XPRS uptime: %02lu:%02lu:%02lu",
+            snprintf(buf, sizeof buf, "%s  up %02lu:%02lu:%02lu", who,
                      (unsigned long)h, (unsigned long)m, (unsigned long)s);
         } else {
-            snprintf(buf, sizeof buf, "XPRS uptime: %lu day%s %02lu h",
+            snprintf(buf, sizeof buf, "%s  up %lu day%s %02lu h", who,
                      (unsigned long)days, days == 1 ? "" : "s",
                      (unsigned long)h);
         }
         lv_label_set_text(s_status_label, buf);
+    }
+    if (s_call_dirty) {
+        s_call_dirty = false;
+        s_uptime_last--;             /* force the label to redraw now */
     }
 
     if (s_body_dirty) {
@@ -385,7 +394,7 @@ static void build_ui(void)
     lv_obj_clear_flag(s_home, LV_OBJ_FLAG_SCROLLABLE);
 
     for (int i = 0; i < XUI_HOME_ROWS; i++) {
-        int y = 6 + i * 40;
+        int y = 4 + i * 33;   /* four rows where three used to sit */
 
         s_home_dot[i] = lv_obj_create(s_home);
         lv_obj_remove_style_all(s_home_dot[i]);
@@ -546,7 +555,7 @@ static void build_ui(void)
     lv_obj_align(s_home_heard_label, LV_ALIGN_BOTTOM_LEFT, 0, -22);
 
     s_home_heard_caption = lv_label_create(s_home);
-    lv_label_set_text(s_home_heard_caption, "Packets heard");
+    lv_label_set_text(s_home_heard_caption, "in reach");
     lv_obj_set_style_text_font(s_home_heard_caption, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_home_heard_caption,
                                 lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
@@ -999,6 +1008,21 @@ void xui_home_row(int idx, const char *name, bool up, const char *detail)
                               up ? lv_palette_main(LV_PALETTE_GREEN)
                                  : lv_palette_main(LV_PALETTE_GREY),
                               0);
+}
+
+void xui_set_call(const char *call)
+{
+    snprintf(s_call_txt, sizeof s_call_txt, "%s", call ? call : "");
+    s_call_dirty = true;
+}
+
+void xui_home_counts(int devices, uint32_t packets)
+{
+    if (!s_home_heard_label) return;
+    lv_label_set_text_fmt(s_home_heard_label, "%d", devices);
+    if (s_home_heard_caption)
+        lv_label_set_text_fmt(s_home_heard_caption,
+                              "in reach - %u pkts", (unsigned)packets);
 }
 
 void xui_home_heard(uint32_t heard)

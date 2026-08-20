@@ -90,7 +90,8 @@ void xst_set_call(const char *own_call)
 }
 
 /* Devices row upsert. Caller holds no lock. */
-static void dev_upsert(const char *call, const char *bearer, int rssi)
+static void dev_upsert(const char *call, const char *bearer, int rssi,
+                       uint8_t hops)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     LOCK();
@@ -107,6 +108,7 @@ static void dev_upsert(const char *call, const char *bearer, int rssi)
     snprintf(s_seen[slot].call, sizeof s_seen[slot].call, "%s", call);
     snprintf(s_seen[slot].bearer, sizeof s_seen[slot].bearer, "%s", bearer);
     s_seen[slot].rssi = rssi;
+    s_seen[slot].hops = hops;
     s_seen[slot].last_ms = now;
     UNLOCK();
 }
@@ -115,7 +117,7 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
 {
     if (!call || !call[0]) return;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return;
-    dev_upsert(call, bearer ? bearer : "", rssi);
+    dev_upsert(call, bearer ? bearer : "", rssi, 0);
 }
 
 void xst_chat_note(const xprs_t *p)
@@ -195,7 +197,11 @@ bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
         UNLOCK();
     }
 
-    dev_upsert(call, bearer ? bearer : "", rssi);
+    /* How many stations carried this here. A via: chain means the sender
+     * is NOT a neighbour -- it is reachable only through somebody. */
+    int hops = xprs_via_count(p);
+    dev_upsert(call, bearer ? bearer : "", rssi,
+               hops > 255 ? 255 : (uint8_t)hops);
     return true;
 }
 
