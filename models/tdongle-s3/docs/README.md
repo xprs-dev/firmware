@@ -68,7 +68,7 @@ device presence only and is a different protocol.
 | §10.6 own beacon | `t:observation f:<call> link:lan peers:N` on the LAN every 5 minutes |
 | Duplicate suppression | 32-entry identifier ring, plus a 60 s heard-window on the LAN |
 | Query by type, time, author | see the query surface below |
-| §36.9 `serve:index` announcement | every 10 minutes on BLE5 and the LAN: `t:service f:<call> serve:index,history,mailbox count:<n>` — how a station discovers this indexer exists at all |
+| §36.9 `serve:archive` announcement | every 10 minutes on BLE5 and the LAN: `t:service f:<call> serve:archive count:<n>` — how a station discovers this indexer exists at all |
 | §36.9 XDIR1 directory | who it archives, one `call ts` line per station, sorted; served at `GET /api/xprs/dir` |
 | §36.9 content never crosses | it archives only what it hears on its own bearers; it imports nothing from another indexer |
 | §25.2 `cmd:history` | **it answers over the air**, on the bearer the ask arrived on: `t:result code:202`, the stored packets verbatim with the author's own signature, then `code:200` — or `206` when more is held, `404` for an empty window, `429` over budget. Paced one packet per 1.5 s, one replay at a time, and metered per asker (6/hour known, 2/hour stranger, 12/hour globally). `only:` matches a callsign anywhere in a packet, including inside `hears:` (§36.6), which is how "where can X be reached" is asked |

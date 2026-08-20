@@ -1587,9 +1587,11 @@ static void xprs_identity_air(void)
 
 static uint32_t s_last_service;
 
-/* `serve:index` is how a station discovers an indexer at all (§36.9): heard in
- * a beacon or a t:service on the air, or passed on verbatim by another
- * indexer. Until this went out, the dongle archived everything it heard and
+/* `serve:archive` is how a station discovers an indexer at all (§36.9): heard
+ * in a beacon or a t:service on the air, or passed on verbatim by another
+ * indexer. One word carries the whole claim -- keeping a spool, answering
+ * cmd:history, holding mail -- because section 24 folded the three it used to
+ * take into that one. Until this went out, the dongle archived everything it heard and
  * answered questions faithfully, and nothing on the network had any way to
  * learn it existed.
  *
@@ -1746,8 +1748,8 @@ static const xc_ops_t k_chan_ops = {
 /* ---- serving cmd:history (XPRS.md sections 25.2.1 and 36) ---------------- */
 
 /*
- * The dongle advertises `serve:index,history,mailbox` every ten minutes. This
- * is the half that makes the claim true over the air: until now `t:command` was
+ * The dongle advertises `serve:archive` every ten minutes. This is the half
+ * that makes the claim true over the air: until now `t:command` was
  * not even one of the types the receive path dispatched on, so the only way to
  * ask this indexer anything was HTTP — which is a bench convenience, not the
  * protocol.

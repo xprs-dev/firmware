@@ -23,6 +23,17 @@ static int g_checks, g_fail;
 } while (0)
 
 /* ── vectors from reticulum-dart (tool/gen_sig_vectors.dart) ────────────── */
+/*
+ * V_TEXT is FIXED. The digest and signature below were computed over these
+ * exact bytes by the other implementation, and the whole value of the vector
+ * is that two codebases agree on them -- so editing the text silently turns a
+ * cross-implementation check into a comparison of nothing.
+ *
+ * It says `serve:index,history,mailbox`, which section 24 no longer defines
+ * (those three folded into `archive`). That is fine and deliberate: this is a
+ * signing test, the bytes are opaque to it, and a stale vocabulary here proves
+ * nothing wrong. Regenerate with gen_sig_vectors.dart if it must ever change.
+ */
 static const char *V_TEXT   = "t:service f:X3JS7Y serve:index,history,mailbox count:32";
 static const char *V_SCALAR = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 static const char *V_DIGEST = "8c012bc0f0f3919ab65e7867c5b394194d1eed28c593b1ccd456ec8532650a07";

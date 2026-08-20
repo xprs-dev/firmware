@@ -30,7 +30,7 @@ A periodic `t:observation` beacon reports what this station directly hears
   bearer the ask arrived on.
 - When storage exists (SD card or a flash FAT partition): index every
   heard packet (36, `geogram_xprsindex`), verify signatures against heard
-  identities, announce `t:service serve:index,history` with the archived
+  identities, announce `t:service serve:archive` with the archived
   count (36.9), and serve the XDIR1 directory.
 - Where a mesh custody plane exists (BLE5 boards): park store-and-forward
   mail for absent stations and release it on sight (`geogram_blemesh`).
