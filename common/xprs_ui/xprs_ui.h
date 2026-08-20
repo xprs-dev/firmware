@@ -157,6 +157,52 @@ void xui_show_stats(bool show);
  *  oldest first. The y range fits itself to the data. UI task only. */
 void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n);
 
+/* ---- The chat panel: a rail of rooms, bubbles, and something to type ----
+ *
+ * The station's own web page (xprs_hotspot) has had this layout for a while:
+ * rooms down the left, the conversation as bubbles, a composer at the foot.
+ * This is that page, drawn natively, for a board with a keyboard. A board
+ * without one has nothing to type with and keeps the plain table.
+ *
+ * Colours are the web page's, so the two faces of one station look like one
+ * station: accent #ffa86a, page #101010, incoming bubble #1b1b1b, outgoing
+ * #2a1c10 behind an accent border.
+ */
+
+/* Eleven rail rows fit in the panel's height, so twelve is the whole of what
+ * can ever be shown -- and every LVGL object costs from a 48 KB pool that a
+ * conversation's bubbles also draw on. */
+#define XUI_CHAT_ROOMS 12    /* rail rows: the fixed rooms plus peers heard */
+#define XUI_CHAT_MSGS  12    /* bubbles kept live; older ones are dropped   */
+
+typedef struct {
+    char name[12];
+    bool heading;            /* a section label (ROOMS / FEED / PEOPLE)     */
+    bool unread;             /* marks the row with a dot                    */
+} xui_room_t;
+
+typedef struct {
+    char from[10];           /* empty on our own saying                     */
+    char text[120];
+    char when[8];            /* "09:24", or an age like "5m"                */
+    bool outgoing;           /* right-aligned, no name, time underneath     */
+} xui_msg_t;
+
+/** Show the chat panel (true) or the plain text body (false). UI task only. */
+void xui_show_chat(bool show);
+
+/** The rail. [sel] is the index of the selected row; headings are skipped
+ *  when moving through it. UI task only. */
+void xui_chat_rooms(const xui_room_t *rooms, int n, int sel);
+
+/** The conversation, oldest first. Rebuilds the bubbles. UI task only. */
+void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header);
+
+/** The composer. [text] is what has been typed so far; when it is empty
+ *  [placeholder] is shown muted instead. [focused] draws the accent border
+ *  that says keystrokes are going here. UI task only. */
+void xui_chat_input(const char *text, const char *placeholder, bool focused);
+
 #ifdef __cplusplus
 }
 #endif

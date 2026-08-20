@@ -20,7 +20,10 @@ extern "C" {
 #endif
 
 #define XST_SEEN_MAX  16
-#define XST_CHAT_MAX  8
+/* Deep enough to hold a conversation, not just the last few sayings: a UI
+ * that filters by room shows a fraction of what is here, so a ring of 8
+ * left a room looking empty while the station was busy. ~150 B a row. */
+#define XST_CHAT_MAX  40
 #define XST_SB10_N    144        /* 10-minute buckets: one day  */
 #define XST_SBDAY_N   30         /* daily buckets: one month    */
 
@@ -33,10 +36,14 @@ typedef struct {
 
 typedef struct {
     char     from[10];
+    char     to[10];             /* d:, empty on a broadcast. Without it a
+                                  * 1:1 cannot say which conversation it
+                                  * belongs to -- only that it was one. */
     char     text[120];
     char     id[XPRS_ID_LEN];    /* section 5, so replies can find it */
     char     r[XPRS_ID_LEN];     /* parent id when this is a reply (6.4) */
-    uint8_t  kind;               /* 0 global, 1 scope:local, 2 direct (d:) */
+    uint8_t  kind;               /* 0 global, 1 scope:local, 2 direct (d:),
+                                  * 3 a published status (section 27) */
     uint32_t ep;                 /* epoch when heard, 0 before NTP */
 } xst_chat_t;
 

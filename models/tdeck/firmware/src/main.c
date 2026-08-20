@@ -169,14 +169,15 @@ static xapp_key_t input_poll(void)
 
 /* ── The keyboard ───────────────────────────────────────────────────────── */
 
-/* It answers with one byte: the key, or zero for nothing pending. Feeding it
- * into the station's console handler is the whole integration -- every key
- * that a serial console can send ('S' for a screenshot, '1'-'8' for a panel)
- * now works from the device itself. Text entry needs a UI that can take text,
- * which is a different piece of work.
+/* It answers with one byte: the key, or zero for nothing pending. Enter is
+ * 0x0d and backspace 0x08; letters arrive lower case unless shift is down.
  *
- * The stock firmware sends lowercase unless a modifier is down, and the
- * handler tests uppercase, so letters are folded up on the way through. */
+ * The byte is passed on RAW. Where the station's console commands are
+ * concerned 's' and 'S' are one key and xprs_app folds the case itself;
+ * where somebody is writing a message they are two different letters, and
+ * folding here would have thrown that away before anybody could ask.
+ * Offering this at all is what tells xprs_app the board can be typed on,
+ * and so earns it the interactive chat panel. */
 static i2c_dev_handle_t s_kbd;
 
 static void keyboard_init(void)
@@ -204,7 +205,6 @@ static int keyboard_key(void)
     if (!s_kbd) return 0;
     uint8_t c = 0;
     if (i2c_read_bytes(s_kbd, -1, &c, 1) != ESP_OK || c == 0) return 0;
-    if (c >= 'a' && c <= 'z') c -= 32;
     return c;
 }
 
@@ -220,7 +220,7 @@ static const xapp_board_t k_tdeck = {
     .flush = display_flush,
     .input_init = input_init,
     .input_poll = input_poll,
-    .console_key = keyboard_key,
+    .raw_key = keyboard_key,
 };
 
 void app_main(void)

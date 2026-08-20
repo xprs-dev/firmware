@@ -349,6 +349,10 @@ static struct {
     volatile bool pending;
 } s_cu;
 
+/* Marks the room a heard saying belongs to as having something new in it.
+ * Defined with the rest of the chat panel, below. */
+static void chat_note_unread(const xprs_t *p);
+
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
     xprs_t sp;
@@ -419,6 +423,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     /* Chat ring + rx/device stats + devices list live in xprs_station now,
      * shared with every board that has a screen. */
     xst_ingest_parsed(&sp, bearer, rssi);
+    chat_note_unread(&sp);
 
     flow_t *fl = &s_flow[s_flow_n % FLOW_MAX];
     snprintf(fl->call, sizeof fl->call, "%s", call);
@@ -714,6 +719,194 @@ static void inet_probe_task(void *arg)
 
 static int s_panel;
 
+/* ── The chat panel: rooms, what is typed, and what leaves ───────────────
+ *
+ * Only for a board that offers raw_key -- see xprs_app.h. Everything here
+ * is the station's own web page rendered natively, including the rooms:
+ * Local is scope:local, Global is the default scope, Social is t:status,
+ * and a callsign is a 1:1 addressed with d:.
+ */
+typedef enum { RM_LOCAL = 0, RM_GLOBAL, RM_SOCIAL, RM_FIXED } room_kind_t;
+
+/* Six, because the rail holds twelve rows and three headings and the three
+ * fixed rooms have already taken six of them. A peer that cannot be shown
+ * cannot be chosen either, so there is no point remembering more. */
+#define CHAT_PEERS_MAX 6
+
+static bool chat_active(void)   /* the interactive panel, not the table */
+{
+    return s_panel == 7 && s_board && s_board->raw_key;
+}
+
+static int  s_room;                       /* 0..2 fixed, else a peer index */
+static char s_peer[CHAT_PEERS_MAX][10];   /* callsigns offered for a 1:1  */
+static int  s_peer_n;
+static bool s_room_unread[RM_FIXED + CHAT_PEERS_MAX];
+static char s_compose[121];               /* what has been typed          */
+static int  s_compose_n;
+
+/* One slot, filled by the UI task and drained by idx_task. Signing is
+ * several KB of secp256k1 stack and ui_task has 6 KB, which is the same
+ * trap that once PANIC'd the bearer task -- so the UI composes the text
+ * and somebody with room to stand signs it. */
+static struct {
+    volatile bool full;
+    char text[121];
+    char to[10];        /* empty unless a 1:1 */
+    uint8_t kind;       /* room_kind_t for the fixed rooms, RM_FIXED = dm */
+} s_outbox;
+
+/* The base callsign: X1A67X-2 and X1A67X are one person, and a rail that
+ * listed both would be lying about how many conversations there are. */
+static void base_call(const char *in, char *out, int cap)
+{
+    int i = 0;
+    for (; in[i] && in[i] != '-' && i < cap - 1; i++) out[i] = in[i];
+    out[i] = 0;
+}
+
+/* Which room a stored saying belongs to, or -1 for somebody else's 1:1 --
+ * which is not ours to show. Mirrors roomOf() in the web page. */
+static int room_of(const xst_chat_t *c)
+{
+    if (c->kind == 3) return RM_SOCIAL;
+    if (c->kind == 2) {
+        char me[10], f[10], t[10];
+        base_call(s_call, me, sizeof me);
+        base_call(c->from, f, sizeof f);
+        base_call(c->to, t, sizeof t);
+        const char *peer = NULL;
+        if (strcasecmp(t, me) == 0) peer = f;
+        else if (strcasecmp(f, me) == 0) peer = t;
+        if (!peer || !peer[0]) return -1;
+        for (int i = 0; i < s_peer_n; i++)
+            if (strcasecmp(s_peer[i], peer) == 0) return RM_FIXED + i;
+        return -1;
+    }
+    return c->kind == 1 ? RM_LOCAL : RM_GLOBAL;
+}
+
+/* The rail's peers: everyone within reach, so a conversation can be
+ * started with somebody who has not spoken yet, plus anyone we have
+ * already exchanged with even if they have since gone quiet. */
+static void chat_refresh_peers(void)
+{
+    char me[10];
+    base_call(s_call, me, sizeof me);
+    s_peer_n = 0;
+
+    xst_dev_t dev[XST_SEEN_MAX];
+    /* An hour, not UI_INRANGE_SEC's five minutes: somebody who spoke half
+     * an hour ago is still worth being able to answer. */
+    int dn = xst_devices(dev, XST_SEEN_MAX, 3600);
+    for (int i = 0; i < dn && s_peer_n < CHAT_PEERS_MAX; i++) {
+        char b[10];
+        base_call(dev[i].call, b, sizeof b);
+        if (!b[0] || strcasecmp(b, me) == 0) continue;
+        /* A group is not a person: only a callsign can hold a 1:1. */
+        if (!xprs_is_station(b, (int)strlen(b))) continue;
+        bool seen = false;
+        for (int j = 0; j < s_peer_n; j++)
+            if (strcasecmp(s_peer[j], b) == 0) { seen = true; break; }
+        if (!seen) snprintf(s_peer[s_peer_n++], 10, "%s", b);
+    }
+
+    /* static: 40 of these is ~6 KB, and ui_task's whole stack is 6144.
+     * The UI is one task, so one copy is enough. */
+    static xst_chat_t rows[XST_CHAT_MAX];
+    int cn = xst_chat(rows, XST_CHAT_MAX);
+    for (int i = 0; i < cn && s_peer_n < CHAT_PEERS_MAX; i++) {
+        if (rows[i].kind != 2) continue;
+        char f[10], t[10];
+        base_call(rows[i].from, f, sizeof f);
+        base_call(rows[i].to, t, sizeof t);
+        const char *peer = strcasecmp(t, me) == 0 ? f
+                         : strcasecmp(f, me) == 0 ? t : NULL;
+        if (!peer || !peer[0]) continue;
+        bool seen = false;
+        for (int j = 0; j < s_peer_n; j++)
+            if (strcasecmp(s_peer[j], peer) == 0) { seen = true; break; }
+        if (!seen) snprintf(s_peer[s_peer_n++], 10, "%s", peer);
+    }
+}
+
+/* Something arrived. Which room it landed in decides which rail row grows
+ * a dot -- except the room being read, where arriving and being read are
+ * the same event. */
+static void chat_note_unread(const xprs_t *p)
+{
+    if (!s_board || !s_board->raw_key) return;   /* no rail to mark */
+    char type[16];
+    xprs_type(p, type, sizeof type);
+    bool status = strcmp(type, "status") == 0;
+    if (!status && strcmp(type, "message") != 0) return;
+
+    xst_chat_t c;
+    memset(&c, 0, sizeof c);
+    if (!xprs_get_str(p, "f", c.from, sizeof c.from)) return;
+    char dst[16], sc[12];
+    bool direct = xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#';
+    if (direct) snprintf(c.to, sizeof c.to, "%.9s", dst);
+    c.kind = status ? 3 : direct ? 2
+           : (xprs_get_str(p, "scope", sc, sizeof sc) &&
+              strcmp(sc, "local") == 0) ? 1 : 0;
+
+    int r = room_of(&c);
+    if (r < 0 || r >= (int)(sizeof s_room_unread / sizeof s_room_unread[0]))
+        return;
+    if (chat_active() && r == s_room) return;
+    s_room_unread[r] = true;
+}
+
+/* Airs a wire on every bearer and spools it; defined with the HTTP API,
+ * which was its first caller. The chat panel is its second. */
+static bool api_send_wire(const char *wire, int len);
+
+/* Hand what was typed to whoever has the stack to sign it. Returns false
+ * when the slot is still full -- the previous saying has not left yet, and
+ * dropping this one is better than overwriting that one. */
+static bool chat_queue_send(void)
+{
+    if (s_outbox.full || !s_compose_n) return false;
+    snprintf(s_outbox.text, sizeof s_outbox.text, "%s", s_compose);
+    if (s_room >= RM_FIXED) {
+        snprintf(s_outbox.to, sizeof s_outbox.to, "%s",
+                 s_peer[s_room - RM_FIXED]);
+        s_outbox.kind = RM_FIXED;
+    } else {
+        s_outbox.to[0] = 0;
+        s_outbox.kind = (uint8_t)s_room;
+    }
+    s_outbox.full = true;         /* last: idx_task reads the rest first */
+    s_compose[0] = 0;
+    s_compose_n = 0;
+    return true;
+}
+
+/* One keystroke while the chat panel is up. Returns true when it was
+ * consumed, which is what keeps the console commands from seeing it. */
+static bool chat_key(int ch)
+{
+    if (ch == 0x0d || ch == '\n') {          /* enter: send */
+        if (!s_compose_n) return true;
+        if (!chat_queue_send())
+            ESP_LOGW(TAG, "chat: the last message has not gone out yet");
+        return true;
+    }
+    if (ch == 0x08 || ch == 0x7f) {          /* backspace */
+        if (s_compose_n) s_compose[--s_compose_n] = 0;
+        return true;
+    }
+    if (ch >= 0x20 && ch < 0x7f) {           /* printable ASCII */
+        if (s_compose_n < (int)sizeof s_compose - 1) {
+            s_compose[s_compose_n++] = (char)ch;
+            s_compose[s_compose_n] = 0;
+        }
+        return true;
+    }
+    return false;
+}
+
 
 static void ui_render(void)
 {
@@ -734,8 +927,9 @@ static void ui_render(void)
 
     body[0] = 0;
     xui_show_home(s_panel == 0);
-    xui_show_table(s_panel != 0 && s_panel != 6);
+    xui_show_table(s_panel != 0 && s_panel != 6 && !chat_active());
     xui_show_stats(s_panel == 6);
+    xui_show_chat(chat_active());
 
     switch (s_panel) {
     case 0: {   /* Links: the graphic home panel */
@@ -1048,7 +1242,95 @@ static void ui_render(void)
         xui_set_title("Settings 6/8");
         break;
     }
-    case 7: {   /* Chat: the human messages passing through this station */
+    case 7: if (chat_active()) {
+        /* The interactive chat: rooms down the left, the conversation as
+         * bubbles, and a composer. Only reached on a board that can type. */
+        chat_refresh_peers();
+        if (s_room >= RM_FIXED + s_peer_n) s_room = RM_GLOBAL;
+
+        static xui_room_t rr[XUI_CHAT_ROOMS];
+        int rn = 0, sel = 0;
+        static const char *const fixed[RM_FIXED] = { "Local", "Global",
+                                                     "Social" };
+        snprintf(rr[rn].name, sizeof rr[rn].name, "ROOMS");
+        rr[rn].heading = true; rr[rn].unread = false; rn++;
+        for (int i = 0; i < RM_FIXED && rn < XUI_CHAT_ROOMS; i++) {
+            if (i == RM_SOCIAL) {
+                snprintf(rr[rn].name, sizeof rr[rn].name, "FEED");
+                rr[rn].heading = true; rr[rn].unread = false; rn++;
+                if (rn >= XUI_CHAT_ROOMS) break;
+            }
+            snprintf(rr[rn].name, sizeof rr[rn].name, "%s", fixed[i]);
+            rr[rn].heading = false;
+            rr[rn].unread = s_room_unread[i];
+            if (s_room == i) sel = rn;
+            rn++;
+        }
+        if (s_peer_n && rn < XUI_CHAT_ROOMS) {
+            snprintf(rr[rn].name, sizeof rr[rn].name, "PEOPLE");
+            rr[rn].heading = true; rr[rn].unread = false; rn++;
+        }
+        for (int i = 0; i < s_peer_n && rn < XUI_CHAT_ROOMS; i++) {
+            snprintf(rr[rn].name, sizeof rr[rn].name, "%s", s_peer[i]);
+            rr[rn].heading = false;
+            rr[rn].unread = s_room_unread[RM_FIXED + i];
+            if (s_room == RM_FIXED + i) sel = rn;
+            rn++;
+        }
+        xui_chat_rooms(rr, rn, sel);
+
+        /* The conversation. xst_chat gives newest first; a thread reads
+         * the other way, so it is walked backwards into the array. */
+        static xui_msg_t mm[XUI_CHAT_MSGS];
+        static xst_chat_t rows[XST_CHAT_MAX];   /* ~6 KB: see above */
+        int cn = xst_chat(rows, XST_CHAT_MAX);
+        uint32_t nowep = xst_epoch_now();
+        char me[10];
+        base_call(s_call, me, sizeof me);
+        int mn = 0;
+        for (int i = cn - 1; i >= 0 && mn < XUI_CHAT_MSGS; i--) {
+            if (room_of(&rows[i]) != s_room) continue;
+            xui_msg_t *m = &mm[mn++];
+            char f[10];
+            base_call(rows[i].from, f, sizeof f);
+            m->outgoing = strcasecmp(f, me) == 0;
+            snprintf(m->from, sizeof m->from, "%s", rows[i].from);
+            snprintf(m->text, sizeof m->text, "%s", rows[i].text);
+            if (rows[i].ep && nowep && nowep >= rows[i].ep) {
+                uint32_t age = nowep - rows[i].ep;
+                unsigned h = (unsigned)(age / 3600);
+                if (age < 60)
+                    snprintf(m->when, sizeof m->when, "%us", (unsigned)age);
+                else if (age < 3600)
+                    snprintf(m->when, sizeof m->when, "%um",
+                             (unsigned)(age / 60));
+                else if (h < 100)
+                    snprintf(m->when, sizeof m->when, "%uh", h);
+                else
+                    snprintf(m->when, sizeof m->when, "%ud", h / 24);
+            } else {
+                m->when[0] = 0;
+            }
+        }
+        s_room_unread[s_room] = false;   /* looking at it IS reading it */
+
+        const char *head = s_room == RM_LOCAL  ? "Local"
+                         : s_room == RM_GLOBAL ? "Global"
+                         : s_room == RM_SOCIAL ? "Social"
+                                               : s_peer[s_room - RM_FIXED];
+        xui_chat_msgs(mm, mn, head);
+
+        /* The placeholder says where the words are about to go, which is
+         * the one thing a person must not have to remember. */
+        const char *ph = s_room == RM_LOCAL  ? "Message (stays local)"
+                       : s_room == RM_GLOBAL ? "Message (goes everywhere)"
+                       : s_room == RM_SOCIAL ? "Status update"
+                                             : "Message to this station";
+        xui_chat_input(s_compose, ph, true);
+
+        xui_set_title("Chat 8/8");
+        break;
+    } else {
         static const char *const hdr[3] = { "From", "Message", "When" };
         static const int cw[3] = { 68, 176, 76 };
         xui_table_setup(3, hdr, cw);
@@ -1117,6 +1399,7 @@ static void ui_render(void)
         xui_set_title("Chat 8/8");
         break;
     }
+    /* falls out of the else: both chat forms end here */
     default: {  /* Stats: 10-minute, hourly or daily bars; arrows switch */
         uint16_t dev[XST_SBDAY_N], rxv[XST_SBDAY_N], txv[XST_SBDAY_N];
         int np = xst_stats_series(s_stats_view, dev, rxv, txv, XST_SBDAY_N);
@@ -1142,7 +1425,7 @@ static void ui_render(void)
     /* Every list panel keeps its own selection: clamp it to what is on the
      * screen, and take the first row when rows appear after the panel was
      * visited empty. */
-    if (s_panel != 0 && s_panel != 6) {
+    if (s_panel != 0 && s_panel != 6 && !chat_active()) {
         if (s_sel[s_panel] >= list_n) s_sel[s_panel] = list_n - 1;
         if (s_sel[s_panel] < 0 && list_n > 0) s_sel[s_panel] = 0;
         if (s_panel == 5 && !s_set_focus)
@@ -1154,7 +1437,10 @@ static void ui_render(void)
     /* The bottom bar tells the user what the three buttons under it do:
      * A cycles the menus (long press goes home), B and C move the selection
      * on the panels that have one. */
-    if (s_panel == 5)
+    if (chat_active())
+        /* The ball picks the room; the keyboard does everything else. */
+        xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
+    else if (s_panel == 5)
         xui_set_keys(s_set_focus ? "OK" : "Menu", XUI_KEY_UP, XUI_KEY_DOWN);
     else if (s_panel != 0)
         xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
@@ -1443,6 +1729,47 @@ static void idx_task(void *arg)
             s_cu.pending = false;
         }
 
+        /* What somebody typed on the keyboard, signed on THIS task's stack
+         * for the same reason the ask above is: ui_task has 6 KB and
+         * secp256k1 wants several of them.
+         *
+         * The field order is the one the station's own web page fixed, and
+         * it matters: sig: is spliced in before m:, and m: runs to the end
+         * of the packet, so anything after it would be swallowed. */
+        if (s_outbox.full) {
+            char ts[24];
+            time_t t2 = time(NULL);
+            if (t2 > 1700000000) {
+                struct tm tmv;
+                gmtime_r(&t2, &tmv);
+                strftime(ts, sizeof ts, "ts:%Y-%m-%d_%H:%M:%S", &tmv);
+            } else {
+                snprintf(ts, sizeof ts, "epoch:0.%u",
+                         (unsigned)(esp_timer_get_time() / 1000000));
+            }
+            char where[16] = "";
+            if (s_outbox.kind == RM_LOCAL)
+                snprintf(where, sizeof where, " scope:local");
+            else if (s_outbox.kind == RM_FIXED)
+                snprintf(where, sizeof where, " d:%s", s_outbox.to);
+
+            char wire[XPRS_MAX_WIRE + 1];
+            int wn = snprintf(wire, sizeof wire, "%s f:%s %s%s m:%s",
+                              s_outbox.kind == RM_SOCIAL ? "t:status"
+                                                         : "t:message",
+                              s_call, ts, where, s_outbox.text);
+            if (wn > 0 && wn <= XPRS_MAX_WIRE) {
+                wn = sign_wire(wire, wn, sizeof wire);
+                if (wn <= XPRS_MAX_WIRE && api_send_wire(wire, wn))
+                    ESP_LOGI(TAG, "chat: sent %d bytes", wn);
+                else
+                    ESP_LOGW(TAG, "chat: no bearer took it");
+            } else {
+                ESP_LOGW(TAG, "chat: too long for one packet (%d)", wn);
+            }
+            s_outbox.full = false;
+        }
+
         /* The stats rings hit the flash every ten minutes -- losing at most
          * ten minutes of bars to a power pull. */
         if (xst_epoch_now() && now_s - last_stats_save_s >= 600) {
@@ -1665,6 +1992,18 @@ static void ui_task(void *arg)
 
         /* UP and DOWN walk the rows on every list panel, and the strip
          * below shows the selected row's detail. */
+        /* In a chat room the ball walks the rail instead of a table, and
+         * the headings are stepped over -- they are labels, not rooms. */
+        if (chat_active() && (key == XAPP_KEY_UP || key == XAPP_KEY_DOWN)) {
+            int last = RM_FIXED + s_peer_n - 1;
+            s_room += key == XAPP_KEY_UP ? -1 : 1;
+            if (s_room < 0) s_room = last;
+            if (s_room > last) s_room = 0;
+            force = true;
+            ESP_LOGI(TAG, "chat: room %d", s_room);
+            key = XAPP_KEY_NONE;
+        }
+
         if (key == XAPP_KEY_UP) {
             if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
             if (s_panel == 5) {
@@ -1713,7 +2052,37 @@ static void ui_task(void *arg)
          * with a real keyboard feeds the same handler, so every one of
          * these works from the device as well as from a script. */
         int ch = getchar();
-        if (ch <= 0 && s_board->console_key) ch = s_board->console_key();
+
+        /* The serial console can type too, and it has to: without it there
+         * is no way to exercise the composer from a script, and "it works,
+         * I pressed the keys myself" is not a test. While a room is open,
+         * lower case and space and enter go into the message; the commands
+         * are all upper case (S, U, D, K, W) and stay reachable. */
+        if (ch > 0 && chat_active() &&
+            (ch == 0x0d || ch == '\n' || ch == 0x08 || ch == 0x7f ||
+             (ch >= 0x20 && ch < 0x7f && !(ch >= 'A' && ch <= 'Z')))) {
+            if (chat_key(ch)) { force = true; ch = 0; }
+        }
+        if (ch >= 'a' && ch <= 'z') ch -= 32;  /* one key, either case */
+
+        /* The two key sources part company here, and they have to.
+         *
+         * While a chat room is open the KEYBOARD belongs to the person
+         * writing -- '1' is a character in a message long before it is a
+         * panel number, and there is no shift that means "not this time".
+         * The SERIAL console keeps its commands throughout, so a script can
+         * still take a screenshot of the very panel being typed into, which
+         * is the only way to see what it looks like mid-sentence. */
+        int kb = s_board->raw_key ? s_board->raw_key() : 0;
+        if (kb > 0) {
+            if (chat_active()) {
+                if (chat_key(kb)) force = true;
+            } else {
+                if (kb >= 'a' && kb <= 'z') kb -= 32;
+                if (ch <= 0) ch = kb;
+            }
+        }
+
         if (ch == 'S') xui_framedump();
         if (ch >= '1' && ch <= '0' + UI_PANEL_COUNT) {
             s_panel = ch - '1';
@@ -1920,7 +2289,13 @@ void xapp_run(const xapp_board_t *board)
         air_identity();
     }
 
-    xTaskCreate(status_task, "status", 3072, NULL, 1, NULL);
+    /* 6 KB, not 3: once a minute this task calls air_identity(), and signing
+     * is several KB of secp256k1 stack -- the same trap that once PANIC'd
+     * xprslan (see sign_wire's neighbours above). On the original ESP32 it
+     * fitted by luck; on the S3 the frames are bigger and the task died at
+     * the first identity, exactly 60 s after every boot. Stack overflow, and
+     * it named itself: "A stack overflow in task status has been detected." */
+    xTaskCreate(status_task, "status", 6144, NULL, 1, NULL);
     xTaskCreate(inet_probe_task, "inet", 3072, NULL, 1, NULL);
 
     /* The screen last: everything it reads already exists by now. The

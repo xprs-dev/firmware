@@ -123,7 +123,12 @@ void xst_chat_note(const xprs_t *p)
     char from[10], text[120];
     char type[16];
     xprs_type(p, type, sizeof type);
-    if (strcmp(type, "message") != 0) return;
+    /* A status (section 27) is a published saying rather than a
+     * conversation, and it is kept for the same reason a message is: a
+     * reader wants to see it. It gets its own kind so a room can tell the
+     * two apart. */
+    bool status = strcmp(type, "status") == 0;
+    if (!status && strcmp(type, "message") != 0) return;
     if (!xprs_get_str(p, "f", from, sizeof from)) return;
     if (!xprs_get_str(p, "m", text, sizeof text) || !text[0]) return;
 
@@ -134,7 +139,11 @@ void xst_chat_note(const xprs_t *p)
     xprs_id(p, row.id);
     if (!xprs_get_str(p, "r", row.r, sizeof row.r)) row.r[0] = 0;
     char sc[12], dst[16];
-    if (xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#')
+    bool direct = xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#';
+    if (direct) snprintf(row.to, sizeof row.to, "%.9s", dst);
+    if (status)
+        row.kind = 3;                                  /* a publication */
+    else if (direct)
         row.kind = 2;                                  /* a 1:1 */
     else if (xprs_get_str(p, "scope", sc, sizeof sc) &&
              strcmp(sc, "local") == 0)

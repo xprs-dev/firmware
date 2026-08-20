@@ -93,6 +93,33 @@ static lv_obj_t  *s_stats_title[XUI_STATS_CHARTS];
 static lv_chart_series_t *s_stats_series[XUI_STATS_CHARTS];
 static lv_coord_t s_stats_vals[XUI_STATS_CHARTS][XUI_STATS_POINTS];
 
+/* Chat: the station's web page, drawn natively. Its palette, so the two
+ * faces of one station look like one station. */
+#define XUI_C_ACCENT  lv_color_make(255, 168, 106)   /* #ffa86a */
+#define XUI_C_PAGE    lv_color_make(16, 16, 16)      /* #101010 */
+#define XUI_C_TEXT    lv_color_make(240, 240, 240)   /* #f0f0f0 */
+#define XUI_C_MUTED   lv_color_make(136, 136, 136)   /* #888888 */
+#define XUI_C_LINE    lv_color_make(44, 43, 42)      /* the hairline, flat */
+#define XUI_C_IN      lv_color_make(27, 27, 27)      /* #1b1b1b */
+#define XUI_C_OUT     lv_color_make(42, 28, 16)      /* #2a1c10 */
+#define XUI_C_HEAD    lv_color_make(85, 85, 85)      /* #555555 */
+
+#define XUI_ROOM_H     16    /* a rail row */
+#define XUI_HEAD_H     16    /* the room header over the conversation */
+#define XUI_COMPOSE_H  22    /* the composer band */
+
+static lv_obj_t *s_chat;
+static lv_obj_t *s_chat_rail;
+static lv_obj_t *s_room_row[XUI_CHAT_ROOMS];
+static lv_obj_t *s_room_lbl[XUI_CHAT_ROOMS];
+static lv_obj_t *s_chat_head;
+static lv_obj_t *s_chat_list;
+static lv_obj_t *s_chat_input;
+static lv_obj_t *s_chat_input_lbl;
+static lv_obj_t *s_chat_send;
+static int s_rail_w;
+static int s_msgs_h;
+
 /* ---- LVGL flush callback ------------------------------------------------ */
 
 static volatile bool s_dump_pending;
@@ -583,6 +610,96 @@ static void build_ui(void)
     }
     lv_obj_add_flag(s_stats, LV_OBJ_FLAG_HIDDEN);
 
+    /* ---- Chat: rail | conversation | composer ----
+     *
+     * The proportions come from the station's own web page. The rail is
+     * narrow on purpose: it must stay legible without taking the room the
+     * bubbles need, and at 320 px wide that is about a quarter. */
+    s_chat = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_chat);
+    lv_obj_set_size(s_chat, s_w, s_center_h);
+    lv_obj_align(s_chat, LV_ALIGN_TOP_LEFT, 0, s_top_h);
+    lv_obj_set_style_bg_color(s_chat, XUI_C_PAGE, 0);
+    lv_obj_set_style_bg_opa(s_chat, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_chat, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* The rail. */
+    s_chat_rail = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(s_chat_rail);
+    lv_obj_set_size(s_chat_rail, s_rail_w, s_center_h);
+    lv_obj_set_pos(s_chat_rail, 0, 0);
+    lv_obj_set_style_bg_color(s_chat_rail, XUI_C_PAGE, 0);
+    lv_obj_set_style_bg_opa(s_chat_rail, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(s_chat_rail, LV_BORDER_SIDE_RIGHT, 0);
+    lv_obj_set_style_border_width(s_chat_rail, 1, 0);
+    lv_obj_set_style_border_color(s_chat_rail, XUI_C_LINE, 0);
+    lv_obj_set_style_pad_all(s_chat_rail, 0, 0);
+    lv_obj_clear_flag(s_chat_rail, LV_OBJ_FLAG_SCROLLABLE);
+    for (int i = 0; i < XUI_CHAT_ROOMS; i++) {
+        s_room_row[i] = lv_obj_create(s_chat_rail);
+        lv_obj_remove_style_all(s_room_row[i]);
+        lv_obj_set_size(s_room_row[i], s_rail_w - 1, XUI_ROOM_H);
+        lv_obj_set_style_bg_opa(s_room_row[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_side(s_room_row[i], LV_BORDER_SIDE_LEFT, 0);
+        lv_obj_set_style_border_color(s_room_row[i], XUI_C_ACCENT, 0);
+        lv_obj_set_style_border_width(s_room_row[i], 0, 0);
+        lv_obj_clear_flag(s_room_row[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(s_room_row[i], LV_OBJ_FLAG_HIDDEN);
+
+        s_room_lbl[i] = lv_label_create(s_room_row[i]);
+        lv_label_set_text(s_room_lbl[i], "");
+        lv_obj_set_style_text_font(s_room_lbl[i], &lv_font_montserrat_12, 0);
+        lv_obj_align(s_room_lbl[i], LV_ALIGN_LEFT_MID, 6, 0);
+    }
+
+    /* The room header, over the conversation. */
+    s_chat_head = lv_label_create(s_chat);
+    lv_label_set_text(s_chat_head, "");
+    lv_obj_set_style_text_font(s_chat_head, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_chat_head, XUI_C_ACCENT, 0);
+    lv_obj_set_pos(s_chat_head, s_rail_w + 6, 2);
+
+    /* The conversation itself: a scrolling column of bubbles. */
+    s_chat_list = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(s_chat_list);
+    lv_obj_set_size(s_chat_list, s_w - s_rail_w, s_msgs_h);
+    lv_obj_set_pos(s_chat_list, s_rail_w, XUI_HEAD_H);
+    lv_obj_set_style_bg_color(s_chat_list, XUI_C_PAGE, 0);
+    lv_obj_set_style_bg_opa(s_chat_list, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(s_chat_list, 4, 0);
+    lv_obj_set_style_pad_row(s_chat_list, 3, 0);
+    lv_obj_set_flex_flow(s_chat_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(s_chat_list, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_chat_list, LV_SCROLLBAR_MODE_OFF);
+
+    /* The composer. */
+    s_chat_input = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(s_chat_input);
+    lv_obj_set_size(s_chat_input, s_w - s_rail_w - 8, XUI_COMPOSE_H - 6);
+    lv_obj_set_pos(s_chat_input, s_rail_w + 4, XUI_HEAD_H + s_msgs_h + 2);
+    lv_obj_set_style_bg_opa(s_chat_input, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_chat_input, 1, 0);
+    lv_obj_set_style_border_color(s_chat_input, XUI_C_LINE, 0);
+    lv_obj_set_style_radius(s_chat_input, 4, 0);
+    lv_obj_set_style_pad_all(s_chat_input, 0, 0);
+    lv_obj_clear_flag(s_chat_input, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_chat_input_lbl = lv_label_create(s_chat_input);
+    lv_label_set_text(s_chat_input_lbl, "");
+    lv_obj_set_style_text_font(s_chat_input_lbl, &lv_font_montserrat_12, 0);
+    lv_label_set_long_mode(s_chat_input_lbl, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(s_chat_input_lbl, s_w - s_rail_w - 36);
+    lv_obj_align(s_chat_input_lbl, LV_ALIGN_LEFT_MID, 5, 0);
+
+    /* The send glyph, the web page's single '>' in accent. */
+    s_chat_send = lv_label_create(s_chat_input);
+    lv_label_set_text(s_chat_send, LV_SYMBOL_RIGHT);
+    lv_obj_set_style_text_font(s_chat_send, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_chat_send, XUI_C_ACCENT, 0);
+    lv_obj_align(s_chat_send, LV_ALIGN_RIGHT_MID, -6, 0);
+
+    lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+
     /* ---- Bottom bar (grey): button legend + device count ---- */
     lv_obj_t *bot = lv_obj_create(scr);
     lv_obj_set_size(bot, s_w, s_bot_h);
@@ -628,6 +745,10 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
     s_radar_r = s_radar_size / 2 - 4;
     s_home_col_w = s_w - 20 - s_radar_size - 36;
     s_flow_h = s_center_h - FLOW_CONTENT_H;
+    /* The chat rail: about a quarter of the width, which at 320 is the
+     * narrowest a callsign stays readable at. */
+    s_rail_w = s_w * 84 / 320;
+    s_msgs_h = s_center_h - XUI_HEAD_H - XUI_COMPOSE_H;
 
     lv_init();
 
@@ -1062,4 +1183,162 @@ placed:
         lv_obj_set_pos(s_blip_lbl[i], lx, ly);
         lrx[i] = lx; lry[i] = ly; lrw[i] = lw; lrh[i] = lh;
     }
+}
+
+/* ---- The chat panel ----------------------------------------------------- */
+
+void xui_show_chat(bool show)
+{
+    if (!s_chat) return;
+    if (show) {
+        lv_obj_clear_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lv_obj_get_parent(s_body_label), LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void xui_chat_rooms(const xui_room_t *rooms, int n, int sel)
+{
+    if (!s_chat_rail) return;
+    if (n > XUI_CHAT_ROOMS) n = XUI_CHAT_ROOMS;
+    if (n < 0) n = 0;
+
+    for (int i = 0; i < XUI_CHAT_ROOMS; i++) {
+        if (i >= n) {
+            lv_obj_add_flag(s_room_row[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        const xui_room_t *r = &rooms[i];
+        lv_obj_clear_flag(s_room_row[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(s_room_row[i], 0, i * XUI_ROOM_H);
+        /* The unread mark is a character, not an object: at 16 px a row it
+         * reads the same and costs nothing from LVGL's pool. */
+        if (r->unread && !r->heading)
+            lv_label_set_text_fmt(s_room_lbl[i], "%s %s", r->name,
+                                  LV_SYMBOL_BELL);
+        else
+            lv_label_set_text(s_room_lbl[i], r->name);
+
+        if (r->heading) {
+            /* A section label is not a destination: no rule, no highlight,
+             * and the selection steps over it. */
+            lv_obj_set_style_text_color(s_room_lbl[i], XUI_C_HEAD, 0);
+            lv_obj_set_style_text_font(s_room_lbl[i], &lv_font_montserrat_10, 0);
+            lv_obj_set_style_bg_opa(s_room_row[i], LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(s_room_row[i], 0, 0);
+            continue;
+        }
+
+        lv_obj_set_style_text_font(s_room_lbl[i], &lv_font_montserrat_12, 0);
+        if (i == sel) {
+            lv_obj_set_style_text_color(s_room_lbl[i], XUI_C_ACCENT, 0);
+            lv_obj_set_style_border_width(s_room_row[i], 2, 0);
+            lv_obj_set_style_bg_color(s_room_row[i], XUI_C_OUT, 0);
+            lv_obj_set_style_bg_opa(s_room_row[i], LV_OPA_COVER, 0);
+        } else {
+            lv_obj_set_style_text_color(s_room_lbl[i], XUI_C_MUTED, 0);
+            lv_obj_set_style_border_width(s_room_row[i], 0, 0);
+            lv_obj_set_style_bg_opa(s_room_row[i], LV_OPA_TRANSP, 0);
+        }
+    }
+}
+
+void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header)
+{
+    if (!s_chat_list) return;
+    lv_label_set_text(s_chat_head, header ? header : "");
+
+    /* Rebuild rather than diff. The list is short by construction and a
+     * bubble's height depends on how its text wrapped, so there is no
+     * cheap way to know an existing one still fits. */
+    lv_obj_clean(s_chat_list);
+    if (n > XUI_CHAT_MSGS) {
+        msgs += n - XUI_CHAT_MSGS;      /* keep the newest */
+        n = XUI_CHAT_MSGS;
+    }
+
+    const int inner = s_w - s_rail_w - 8;
+    const int maxw = inner * 85 / 100;   /* the web page's max-width: 85% */
+
+    for (int i = 0; i < n; i++) {
+        const xui_msg_t *m = &msgs[i];
+
+        lv_obj_t *wrap = lv_obj_create(s_chat_list);
+        lv_obj_remove_style_all(wrap);
+        lv_obj_set_width(wrap, inner);
+        lv_obj_set_height(wrap, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_pad_all(wrap, 0, 0);
+        lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(wrap, LV_FLEX_FLOW_COLUMN);
+        /* In a column the cross axis is the horizontal one, and BOTH the
+         * item placement and the track's own placement have to be told
+         * which side to sit on -- setting only the first leaves the track
+         * itself at the left, taking the bubble with it. */
+        lv_flex_align_t side = m->outgoing ? LV_FLEX_ALIGN_END
+                                           : LV_FLEX_ALIGN_START;
+        lv_obj_set_flex_align(wrap, LV_FLEX_ALIGN_START, side, side);
+
+        /* Incoming names itself above the bubble; outgoing puts its time
+         * underneath and never repeats our own callsign. */
+        if (!m->outgoing) {
+            lv_obj_t *meta = lv_label_create(wrap);
+            lv_label_set_text_fmt(meta, "%s  %s", m->from, m->when);
+            lv_obj_set_style_text_font(meta, &lv_font_montserrat_10, 0);
+            lv_obj_set_style_text_color(meta, XUI_C_ACCENT, 0);
+        }
+
+        lv_obj_t *bub = lv_obj_create(wrap);
+        lv_obj_remove_style_all(bub);
+        lv_obj_set_width(bub, LV_SIZE_CONTENT);
+        lv_obj_set_height(bub, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_color(bub, m->outgoing ? XUI_C_OUT : XUI_C_IN, 0);
+        lv_obj_set_style_bg_opa(bub, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(bub, 8, 0);
+        lv_obj_set_style_pad_hor(bub, 6, 0);
+        lv_obj_set_style_pad_ver(bub, 3, 0);
+        lv_obj_set_style_border_width(bub, 1, 0);
+        lv_obj_set_style_border_color(bub, m->outgoing ? XUI_C_ACCENT
+                                                       : XUI_C_LINE, 0);
+        lv_obj_set_style_border_opa(bub, m->outgoing ? LV_OPA_40
+                                                     : LV_OPA_COVER, 0);
+        lv_obj_clear_flag(bub, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *t = lv_label_create(bub);
+        lv_label_set_text(t, m->text);
+        lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+        /* The LABEL is what is bounded, and the bubble hugs it. Sizing the
+         * bubble to its content while the label asks for a percentage OF
+         * the bubble is circular, and LVGL resolves the circle by making
+         * both as narrow as one character -- a tall thin ribbon down the
+         * screen, which is exactly what the first build drew. */
+        lv_obj_set_width(t, LV_SIZE_CONTENT);
+        lv_obj_set_style_max_width(t, maxw - 14, 0);
+        lv_obj_set_style_text_font(t, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(t, XUI_C_TEXT, 0);
+
+        if (m->outgoing) {
+            lv_obj_t *meta = lv_label_create(wrap);
+            lv_label_set_text(meta, m->when);
+            lv_obj_set_style_text_font(meta, &lv_font_montserrat_10, 0);
+            lv_obj_set_style_text_color(meta, XUI_C_MUTED, 0);
+        }
+    }
+
+    /* Newest at the bottom, which is where a conversation is read from. */
+    lv_obj_update_layout(s_chat_list);
+    lv_obj_scroll_to_y(s_chat_list, LV_COORD_MAX, LV_ANIM_OFF);
+}
+
+void xui_chat_input(const char *text, const char *placeholder, bool focused)
+{
+    if (!s_chat_input_lbl) return;
+    bool empty = !text || !text[0];
+    lv_label_set_text(s_chat_input_lbl,
+                      empty ? (placeholder ? placeholder : "") : text);
+    lv_obj_set_style_text_color(s_chat_input_lbl,
+                                empty ? XUI_C_MUTED : XUI_C_TEXT, 0);
+    lv_obj_set_style_border_color(s_chat_input,
+                                  focused ? XUI_C_ACCENT : XUI_C_LINE, 0);
 }

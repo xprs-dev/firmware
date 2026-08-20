@@ -20,7 +20,12 @@ CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 CONFIG_LV_FONT_MONTSERRAT_12=y
 CONFIG_LV_FONT_MONTSERRAT_10=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_LV_MEM_SIZE_KILOBYTES=32
+# 48 KB, not the 32 the other boards use: the chat panel is built from LVGL
+# objects (a rail, and a bubble with a label inside it per message) rather
+# than one table widget, and when this pool runs out LVGL's LV_ASSERT_MALLOC
+# spins forever inside lv_init -- a hang with no message, which is a long way
+# to walk to find a number.
+CONFIG_LV_MEM_SIZE_KILOBYTES=48
 # The XPRS index names segments seg_<10 digits>.bin -- longer than 8.3, so
 # without long-filename support every write fails while the accept counter
 # still climbs.

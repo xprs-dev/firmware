@@ -60,9 +60,22 @@ typedef struct {
 
     void (*input_init)(void);          /**< optional */
     xapp_key_t (*input_poll)(void);    /**< optional; called every 10 ms */
-    /** Optional extra source of console keys -- a physical keyboard that
-     *  feeds the same handler as the serial console. Returns 0 for none. */
-    int (*console_key)(void);
+    /**
+     * A physical keyboard, if the board has one. Returns the key as a RAW
+     * byte -- lower case left alone, 0x08 backspace, 0x0d enter -- or 0
+     * when nothing is pending.
+     *
+     * Raw, because the same key means two things. Where the console
+     * commands are concerned 's' and 'S' are one key and this component
+     * folds the case itself; where a person is typing a message they are
+     * emphatically not, and a board that folded case first would have
+     * thrown away the difference before anybody could ask.
+     *
+     * Offering this is also what says the board can be TYPED ON, so it is
+     * what earns the interactive chat panel in place of the read-only
+     * table. A board with buttons and no keyboard leaves it NULL.
+     */
+    int (*raw_key)(void);
 } xapp_board_t;
 
 /** Run the station. Does not return: it is the body of app_main().
