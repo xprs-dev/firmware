@@ -1,0 +1,14 @@
+# Name,   Type, SubType, Offset,   Size
+# NVS at the standard 0x9000 so the callsign, the identity and the WiFi
+# credentials survive a reflash, exactly as on the other boards.
+nvs,      data, nvs,     0x9000,   0x6000
+phy_init, data, phy,     0xf000,   0x1000
+# 2MB, not the M5Stack's 1.5MB: the same firmware is already at 83% there, and
+# the S3's code is bigger than the original ESP32's for the same source.
+factory,  app,  factory, 0x10000,  0x200000
+# Everything the indexer stores: a wear-levelled FAT filling the rest of the
+# 16MB flash.
+storage,  data, fat,     0x210000, 0xD70000
+# Where a panic writes its last words: task, PC, backtrace. Read at the next
+# boot and put into the rotating log, so a freeze names its culprit.
+coredump, data, coredump, 0xF80000, 0x10000

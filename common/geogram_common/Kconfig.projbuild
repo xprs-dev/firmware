@@ -16,6 +16,10 @@ menu "XPRS Board Selection"
             bool "Heltec WiFi LoRa 32 V3"
             depends on IDF_TARGET_ESP32S3
 
+        config GEOGRAM_BOARD_TDECK
+            bool "LILYGO T-Deck"
+            depends on IDF_TARGET_ESP32S3
+
         config GEOGRAM_BOARD_ESP32C3_MINI
             bool "ESP32-C3 Mini"
             depends on IDF_TARGET_ESP32C3

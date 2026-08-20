@@ -9,6 +9,8 @@ dependencies.lock
 # resolved output is not -- with one exception below.
 sdkconfig.rns_ble5
 sdkconfig.m5stack
+sdkconfig.tdeck
+sdkconfig.tdeck_plus
 sdkconfig.tdongle
 sdkconfig.espnow_probe
 

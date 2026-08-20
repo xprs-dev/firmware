@@ -28,6 +28,7 @@ shared `multiboard/` build.
 |---|---|---|
 | [`tdongle-s3`](models/tdongle-s3/) | ESP32-S3 | own project -- the reference station |
 | [`m5stack-core`](models/m5stack-core/) | ESP32 | own project -- the second voice on the air |
+| [`tdeck`](models/tdeck/) | ESP32-S3 | own project -- screen, trackball, keyboard; 868 MHz radio idle |
 | [`heltec-v1`](models/heltec-v1/) [`v2`](models/heltec-v2/) [`v3`](models/heltec-v3/) | ESP32 / S3 | `multiboard` -- LoRa, SX1276 / SX1262 |
 | [`kv4p`](models/kv4p/) | ESP32 | `multiboard` -- VHF handheld via SA818 |
 | [`esp32c3-mini`](models/esp32c3-mini/) | ESP32-C3 | `multiboard` |

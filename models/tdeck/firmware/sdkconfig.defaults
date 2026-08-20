@@ -1,0 +1,41 @@
+# Say which board this is. The choice in common/geogram_common/Kconfig.projbuild
+# defaults to the Waveshare e-paper board on ANY ESP32-S3, and geogram_lvgl
+# compiles an e-paper LVGL port when it sees that — so an S3 project that does
+# not name itself fails to build against a driver it never asked for. The
+# M5Stack never met this because the e-paper option is S3-only.
+CONFIG_GEOGRAM_BOARD_TDECK=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+# The T-Deck exposes no UART pins — the console is the S3's own USB. Without
+# this there is no log and no console keys, which is most of the debugging.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# This node exists to hear ESP-NOW. A station that modem-sleeps misses frames.
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# LVGL (managed component, configured via Kconfig — its CMake sets
+# CONFIG_LV_CONF_SKIP=y, so lv_conf.h is ignored). Montserrat 14 is the
+# Kconfig default; the bars use 12.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_10=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_LV_MEM_SIZE_KILOBYTES=32
+# The XPRS index names segments seg_<10 digits>.bin -- longer than 8.3, so
+# without long-filename support every write fails while the accept counter
+# still climbs.
+CONFIG_FATFS_LFN_HEAP=y
+# Phone browsers send >512B of headers (UA + Accept + our nsec cookie);
+# the default answers them 431 'Header fields are too long'.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# A TASK WDT freeze reboots the board before the UART panic print can be
+# read; the core dump keeps the culprit's name for the next boot.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# PSRAM is deliberately NOT enabled yet. The module is an N16R8, so it has 8MB
+# of OCTAL PSRAM and turning it on means CONFIG_SPIRAM_MODE_OCT plus a speed
+# that matches the board — get one of them wrong and the symptom is a boot
+# loop that looks exactly like a bad flash. The same firmware already fits an
+# original ESP32's SRAM on the M5Stack, so there is nothing to buy here until
+# the heap numbers say otherwise (docs/esp32.md: change one thing at a time).
