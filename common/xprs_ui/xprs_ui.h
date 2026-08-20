@@ -70,9 +70,14 @@ void xui_framedump(void);
  *  UI task only. */
 void xui_show_home(bool show);
 
-/** Update one home row: a coloured status dot, the link name, and the
- *  detail text beside it. UI task only. */
-void xui_home_row(int idx, const char *name, bool up, const char *detail);
+/** Update one home row: a status dot, the link name, the count beside it,
+ *  and an optional second line under the name for the one fact worth
+ *  carrying on the panel itself -- an address, say. Pass "" or NULL for no
+ *  note, and "" for [name] to hide the row entirely (a board without the
+ *  link should not advertise it). Rows below re-flow to make room.
+ *  UI task only. */
+void xui_home_row(int idx, const char *name, bool up, const char *detail,
+                  const char *note);
 
 /** The home panel's headline: how many distinct stations are in reach, and
  *  how many packets carried them there. UI task only. */

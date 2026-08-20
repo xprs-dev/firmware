@@ -1005,22 +1005,29 @@ static void ui_render(void)
         char d[8];
         int row = 0;
         snprintf(d, sizeof d, "%d", n_now);
-        xui_home_row(row++, "ESP-NOW", xprsnow_is_active(), d);
+        xui_home_row(row++, "ESP-NOW", xprsnow_is_active(), d, NULL);
 
+        /* The address under the name: the one fact from this link somebody
+         * actually needs off the screen -- to open the chat page, or to
+         * curl the API -- and hunting it on the This-device panel while
+         * standing at the board was the wrong trade. */
         snprintf(d, sizeof d, "%d", n_lan);
         xui_home_row(row++, "WiFi / LAN", s_ip_str[0] != 0,
-                     s_ip_str[0] ? d : "");
+                     s_ip_str[0] ? d : "",
+                     s_ip_str[0] ? s_ip_str
+                                 : (s_ssid[0] ? "joining..." : NULL));
 
         snprintf(d, sizeof d, "%d", n_inet);
         xui_home_row(row++, "Internet", s_inet_known && s_inet_up,
-                     s_inet_known && s_inet_up ? d : "");
+                     s_inet_known && s_inet_up ? d : "", NULL);
 
         /* Only a board with the radio says anything about it. */
         if (s_board->lora) {
             snprintf(d, sizeof d, "%d", n_lora);
-            xui_home_row(row++, "LoRa", xprslora_is_active(), d);
+            xui_home_row(row++, "LoRa", xprslora_is_active(), d, NULL);
         }
-        for (; row < XUI_HOME_ROWS; row++) xui_home_row(row, "", false, "");
+        for (; row < XUI_HOME_ROWS; row++)
+            xui_home_row(row, "", false, "", NULL);
 
         xui_home_counts(nb, s_heard_count);
 

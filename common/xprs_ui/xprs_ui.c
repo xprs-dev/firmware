@@ -57,6 +57,9 @@ static lv_obj_t *s_home;
 static lv_obj_t *s_home_dot[XUI_HOME_ROWS];
 static lv_obj_t *s_home_name[XUI_HOME_ROWS];
 static lv_obj_t *s_home_detail[XUI_HOME_ROWS];
+static lv_obj_t *s_home_note[XUI_HOME_ROWS];
+static bool      s_home_has_note[XUI_HOME_ROWS];
+static bool      s_home_shown[XUI_HOME_ROWS];
 static lv_obj_t *s_home_heard_label;
 static lv_obj_t *s_home_heard_caption;
 static lv_obj_t *s_home_heard_word;
@@ -461,6 +464,17 @@ static void build_ui(void)
         lv_obj_set_width(s_home_detail[i], 24);
         lv_obj_align(s_home_detail[i], LV_ALIGN_TOP_LEFT,
                      s_home_col_w - 22, y);
+
+        /* The optional second line, normally absent. Smaller and dimmer
+         * than the name: an address is read once, not scanned. */
+        s_home_note[i] = lv_label_create(s_home);
+        lv_label_set_text(s_home_note[i], "");
+        lv_obj_set_style_text_font(s_home_note[i], &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(s_home_note[i],
+                                    lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
+        lv_label_set_long_mode(s_home_note[i], LV_LABEL_LONG_DOT);
+        lv_obj_set_width(s_home_note[i], s_home_col_w - 14);
+        lv_obj_add_flag(s_home_note[i], LV_OBJ_FLAG_HIDDEN);
     }
 
     /* ---- The radar, right half: a PPI scope like a tower console ---- */
@@ -1081,18 +1095,47 @@ void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n)
     lv_chart_refresh(s_stats_chart[idx]);
 }
 
-void xui_home_row(int idx, const char *name, bool up, const char *detail)
+/* Lay the visible rows out top to bottom, giving the ones with a second
+ * line the height they need. Done as a pass over all four rather than
+ * per-row arithmetic because a note on row 1 moves rows 2 and 3, and the
+ * caller sets them in any order it likes. */
+static void home_relayout(void)
+{
+    int y = 6;
+    for (int i = 0; i < XUI_HOME_ROWS; i++) {
+        if (!s_home_shown[i]) continue;
+        lv_obj_align(s_home_dot[i], LV_ALIGN_TOP_LEFT, 0, y + 3);
+        lv_obj_align(s_home_name[i], LV_ALIGN_TOP_LEFT, 14, y);
+        lv_obj_align(s_home_detail[i], LV_ALIGN_TOP_LEFT,
+                     s_home_col_w - 22, y);
+        y += 19;
+        if (s_home_has_note[i]) {
+            lv_obj_align(s_home_note[i], LV_ALIGN_TOP_LEFT, 14, y - 4);
+            y += 11;
+        }
+    }
+}
+
+void xui_home_row(int idx, const char *name, bool up, const char *detail,
+                  const char *note)
 {
     if (idx < 0 || idx >= XUI_HOME_ROWS) return;
     if (!s_home_name[idx]) return;
+
     /* No hardware, no row: a board without the link hands "" and the line
      * disappears instead of announcing what it cannot do. */
-    if (!name || !name[0]) {
+    s_home_shown[idx] = name && name[0];
+    s_home_has_note[idx] = s_home_shown[idx] && note && note[0];
+
+    if (!s_home_shown[idx]) {
         lv_obj_add_flag(s_home_dot[idx], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_home_name[idx], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_home_detail[idx], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_home_note[idx], LV_OBJ_FLAG_HIDDEN);
+        home_relayout();
         return;
     }
+
     lv_obj_clear_flag(s_home_dot[idx], LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_home_name[idx], LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s_home_detail[idx], LV_OBJ_FLAG_HIDDEN);
@@ -1101,6 +1144,14 @@ void xui_home_row(int idx, const char *name, bool up, const char *detail)
                                  : lv_palette_main(LV_PALETTE_GREY), 0);
     lv_label_set_text(s_home_name[idx], name);
     lv_label_set_text(s_home_detail[idx], detail ? detail : "");
+
+    if (s_home_has_note[idx]) {
+        lv_label_set_text(s_home_note[idx], note);
+        lv_obj_clear_flag(s_home_note[idx], LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s_home_note[idx], LV_OBJ_FLAG_HIDDEN);
+    }
+    home_relayout();
 }
 
 void xui_set_call(const char *call)
