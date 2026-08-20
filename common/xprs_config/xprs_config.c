@@ -39,6 +39,19 @@ static cfg_entry_t s_cfg[] = {
     { "ap_on",     {0}, false },
     { "ap_ssid",   {0}, false },
     { "tz",        {0}, false },
+    /* Over-the-air updates (XPRS.md 25.8) and who may ask for one (25.4).
+     * `fwkey` is the x-only key whose signature makes an image installable
+     * here; `own1..own4` are the callsign-deriving npubs allowed to command
+     * this station. Both are re-writable with a cable on purpose: a lost
+     * key must be a ladder, never a brick. */
+    { "fwkey",     {0}, false },
+    { "fwurl",     {0}, false },
+    { "fwchan",    {0}, false },
+    { "fwauto",    {0}, false },
+    { "own1",      {0}, false },
+    { "own2",      {0}, false },
+    { "own3",      {0}, false },
+    { "own4",      {0}, false },
 };
 #define CFG_N (sizeof(s_cfg) / sizeof(s_cfg[0]))
 
@@ -157,7 +170,28 @@ int xcfg_ini_render(char *buf, size_t cap)
         "; offset from UTC, e.g. +01:00 or -05:30. The offset places the\n"
         "; day boundary for the daily statistics.\n"
         "server = %s\n"
-        "tz = %s\n",
+        "tz = %s\n"
+        "\n"
+        "[update]\n"
+        "; Firmware updates over the air (XPRS.md 25.8). `key` is the public\n"
+        "; half whose signature makes an image installable on this station;\n"
+        "; an image signed by anybody else is refused before a byte is\n"
+        "; written. `source` is where to look, `channel` which line to\n"
+        "; follow, and `auto` whether to check on a timer or only when asked.\n"
+        "key = %s\n"
+        "source = %s\n"
+        "channel = %s\n"
+        "auto = %s\n"
+        "\n"
+        "[owners]\n"
+        "; npubs allowed to command this station: update, reboot, and any\n"
+        "; other actuation. A command from anybody else is discarded, and one\n"
+        "; from a station we can identify but do not permit gets a refusal.\n"
+        "; Empty means nobody may -- the station still answers questions.\n"
+        "one = %s\n"
+        "two = %s\n"
+        "three = %s\n"
+        "four = %s\n",
         xcfg_get("name", ""),
         xcfg_get_bool("wifi_on", true) ? "yes" : "no",
         xcfg_get("ssid", ""),
@@ -171,7 +205,15 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("ap_on", true) ? "yes" : "no",
         xcfg_get("ap_ssid", ""),
         xcfg_get("ntp", "pool.ntp.org"),
-        xcfg_get("tz", "+00:00"));
+        xcfg_get("tz", "+00:00"),
+        xcfg_get("fwkey", ""),
+        xcfg_get("fwurl", ""),
+        xcfg_get("fwchan", "stable"),
+        xcfg_get_bool("fwauto", false) ? "yes" : "no",
+        xcfg_get("own1", ""),
+        xcfg_get("own2", ""),
+        xcfg_get("own3", ""),
+        xcfg_get("own4", ""));
 }
 
 /* section + key -> NVS key. */
@@ -191,6 +233,14 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "hotspot", "ssid",     "ap_ssid" },
     { "time",    "server",   "ntp" },
     { "time",    "tz",       "tz" },
+    { "update",  "key",      "fwkey" },
+    { "update",  "source",   "fwurl" },
+    { "update",  "channel",  "fwchan" },
+    { "update",  "auto",     "fwauto" },
+    { "owners",  "one",      "own1" },
+    { "owners",  "two",      "own2" },
+    { "owners",  "three",    "own3" },
+    { "owners",  "four",     "own4" },
 };
 
 static char *trim(char *s)
