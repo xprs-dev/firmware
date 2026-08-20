@@ -17,6 +17,7 @@
 #include "esp_ota_ops.h"
 #include "esp_core_dump.h"
 #include "esp_heap_caps.h"
+#include "esp_partition.h"
 #include "xprsindex.h"
 #include "xprs.h"
 #include <time.h>
@@ -424,7 +425,8 @@ static esp_err_t h_log(httpd_req_t *req)
 static esp_err_t h_diag(httpd_req_t *req)
 {
     resp_json(req);
-    static char out[900];
+    char *out = malloc(900);      /* borrowed per request, never resident */
+    if (!out) return resp_error(req, "503 Service Unavailable", "no memory");
     const esp_app_desc_t *d = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
@@ -433,7 +435,7 @@ static esp_err_t h_diag(httpd_req_t *req)
     esp_core_dump_summary_t *cd = malloc(sizeof *cd);
     bool have_cd = cd && esp_core_dump_get_summary(cd) == ESP_OK;
 
-    int n = snprintf(out, sizeof out,
+    int n = snprintf(out, 900,
         "{\"ok\":true,"
         "\"fw\":{\"version\":\"%s\",\"project\":\"%s\",\"idf\":\"%s\","
         "\"built\":\"%s %s\"},"
@@ -452,15 +454,17 @@ static esp_err_t h_diag(httpd_req_t *req)
         run ? run->label : "?", (int)st,
         esp_ota_check_rollback_is_possible() ? "true" : "false",
         xota_busy() ? "true" : "false", xota_progress());
-    if (have_cd && n > 0 && n < (int)sizeof out)
-        n += snprintf(out + n, sizeof out - n,
+    if (have_cd && n > 0 && n < 900)
+        n += snprintf(out + n, 900 - n,
                       ",\"crash\":{\"task\":\"%s\",\"pc\":\"0x%08lx\"}",
                       cd->exc_task, (unsigned long)cd->exc_pc);
     free(cd);
-    if (n > 0 && n < (int)sizeof out)
-        n += snprintf(out + n, sizeof out - n, "}");
+    if (n > 0 && n < 900)
+        n += snprintf(out + n, 900 - n, "}");
     httpd_resp_set_type(req, "application/json");
-    return httpd_resp_send(req, out, n);
+    esp_err_t rc = httpd_resp_send(req, out, n);
+    free(out);
+    return rc;
 }
 
 /* The push door: the caller already holds the image (a phone on this
@@ -475,14 +479,16 @@ static esp_err_t h_update(httpd_req_t *req)
 {
     resp_json(req);
     char ver[24] = "", sig[80] = "";
-    static char auth[300];
+    char *auth = malloc(300);
+    if (!auth) return resp_error(req, "503 Service Unavailable", "no memory");
     auth[0] = 0;
     httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Version", ver, sizeof ver);
     httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Sig", sig, sizeof sig);
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, sizeof auth);
+    httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, 300);
 
     char who[16] = "";
     xauth_verdict_t v = xauth_check_http(auth, s_cfg->callsign, NULL, who);
+    free(auth);
     if (v != XAUTH_OK) {
         ESP_LOGW(TAG, "update refused: %s",
                  v == XAUTH_403 ? "signer not allowed" :
@@ -499,21 +505,24 @@ static esp_err_t h_update(httpd_req_t *req)
     if (xota_push_begin(ver, (size_t)req->content_len, sig) != ESP_OK)
         return resp_error(req, "409 Conflict", "busy, or the image does not fit");
 
-    static char buf[1024];
+    char *buf = malloc(1024);
+    if (!buf) { xota_push_abort();
+                return resp_error(req, "503 Service Unavailable", "no memory"); }
     int left = req->content_len;
     while (left > 0) {
-        int want = left > (int)sizeof buf ? (int)sizeof buf : left;
+        int want = left > 1024 ? 1024 : left;
         int got = httpd_req_recv(req, buf, want);
         if (got <= 0) {
-            xota_push_abort();
+            free(buf); xota_push_abort();
             return resp_error(req, "400 Bad Request", "transfer died");
         }
         if (xota_push_write(buf, (size_t)got) != ESP_OK) {
-            xota_push_abort();
+            free(buf); xota_push_abort();
             return resp_error(req, "500 Internal Server Error", "write failed");
         }
         left -= got;
     }
+    free(buf);
     ESP_LOGW(TAG, "%s pushed %s (%d bytes)", who, ver, req->content_len);
     /* Answers before it verifies-and-reboots, so the caller hears something:
      * on success the connection simply dies with the restart, and the
@@ -523,6 +532,48 @@ static esp_err_t h_update(httpd_req_t *req)
     if (xota_push_finish() != ESP_OK)
         ESP_LOGE(TAG, "push refused at the last step -- image not installed");
     return ESP_OK;
+}
+
+/* The crash itself, not the one-line summary: whatever the panic wrote,
+ * streamed out as the ELF espcoredump.py wants. Read in 1 KB pieces --
+ * a 64 KB allocation on a board with this much free heap is how the
+ * diagnosis tool becomes the second crash.
+ *
+ * Pair it with the .elf CI publishes beside the .bin, or the addresses
+ * mean nothing:
+ *   espcoredump.py info_corefile -t elf -c cd.elf xprs-<board>-<ver>.elf
+ */
+static esp_err_t h_coredump(httpd_req_t *req)
+{
+    size_t addr = 0, size = 0;
+    if (esp_core_dump_image_get(&addr, &size) != ESP_OK || !size)
+        return resp_error(req, "404 Not Found", "no crash recorded");
+
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, NULL);
+    if (!part) return resp_error(req, "404 Not Found", "no coredump partition");
+
+    char disp[96];
+    snprintf(disp, sizeof disp, "attachment; filename=\"coredump-%s-%s.elf\"",
+             s_cfg->board ? s_cfg->board : "esp32", xota_version());
+    httpd_resp_set_type(req, "application/octet-stream");
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    char *buf = malloc(1024);
+    if (!buf) return resp_error(req, "503 Service Unavailable", "no memory");
+    size_t off = 0;
+    while (off < size) {
+        size_t want = size - off > 1024 ? 1024 : size - off;
+        if (esp_partition_read(part, off, buf, want) != ESP_OK) break;
+        if (httpd_resp_send_chunk(req, buf, want) != ESP_OK) {
+            free(buf);
+            return ESP_FAIL;
+        }
+        off += want;
+    }
+    free(buf);
+    return httpd_resp_send_chunk(req, NULL, 0);
 }
 
 esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
@@ -552,6 +603,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
         { .uri = "/api/diag", .method = HTTP_GET, .handler = h_diag },
         { .uri = "/api/update", .method = HTTP_POST, .handler = h_update },
+        { .uri = "/api/coredump", .method = HTTP_GET, .handler = h_coredump },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(s_httpd, &uris[i]);

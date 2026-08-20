@@ -1837,6 +1837,10 @@ static void idx_task(void *arg)
         if (s_ask.pending && s_index && xcfg_get_bool("index_on", true))
             idx_answer_history();
 
+        /* An install, if one was asked for: minutes of flash work on the
+         * task that already owns the card. */
+        xota_poll();
+
         /* The parked 36.10 catch-up ask, signed on THIS task's stack. */
         if (s_cu.pending) {
             char since[24], nowts[24];
@@ -2364,9 +2368,17 @@ void xapp_run(const xapp_board_t *board)
             != pdPASS)
         ESP_LOGE(TAG, "indexer task failed to start -- nothing will be kept");
 
-    /* The updater's stack, claimed in the same breath and for the same
-     * reason: 8 KB in one piece is not something to ask for after WiFi and
-     * the card have taken their share (25.8, and esp32.md's relay_task). */
+    /* The updater claims no stack of its own: it runs on idx_task, which
+     * already has one, already sits on core 1, and already owns the flash
+     * an install pauses. Its own 8 KB task cost this board the last of its
+     * heap the first time -- ENOMEM in the LAN bearer and in the index. */
+    /* A board with nothing pinned can install nothing and obey nobody.
+     * Seed the compiled-in defaults ONCE; after that they are the
+     * operator's, changeable with a cable or through the config share. */
+    if (!xcfg_get("fwkey", "")[0] && s_board->fw_key && s_board->fw_key[0])
+        xcfg_set("fwkey", s_board->fw_key);
+    if (!xcfg_get("own1", "")[0] && s_board->fw_owner && s_board->fw_owner[0])
+        xcfg_set("own1", s_board->fw_owner);
     {
         static xota_cfg_t oc;
         oc.board = s_board->board_id;

@@ -26,6 +26,30 @@ static struct {
     int      code;
 } s_seen[8];
 
+/* Do two callsigns name the SAME KEY?
+ *
+ * A callsign is a prefix plus characters derived from the key (section 3):
+ * X1 for a person, X3 for a station, X4 for a device, X5 for a nameless
+ * one. The same npub therefore yields X1Q3Q5 on a phone and X3Q3Q5 on a
+ * board, and an allow-list that compared the whole string would refuse the
+ * very operator it was written for. What the key decides is everything
+ * after the prefix, so that is what is compared -- and the device suffix
+ * (X1QZ3N-7 is X1QZ3N's tablet, 3.1) is ignored on both sides. */
+static bool key_eq(const char *a, const char *b)
+{
+    if (!a || !b) return false;
+    if (a[0] == 'X' || a[0] == 'x') a += 2;    /* skip the kind digit */
+    if (b[0] == 'X' || b[0] == 'x') b += 2;
+    while (*a && *b && *a != '-' && *b != '-') {
+        char ca = *a, cb = *b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return false;
+        a++; b++;
+    }
+    return (*a == 0 || *a == '-') && (*b == 0 || *b == '-');
+}
+
 /* The base callsign: X1QZ3N-7 is X1QZ3N's device (3.1). */
 static bool base_eq(const char *a, const char *b)
 {
@@ -82,7 +106,7 @@ bool xauth_is_owner(const char *call)
         if (!npub[0]) continue;
         char derived[NOSTR_CALLSIGN_LEN] = "";
         if (nostr_keys_derive_callsign(npub, derived) != ESP_OK) continue;
-        if (base_eq(derived, call)) return true;
+        if (key_eq(derived, call)) return true;
     }
     return false;
 }
@@ -102,7 +126,7 @@ static bool owner_key(const char *call, uint8_t out[32])
         if (!npub[0]) continue;
         char derived[NOSTR_CALLSIGN_LEN] = "";
         if (nostr_keys_derive_callsign(npub, derived) != ESP_OK) continue;
-        if (!base_eq(derived, call)) continue;
+        if (!key_eq(derived, call)) continue;
         char hrp[8] = "";
         uint8_t buf[64];
         size_t n = sizeof buf;

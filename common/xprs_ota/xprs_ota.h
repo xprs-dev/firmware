@@ -70,11 +70,26 @@ typedef struct {
 } xota_cfg_t;
 
 /**
- * Start the updater. Creates the worker task -- at the TOP of app_main,
- * beside the other big stacks, because 8 KB in one piece is not something
- * to ask for after WiFi, BLE and the SD card have taken their share.
+ * Start the updater. Claims NO task and NO stack.
+ *
+ * The first cut created its own 8 KB worker "beside the other big stacks",
+ * per the usual advice -- and on the m5stack, which lives at about 8 KB
+ * free with a full archive, that 8 KB was the whole margin: the LAN bearer
+ * started failing sendto with ENOMEM and the index could not open its
+ * files. The advice is right for a task the station always needs; it is
+ * wrong for one that runs for three minutes a month.
+ *
+ * So the install runs on the caller's storage task -- which already has a
+ * big stack, already lives on core 1, and already owns the flash the
+ * install is about to pause. Call xota_poll() from it.
  */
 esp_err_t xota_start(const xota_cfg_t *cfg);
+
+/**
+ * Do any pending install work. Call from the station's storage task (the
+ * one that may block for minutes); returns immediately when idle.
+ */
+void xota_poll(void);
 
 /**
  * Ask for an update from the configured source (or [url] when non-NULL,

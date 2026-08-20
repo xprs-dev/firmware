@@ -3,6 +3,7 @@
 #include "xprs_ota.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -13,7 +14,6 @@
 #include "esp_ota_ops.h"
 #include "esp_task_wdt.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mbedtls/sha256.h"
 #include "nvs.h"
@@ -34,7 +34,7 @@ static const char *TAG = "xota";
 #define XOTA_MAX_SEC 360
 
 static xota_cfg_t s_cfg;
-static SemaphoreHandle_t s_go;
+static volatile bool s_pending;
 static volatile bool s_busy;
 static volatile int  s_pct = -1;
 
@@ -264,10 +264,14 @@ static bool fetch_manifest(const char *base, const char *chan,
     esp_http_client_handle_t c = esp_http_client_init(&hc);
     if (!c) return false;
     bool ok = false;
-    static char body[2048];   /* static: too big for this task's stack */
+    /* Borrowed for the seconds this takes, not owned for the life of the
+     * station: 2 KB of permanent .bss is a quarter of this board's free
+     * heap, and the manifest is read once a month. */
+    char *body = malloc(2048);
+    if (!body) { esp_http_client_cleanup(c); return false; }
     if (esp_http_client_open(c, 0) == ESP_OK) {
         esp_http_client_fetch_headers(c);
-        int n = esp_http_client_read(c, body, sizeof body - 1);
+        int n = esp_http_client_read(c, body, 2047);
         if (n > 0) {
             body[n] = 0;
             char shahex[80] = "", sizestr[24] = "", rel[160] = "";
@@ -288,6 +292,7 @@ static bool fetch_manifest(const char *base, const char *chan,
     }
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
+    free(body);
     if (!ok) ESP_LOGW(TAG, "manifest unreadable or incomplete");
     else if (want_version && want_version[0] &&
              strcmp(want_version, m->version) != 0) {
@@ -409,11 +414,11 @@ static xota_code_t do_install(const xota_manifest_t *m)
     return XOTA_ACCEPTED;             /* not reached */
 }
 
-static void ota_task(void *arg)
+void xota_poll(void)
 {
-    (void)arg;
-    for (;;) {
-        xSemaphoreTake(s_go, portMAX_DELAY);
+    if (!s_pending) return;
+    s_pending = false;
+    {
         s_busy = true;
         s_pct = 0;
 
@@ -461,17 +466,6 @@ esp_err_t xota_start(const xota_cfg_t *cfg)
 {
     if (!cfg) return ESP_ERR_INVALID_ARG;
     s_cfg = *cfg;
-    s_go = xSemaphoreCreateBinary();
-    if (!s_go) return ESP_ERR_NO_MEM;
-    /* Core 1: every flash operation here is exactly what docs/esp32.md says
-     * must stay off the radio cores. 8 KB claimed now, while the heap is
-     * still one large block -- the lesson relay_task paid for. */
-    if (xTaskCreatePinnedToCore(ota_task, "ota", 8192, NULL, 2, NULL, 1)
-        != pdPASS) {
-        ESP_LOGE(TAG, "updater task did NOT start -- this station cannot "
-                      "be updated over the air");
-        return ESP_ERR_NO_MEM;
-    }
     ESP_LOGI(TAG, "updater ready, running %s", xota_version());
     return ESP_OK;
 }
@@ -480,15 +474,14 @@ xota_code_t xota_request(const char *version, const char *url,
                          const char *reply_to, const char *bearer,
                          const char *cmd_id)
 {
-    if (!s_go) return XOTA_FAILED;
-    if (s_busy) return XOTA_BUSY;
+    if (s_busy || s_pending) return XOTA_BUSY;
     memset(&s_req, 0, sizeof s_req);
     if (version)  snprintf(s_req.version,  sizeof s_req.version,  "%s", version);
     if (url)      snprintf(s_req.url,      sizeof s_req.url,      "%s", url);
     if (reply_to) snprintf(s_req.reply_to, sizeof s_req.reply_to, "%s", reply_to);
     if (bearer)   snprintf(s_req.bearer,   sizeof s_req.bearer,   "%s", bearer);
     if (cmd_id)   snprintf(s_req.cmd_id,   sizeof s_req.cmd_id,   "%s", cmd_id);
-    xSemaphoreGive(s_go);
+    s_pending = true;          /* the storage task picks it up */
     return XOTA_ACCEPTED;
 }
 
@@ -527,7 +520,14 @@ esp_err_t xota_push_begin(const char *version, size_t size, const char *sig)
     if (s_cfg.quiesce) s_cfg.quiesce(true);
     mbedtls_sha256_init(&s_sha);
     mbedtls_sha256_starts(&s_sha, 0);
-    esp_err_t err = esp_ota_begin(s_push.part, size, &s_push.h);
+    /* OTA_WITH_SEQUENTIAL_WRITES, not the announced size: with a size,
+     * esp_ota_begin erases the whole 1.9 MB slot up front, and on this chip
+     * an erase disables the cache for BOTH cores. The first push spent that
+     * stall inside the HTTP worker and the UI task missed its watchdog. The
+     * pull path can afford one long erase because it owns its task; a push
+     * must keep answering a socket, so it erases as it writes. */
+    esp_err_t err = esp_ota_begin(s_push.part, OTA_WITH_SEQUENTIAL_WRITES,
+                                  &s_push.h);
     if (err != ESP_OK) {
         mbedtls_sha256_free(&s_sha);
         if (s_cfg.quiesce) s_cfg.quiesce(false);
@@ -550,6 +550,10 @@ esp_err_t xota_push_write(const void *data, size_t len)
     esp_err_t err = esp_ota_write(s_push.h, data, len);
     if (err != ESP_OK) return err;
     s_push.got += len;
+    /* Air for everybody else. Sixteen kilobytes of flash writing between
+     * breaths keeps the screen, the bearers and the watchdog alive through
+     * the three minutes this takes. */
+    if ((s_push.got & 0x3FFF) < len) vTaskDelay(pdMS_TO_TICKS(2));
     s_pct = (int)((int64_t)s_push.got * 100 / (int64_t)s_push.size);
     return ESP_OK;
 }

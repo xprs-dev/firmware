@@ -25,3 +25,4 @@ sdkconfig.espnow_probe
 # The pattern is deliberately path-free so a new project cannot miss it.
 wifi_secrets.h
 igate_secrets.h
+fw_secrets.h

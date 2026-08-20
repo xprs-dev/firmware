@@ -48,6 +48,14 @@ typedef struct {
     const char *board_id;      /**< "m5stack-core" -- reported by /api/status */
     const char *banner;        /**< one line for the boot log, board's own words */
 
+    /** Which key may approve firmware for this board (64 hex, x-only) and
+     *  which npub may command it. Defaults only: written into config once
+     *  on a board that has none, and the operator's to change afterwards.
+     *  NULL or empty means the station installs nothing / obeys nobody,
+     *  which is the right answer for a board nobody has configured. */
+    const char *fw_key;
+    const char *fw_owner;
+
     const char *wifi_ssid;     /**< compiled-in default; config.ini overrides */
     const char *wifi_pass;
     int espnow_channel;        /**< used only when the SSID is empty */

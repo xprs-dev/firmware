@@ -23,6 +23,7 @@
 #include "xprs_app.h"
 
 #include "wifi_secrets.h"   /* gitignored; see wifi_secrets.h.example */
+#include "fw_secrets.h"     /* gitignored; see fw_secrets.h.example */
 
 static const char *TAG = "m5board";
 
@@ -126,6 +127,8 @@ static xapp_key_t input_poll(void)
 static const xapp_board_t k_m5stack = {
     .board_id = "m5stack-core",
     .banner = "ESP-NOW + LAN, no BLE5 on this chip",
+    .fw_key = FW_DEFAULT_KEY,
+    .fw_owner = FW_DEFAULT_OWNER,
     .wifi_ssid = WIFI_SSID,
     .wifi_pass = WIFI_PASS,
     .espnow_channel = ESPNOW_FALLBACK_CHANNEL,
