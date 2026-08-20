@@ -955,6 +955,70 @@ static void xprs_seen_remember(uint32_t idh)
     s_xseen_rr++;
 }
 
+/* XPRS.md 36.10: a serve:archive announcement from a station that was
+ * away -- ask it for the window we missed, on the bearer it spoke on
+ * (0 = BLE5, else xprslan/xprsnow). The reply is ordinary heard traffic. */
+static struct {
+    char call[16];
+    uint32_t since;
+    int bearer;
+    volatile bool pending;
+} s_cu;
+
+static void xprs_catchup_maybe(const xprs_t *p, int bearer)
+{
+    char type[16], sv[40], from[16];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "service") != 0) return;
+    if (!xprs_get_str(p, "serve", sv, sizeof sv)) return;
+    if (!strstr(sv, "archive")) return;
+    /* A meeting is DIRECT (36.10): a relayed announcement is not a peer in
+     * range, and the asker's reply would go to the relay's neighbourhood. */
+    if (xprs_get(p, "via", NULL) != NULL) return;
+    if (!xprs_get_str(p, "f", from, sizeof from)) return;
+    if (strcasecmp(from, s_aprs_call) == 0) return;
+    if (!s_xprs_index || !s_aprs_call[0]) return;
+    time_t nowt = time(NULL);
+    if (nowt < 1700000000) return;                /* no clock, no since: */
+    uint32_t newest = xprsindex_boot_newest_ts(s_xprs_index);
+    if (!newest) return;                          /* empty store */
+    if (!xst_catchup_due(from, 600)) return;
+    /* Park it. Signing is several KB of secp256k1 stack, and this runs on
+     * a 5 KB bearer task -- relay_task (8 KB) builds and airs the ask. */
+    if (s_cu.pending) return;
+    snprintf(s_cu.call, sizeof s_cu.call, "%s", from);
+    s_cu.since = newest;
+    s_cu.bearer = bearer;
+    s_cu.pending = true;
+}
+
+/* Build, sign and air the parked catch-up ask. relay_task only. */
+static void xprs_catchup_air(void)
+{
+    if (!s_cu.pending) return;
+    char since[24], nowts[32];
+    struct tm tmv;
+    time_t t = (time_t)s_cu.since;
+    gmtime_r(&t, &tmv);
+    strftime(since, sizeof since, "%Y-%m-%d_%H:%M:%S", &tmv);
+    time_t nowt = time(NULL);
+    gmtime_r(&nowt, &tmv);
+    strftime(nowts, sizeof nowts, "%Y-%m-%d_%H:%M:%S", &tmv);
+    char ask[XPRS_MAX_WIRE + 1];
+    int an = snprintf(ask, sizeof ask,
+                      "t:command f:%s d:%s ts:%s cmd:history since:%s",
+                      s_aprs_call, s_cu.call, nowts, since);
+    if (an > 0 && an < (int)sizeof ask) {
+        an = xprs_sign_wire(ask, an, (int)sizeof ask);
+        if (s_cu.bearer == 0)                    xprs_air(ask, an, SUBTYPE_XPRS);
+        else if (s_cu.bearer == XPRS_BEARER_LAN) xprslan_send(ask, an);
+        else                                     xprsnow_send(ask, an);
+        ESP_LOGI(TAG, "catch-up: asked %s for history since %s",
+                 s_cu.call, since);
+    }
+    s_cu.pending = false;
+}
+
 static void xprs_air(const char *wire, int len, uint8_t subtype)
 {
     char id[XPRS_ID_LEN];
@@ -1336,6 +1400,7 @@ static void xprs_from_bearer(const char *wire, int len, int rssi,
             } else if (strcmp(type, "identity") == 0) {
                 xprs_identity_heard(&hp);
             }
+            xprs_catchup_maybe(&hp, bearer);
             /* The screen's stores (xprs_station): every hearing counts,
              * relayed copies included, exactly as the m5stack banks them. */
             xst_ingest_parsed(&hp, bearer == XPRS_BEARER_LAN ? "lan"
@@ -1546,7 +1611,7 @@ static void xprs_service_air(void)
     char ts[24];
     xprs_time_field(ts, sizeof ts);
     int len = snprintf(wire, sizeof wire,
-                       "t:service f:%s serve:index,history,mailbox count:%d %s",
+                       "t:service f:%s serve:archive count:%d %s",
                        s_aprs_call, n, ts);
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
     len = xprs_sign_wire(wire, len, (int)sizeof wire);
@@ -1557,7 +1622,7 @@ static void xprs_service_air(void)
     if (s_xprs_index) {
         xprsindex_add(s_xprs_index, wire, len, 0, true, (uint32_t)time(NULL));
     }
-    ESP_LOGI(TAG, "announced serve:index — %d callsigns archived", n);
+    ESP_LOGI(TAG, "announced serve:archive — %d callsigns archived", n);
 }
 
 /* This station, on the bearer it is describing (§10.6). Built on the bearer's
@@ -2183,6 +2248,7 @@ static void handle_xprs(const uint8_t *payload, int len, int rssi,
     if (!from[0]) return;                                  /* unattributable */
     if (strcasecmp(from, s_aprs_call) == 0) return;        /* our own echo */
 
+    xprs_catchup_maybe(&p, 0);
     /* The screen's stores: devices, chat, rx/device stats (xprs_station,
      * shared with the m5stack). Cheap ring writes, so from this task too. */
     xst_ingest_parsed(&p, "ble", rssi);
@@ -2492,6 +2558,7 @@ static void relay_task(void *arg)
         s_relay_ticks++;
         uint32_t t = now_sec();
         gatt_mesh_tick();   /* MSP session timeouts (politeness/stall) */
+        xprs_catchup_air(); /* parked 36.10 ask: signed on THIS stack */
 
         /* A hub learns nothing about a station that has not spoken since it
          * connected, so a fresh socket asks for an announce here — on the task
@@ -3660,6 +3727,9 @@ void app_main(void)
      * cost the other firmware its ability to transmit at all. */
     if (sdcard_is_mounted()) {
         s_xprs_index = xprsindex_open("/sdcard/xprs");
+        xprsindex_set_own(s_xprs_index, s_aprs_call);
+        /* An SD card is roomy; a quarter gigabyte is still weeks of air. */
+        xprsindex_set_max_bytes(s_xprs_index, 256ull * 1024 * 1024);
         xst_stats_load("/sdcard/xprs/stats.bin");
         if (xprsindex_ready(s_xprs_index)) {
             xprsidx_stats_t xs;

@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 
 #include "xprs.h"
+#include <time.h>
 
 #ifdef XPRSIDX_HOST_TEST
 #define XI_LOGI(fmt, ...) ((void)0)
@@ -56,6 +57,7 @@ static uint64_t xi_card_free(const char *d);
 #endif
 
 #define XI_RECS_PER_SEG   4096u
+#define XPRSIDX_DECL_MAX  16
 #define XI_DEDUP_RING     32
 #define XI_DEFAULT_LIMIT  64
 /* Recent segments cached in RAM. The zone file is the real map — an index that
@@ -170,6 +172,16 @@ struct xprsidx_s {
     xi_rec_t queue[XI_QUEUE_LEN];   /* decided, not yet on the card */
     int      q_head, q_count;
     uint32_t q_dropped;
+    /* XPRS.md 36.11: the retention classes. own[] is this station's base
+     * callsign; decl[] the callsigns whose t:mailbox hold: named it. */
+    char     own[XPRSIDX_CALL_LEN];
+    char     decl[XPRSIDX_DECL_MAX][XPRSIDX_CALL_LEN];
+    int      decl_n;
+    bool     decl_dirty;            /* persisted by the writer task */
+    uint64_t max_bytes;             /* 0 = no cap */
+    uint32_t oldest_first;          /* first index of the oldest segment */
+    uint32_t newest_ts;             /* the newest stored packet's own ts: */
+    uint32_t boot_newest_ts;        /* newest_ts as it was at open() */
 #ifndef XPRSIDX_HOST_TEST
     SemaphoreHandle_t lock;
 #endif
@@ -420,6 +432,9 @@ static uint32_t xi_type_tail(const xprsidx_t *st, int type, uint32_t skip_end,
 }
 
 static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec);
+static void xi_decl_load(xprsidx_t *st);
+static void xi_decl_save(xprsidx_t *st);
+static bool xi_evict_locked(xprsidx_t *st);
 static void xi_sync_card(xprsidx_t *st);
 #ifndef XPRSIDX_HOST_TEST
 static void xi_writer_task(void *arg);
@@ -585,6 +600,37 @@ xprsidx_t *xprsindex_open(const char *dir)
         st->next_index = last_first + tail;
         st->count = st->next_index;   /* eviction rewrites this below */
     }
+    /* The oldest segment still on the card (eviction deletes from the
+     * front, so the lowest seg_ number is it), and the newest packet ts
+     * (from the zone map -- cheap, one pass over 16-byte entries). */
+    st->oldest_first = 0;
+    {
+        bool first_seen = false;
+        DIR *d2 = opendir(st->dir);
+        if (d2) {
+            struct dirent *de2;
+            while ((de2 = readdir(d2)) != NULL) {
+                if (strncmp(de2->d_name, "seg_", 4) != 0) continue;
+                uint32_t f2 = (uint32_t)strtoul(de2->d_name + 4, NULL, 10);
+                if (!first_seen || f2 < st->oldest_first) {
+                    st->oldest_first = f2;
+                    first_seen = true;
+                }
+            }
+            closedir(d2);
+        }
+        for (uint32_t zn = 0;; zn++) {
+            xi_zone_t z;
+            if (!xi_zone_read(st, zn, &z)) break;
+            if (z.max_ts > st->newest_ts) st->newest_ts = z.max_ts;
+        }
+    }
+    /* The catch-up since: (36.10). Snapshot NOW: by the time an archiver
+     * peer is sighted, newest_ts has already moved past the hole -- fresh
+     * traffic heard since boot is newer than everything missed during the
+     * absence, and asking from the live newest asks for nothing. */
+    st->boot_newest_ts = st->newest_ts;
+    xi_decl_load(st);
     st->ready = true;
 #ifndef XPRSIDX_HOST_TEST
     /* Core 1, deliberately. The BLE controller and host are pinned to core 0
@@ -609,6 +655,180 @@ xprsidx_t *xprsindex_open(const char *dir)
     XI_LOGI("open %s: %u records, %u segments", st->dir,
             (unsigned)st->count, (unsigned)st->nseg);
     return st;
+}
+
+/* ── Retention (XPRS.md 36.11) ──────────────────────────────────────────
+ * Class 3: mail for a callsign whose t:mailbox hold: names this station.
+ * Class 2: any other mail (d: without a declaration).
+ * Class 1: the spool -- everything else.
+ * Eviction deletes the oldest segment, carrying class 2 and 3 records
+ * forward into the active one first; nothing survives its own until:. */
+
+static void xi_decl_path(const xprsidx_t *st, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/decl.txt", st->dir);
+}
+
+static void xi_decl_load(xprsidx_t *st)
+{
+    char path[96];
+    xi_decl_path(st, path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[XPRSIDX_CALL_LEN + 2];
+    while (st->decl_n < XPRSIDX_DECL_MAX && fgets(line, sizeof line, f)) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        if (line[0]) xi_copy(st->decl[st->decl_n++], XPRSIDX_CALL_LEN, line, -1);
+    }
+    fclose(f);
+}
+
+static void xi_decl_save(xprsidx_t *st)
+{
+    char path[96];
+    xi_decl_path(st, path, sizeof path);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    for (int i = 0; i < st->decl_n; i++) fprintf(f, "%s\n", st->decl[i]);
+    fclose(f);
+    st->decl_dirty = false;
+}
+
+/* Base-callsign compare: X1QZ3N-7 declares for X1QZ3N (section 3.1). */
+static bool xi_base_eq(const char *a, const char *b)
+{
+    while (*a && *b && *a != '-' && *b != '-') {
+        char ca = *a, cb = *b;
+        if (ca >= 'a' && ca <= 'z') ca -= 32;
+        if (cb >= 'a' && cb <= 'z') cb -= 32;
+        if (ca != cb) return false;
+        a++; b++;
+    }
+    return (*a == 0 || *a == '-') && (*b == 0 || *b == '-');
+}
+
+static bool xi_declared(const xprsidx_t *st, const char *call)
+{
+    for (int i = 0; i < st->decl_n; i++)
+        if (xi_base_eq(st->decl[i], call)) return true;
+    return false;
+}
+
+/* A t:mailbox whose hold: names this station: remember the declarer.
+ * Called from the add path (RAM only; the writer task persists). */
+static void xi_decl_note(xprsidx_t *st, const xprs_t *p, const char *from)
+{
+    if (!st->own[0]) return;
+    int vlen = 0;
+    const char *v = xprs_get(p, "hold", &vlen);
+    if (!v) return;
+    /* Does the comma-separated hold: list contain our base callsign? */
+    const char *q = v, *end = v + vlen;
+    bool named = false;
+    while (q < end && !named) {
+        const char *c = q;
+        while (q < end && *q != ',') q++;
+        char one[XPRSIDX_CALL_LEN];
+        int n = (int)(q - c);
+        if (n > 0 && n < (int)sizeof one) {
+            memcpy(one, c, (size_t)n);
+            one[n] = 0;
+            if (xi_base_eq(one, st->own)) named = true;
+        }
+        if (q < end) q++;
+    }
+    if (!named) return;
+    if (xi_declared(st, from)) return;
+    if (st->decl_n >= XPRSIDX_DECL_MAX) return;      /* full: first come */
+    xi_copy(st->decl[st->decl_n++], XPRSIDX_CALL_LEN, from, -1);
+    st->decl_dirty = true;
+    XI_LOGI("mailbox declaration: holding for %s", from);
+}
+
+/* The record's own until:, or 0. Parsed from the stored wire. */
+static uint32_t xi_rec_until(const xi_rec_t *r)
+{
+    xprs_t p;
+    if (!xprs_parse(r->wire, r->len, &p)) return 0;
+    int vlen = 0;
+    const char *v = xprs_get(&p, "until", &vlen);
+    return v ? xi_ts_to_epoch(v, vlen) : 0;
+}
+
+/* Over budget? Delete the oldest segment, carrying mail forward (36.11).
+ * Writer task only, lock held. One segment per call -- the writer loops. */
+static bool xi_evict_locked(xprsidx_t *st)
+{
+    if (!st->max_bytes || st->nseg < 2) return false;
+    uint64_t used = (uint64_t)st->nseg * XI_RECS_PER_SEG * sizeof(xi_rec_t);
+    if (used <= st->max_bytes) return false;
+
+    uint32_t first = st->oldest_first;
+    if (first == st->active_first) return false;     /* never the active one */
+
+    char path[96];
+    xi_seg_path(st, path, sizeof path, first);
+    FILE *f = fopen(path, "rb");
+    uint32_t now = (uint32_t)time(NULL);
+    if (now < 1700000000u) now = 0;
+    int carried = 0;
+    if (f) {
+        xi_rec_t r;
+        while (fread(&r, sizeof r, 1, f) == 1) {
+            if (!r.len || !(r.flags & XI_F_MAIL)) continue;   /* class 1 */
+            uint32_t until = xi_rec_until(&r);
+            if (until && now && now > until) continue;        /* expired */
+            /* Class 2 and 3 both carry forward; class 3 (declared) always,
+             * class 2 only while the store is not drowning in mail. */
+            (void)xi_declared(st, r.to);
+            r.index = st->next_index++;
+            st->count++;
+            if (xi_write_rec(st, &r)) carried++;
+        }
+        fclose(f);
+    }
+    if (st->read_fp && st->read_first == first) xi_read_close(st);
+    unlink(path);
+    st->nseg--;
+    /* The next-lowest segment becomes the oldest. */
+    uint32_t next_oldest = st->active_first;
+    DIR *d = opendir(st->dir);
+    if (d) {
+        struct dirent *de;
+        bool seen = false;
+        while ((de = readdir(d)) != NULL) {
+            if (strncmp(de->d_name, "seg_", 4) != 0) continue;
+            uint32_t fs = (uint32_t)strtoul(de->d_name + 4, NULL, 10);
+            if (!seen || fs < next_oldest) { next_oldest = fs; seen = true; }
+        }
+        closedir(d);
+    }
+    st->oldest_first = next_oldest;
+    XI_LOGI("evicted seg_%u: %d mail record(s) carried forward", (unsigned)first,
+            carried);
+    return true;
+}
+
+void xprsindex_set_own(xprsidx_t *st, const char *call)
+{
+    if (!st || !call) return;
+    xi_copy(st->own, sizeof st->own, call, -1);
+}
+
+void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes)
+{
+    if (st) st->max_bytes = bytes;
+}
+
+uint32_t xprsindex_newest_ts(const xprsidx_t *st)
+{
+    return st ? st->newest_ts : 0;
+}
+
+uint32_t xprsindex_boot_newest_ts(const xprsidx_t *st)
+{
+    return st ? st->boot_newest_ts : 0;
 }
 
 void xprsindex_close(xprsidx_t *st)
@@ -680,7 +900,11 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
      * same call, one thread earlier. */
     xi_rec_t judged = *r;
     if (!xi_judge_rec(st, &judged)) return false;
-    return xi_write_rec_fwd(st, &judged);
+    bool ok = xi_write_rec_fwd(st, &judged);
+    /* No writer task on the host: retention housekeeping runs inline. */
+    while (xi_evict_locked(st)) {}
+    if (st->decl_dirty) xi_decl_save(st);
+    return ok;
 #else
     if (st->q_count >= XI_QUEUE_LEN) {
         /* The card is slower than the air. Losing the newest is better than
@@ -743,6 +967,9 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     if (outgoing) r.flags |= XI_F_OUTGOING;
     if (xprs_get(&p, "sig", &vlen)) r.flags |= XI_F_SIGNED;
     memcpy(r.wire, wire, (size_t)len);
+
+    if (r.ts > st->newest_ts) st->newest_ts = r.ts;
+    if (code == XI_T_MAILBOX) xi_decl_note(st, &p, r.from);
 
     /* Decided. The card work is somebody else's problem now. */
     st->dedup[st->dedup_pos] = h;
@@ -1067,6 +1294,10 @@ static void xi_writer_task(void *arg)
         if (n) {
             XI_LOCK(st);
             xi_sync_card(st);
+            /* Over budget? One segment per pass keeps the card burst short
+             * (36.11: mail carries forward, the spool goes first). */
+            xi_evict_locked(st);
+            if (st->decl_dirty) xi_decl_save(st);
             XI_UNLOCK(st);
         }
     }

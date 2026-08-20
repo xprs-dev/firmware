@@ -341,6 +341,14 @@ static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */
 static bool s_rotate;
 static uint64_t s_rotate_next_us;      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
+/* A parked 36.10 catch-up ask (built + signed on idx_task's stack). */
+static struct {
+    char call[10];
+    char bearer[7];
+    uint32_t since;
+    volatile bool pending;
+} s_cu;
+
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
     xprs_t sp;
@@ -380,6 +388,32 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_ask.len = len;
         snprintf(s_ask.bearer, sizeof s_ask.bearer, "%s", bearer);
         s_ask.pending = true;                 /* published last */
+    } while (0);
+
+    /* A serve:archive announcement from a station that was away: ask it
+     * for the window we missed (XPRS.md 36.10), before ingesting makes it
+     * look freshly heard. A meeting is DIRECT -- a relayed announcement is
+     * not a peer in range. The reply is ordinary heard traffic. */
+    do {
+        char type[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "service") != 0) break;
+        char sv[40];
+        if (!xprs_get_str(&sp, "serve", sv, sizeof sv)) break;
+        if (!strstr(sv, "archive")) break;
+        if (xprs_get(&sp, "via", NULL) != NULL) break;
+        if (!xst_epoch_now()) break;              /* no clock, no since: */
+        uint32_t newest = s_index ? xprsindex_boot_newest_ts(s_index) : 0;
+        if (!newest) break;                 /* empty store: nothing missed */
+        if (!xst_catchup_due(call, 600)) break;
+        /* Park it. Signing is several KB of secp256k1 stack and this runs
+         * on the 5 KB bearer task -- the first build here PANIC'd xprslan.
+         * idx_task (8 KB) builds and airs the ask. */
+        if (s_cu.pending) break;
+        snprintf(s_cu.call, sizeof s_cu.call, "%s", call);
+        snprintf(s_cu.bearer, sizeof s_cu.bearer, "%s", bearer);
+        s_cu.since = newest;
+        s_cu.pending = true;
     } while (0);
 
     /* Chat ring + rx/device stats + devices list live in xprs_station now,
@@ -1137,6 +1171,9 @@ static void ui_render(void)
 /* Sends one wire on the bearer an ask arrived on; announcements go on both. */
 static void idx_air(const char *bearer, const char *wire, int len)
 {
+    /* One line per replayed packet: a replay that airs nothing is the
+     * failure mode that costs a day, and a page is at most a handful. */
+    ESP_LOGI(TAG, "replay on %s: %.*s", bearer, len > 70 ? 70 : len, wire);
     if (strcmp(bearer, "espnow") == 0) xprsnow_send(wire, len);
     else                               xprslan_send(wire, len);
 }
@@ -1331,6 +1368,9 @@ static void idx_task(void *arg)
                                                      &mc, &wl);
     if (err == ESP_OK) {
         s_index = xprsindex_open("/idx/xprs");
+        xprsindex_set_own(s_index, s_call);
+        /* The FAT partition is ~14 MB; leave room for the log + stats. */
+        xprsindex_set_max_bytes(s_index, 10u * 1024u * 1024u);
         if (s_index) {
             s_api_cfg.index = s_index;
             xprsindex_set_verifier(s_index, index_verifier);
@@ -1371,8 +1411,7 @@ static void idx_task(void *arg)
             xprsindex_stats(s_index, &st);
             char w[XPRSIDX_WIRE_MAX + 1];
             int n = snprintf(w, sizeof w,
-                             "t:service f:%s serve:index,history,mailbox "
-                             "count:%lu",
+                             "t:service f:%s serve:archive count:%lu",
                              s_call, (unsigned long)st.count);
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
@@ -1381,6 +1420,32 @@ static void idx_task(void *arg)
 
         if (s_ask.pending && s_index && xcfg_get_bool("index_on", true))
             idx_answer_history();
+
+        /* The parked 36.10 catch-up ask, signed on THIS task's stack. */
+        if (s_cu.pending) {
+            char since[24], nowts[24];
+            struct tm tmv;
+            time_t t = (time_t)s_cu.since;
+            gmtime_r(&t, &tmv);
+            strftime(since, sizeof since, "%Y-%m-%d_%H:%M:%S", &tmv);
+            time_t t2 = time(NULL);
+            gmtime_r(&t2, &tmv);
+            strftime(nowts, sizeof nowts, "%Y-%m-%d_%H:%M:%S", &tmv);
+            char ask[XPRSIDX_WIRE_MAX + 1];
+            int an = snprintf(ask, sizeof ask,
+                              "t:command f:%s d:%s ts:%s cmd:history since:%s",
+                              s_call, s_cu.call, nowts, since);
+            if (an > 0 && an < (int)sizeof ask) {
+                an = sign_wire(ask, an, sizeof ask);
+                if (strcmp(s_cu.bearer, "espnow") == 0)
+                    xprsnow_send(ask, an);
+                else
+                    xprslan_send(ask, an);
+                ESP_LOGI(TAG, "catch-up: asked %s for history since %s",
+                         s_cu.call, since);
+            }
+            s_cu.pending = false;
+        }
 
         /* The stats rings hit the flash every ten minutes -- losing at most
          * ten minutes of bars to a power pull. */
@@ -1429,6 +1494,9 @@ static void idx_task(void *arg)
                 closedir(d);
             }
             s_index = xprsindex_open("/idx/xprs");
+        xprsindex_set_own(s_index, s_call);
+        /* The FAT partition is ~14 MB; leave room for the log + stats. */
+        xprsindex_set_max_bytes(s_index, 10u * 1024u * 1024u);
             if (s_index) {
                 xprsindex_set_verifier(s_index, index_verifier);
                 s_api_cfg.index = s_index;

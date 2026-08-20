@@ -238,6 +238,27 @@ size_t xprsindex_query(xprsidx_t *st, const xprsidx_query_t *q,
 
 void xprsindex_stats(xprsidx_t *st, xprsidx_stats_t *out);
 
+/* ── Retention (XPRS.md 36.11) ──────────────────────────────────────────── */
+
+/** This station's callsign: what a `t:mailbox hold:` must name for its
+ * declarer to reach class 3. Set it before traffic flows. */
+void xprsindex_set_own(xprsidx_t *st, const char *call);
+
+/** Storage budget in bytes; 0 (the default) = no cap. Over it, the writer
+ * deletes the oldest segment, carrying mail forward: class 3 (declared)
+ * and class 2 (custody) survive, the spool goes first, and nothing
+ * outlives its own `until:`. */
+void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes);
+
+/** The newest stored packet's own ts: (epoch seconds), 0 when empty. */
+uint32_t xprsindex_newest_ts(const xprsidx_t *st);
+
+/** newest_ts as it was when the store OPENED -- the `since:` a catch-up
+ * ask carries (XPRS.md 36.10). The live figure is useless for this: by
+ * the time a peer is sighted, fresh traffic has pushed it past the very
+ * hole the absence made. */
+uint32_t xprsindex_boot_newest_ts(const xprsidx_t *st);
+
 /**
  * `ts:` (`YYYY-MM-DD_hh:mm:ss`, section 4.3) as epoch seconds, or 0 when it is
  * not one. Public because a `cmd:history` carries `since:`/`until:` in exactly

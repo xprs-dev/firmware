@@ -342,6 +342,53 @@ int xst_stats_series(int view, uint16_t *dev, uint16_t *rx, uint16_t *tx,
     return np;
 }
 
+/* 36.10: one ask per peer per absence. The last-heard side lives in the
+ * devices ring; this adds only "when did we last ask". */
+#define XST_ASK_MAX 8
+static struct { char call[10]; uint32_t asked_ms; } s_ask[XST_ASK_MAX];
+
+bool xst_catchup_due(const char *call, int absent_sec)
+{
+    if (!call || !call[0]) return false;
+    if (s_call[0] && strcasecmp(call, s_call) == 0) return false;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    /* "Back in radio range, or just powered on" (36.10): during the first
+     * minutes after our own boot everything looks freshly heard, yet the
+     * hole in the archive is OURS -- so a young station treats every
+     * archiver as worth one ask. The cooldown below still bounds it. */
+    bool young = now < 15u * 60u * 1000u;
+
+    bool absent = true;
+    LOCK();
+    for (int i = 0; i < XST_SEEN_MAX; i++) {
+        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0) {
+            absent = (now - s_seen[i].last_ms) / 1000 >=
+                     (uint32_t)absent_sec;
+            break;
+        }
+    }
+    UNLOCK();
+    if (!absent && !young) return false;
+
+    /* Asked recently? The cooldown is the same absence window. */
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < XST_ASK_MAX; i++) {
+        if (s_ask[i].call[0] && strcasecmp(s_ask[i].call, call) == 0) {
+            if ((now - s_ask[i].asked_ms) / 1000 < (uint32_t)absent_sec)
+                return false;
+            slot = i;
+            break;
+        }
+        if (!s_ask[i].call[0]) { if (slot < 0) slot = i; }
+        else if (s_ask[i].asked_ms < s_ask[oldest].asked_ms) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    snprintf(s_ask[slot].call, sizeof s_ask[slot].call, "%s", call);
+    s_ask[slot].asked_ms = now;
+    return true;
+}
+
 float xst_est_distance_m(int rssi)
 {
     if (!rssi) return -1.0f;

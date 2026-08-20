@@ -83,6 +83,14 @@ int  xst_stats_series(int view, uint16_t *dev, uint16_t *rx, uint16_t *tx,
 /* 0 until NTP has spoken -- nothing is banked before then. */
 uint32_t xst_epoch_now(void);
 
+/* XPRS.md 36.10, two archivers meet: should this station ask [call] for a
+ * catch-up replay? True when [call] was silent for at least [absent_sec]
+ * (or never heard) and has not been asked this absence. Call BEFORE
+ * ingesting the packet that carried the serve:archive announcement --
+ * ingesting first would make the peer look freshly heard. The caller still
+ * owns the ask itself (clock, since:, signing, which bearer). */
+bool xst_catchup_due(const char *call, int absent_sec);
+
 /* Distance from signal strength (log-distance path loss, A=-40 dBm,
  * n=2.7): honestly rough, but -46 and -85 are a room and a street apart.
  * -1 when rssi is 0 (bearer without RSSI). */

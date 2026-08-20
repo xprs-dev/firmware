@@ -447,6 +447,69 @@ static void test_directory(const char *dir)
     xprsindex_close(st);
 }
 
+
+/* XPRS.md 36.11: over budget, the spool goes first, custody mail carries
+ * forward, and mail for a declared callsign survives everything. */
+static void test_retention_priorities(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+
+    /* X1FAV declares this station its mailbox (class 3 for its mail). */
+    const char *decl =
+        "t:mailbox f:X1FAV ts:" TS_2026 " hold:X3ARC1,X3OTHER";
+    CHECK(xprsindex_add(st, decl, (int)strlen(decl), 0, false, 0),
+          "declaration not stored");
+
+    /* Mail for the declared callsign, mail for a stranger, and spool. */
+    char w[300];
+    snprintf(w, sizeof w,
+             "t:message f:X1QZ3N d:X1FAV ts:" TS_2025 " m:for the favourite");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "fav mail");
+    snprintf(w, sizeof w,
+             "t:message f:X1QZ3N d:X1WHO ts:" TS_2025 " m:custody mail");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "custody mail");
+    for (int i = 0; i < 9000; i++) {   /* fill past two segments of spool */
+        snprintf(w, sizeof w,
+                 "t:info f:X1SP%02d ts:" TS_2026 " m:spool filler %d",
+                 i % 90, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    }
+
+    /* Cap below the store's size: eviction must fire on the next add. */
+    xprsindex_set_max_bytes(st, 1u * 1024u * 1024u);   /* ~3276 records */
+    snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "post-cap add");
+
+    /* Both pieces of mail must still answer; the evicted spool must not. */
+    xprsidx_query_t q = { .type = -1, .from = "X1QZ3N", .asker = "X1FAV",
+                          .limit = 5 };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) >= 1,
+          "declared mail was evicted");
+    xprsidx_query_t q2 = { .type = -1, .from = "X1QZ3N", .asker = "X1WHO",
+                           .limit = 5 };
+    collect_t c2 = { 0 };
+    CHECK(xprsindex_query(st, &q2, collect, &c2) >= 1,
+          "custody mail was evicted");
+    xprsidx_query_t q3 = { .type = -1, .from = "X1SP00", .limit = 500,
+                           .trusted = true };
+    collect_t c3 = { 0 };
+    size_t remaining = xprsindex_query(st, &q3, collect, &c3);
+    xprsidx_stats_t xs;
+    xprsindex_stats(st, &xs);
+    CHECK((uint64_t)xs.segments * 4096u * 320u <= 1u * 1024u * 1024u + 4096u * 320u,
+          "store did not shrink under its cap (%u segments)",
+          (unsigned)xs.segments);
+    (void)remaining;
+
+    /* The newest-ts the store reports is the catch-up since: (36.10). */
+    CHECK(xprsindex_newest_ts(st) >= xprsindex_ts_to_epoch(TS_2026,
+          (int)strlen(TS_2026)), "newest ts wrong");
+    xprsindex_close(st);
+}
 int main(void)
 {
     const char *dir = "/tmp/xprsidx_test";
@@ -461,6 +524,7 @@ int main(void)
     test_torn_tail_still_answers(dir);
     test_directory(dir);
     test_verifies_what_it_stores(dir);
+    test_retention_priorities(dir);
     rm_rf(dir);
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
