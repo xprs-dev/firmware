@@ -144,7 +144,7 @@ static void title_render(void)
     if (!s_title_label) return;
     lv_label_set_text(s_title_label, s_title);
     if (s_clock_label)
-        lv_label_set_text(s_clock_label, s_uptime_txt);
+        lv_label_set_text_fmt(s_clock_label, "Uptime: %s", s_uptime_txt);
 }
 static volatile bool s_call_dirty;
 static char s_input_text[128];
@@ -378,26 +378,23 @@ static void build_ui(void)
     lv_obj_set_style_text_color(s_status_label, lv_color_black(), 0);
     lv_obj_align(s_status_label, LV_ALIGN_LEFT_MID, 6, 0);
 
-    /* The clock sits at a fixed offset and the title after it, so neither
-     * moves when a digit changes. "00:00:00 | " is the widest the clock
-     * gets before it starts counting days. */
+    /* The clock owns the right corner. "Uptime: HH:MM:SS" is a constant
+     * width, so right-aligning it holds still -- what wandered before was a
+     * bare clock whose digit count changed under a right-aligned label. */
     s_clock_label = lv_label_create(top);
     lv_label_set_text(s_clock_label, "");
     lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_clock_label, lv_color_black(), 0);
-    lv_obj_align(s_clock_label, LV_ALIGN_RIGHT_MID, -(s_w * 118 / 320), 0);
-
-    lv_obj_t *sep = lv_label_create(top);
-    lv_label_set_text(sep, "|");
-    lv_obj_set_style_text_font(sep, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(sep, lv_color_black(), 0);
-    lv_obj_align(sep, LV_ALIGN_RIGHT_MID, -(s_w * 106 / 320), 0);
+    lv_obj_align(s_clock_label, LV_ALIGN_RIGHT_MID, -6, 0);
 
     s_title_label = lv_label_create(top);
     lv_label_set_text(s_title_label, "");
     lv_obj_set_style_text_font(s_title_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_black(), 0);
-    lv_obj_align(s_title_label, LV_ALIGN_RIGHT_MID, -6, 0);
+    /* The panel name in the middle, between the callsign and the clock:
+     * it changes only when somebody changes panel, so centring costs no
+     * movement. */
+    lv_obj_align(s_title_label, LV_ALIGN_CENTER, 0, 0);
 
     /* ---- Centre body (black) ---- */
     lv_obj_t *center = lv_obj_create(scr);

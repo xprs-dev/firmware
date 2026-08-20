@@ -31,6 +31,22 @@ board by its stable by-id path instead:
 If a flash cannot get the board into download mode, hold the **trackball click**
 (GPIO 0 is the strapping pin) while tapping reset.
 
+Sometimes the native-USB console wedges: the port still opens but esptool says
+`Could not configure port` or `Write timeout`, and nothing reaches the board.
+The JTAG half of the same USB device keeps working, so flash through it --
+naming the board's serial, because OpenOCD otherwise takes the first USB-JTAG
+device it finds and the T-Dongle is one:
+
+```sh
+~/.platformio/penv/bin/pio pkg exec -p tool-openocd-esp32 -- openocd \
+  -c "adapter serial DC:DA:0C:3C:24:C8" -f board/esp32s3-builtin.cfg \
+  -c "program_esp .pio/build/tdeck/firmware.bin 0x10000 verify reset exit"
+```
+
+Only the app moves; the bootloader and partition table do not change between
+builds. A `USBDEVFS_RESET` on the device node is worth trying first and is
+often enough.
+
 ## Controls
 
 The trackball is the M5Stack's three buttons, plus one:
