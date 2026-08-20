@@ -1002,10 +1002,14 @@ static void ui_render(void)
          * is up, and the addresses and channel numbers that used to sit
          * under each name live on the This-device panel. A link the board
          * does not have takes no row at all -- an empty name hides it. */
-        char d[8];
+        char d[8], note[24];
         int row = 0;
         snprintf(d, sizeof d, "%d", n_now);
-        xui_home_row(row++, "ESP-NOW", xprsnow_is_active(), d, NULL);
+        /* The channel is what decides whether two ESP-NOW stations can hear
+         * each other at all, so it belongs where the link does. */
+        snprintf(note, sizeof note, "channel %u", xprsnow_channel());
+        xui_home_row(row++, "ESP-NOW", xprsnow_is_active(), d,
+                     xprsnow_is_active() ? note : NULL);
 
         /* The address under the name: the one fact from this link somebody
          * actually needs off the screen -- to open the chat page, or to
@@ -1024,7 +1028,16 @@ static void ui_render(void)
         /* Only a board with the radio says anything about it. */
         if (s_board->lora) {
             snprintf(d, sizeof d, "%d", n_lora);
-            xui_home_row(row++, "LoRa", xprslora_is_active(), d, NULL);
+            /* The band, for the same reason as the channel above: two
+             * radios on different frequencies are simply deaf to each
+             * other, and nothing else on the screen would say so. */
+            uint32_t hz = s_board->lora->freq_hz ? s_board->lora->freq_hz
+                                                 : 868000000u;
+            snprintf(note, sizeof note, "%u.%u MHz",
+                     (unsigned)(hz / 1000000u),
+                     (unsigned)((hz % 1000000u) / 100000u));
+            xui_home_row(row++, "LoRa", xprslora_is_active(), d,
+                         xprslora_is_active() ? note : NULL);
         }
         for (; row < XUI_HOME_ROWS; row++)
             xui_home_row(row, "", false, "", NULL);

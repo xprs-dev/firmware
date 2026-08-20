@@ -1,12 +1,25 @@
-# Name,   Type, SubType, Offset,  Size
-# NVS at the standard 0x9000 so the callsign and WiFi credentials survive a
-# reflash, exactly as on the dongle.
-nvs,      data, nvs,     0x9000,  0x6000
-phy_init, data, phy,     0xf000,  0x1000
-factory,  app,  factory, 0x10000, 0x180000
-# Everything the indexer stores: a wear-levelled FAT filling the rest
-# of the 16MB flash. NVS and the app do not move, so nothing is lost.
-storage,  data, fat,     0x190000, 0xDF0000
+# Name,   Type, SubType,  Offset,   Size
+# Two app slots, because a station on a roof updates over the air or not at
+# all (XPRS.md 25.8). There is deliberately no `factory` slot: a factory
+# image only helps when otadata is corrupt, while IDF rollback helps with the
+# failure that actually kills a deployed node -- an image that boots, passes
+# its own checksum, and then cannot join the network. The 90 s task watchdog
+# (panic on trigger) is what turns a hang into the reset that rolls back.
+#
+# NVS keeps its address and size, so the nsec, the callsign and the WiFi
+# credentials survive the one cable visit this table costs. Never erase_flash.
+nvs,      data, nvs,      0x9000,   0x6000
+otadata,  data, ota,      0xf000,   0x2000
+phy_init, data, phy,      0x11000,  0x1000
+# 0x1E0000 = 1,966,080 B per slot; the image is about 1.34 MB, so ~32% spare.
+# App partitions must start on a 0x10000 boundary, hence the gap below.
+ota_0,    app,  ota_0,    0x20000,  0x1E0000
+ota_1,    app,  ota_1,    0x200000, 0x1E0000
+# Everything the indexer stores: a wear-levelled FAT. It shrinks from 13.94 MB
+# to 11.63 MB to pay for the second slot, and it MOVES, so the first boot on
+# this table reformats it once -- the archive, stats and logs are lost that
+# one time. The index cap is 10 MB, which still fits.
+storage,  data, fat,      0x3E0000, 0xBA0000
 # Where a panic writes its last words: task, PC, backtrace. Read at the next
 # boot and put into the rotating log, so a freeze names its culprit.
 coredump, data, coredump, 0xF80000, 0x10000

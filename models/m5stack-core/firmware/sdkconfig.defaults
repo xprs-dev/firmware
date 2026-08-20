@@ -27,3 +27,19 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 # read; the core dump keeps the culprit's name for the next boot.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# ---- Over-the-air updates (XPRS.md 25.8) -------------------------------
+# Rollback is the safety net that makes flashing a roof node reasonable: a
+# new image boots PENDING_VERIFY and any reset before it marks itself valid
+# sends the bootloader back to the slot that worked. The 90 s task watchdog
+# (panic on trigger, already set) is what turns a hang into that reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# Plain HTTP is deliberate. The image is authenticated by a signature over
+# the xprsfw1 line (25.8), checked before a byte reaches flash, so the
+# carrier needs no trust of its own -- and mbedtls TLS wants 20-40 KB of
+# peak heap, which the dongle (about 13 KB free) simply does not have.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+# esp_https_ota_finish() sets the boot partition unconditionally and offers
+# no hook in between, so the stream is hashed in the decrypt callback --
+# which runs BEFORE each esp_ota_write -- and a mismatch aborts instead.
+CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
