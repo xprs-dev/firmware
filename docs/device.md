@@ -104,6 +104,48 @@ The T-Dongle S3 has the room (671 KB spare in its slot, 13 MB of unused
 flash, no LVGL pool contention, ~22 KB free); the m5stack takes a push
 over its own access point instead, which costs no HTTP client at all.
 
+
+## 6.1 What was actually proved, and on what
+
+Every line below was run against a T-Dongle-S3 on the bench, over the
+network, with no cable touched after the image was built. Each result is
+from the station's own log or its /api/diag, not from inference.
+
+| case | expected | observed |
+|---|---|---|
+| push with no auth header | refused, nothing written | 403, still on the old version |
+| push with a forged auth (real callsign, wrong key) | refused, nothing written | 403, still on the old version |
+| unsigned cmd:update over the air | silence -- no answer at all | no reaction of any kind |
+| stale + forged cmd:update over the air | silence | no reaction of any kind |
+| signed cmd:update over the air | acted on, answered | verified on relay_task, answered `code:501 push the image to me` (this board has no fetcher) |
+| push, valid operator, TAMPERED image approval | full transfer, refused at the end, boot partition untouched | `approval does not verify` -> `push refused: no valid approval` -> station back up on the old image |
+| push, valid operator, valid approval | installs, reboots, self-test commits | 1,445,424 B in 38 s -> `ota_1` -> `this image proved itself -- rollback cancelled` -> state VALID |
+| an image that condemns itself | previous image comes back on its own | `condemning this image` -> `going back to the one that did` -> reboot -> `rolled back from 0.2.8-badselftest: still running 0.2.7` |
+
+Two honest gaps. The `code:500 fw:<old> m:rolled back` packet is
+implemented and its cross-boot NVS record is written, but it was not
+observed **on the wire**: an HTTP push carries no XPRS reply address, so
+there is nobody to answer, and the over-the-air path that would carry one
+cannot reach an install on this board because it has no fetcher. It needs
+a board with `CONFIG_XPRS_OTA_PULL=y` -- the m5stack -- to be seen.
+
+And the m5stack's own OTA has not been installed over the air at all. It
+has the same code and the same receive-path split, and its heap is not the
+dongle's, but "same code" is not a test.
+
+**The rollback path has a build hook, on purpose.** It is the only part of
+the updater a working image cannot exercise, and it is the part that
+decides whether a bad push costs a ladder:
+
+```sh
+pio run -e rns_ble5 --build-flag=-DXOTA_FAIL_SELFTEST
+```
+
+That image condemns itself at the self-test. Sign it, install it, and
+watch the previous one come back. Put the flag in the version string too,
+so a shipped one is obvious.
+
+
 ## 7. Discipline
 
 docs/esp32.md is binding and measured: core 0 belongs to the radios, core

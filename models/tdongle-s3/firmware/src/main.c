@@ -2833,9 +2833,21 @@ static void relay_task(void *arg)
         /* Rollback self-test (25.8): two minutes of the API listening, a
          * bearer up and no panic behind us, then this image is trusted. */
         if (s_relay_ticks == 80) {
+#ifdef XOTA_FAIL_SELFTEST
+            /* A build that condemns itself on purpose. The rollback path is
+             * the only part of the updater that cannot be exercised by a
+             * working image, and it is the part that decides whether a bad
+             * push means a ladder. Build one of these, sign it, install it,
+             * and watch the previous image come back by itself:
+             *     pio run -e rns_ble5 --build-flag=-DXOTA_FAIL_SELFTEST
+             * Never ship it -- the version string should say so too. */
+            ESP_LOGE(TAG, "XOTA_FAIL_SELFTEST: condemning this image");
+            xota_mark_unhealthy();
+#else
             if (s_api && (xprslan_is_active() || s_mesh_up) &&
                 esp_reset_reason() != ESP_RST_PANIC) xota_mark_healthy();
             else xota_mark_unhealthy();
+#endif
         }
         uint32_t t = now_sec();
         gatt_mesh_tick();   /* MSP session timeouts (politeness/stall) */
