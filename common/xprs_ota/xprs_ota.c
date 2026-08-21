@@ -12,6 +12,7 @@
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #endif
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_task_wdt.h"
@@ -256,9 +257,19 @@ static bool json_field(const char *json, const char *key, char *out, size_t cap)
 static bool fetch_manifest(const char *base, const char *chan,
                            const char *want_version, xota_manifest_t *m)
 {
+    /* Two callers, two shapes. A channel means [base] is a feed root and
+     * the manifest lives at the well-known place under it. No channel
+     * means [base] IS the manifest, complete -- which is what an operator
+     * naming a url: in cmd:update supplies. That second case used to fall
+     * through the first and ask for
+     * "http://host/thing.bin.json/firmware/m5stack-core/.json", so the
+     * url: form of the command could never have worked. */
     char url[200];
-    snprintf(url, sizeof url, "%s/firmware/%s/%s.json",
-             base, s_cfg.board ? s_cfg.board : "?", chan);
+    if (chan && chan[0])
+        snprintf(url, sizeof url, "%s/firmware/%s/%s.json",
+                 base, s_cfg.board ? s_cfg.board : "?", chan);
+    else
+        snprintf(url, sizeof url, "%s", base);
     ESP_LOGI(TAG, "manifest: %s", url);
 
     esp_http_client_config_t hc = {
@@ -348,7 +359,9 @@ static xota_code_t do_install(const xota_manifest_t *m)
     esp_https_ota_handle_t h = NULL;
     esp_err_t err = esp_https_ota_begin(&oc, &h);
     if (err != ESP_OK || !h) {
-        ESP_LOGE(TAG, "could not start: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "could not start: %s (free %u, largest %u)",
+                 esp_err_to_name(err), (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         mbedtls_sha256_free(&s_sha);
         if (s_cfg.quiesce) s_cfg.quiesce(false);
         return XOTA_FAILED;
@@ -427,6 +440,17 @@ void xota_poll(void)
         s_busy = true;
         s_pct = 0;
 
+        /* Stand the station down BEFORE the manifest, not after.
+         *
+         * quiesce() used to be called inside do_install(), which is after
+         * the manifest has already been fetched -- and the manifest fetch
+         * is itself an HTTP client, a 2 KB buffer and a socket, on a board
+         * that is standing down precisely because it has no room for them.
+         * The M5Stack timed out at eight seconds with the server never
+         * seeing the request. Everything from here to the end of the
+         * attempt runs quiesced, and every exit below resumes. */
+        if (s_cfg.quiesce) s_cfg.quiesce(true);
+
         xota_manifest_t m;
         memset(&m, 0, sizeof m);
         bool have = false;
@@ -436,7 +460,7 @@ void xota_poll(void)
              * the same file with .json appended. */
             char murl[200];
             snprintf(murl, sizeof murl, "%s.json", s_req.url);
-            have = fetch_manifest(murl, "", s_req.version, &m);
+            have = fetch_manifest(murl, NULL, s_req.version, &m);
             if (have) snprintf(m.url, sizeof m.url, "%s", s_req.url);
         } else {
             const char *base = xcfg_get("fwurl", "");
@@ -450,6 +474,7 @@ void xota_poll(void)
         }
 
         xota_code_t code = have ? do_install(&m) : XOTA_FAILED;
+        if (s_cfg.quiesce) s_cfg.quiesce(false);   /* idempotent */
         s_busy = false;
         s_pct = -1;
         /* Only a failure gets aired from here; a success has rebooted and

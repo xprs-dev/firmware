@@ -360,9 +360,52 @@ static void chat_note_unread(const xprs_t *p);
 /* The card is the one thing an install must not fight: an erase of the
  * other slot while the index is mid-write is how a station comes back with
  * a corrupt archive on top of a corrupt update. */
+/* Stand the station down for the length of an install.
+ *
+ * Pausing the index writer is not the expensive part. This board reaches
+ * steady state with about 7 KB of free heap, and an image it fetches for
+ * itself needs an HTTP client, a 2 KB manifest buffer and a socket --
+ * docs/device.md puts the floor at roughly 25 KB. The first attempt timed
+ * out at eight seconds without the server ever seeing the request.
+ *
+ * The hotspot looked like the answer and is not. The boot trace says
+ * `heap after hotspot: 30,448`, down from 139,440, so the SoftAP and its
+ * DHCP server and netif cost about 109 KB -- but dropping to WIFI_MODE_STA
+ * gives back only 3,312 of them (measured: 7,628 -> 10,940). The rest was
+ * claimed when the interface was created and is not returned by a mode
+ * change; freeing it would mean tearing the netif down, which is a
+ * different and much more invasive change. Three kilobytes is still worth
+ * having for the duration, and the AP comes back afterwards -- including
+ * on the failure path, because a refused image must not cost the station
+ * its hotspot until someone power-cycles it.
+ *
+ * It is not enough to fetch with. At about 11 KB free this board is still
+ * under the ~25 KB floor in docs/device.md, and esp_https_ota_begin()
+ * answers ESP_ERR_NO_MEM. Both shipping boards are therefore given their
+ * images rather than fetching them; see device.md 6.2. */
+static bool s_ap_stood_down;
+
 static void ota_quiesce(bool quiet)
 {
     if (s_index) xprsindex_pause_writes(s_index, quiet);
+
+    unsigned before = (unsigned)esp_get_free_heap_size();
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) == ESP_OK) {
+        if (quiet && mode == WIFI_MODE_APSTA) {
+            if (esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) {
+                s_ap_stood_down = true;
+                ESP_LOGW(TAG, "hotspot down for the install: heap %u -> %u",
+                         (unsigned)before,
+                         (unsigned)esp_get_free_heap_size());
+            }
+        } else if (!quiet && s_ap_stood_down) {
+            s_ap_stood_down = false;
+            if (esp_wifi_set_mode(WIFI_MODE_APSTA) == ESP_OK)
+                ESP_LOGI(TAG, "hotspot back up");
+        }
+    }
+
     if (quiet) ESP_LOGW(TAG, "storage paused: an update is being installed");
     else       ESP_LOGI(TAG, "storage resumed");
 }
@@ -467,6 +510,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_upd.len = len;
         snprintf(s_upd.bearer, sizeof s_upd.bearer, "%s", bearer);
         s_upd.pending = true;
+        ESP_LOGW(TAG, "cmd:update parked from %s", bearer);
     } while (0);
 
     /* A serve:archive announcement from a station that was away: ask it
@@ -1778,7 +1822,7 @@ static void idx_task(void *arg)
      * store there. Done on THIS task: it is the only one that touches it. */
     static wl_handle_t wl = WL_INVALID_HANDLE;
     const esp_vfs_fat_mount_config_t mc = {
-        .max_files = 5,    /* each open FILE holds a 4 KB sector cache */
+        .max_files = CONFIG_SDCARD_MAX_FILES,  /* 4 KB of sector cache each */
         .format_if_mount_failed = true,
         .allocation_unit_size = 4096,
     };
@@ -1847,10 +1891,12 @@ static void idx_task(void *arg)
         if (s_upd.pending) {
             s_upd.pending = false;
             xprs_t up;
+            ESP_LOGW(TAG, "cmd:update taken up on idx_task");
             if (xprs_parse(s_upd.wire, s_upd.len, &up)) {
                 char id[8] = "", from[16] = "";
                 int prev = 0;
                 xauth_verdict_t v = xauth_check(&up, s_call, id, from, &prev);
+                ESP_LOGW(TAG, "cmd:update from %s -> verdict %d", from, (int)v);
                 if (v == XAUTH_REPEAT)
                     ota_answer(from, s_upd.bearer, id, prev, NULL);
                 else if (v == XAUTH_403)

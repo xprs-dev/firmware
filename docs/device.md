@@ -146,6 +146,60 @@ watch the previous one come back. Put the flag in the version string too,
 so a shipped one is obvious.
 
 
+
+## 6.2 Both boards are given their images; neither fetches one
+
+Section 6 put the floor for a station that fetches its own image at about
+25 KB of free heap. Measured against that floor, neither shipping board
+clears it, and the reasons are worth writing down because they look like
+bugs and are not.
+
+**T-Dongle-S3.** Runs at about 14 KB free with everything up. The fetching
+half of the updater is compiled out (`CONFIG_XPRS_OTA_PULL=n`); a
+`cmd:update` naming no image is answered honestly with `code:501 push the
+image to me` rather than going quiet.
+
+**M5Stack Core.** Runs at 9-12 KB. It keeps the fetcher compiled in and
+the fetcher gets as far as reading and parsing the manifest -- then
+`esp_https_ota_begin()` answers `ESP_ERR_NO_MEM` and the failure is aired
+as `code:500`, which is the system behaving correctly about not fitting.
+
+The hotspot looked like the way out of that and is not. `heap after
+hotspot: 30,448` in the boot trace, down from 139,440, so the SoftAP and
+its DHCP server and netif cost roughly 109 KB -- but dropping to
+`WIFI_MODE_STA` returns only **3,312** of them (7,628 -> 10,940 measured).
+The rest is claimed when the interface is created and a mode change does
+not give it back. Freeing it properly means tearing the netif down, which
+has not been done.
+
+So the push door is the path on both boards, and it is validated on both:
+
+| board | image | transfer | outcome |
+|---|---|---|---|
+| tdongle-s3 | 1,445,424 B | 38 s | `ota_1`, self-test committed |
+| m5stack-core | 1,459,120 B | 17 s | `ota_1`, self-test committed |
+
+Two things had to change before either would accept a push, and both are
+the same mistake in different clothes -- asking for memory at the moment
+there is none:
+
+- **The socket has to be patient.** `recv_wait_timeout` defaults to five
+  seconds, which is sized for a JSON request, not for 1.4 MB arriving
+  while the same task erases flash with the cache off. Pushes died at
+  44-130 KB with `recv=-3` while every write returned `ESP_OK`. Thirty
+  seconds on both boards.
+- **The station has to stand down.** `quiesce()` originally paused the
+  index writer and nothing else, so the transfer competed with the hub
+  link, ESP-NOW and the bearers for lwip buffers; the window shut and
+  never reopened. It now hands back real resources for the duration, and
+  resumes on the failure path too.
+
+And `CONFIG_SDCARD_MAX_FILES` is now per board, because each open file is
+a 4 KB sector cache and that is the largest single lever either board has:
+the M5Stack went from 6,796 to 12,132 bytes free by going from five to
+four, which is the difference between refusing a push and taking one.
+
+
 ## 7. Discipline
 
 docs/esp32.md is binding and measured: core 0 belongs to the radios, core

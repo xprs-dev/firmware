@@ -586,6 +586,13 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
     hc.server_port = 80;
     hc.core_id = 1;          /* handlers read flash; keep off the radio core */
     hc.stack_size = 6144;
+    /* A firmware push is well over a megabyte arriving while this same
+     * task erases and writes flash, and an erase stops the cache for both
+     * cores. The default five-second socket wait is sized for a JSON
+     * request; on the T-Dongle two pushes died mid-transfer with recv=-3
+     * before this was raised. Thirty seconds still reaps a dead client. */
+    hc.recv_wait_timeout = 30;
+    hc.send_wait_timeout = 30;
     hc.max_uri_handlers = 16;
     hc.lru_purge_enable = true;
     esp_err_t ret = httpd_start(&s_httpd, &hc);

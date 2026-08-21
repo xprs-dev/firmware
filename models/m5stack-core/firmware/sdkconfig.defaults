@@ -48,3 +48,10 @@ CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
 # no hook in between, so the stream is hashed in the decrypt callback --
 # which runs BEFORE each esp_ota_write -- and a mismatch aborts instead.
 CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
+
+# Each open file is a 4 KB sector cache. This board reached steady state
+# with 7 KB of free heap -- 30,448 at boot, spent as the archive opened its
+# files -- and could not accept a firmware push at all. docs/esp32.md warns
+# against raising this number; four is the compromise that keeps a query
+# able to open a file while the store holds its own.
+CONFIG_SDCARD_MAX_FILES=4

@@ -1,4 +1,4 @@
-menu "SD card"
+menu "XPRS station storage"
 
 config SDCARD_MAX_FILES
     int "How many files may be open on the card at once"
