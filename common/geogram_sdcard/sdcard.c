@@ -54,7 +54,7 @@ esp_err_t sdcard_init(void)
         // "vfs_fat: open: no free file descriptors": the directory listing, the
         // key store, the mesh mail. Two spare handles cost about a kilobyte and
         // are what the rest of the firmware works from.
-        .max_files = 5,
+        .max_files = CONFIG_SDCARD_MAX_FILES,
         .allocation_unit_size = 16 * 1024   // 16KB allocation unit
     };
 

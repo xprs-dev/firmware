@@ -978,11 +978,31 @@ static void ota_air(const char *bearer, const char *wire, int len)
 }
 
 /* The card is the one thing an install must not fight. */
+/* Stand the station down for the length of an install.
+ *
+ * Pausing the index writer was not nearly enough. A push is 1.4 MB of TCP
+ * arriving at a board whose free heap is about 11 KB, and the first three
+ * attempts died the same way: the worker received 44-130 KB, lwip ran out
+ * of buffers, the window shut and never reopened, and the socket timed out
+ * with recv=-3 while the flash writes themselves reported ESP_OK.
+ *
+ * So the radios that are competing for those buffers go quiet: the hub
+ * link hands back its socket and both its windows, ESP-NOW hands back its
+ * queues. Neither is load-bearing for the next two minutes, and the
+ * station is about to reboot into new firmware anyway. Both come back on
+ * their own when this is called with false -- including on the failure
+ * path, because a refused image must not leave the station deaf. */
 static void ota_quiesce(bool quiet)
 {
     if (s_xprs_index) xprsindex_pause_writes(s_xprs_index, quiet);
-    if (quiet) ESP_LOGW(TAG, "storage paused: installing firmware");
-    else       ESP_LOGI(TAG, "storage resumed");
+    rns_tcp_pause(quiet);
+    if (quiet) {
+        xprsnow_stop();
+        ESP_LOGW(TAG, "station stood down: installing firmware");
+    } else {
+        xprsnow_start(s_aprs_call[0] ? s_aprs_call : "TDONGLE");
+        ESP_LOGI(TAG, "station back up");
+    }
 }
 
 /* One answer to a command, signed, on the bearer it arrived on. */
@@ -1477,7 +1497,11 @@ static esp_err_t api_update_post(httpd_req_t *req)
     while (left > 0) {
         int want = left > 1024 ? 1024 : left;
         int got = httpd_req_recv(req, buf, want);
-        if (got <= 0 || xota_push_write(buf, (size_t)got) != ESP_OK) {
+        esp_err_t wr = got > 0 ? xota_push_write(buf, (size_t)got) : ESP_OK;
+        if (got <= 0 || wr != ESP_OK) {
+            ESP_LOGE(TAG, "push stopped after %d of %d: recv=%d write=%s",
+                     (int)req->content_len - left, (int)req->content_len,
+                     got, esp_err_to_name(wr));
             xota_push_abort();
             httpd_resp_set_status(req, "400 Bad Request");
             return httpd_resp_sendstr(req, "transfer died\n");
@@ -1501,6 +1525,16 @@ static void api_start(void)
      * for both cores -- doing that on an unaffined worker put it next to the
      * BLE controller and the WiFi task (esp32.md, "the two processors"). */
     cfg.core_id = 1;
+    /* A firmware push is 1.4 MB arriving while this same task erases and
+     * writes flash, and an erase stops the cache for both cores. The
+     * default five-second socket wait is sized for a JSON request: two
+     * pushes died at 128 KB and at 403 KB with recv=-3, the window having
+     * closed while the worker was inside a write and the retransmits
+     * needing longer than five seconds to recover on a 2,880-byte window.
+     * Thirty seconds is still short enough to reap a genuinely dead
+     * client, and long enough that the transfer survives the flash. */
+    cfg.recv_wait_timeout = 30;
+    cfg.send_wait_timeout = 30;
     cfg.max_uri_handlers = 8;
     cfg.max_open_sockets = 4;
     cfg.lru_purge_enable = true;
@@ -3995,6 +4029,40 @@ void app_main(void)
      * persists parked store-and-forward mail across reboots; RAM-only without. */
     heap_mark("before blemesh");
     blemesh_table_init(s_aprs_call[0] ? s_aprs_call : "TDONGLE");
+
+    /* The BLE host, brought up here rather than at the end of app_main.
+     *
+     * nimble_port_freertos_init() creates the host task with a 5,120-byte
+     * stack, and a stack is one contiguous allocation. Started last it
+     * found 5,256 bytes free in a largest block of 3,584 and simply did
+     * not start -- silently, because nothing checks it. The station then
+     * ran with no BLE at all, and relay_task, which waits on on_sync()
+     * before its first loop, waited forever. That task carries the
+     * firmware self-test and the answer to an over-the-air cmd:update, so
+     * a freshly installed image sat in PENDING_VERIFY until the next
+     * reboot rolled it back, and no update command was ever answered.
+     * `relay=0` on the alive line is the tell.
+     *
+     * Here the heap is still one 31 KB block. docs/esp32.md, again:
+     * claim the big stacks early or do not claim them.
+     *
+     * The GATT table still goes up before the host, which is the only
+     * ordering this actually requires. */
+    heap_mark("before gatt_mesh");
+    gatt_mesh_svcs_init();   /* GATT service table before the host starts */
+    s_ble_up = true;
+    /* The callbacks BEFORE the host task, not after it. They used to be
+     * set at the very end of app_main, which was harmless only because the
+     * host was started at the very end too. Moving the host up without
+     * them meant it synced against an unset sync_cb: BLE came up, on_sync
+     * never ran, and relay_task -- which waits on it -- stayed parked for
+     * good, taking the firmware self-test and the cmd:update answer with
+     * it. Registering a callback after the thing that fires it is a race
+     * that always loses here, because the controller is already ready. */
+    ble_hs_cfg.sync_cb = on_sync;
+    ble_hs_cfg.reset_cb = on_reset;
+    heap_mark("before nimble_host");
+    nimble_port_freertos_init(host_task);
     const char *scf_path = NULL;
     heap_mark("before sdcard");
     if (sdcard_init() == ESP_OK && sdcard_is_mounted()) {
@@ -4078,21 +4146,41 @@ void app_main(void)
     }
 #endif
     heap_mark("before rns_tcp");
+#ifdef RNS_HUB_LINK
     if (rns_tcp_start(NULL, 0) != ESP_OK) {
         ESP_LOGW(TAG, "Reticulum interface failed to start");
     }
+#else
+    /* No hub link on this board, deliberately.
+     *
+     * The T-Dongle-S3 cannot run everything at once. Measured, with each
+     * subsystem started and none of them failing quietly: WiFi and the
+     * iGate 55.7 KB, NimBLE and the controller 59.3 KB, the SD card 32 KB
+     * at three open files, the LAN and ESP-NOW bearers 10.5 KB, the HTTP
+     * server 11 KB, LVGL 16 KB -- against a heap that starts at 208 KB.
+     * That is roughly 12 KB more than exists, and the shortfall does not
+     * announce itself: whatever is created last simply fails, silently,
+     * and the station runs on looking healthy. It cost this bench a full
+     * session to find that BLE had not started for want of one contiguous
+     * 5,120-byte stack, which parked relay_task, which took the firmware
+     * self-test and the answer to an over-the-air cmd:update with it.
+     *
+     * One socket to one hub is 12,676 bytes -- a 4 KB task stack and, most
+     * of it, that connection's two lwip windows. It is almost exactly the
+     * shortfall, and it is the one thing here whose job another station
+     * already does: the m5stack keeps its hub link, and this board is a
+     * local-RF station and archiver -- BLE mesh, ESP-NOW, LAN, the card,
+     * the screen, the API and its own updates.
+     *
+     * Build with -DRNS_HUB_LINK to put it back, and expect to give up
+     * something else in the same breath. */
+    ESP_LOGI(TAG, "no hub link on this board -- local RF and the card "
+                  "(see the budget in main.c)");
+#endif
 
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat", 3072, NULL, 1, NULL, 1);
 
     xTaskCreate(console_task, "console", 4096, NULL, 3, NULL);
-
-    ble_hs_cfg.sync_cb = on_sync;
-    ble_hs_cfg.reset_cb = on_reset;
-    heap_mark("before gatt_mesh");
-    gatt_mesh_svcs_init();   /* GATT service table before the host starts */
-    s_ble_up = true;
-    heap_mark("before nimble_host");
-    nimble_port_freertos_init(host_task);
 
     ESP_LOGI(TAG, "RNS-BLE5 full node + repeater + UI + APRS-IS iGate up");
 }

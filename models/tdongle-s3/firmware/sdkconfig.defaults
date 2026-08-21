@@ -139,3 +139,8 @@ CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE=20
 # writes behind it. Two listeners because there is one HTTP server.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 CONFIG_LWIP_TCP_WND_DEFAULT=2880
+
+# Each open file is a 4 KB sector cache; sdcard_init() cost this board
+# 40,248 bytes with five. It keeps the index segment and the SCF spool open
+# and reads one file at a time.
+CONFIG_SDCARD_MAX_FILES=3

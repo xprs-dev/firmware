@@ -157,6 +157,14 @@ static int dial(void)
     return sock;
 }
 
+static volatile bool s_paused;
+
+void rns_tcp_pause(bool paused)
+{
+    s_paused = paused;
+    ESP_LOGW(TAG, "hub link %s", paused ? "paused" : "resuming");
+}
+
 static void rns_tcp_task(void *arg)
 {
     (void)arg;
@@ -164,6 +172,10 @@ static void rns_tcp_task(void *arg)
     static uint8_t buf[512];
 
     while (s_running) {
+        /* Stood down. The socket and its two lwip windows are the largest
+         * single thing this station can hand back, and a firmware push
+         * needs every byte of it -- see xprs_ota.h. */
+        if (s_paused) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
         int sock = dial();
         if (sock < 0) {
             attempts++;
@@ -178,7 +190,7 @@ static void rns_tcp_task(void *arg)
         s_connects++;
         if (s_rx_cb) s_rx_cb(NULL, 0, s_rx_ctx);   /* "we are up" — announce now */
 
-        while (s_running) {
+        while (s_running && !s_paused) {
             int n = recv(sock, buf, sizeof buf, 0);
             if (n > 0) {
                 rns_hdlc_rx_feed(&s_rx, buf, (size_t)n, on_frame, NULL);

@@ -43,6 +43,17 @@ esp_err_t rns_tcp_add_hub(const char *host, uint16_t port);
 const char *rns_tcp_current_hub(void);
 
 esp_err_t rns_tcp_start(const char *host, uint16_t port);
+
+/**
+ * Stand the hub link down, or bring it back.
+ *
+ * Closes the socket and stops reconnecting while paused. That is worth
+ * about 12.7 KB on the T-Dongle -- a 4 KB task stack and, mostly, one TCP
+ * connection's send and receive windows -- and it is what makes room for a
+ * firmware push to be received at all on a board this tight. The link
+ * reconnects and re-announces by itself on resume.
+ */
+void rns_tcp_pause(bool paused);
 void      rns_tcp_stop(void);
 bool      rns_tcp_is_up(void);
 void      rns_tcp_set_rx_cb(rns_tcp_rx_cb_t cb, void *ctx);

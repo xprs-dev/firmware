@@ -1,0 +1,19 @@
+menu "SD card"
+
+config SDCARD_MAX_FILES
+    int "How many files may be open on the card at once"
+    default 5
+    range 2 10
+    help
+        With CONFIG_FATFS_SECTOR_4096 and CONFIG_FATFS_PER_FILE_CACHE --
+        which both boards use -- every open FILE holds a 4 KB sector cache,
+        so this number costs four kilobytes of heap each and is one of the
+        largest single allocations either board makes.
+
+        Five is right for the M5Stack, whose store keeps three files open
+        while a query opens two more. The T-Dongle keeps the index segment
+        and the store-and-forward spool open and reads one at a time, so
+        three fits it and hands eight kilobytes back to a heap that has
+        none to spare. docs/esp32.md records what happened the last time
+        this number was raised "to be safe".
+endmenu
