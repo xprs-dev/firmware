@@ -15,7 +15,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
+#include <strings.h>
 #include <dirent.h>
 #include <errno.h>
 #include <unistd.h>
@@ -58,6 +60,21 @@ static uint64_t xi_card_free(const char *d);
 
 #define XI_RECS_PER_SEG   4096u
 #define XPRSIDX_DECL_MAX  16
+/*
+ * REGULARS: callsigns this station has heard on many distinct days. Mail for
+ * one is kept as long as mail for a station that explicitly declared this one
+ * (36.11 class 3) -- somebody here every day has chosen this station just as
+ * surely, they simply never said so in a packet. Ranked by days heard, so a
+ * passer-by never displaces a resident. 16 entries is ~200 bytes on a board
+ * that reports 11 kB free.
+ */
+#define XPRSIDX_REG_MAX   16
+/*
+ * How many recent presence announcements are remembered well enough to know
+ * one is a repeat. Small: it only has to span the neighbours in earshot, and
+ * a miss costs one duplicate record rather than anything breaking.
+ */
+#define XI_PRESENCE_RING  12
 #define XI_DEDUP_RING     32
 #define XI_DEFAULT_LIMIT  64
 /* Recent segments cached in RAM. The zone file is the real map — an index that
@@ -165,6 +182,9 @@ struct xprsidx_s {
     uint32_t since_flush;     /* adds since the zone entry last hit the card */
     uint32_t dedup[XI_DEDUP_RING];
     int      dedup_pos;
+    /* Presence repeats: same words, new timestamp. See xi_presence_hash. */
+    uint32_t pres[XI_PRESENCE_RING];
+    int      pres_pos;
     xprsidx_gate_fn gate;           /* "the radio is idle" — may be NULL */
     xprsidx_verify_cb_t verify;     /* section 9.1, run on the writer task */
     uint32_t verified, unverified, forged;
@@ -178,6 +198,15 @@ struct xprsidx_s {
     char     decl[XPRSIDX_DECL_MAX][XPRSIDX_CALL_LEN];
     int      decl_n;
     bool     decl_dirty;            /* persisted by the writer task */
+    /* Regulars: callsign, distinct days heard, and the last day counted, so a
+     * station heard twice in one afternoon scores one day and not two. */
+    struct {
+        char     call[XPRSIDX_CALL_LEN];
+        uint16_t days;
+        uint32_t last_day;
+    } reg[XPRSIDX_REG_MAX];
+    int      reg_n;
+    bool     reg_dirty;
     uint64_t max_bytes;             /* 0 = no cap */
     uint32_t oldest_first;          /* first index of the oldest segment */
     uint32_t newest_ts;             /* the newest stored packet's own ts: */
@@ -434,6 +463,8 @@ static uint32_t xi_type_tail(const xprsidx_t *st, int type, uint32_t skip_end,
 static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec);
 static void xi_decl_load(xprsidx_t *st);
 static void xi_decl_save(xprsidx_t *st);
+static void xi_reg_load(xprsidx_t *st);
+static void xi_reg_save(xprsidx_t *st);
 static bool xi_evict_locked(xprsidx_t *st);
 static void xi_sync_card(xprsidx_t *st);
 #ifndef XPRSIDX_HOST_TEST
@@ -525,12 +556,103 @@ static bool xi_may_serve(const xi_rec_t *r, const xprsidx_query_t *q)
     return xi_ieq(q->asker, r->to) || xi_ieq(q->asker, r->from);
 }
 
+/*
+ * What a person catching up wants: the talking, not the presence. An archiver
+ * keeps every beacon it hears and they outnumber conversation on any real
+ * channel, so a page of the newest twelve is twelve beacons unless something
+ * says otherwise. Measured on a bench station: 120 identity, 69 observation,
+ * 11 service and no messages in the newest two hundred records.
+ */
+static bool xi_is_talk(uint8_t type)
+{
+    switch (type) {
+    case XI_T_MESSAGE: case XI_T_REACTION: case XI_T_BLOG:
+    case XI_T_EVENT:   case XI_T_WARNING:  case XI_T_SOS:
+    case XI_T_INFO:    case XI_T_STATUS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+/*
+ * XPRS.md 36.6: `only:` matches a callsign WHEREVER the packet carries it --
+ * as author, as addressee, or inside a list field (hears:, hold:, via:,
+ * grant:). Author and addressee are the indexed fields and answer most asks
+ * without touching the wire; the list fields need the bytes, so the scan is
+ * the fallback rather than the first move. Boundary-checked so X1AB does not
+ * match X1ABCD.
+ */
+static bool xi_mentions(const xi_rec_t *r, const char *call)
+{
+    if (xi_ieq(call, r->from) || xi_ieq(call, r->to)) return true;
+    int cl = (int)strlen(call);
+    if (cl <= 0) return false;
+    int len = r->len <= XPRSIDX_WIRE_MAX ? r->len : XPRSIDX_WIRE_MAX;
+    for (int i = 0; i + cl <= len; i++) {
+        if (strncasecmp(r->wire + i, call, (size_t)cl) != 0) continue;
+        char before = (i == 0) ? 0 : r->wire[i - 1];
+        char after  = (i + cl >= len) ? 0 : r->wire[i + cl];
+        bool lb = !(isalnum((unsigned char)before) || before == '-');
+        bool rb = !(isalnum((unsigned char)after)  || after  == '-');
+        if (lb && rb) return true;
+    }
+    return false;
+}
+
+/*
+ * A presence announcement's content, ignoring WHEN it was said.
+ *
+ * `t:identity` and `t:observation` repeat the same facts forever; only the
+ * timestamp moves. The section 5 identifier covers the timestamp, so every
+ * repeat is a new id, a new record, and another slot in everybody's archive.
+ * Measured on a bench station: 120 of the newest 200 records were one
+ * neighbour's identity, 69 were observations, and not one was a message --
+ * so a history page of twelve was twelve beacons and the conversation was
+ * unreachable.
+ *
+ * Hashing the wire with `ts:` and `epoch:` skipped makes a repeat detectable.
+ * A beacon whose CONTENT changed -- a new peer count, a different key -- hashes
+ * differently and is kept, which is the whole point: what is dropped is the
+ * saying-it-again, not the saying-something-new.
+ */
+static uint32_t xi_presence_hash(const char *wire, int len)
+{
+    uint32_t h = 2166136261u;
+    int i = 0;
+    while (i < len) {
+        int start = i;
+        while (i < len && wire[i] != ' ') i++;
+        int tlen = i - start;
+        bool skip = (tlen > 3 && strncmp(wire + start, "ts:", 3) == 0) ||
+                    (tlen > 6 && strncmp(wire + start, "epoch:", 6) == 0);
+        if (!skip) {
+            for (int k = start; k < start + tlen; k++) {
+                h ^= (uint8_t)wire[k];
+                h *= 16777619u;
+            }
+        }
+        while (i < len && wire[i] == ' ') i++;
+    }
+    return h ? h : 1u;
+}
+
+/* Types whose repeats say nothing new. Mail and conversation are never
+ * suppressed: two identical messages minutes apart were said twice. */
+static bool xi_is_presence(int code)
+{
+    return code == XI_T_IDENTITY || code == XI_T_OBSERVATION ||
+           code == XI_T_SERVICE;
+}
+
 static bool xi_matches(const xi_rec_t *r, const xprsidx_query_t *q)
 {
     if (q->type >= 0 && r->type != (uint8_t)q->type) return false;
+    if (q->type < 0 && q->talk_only && !xi_is_talk(r->type)) return false;
     if (q->since_ts && (r->ts == 0 || r->ts < q->since_ts)) return false;
     if (q->until_ts && (r->ts == 0 || r->ts > q->until_ts)) return false;
     if (q->from && *q->from && !xi_ieq(q->from, r->from)) return false;
+    if (q->only && *q->only && !xi_mentions(r, q->only)) return false;
     return xi_may_serve(r, q);
 }
 
@@ -631,6 +753,7 @@ xprsidx_t *xprsindex_open(const char *dir)
      * absence, and asking from the live newest asks for nothing. */
     st->boot_newest_ts = st->newest_ts;
     xi_decl_load(st);
+    xi_reg_load(st);
     st->ready = true;
 #ifndef XPRSIDX_HOST_TEST
     /* Core 1, deliberately. The BLE controller and host are pinned to core 0
@@ -708,11 +831,132 @@ static bool xi_base_eq(const char *a, const char *b)
     return (*a == 0 || *a == '-') && (*b == 0 || *b == '-');
 }
 
+/* ── Regulars ───────────────────────────────────────────────────────────── */
+
+static void xi_reg_path(const xprsidx_t *st, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/regulars.txt", st->dir);
+}
+
+static void xi_reg_load(xprsidx_t *st)
+{
+    char path[96];
+    xi_reg_path(st, path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[XPRSIDX_CALL_LEN + 24];
+    while (st->reg_n < XPRSIDX_REG_MAX && fgets(line, sizeof line, f)) {
+        char call[XPRSIDX_CALL_LEN] = "";
+        unsigned days = 0, last = 0;
+        if (sscanf(line, "%15s %u %u", call, &days, &last) != 3) continue;
+        if (!call[0]) continue;
+        xi_copy(st->reg[st->reg_n].call, XPRSIDX_CALL_LEN, call, -1);
+        st->reg[st->reg_n].days = (uint16_t)days;
+        st->reg[st->reg_n].last_day = last;
+        st->reg_n++;
+    }
+    fclose(f);
+}
+
+static void xi_reg_save(xprsidx_t *st)
+{
+    char path[96];
+    xi_reg_path(st, path, sizeof path);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    for (int i = 0; i < st->reg_n; i++) {
+        fprintf(f, "%s %u %u\n", st->reg[i].call,
+                (unsigned)st->reg[i].days, (unsigned)st->reg[i].last_day);
+    }
+    fclose(f);
+    st->reg_dirty = false;
+}
+
+/*
+ * Note that [call] was heard today. Counts DISTINCT DAYS, not packets: a
+ * station that beacons every minute for one afternoon is a visitor, and one
+ * that says a single thing every morning for a month lives here. Without a
+ * synced clock there is no "today", so nothing is counted rather than
+ * everything landing on day zero.
+ */
+static void xi_reg_note(xprsidx_t *st, const char *call, uint32_t now)
+{
+    if (!call || !*call || now < 1700000000u) return;
+    uint32_t day = now / 86400u;
+    int lowest = 0;
+    for (int i = 0; i < st->reg_n; i++) {
+        if (xi_base_eq(st->reg[i].call, call)) {
+            if (st->reg[i].last_day == day) return;   /* already counted today */
+            st->reg[i].last_day = day;
+            if (st->reg[i].days < 0xFFFF) st->reg[i].days++;
+            st->reg_dirty = true;
+            return;
+        }
+        if (st->reg[i].days < st->reg[lowest].days) lowest = i;
+    }
+    if (st->reg_n < XPRSIDX_REG_MAX) {
+        xi_copy(st->reg[st->reg_n].call, XPRSIDX_CALL_LEN, call, -1);
+        st->reg[st->reg_n].days = 1;
+        st->reg[st->reg_n].last_day = day;
+        st->reg_n++;
+        st->reg_dirty = true;
+        return;
+    }
+    /*
+     * Full. A newcomer takes a slot only when the weakest entry is BOTH a
+     * one-day wonder and gone for a week -- unlike decl[], where first come
+     * wins forever, and unlike plain least-recently-used, which on a busy
+     * channel would hand the table to whoever spoke last.
+     *
+     * The staleness test is load-bearing, not taste. Without it, ninety
+     * passing callsigns against sixteen slots each evict the previous one,
+     * every record marks the table dirty, and the writer task rewrites the
+     * file for the whole of a fill -- which is exactly what it did the first
+     * time this was written.
+     */
+    if (st->reg[lowest].days <= 1 &&
+        day > st->reg[lowest].last_day + 7u) {
+        xi_copy(st->reg[lowest].call, XPRSIDX_CALL_LEN, call, -1);
+        st->reg[lowest].days = 1;
+        st->reg[lowest].last_day = day;
+        st->reg_dirty = true;
+    }
+}
+
+static bool xi_regular(const xprsidx_t *st, const char *call)
+{
+    if (!call || !*call) return false;
+    for (int i = 0; i < st->reg_n; i++) {
+        if (xi_base_eq(st->reg[i].call, call)) return st->reg[i].days >= 2;
+    }
+    return false;
+}
+
+
 static bool xi_declared(const xprsidx_t *st, const char *call)
 {
     for (int i = 0; i < st->decl_n; i++)
         if (xi_base_eq(st->decl[i], call)) return true;
     return false;
+}
+
+/*
+ * XPRS.md 36.11, as a number: 3 kept longest, 1 discarded first.
+ *
+ * Class 3 is mail for somebody who chose this station -- by declaring it with
+ * t:mailbox hold:, or by simply being here most days (xi_regular). Class 2 is
+ * anybody else's mail, carried as a favour. Class 1 is the spool.
+ *
+ * This used to be computed and thrown away: xi_evict_locked called
+ * xi_declared() and discarded the result with a (void) cast, so every record
+ * with a d: survived on XI_F_MAIL alone and classes 2 and 3 were the same
+ * thing. The host test passed because it only asserted that both survived.
+ */
+static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
+{
+    if (!(r->flags & XI_F_MAIL)) return 1;
+    if (xi_declared(st, r->to) || xi_regular(st, r->to)) return 3;
+    return 2;
 }
 
 /* A t:mailbox whose hold: names this station: remember the declarer.
@@ -789,12 +1033,37 @@ static bool xi_evict_locked(xprsidx_t *st)
     uint32_t now = (uint32_t)time(NULL);
     if (now < 1700000000u) now = 0;
     int carried = 0;
-    if (f) {
+    /*
+     * Two passes, because 36.11 is an ORDER and not a set. Pass 1 carries what
+     * the station may not drop: mail for somebody who chose it, and spool its
+     * sender marked as mattering. Pass 2 carries everybody else's mail -- a
+     * favour -- and only while there is still room for it. One pass could not
+     * express that: it would either carry all mail or none, which is exactly
+     * the state this replaces.
+     */
+    /* What the store will hold once this segment is gone. If that is still
+     * over budget, class 2 is what pays: dropping other people's carried mail
+     * is the price of keeping the mail of stations that chose this one. */
+    const uint64_t after_evict =
+        (uint64_t)(st->nseg - 1) * XI_RECS_PER_SEG * sizeof(xi_rec_t);
+    const bool room_for_class2 = after_evict <= st->max_bytes;
+    for (int pass = 0; pass < 2 && f; pass++) {
+        if (pass == 1) {
+            if (!room_for_class2) {
+                XI_LOGI("evict: over budget after the segment goes - "
+                        "carried mail dropped, declared mail kept");
+                break;
+            }
+            rewind(f);
+        }
         xi_rec_t r;
         while (fread(&r, sizeof r, 1, f) == 1) {
             if (!r.len) continue;
             uint32_t until = xi_rec_until(&r);
             if (until && now && now > until) continue;        /* expired */
+            int cls = xi_class_of(st, &r);
+            if (pass == 0 && cls == 2) continue;   /* class 2 waits for pass 2 */
+            if (pass == 1 && cls != 2) continue;   /* already carried */
 
             /* What survives a full store, in the order section 13.5 asks
              * for: mail is carried because somebody is waiting for it, and
@@ -817,13 +1086,12 @@ static bool xi_evict_locked(xprsidx_t *st)
             }
             if (!keep) continue;
 
-            (void)xi_declared(st, r.to);
             r.index = st->next_index++;
             st->count++;
             if (xi_write_rec(st, &r)) carried++;
         }
-        fclose(f);
     }
+    if (f) fclose(f);
     if (st->read_fp && st->read_first == first) xi_read_close(st);
     unlink(path);
     st->nseg--;
@@ -940,6 +1208,7 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
     /* No writer task on the host: retention housekeeping runs inline. */
     while (xi_evict_locked(st)) {}
     if (st->decl_dirty) xi_decl_save(st);
+    if (st->reg_dirty) xi_reg_save(st);
     return ok;
 #else
     if (st->q_count >= XI_QUEUE_LEN) {
@@ -983,6 +1252,16 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     for (int i = 0; i < XI_DEDUP_RING; i++) {
         if (st->dedup[i] == h) return false;      /* heard again, already kept */
     }
+    /* The same announcement with a new clock on it: keep the first, drop the
+     * repeats, so an archive fills with what was said rather than with who
+     * was present. */
+    uint32_t ph = 0;
+    if (xi_is_presence(code)) {
+        ph = xi_presence_hash(wire, len);
+        for (int i = 0; i < XI_PRESENCE_RING; i++) {
+            if (st->pres[i] == ph) return false;
+        }
+    }
 
     char buf[XPRSIDX_CALL_LEN];
     if (xprs_get_str(&p, "f", buf, sizeof buf)) xi_copy(r.from, sizeof r.from, buf, -1);
@@ -1006,10 +1285,17 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
 
     if (r.ts > st->newest_ts) st->newest_ts = r.ts;
     if (code == XI_T_MAILBOX) xi_decl_note(st, &p, r.from);
+    /* Who is actually here. Counted from the AUTHOR of anything stored, so
+     * presence is observed rather than declared -- see xi_reg_note. */
+    xi_reg_note(st, r.from, ts_now);
 
     /* Decided. The card work is somebody else's problem now. */
     st->dedup[st->dedup_pos] = h;
     st->dedup_pos = (st->dedup_pos + 1) % XI_DEDUP_RING;
+    if (ph) {
+        st->pres[st->pres_pos] = ph;
+        st->pres_pos = (st->pres_pos + 1) % XI_PRESENCE_RING;
+    }
     st->next_index++;
     st->count++;
     return xi_queue_rec(st, &r);
@@ -1334,6 +1620,7 @@ static void xi_writer_task(void *arg)
              * (36.11: mail carries forward, the spool goes first). */
             xi_evict_locked(st);
             if (st->decl_dirty) xi_decl_save(st);
+            if (st->reg_dirty) xi_reg_save(st);
             XI_UNLOCK(st);
         }
     }

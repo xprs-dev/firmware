@@ -28,7 +28,7 @@ So transmission is a WINDOW, not a state:
 | `ADV_PERIOD_MS` | 60 000 — how often that window opens |
 | Rest of the minute | receiving |
 
-(`android/app/src/main/kotlin/com/example/iwi/Ble5.kt`.) The window is enforced
+(`android/app/src/main/kotlin/com/xprs/app/Ble5.kt`.) The window is enforced
 by the controller itself — `AdvertisingSet.enableAdvertising(true, duration, 0)`
 — so a missed callback cannot leave the device transmitting for a whole minute.
 Registering a frame while the radio is listening opens the window immediately
@@ -192,11 +192,20 @@ carry it. Direct phone-to-phone broadcast may use the full `maxPayload`.
 `_onBle5Aprs` in `lib/connections/bluetooth/ble_service_io.dart` is the inbound
 path for subtype `0x41`:
 
+Before any of that, the native side has already filtered twice. `onScanResult`
+in `Ble5.kt` drops an advert that carries no `0xFFFF` manufacturer data or whose
+first byte is not the `0x3E` marker, and then suppresses a repeat of the same
+`(address, subtype, payload)` within `SCAN_EVENT_MIN_MS = 750 ms` — a shorter
+window underneath the 130 s one below. Each of those branches increments a
+counter (section 6); none of them logs, because that path runs for every advert
+in the room.
+
 1. Deduplication by payload hash within `kBleBcastDedup = 130 s`. A sender
    re-transmits identical bytes for the duration of the TTL and the receiver
    presents the frame once.
-2. `LogService: BLE5 rx aprs <n>B rssi=<r>`, logged after deduplication. This
-   line establishes whether a frame reached the device at all.
+2. Counted into the `perf: ble5-rx` summary, and logged per frame only under the
+   `ble.debug` preference. It used to be one unconditional log line per frame,
+   which was affordable only because the path was dead — see section 5.
 3. Custody tap, `MeshCustodyDelegate.onAirFrame`: receipts purge parked copies,
    mail for other stations is parked, mail for this station is delivered.
 4. The frame is placed on the `inbound` stream that wapps read through
@@ -206,9 +215,27 @@ The scan is never suspended. Pausing the extended scan while a GATT link is
 active was measured as the difference between 10 of 10 and 0 of 10 messages
 delivered: stations stop receiving announces, Reticulum paths expire, and the
 resulting failures appear unrelated to Bluetooth. `_scanWatchdog` re-arms the
-scan every 2 seconds.
+scan every 2 seconds, off the native `BgService` heartbeat, so it keeps healing
+with the screen off. It is deliberately NOT ref-counted: the BLE5 broadcast lane
+carries the mesh, Reticulum and every XPRS beacon, and is not a wapp-owned
+resource that can be released.
 
 ## 5. Known failure modes
+
+**A stopped scan is not a paused scan.** `Ble5Bus.stopScan()` used to cancel the
+scan EventChannel subscription. Cancelling fires `onCancel` on the native side,
+which nulls the sink `onScanResult` writes to — so adverts kept arriving, kept
+incrementing `scanResults`, and were discarded one line later with nothing
+logged anywhere. Both resume paths (`_resumeBle5Scan`, `_scanWatchdog`) were
+gated on `_scanRefs`, a counter only a wapp's `hal_ble_scan_start` raises, and
+the bus's own 150 s silence watchdog was disabled by the same call clearing
+`_wantScan`. One GATT link — an ESP32 dialling in is enough — therefore left the
+phone deaf for the life of the process while `/api/status` still reported
+`advertising: true`, `ble5: true` and a fresh `dialable` peer, because the
+legacy discovery scan is a separate scan on a separate channel. Symptom to
+recognise: `xprsBeaconsHeard`, `beaconsHeard` and `neighbors` pinned at 0 while
+the phone's own beacons go out and stations reply to them. `rxNoSink` in
+section 6 names this state directly.
 
 **A frame transmitted once may not arrive.** Register it for minutes and
 refresh. The courier transmits at 0, +90 s and +180 s with a 300 s TTL. The
@@ -241,13 +268,30 @@ wapp's own log panel, or the host's `wapp <name>: cmd` lines, rather than adding
 ```sh
 adb -s <device> forward tcp:3458 tcp:3456
 curl -s localhost:3458/api/status | jq '.mesh'   # neighbours, custody, courier
-curl -s localhost:3458/api/log?limit=200         # BLE5 rx aprs, Courier, Mesh
+curl -s localhost:3458/api/log?n=200             # perf: ble5-rx, Courier, Mesh
 ```
 
 ESP32 console at 115200 baud: `status`, `scf`, `scfclear`, `msg <to> <text>`,
 `ack <am>`, `beacon`, `transfers`.
 
-`Ble5Bus.radioStatus()` reports transmission attempts, refusals and the interval
-since any advertisement was last received. It is surfaced under `.mesh.gatt` as
-`advertFailures`, `maxPayload` and `ble5`. Without it, a radio receiving nothing
-and an environment containing no stations are indistinguishable.
+`Ble5Bus.radioStatus()` reports transmission attempts, refusals, the interval
+since any advertisement was last received, and **where the inbound adverts
+went**. It is surfaced under `.mesh.gatt`, refreshed on the 2 s service tick and
+cached (a status request must not cost a platform-channel round trip):
+
+| Field | Reads |
+|---|---|
+| `scanResults` | every advert the radio delivered, before any filtering |
+| `rxEmitted` | how many of those reached Dart |
+| `rxNoSink` | **arrived while nothing was listening** — deaf, not alone |
+| `rxNoMfg` / `rxMarker` | not ours: no `0xFFFF` data, or not the `0x3E` marker |
+| `rxDedup` | suppressed by the 750 ms native window |
+| `scanning` / `wantScan` / `busScanning` | asked-for vs actually registered |
+| `msSinceLastFrame` | silence, in ms |
+
+The composition is the diagnosis. `scanResults` climbing with `rxEmitted` flat
+and `rxNoSink` climbing is a radio that hears perfectly and an app that stopped
+listening — which is exactly what a `stopScan` that cancelled the EventChannel
+subscription produced, silently, for a whole session (section 5). Without these,
+a radio receiving nothing and an environment containing no stations are
+indistinguishable.

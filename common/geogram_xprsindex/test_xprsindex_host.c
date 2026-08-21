@@ -450,6 +450,103 @@ static void test_directory(const char *dir)
 
 /* XPRS.md 36.11: over budget, the spool goes first, custody mail carries
  * forward, and mail for a declared callsign survives everything. */
+/*
+ * A callsign nobody declared, but who is here every day, gets its mail kept
+ * like a declarant's. That is the whole point: somebody present daily has
+ * chosen this station just as surely as one that said so in a t:mailbox, and
+ * before this the only way to matter was to declare.
+ */
+static void test_regulars_earn_class3(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+
+    /* X1HERE turns up on several distinct days; X1GONE only ever once. */
+    char w[300];
+    const uint32_t day0 = 1787000000u;
+    for (int d = 0; d < 5; d++) {
+        snprintf(w, sizeof w,
+                 "t:status f:X1HERE ts:" TS_2026 " m:morning %d", d);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, day0 + (uint32_t)d * 86400u);
+    }
+    snprintf(w, sizeof w, "t:status f:X1GONE ts:" TS_2026 " m:passing through");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+
+    /* Mail for each, then fill past the cap so eviction has to choose. */
+    snprintf(w, sizeof w,
+             "t:message f:X1QZ3N d:X1HERE ts:" TS_2025 " m:for the regular");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "regular mail");
+    snprintf(w, sizeof w,
+             "t:message f:X1QZ3N d:X1GONE ts:" TS_2025 " m:for the stranger");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "stranger mail");
+    for (int i = 0; i < 9000; i++) {
+        snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:filler %d",
+                 i % 90, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    }
+    xprsindex_set_max_bytes(st, 1u * 1024u * 1024u);
+    snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
+
+    xprsidx_query_t q = { .type = -1, .from = "X1QZ3N", .asker = "X1HERE",
+                          .limit = 5 };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) >= 1,
+          "a regular's mail was evicted");
+    xprsindex_close(st);
+}
+
+/*
+ * `only:` is a CALLSIGN (36.6) and `kind:` is a TYPE (25.2). Reading only: as
+ * a type made only:message appear to work while the spec's own only:X5A3F2
+ * matched nothing at all.
+ */
+static void test_only_is_a_callsign(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+
+    const char *a = "t:message f:X1AAAA ts:" TS_2026 " m:from aaaa";
+    const char *b = "t:message f:X1BBBB ts:" TS_2026 " m:from bbbb";
+    const char *o = "t:observation f:X1AAAA ts:" TS_2026 " link:lan peers:1";
+    xprsindex_add(st, a, (int)strlen(a), 0, false, 0);
+    xprsindex_add(st, b, (int)strlen(b), 0, false, 0);
+    xprsindex_add(st, o, (int)strlen(o), 0, false, 0);
+
+    /* only: picks the station, whatever the type. */
+    xprsidx_query_t q = { .type = -1, .only = "X1AAAA", .limit = 10,
+                          .trusted = true };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 2,
+          "only: did not match a callsign across types");
+
+    /* kind: picks the type, whatever the station. */
+    xprsidx_query_t q2 = { .type = xprsidx_type_code("message"), .limit = 10,
+                           .trusted = true };
+    collect_t c2 = { 0 };
+    CHECK(xprsindex_query(st, &q2, collect, &c2) == 2,
+          "kind: did not match a type across stations");
+
+    /* Together they intersect. */
+    xprsidx_query_t q3 = { .type = xprsidx_type_code("message"),
+                           .only = "X1AAAA", .limit = 10, .trusted = true };
+    collect_t c3 = { 0 };
+    CHECK(xprsindex_query(st, &q3, collect, &c3) == 1,
+          "only: and kind: did not intersect");
+
+    /* With neither, a replay serves the talking and not the beacons. */
+    xprsidx_query_t q4 = { .type = -1, .talk_only = true, .limit = 10,
+                           .trusted = true };
+    collect_t c4 = { 0 };
+    CHECK(xprsindex_query(st, &q4, collect, &c4) == 2,
+          "an unfiltered replay handed back presence chatter");
+    xprsindex_close(st);
+}
+
 static void test_retention_priorities(const char *dir)
 {
     rm_rf(dir);
@@ -483,7 +580,17 @@ static void test_retention_priorities(const char *dir)
     snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "post-cap add");
 
-    /* Both pieces of mail must still answer; the evicted spool must not. */
+    /*
+     * 36.11 is an ORDER, not a set. Class 3 -- mail for a station that chose
+     * this one -- must survive; class 2, somebody else's mail carried as a
+     * favour, is what pays when the store is still over budget after the
+     * segment goes.
+     *
+     * The old version of this test asserted only that BOTH survived, which is
+     * why nobody noticed that xi_evict_locked computed the class and threw the
+     * answer away: classes 2 and 3 were the same thing and the test could not
+     * tell.
+     */
     xprsidx_query_t q = { .type = -1, .from = "X1QZ3N", .asker = "X1FAV",
                           .limit = 5 };
     collect_t c = { 0 };
@@ -492,8 +599,16 @@ static void test_retention_priorities(const char *dir)
     xprsidx_query_t q2 = { .type = -1, .from = "X1QZ3N", .asker = "X1WHO",
                            .limit = 5 };
     collect_t c2 = { 0 };
-    CHECK(xprsindex_query(st, &q2, collect, &c2) >= 1,
-          "custody mail was evicted");
+    size_t custody = xprsindex_query(st, &q2, collect, &c2);
+    xprsidx_stats_t pressure;
+    xprsindex_stats(st, &pressure);
+    const uint64_t after = (uint64_t)pressure.segments * 4096u * 320u;
+    if (after > 1u * 1024u * 1024u) {
+        CHECK(custody == 0,
+              "custody mail outlived the budget it should have paid");
+    } else {
+        CHECK(custody >= 1, "custody mail dropped while there was room");
+    }
     xprsidx_query_t q3 = { .type = -1, .from = "X1SP00", .limit = 500,
                            .trusted = true };
     collect_t c3 = { 0 };
@@ -525,6 +640,8 @@ int main(void)
     test_directory(dir);
     test_verifies_what_it_stores(dir);
     test_retention_priorities(dir);
+    test_regulars_earn_class3(dir);
+    test_only_is_a_callsign(dir);
     rm_rf(dir);
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

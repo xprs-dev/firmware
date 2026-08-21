@@ -78,6 +78,8 @@ static char s_pass[64];
  * archive has opened its files. The floor catches a step change -- a
  * setting that stopped being applied -- not ordinary drift. */
 #define M5_HEAP_FLOOR 6000
+
+
 #include "xprs_auth.h"
 #include "xprs_ota.h"
 #include "xprs_hotspot.h"
@@ -91,6 +93,40 @@ static char s_pass[64];
 #include "esp_system.h"
 
 static const char *TAG = "xprs";
+
+/* Released once the config and the publisher key exist; see the call site.
+ * Weak so boards without common/xprs_script still link. */
+__attribute__((weak)) void xs_app_ready(void) { }
+
+/* One boot-trace line, and it reports INTERNAL memory on purpose.
+ *
+ * docs/esp32.md's whole heap-by-boot-stage method rests on these marks, and
+ * esp_get_free_heap_size() quietly stopped being the right number the day a
+ * board grew PSRAM: it counts eight megabytes that a task stack, a DMA
+ * buffer, or anything touched while the flash cache is down can never use.
+ * The T-Deck proved it by reporting 8,367,348 bytes free while the HTTP
+ * server could not get a 6,144-byte stack.
+ *
+ * So: internal free, internal largest block, internal minimum-ever -- the
+ * three numbers that actually decide whether the next subsystem starts --
+ * and the PSRAM total alongside, separately, where it cannot be mistaken
+ * for headroom it is not. Identical output on a board without PSRAM. */
+static void heap_mark(const char *stage)
+{
+    unsigned internal = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    unsigned largest  =
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    unsigned min_ever =
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+#if CONFIG_SPIRAM
+    unsigned psram = (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    ESP_LOGI(TAG, "heap %s: internal %u (largest %u, min %u) + psram %u",
+             stage, internal, largest, min_ever, psram);
+#else
+    ESP_LOGI(TAG, "heap %s: internal %u (largest %u, min %u)",
+             stage, internal, largest, min_ever);
+#endif
+}
 
 /* This station. Derived from the MAC so two boards never collide, unless NVS
  * carries one an operator chose. X5 marks it as an experimental station rather
@@ -758,7 +794,21 @@ static void status_task(void *arg)
         /* §23.7's deadline: the one thing that guarantees a station that moved
          * comes back. Cheap, so it runs on the fast tick, not the log's. */
         xprschan_tick();
-        if (++n % 120 == 0) air_identity();       /* every 60 s */
+        /*
+         * Section 18.1: "every 30 minutes is a reasonable interval on a quiet
+         * channel". This was every 60 s, and because each announcement carries
+         * a fresh ts:/epoch: every one was a NEW record in every archive that
+         * heard it -- measured on a bench station, 120 of the newest 200
+         * records were one neighbour's identity and not one was a message. A
+         * key binding does not change; saying so once a minute buys nothing
+         * and costs everybody's store.
+         *
+         * First airing stays early (n small) so a station that just came up is
+         * findable without a half-hour wait -- it is exactly the one its
+         * neighbours have not heard of.
+         */
+        n++;
+        if (n == 60 || n % 3600 == 0) air_identity();     /* 30 s, then 30 min */
 
         /* Rollback self-test (25.8). A new image is on probation until it
          * has held together for two minutes: the API listening, a bearer
@@ -795,10 +845,12 @@ static void status_task(void *arg)
         xh_report(false);
         xh_heap_floor(M5_HEAP_FLOOR);
 
-        ESP_LOGW(TAG, "alive %us heap=%u call=%s ch=%u espnow rx=%u tx=%u "
+        ESP_LOGW(TAG, "alive %us heap=%u/%u call=%s ch=%u espnow rx=%u tx=%u "
                       "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u",
                  (unsigned)(esp_timer_get_time() / 1000000ULL),
-                 (unsigned)esp_get_free_heap_size(), s_call,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                 s_call,
                  xprsnow_channel(), (unsigned)rx, (unsigned)tx,
                  (unsigned)cancelled, (unsigned)dropped,
                  (unsigned)done, (unsigned)issued, (unsigned)failed,
@@ -1664,8 +1716,9 @@ static void idx_air(const char *bearer, const char *wire, int len)
     /* One line per replayed packet: a replay that airs nothing is the
      * failure mode that costs a day, and a page is at most a handful. */
     ESP_LOGI(TAG, "replay on %s: %.*s", bearer, len > 70 ? 70 : len, wire);
-    if (strcmp(bearer, "espnow") == 0) xprsnow_send(wire, len);
-    else                               xprslan_send(wire, len);
+    if (strcmp(bearer, "espnow") == 0)    xprsnow_send(wire, len);
+    else if (strcmp(bearer, "lora") == 0) xprslora_send(wire, len);
+    else                                  xprslan_send(wire, len);
 }
 
 static void idx_result(const char *bearer, const char *to, const char *cmdid,
@@ -1759,6 +1812,36 @@ static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
     return true;
 }
 
+/*
+ * A parked ask this station cannot serve -- no index mounted, or the operator
+ * switched the indexer off. Say so and free the slot.
+ *
+ * `pending` used to be set on accept and cleared only inside
+ * idx_answer_history(), which is not reached in either of those states. So it
+ * latched: seen_note()'s "one at a time" guard then dropped every later ask,
+ * and the station went silent for the rest of its uptime with no 404, no 429
+ * and nothing in the log to say why. An archiver that cannot serve is over
+ * budget as far as the asker is concerned, and 429 is the code that says
+ * "not now" without claiming the window was empty.
+ */
+static void idx_refuse_history(void)
+{
+    char wire[XPRSIDX_WIRE_MAX + 1];
+    char bearer[7];
+    int len = s_ask.len;
+    memcpy(wire, s_ask.wire, len + 1);
+    snprintf(bearer, sizeof bearer, "%s", s_ask.bearer);
+    s_ask.pending = false;
+
+    xprs_t p;
+    if (!xprs_parse(wire, len, &p)) return;
+    char from[16], cmdid[8];
+    if (!xprs_get_str(&p, "f", from, sizeof from)) return;
+    xprs_id(&p, cmdid);
+    ESP_LOGW(TAG, "history ask from %s refused: indexer unavailable", from);
+    idx_result(bearer, from, cmdid, 429);
+}
+
 /* One heard `cmd:history`, on idx_task: the check-everything-then-replay
  * shape of the Dart responder (xprs_history_server.dart) and the dongle,
  * paced a packet per 1500 ms so the replay never owns the channel. */
@@ -1806,15 +1889,22 @@ static void idx_answer_history(void)
         return;
     }
 
-    char since[24] = "", until[24] = "", only[16] = "";
+    char since[24] = "", until[24] = "", only[16] = "", kind[16] = "";
     xprs_get_str(&p, "since", since, sizeof since);
     xprs_get_str(&p, "until", until, sizeof until);
     xprs_get_str(&p, "only", only, sizeof only);
+    xprs_get_str(&p, "kind", kind, sizeof kind);
 
+    /* `only:` is a CALLSIGN (36.6) and `kind:` is a TYPE (25.2). This used to
+     * read only: as a type, which made only:message work by accident and the
+     * spec's own only:X5A3F2 match nothing at all. With neither given, serve
+     * the talking rather than the beacons -- see xi_is_talk. */
     xprsidx_query_t q = {
         .since_ts = since[0] ? xprsindex_ts_to_epoch(since, strlen(since)) : 0,
         .until_ts = until[0] ? xprsindex_ts_to_epoch(until, strlen(until)) : 0,
-        .type = only[0] ? xprsidx_type_code(only) : -1,
+        .type = kind[0] ? xprsidx_type_code(kind) : -1,
+        .only = only[0] ? only : NULL,
+        .talk_only = !kind[0],
         .asker = from,
         .limit = HIST_PAGE + 1,
         .newest_first = true,
@@ -1911,8 +2001,23 @@ static void idx_task(void *arg)
             xprslan_send(w, n);
         }
 
-        if (s_ask.pending && s_index && xcfg_get_bool("index_on", true))
-            idx_answer_history();
+        if (s_ask.pending) {
+            /*
+             * The slot is cleared on EVERY path out, not only the one that
+             * answers. It used to be set on accept and cleared only inside
+             * idx_answer_history(), which this line would not reach with the
+             * index unmounted or the indexer switched off -- so `pending`
+             * latched, `seen_note` dropped every later ask at its "one at a
+             * time" guard, and the station went silent for good with no 404,
+             * no 429 and nothing in the log. Say so instead: an archiver that
+             * cannot serve is over budget as far as the asker is concerned.
+             */
+            if (s_index && xcfg_get_bool("index_on", true)) {
+                idx_answer_history();
+            } else {
+                idx_refuse_history();
+            }
+        }
 
         /* The verify, the decision and the answer for a parked update --
          * on this task because it can afford the curve work. */
@@ -2489,6 +2594,18 @@ void xapp_run(const xapp_board_t *board)
         xcfg_set("fwkey", s_board->fw_key);
     if (!xcfg_get("own1", "")[0] && s_board->fw_owner && s_board->fw_owner[0])
         xcfg_set("own1", s_board->fw_owner);
+    if (!xcfg_get("scriptkey", "")[0] && s_board->script_key && s_board->script_key[0])
+        xcfg_set("scriptkey", s_board->script_key);
+
+    /* Only NOW may the script host load anything: it needs xcfg_init() to
+     * have run and the publisher key above to be seeded, and both happen
+     * here, well after app_main claimed the script task's stack.
+     *
+     * Same shape as relay_task on the T-Dongle (docs/esp32.md): claim the
+     * big stack at the top of app_main where the heap is still one block,
+     * then block on a flag until the rest of the station is ready. Weak, so
+     * a board that does not link the script host gets the no-op. */
+    xs_app_ready();
     {
         static xota_cfg_t oc;
         oc.board = s_board->board_id;
@@ -2527,13 +2644,37 @@ void xapp_run(const xapp_board_t *board)
     xh_expect(XH_ADDR,  true);
     xh_expect(XH_INDEX, true);
 
-    ESP_LOGI(TAG, "heap before wifi: %u (largest %u)",
-             (unsigned)esp_get_free_heap_size(),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    heap_mark("before wifi");
     wifi_up();
-    ESP_LOGI(TAG, "heap after wifi: %u (largest %u)",
-             (unsigned)esp_get_free_heap_size(),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    heap_mark("after wifi");
+
+    /* The HTTP server starts HERE, and the position is a memory decision,
+     * not a matter of taste. docs/esp32.md: "the boot order is the
+     * allocator -- whoever starts last gets the fragments."
+     *
+     * httpd creates its own task with a 6,144-byte stack (xprs_api.c), and
+     * a task stack must be INTERNAL memory. Measured on the T-Deck with
+     * PSRAM on, this is what the internal heap looks like across boot:
+     *
+     *     before wifi   173,975 free, largest 63,488
+     *     after wifi     50,171 free, largest 47,104   <- we are here
+     *     at the old call site, after the bearers, the radio and the index:
+     *                     6,459 free, largest  6,144
+     *
+     * httpd asked for 6,144 against a largest block of 6,144 and lost, every
+     * boot, and the station served nothing on the LAN while gossiping
+     * happily over ESP-NOW -- the exact presentation docs/esp32.md records
+     * for this bug. Asked here it sees a 47 KB block.
+     *
+     * Starting before the network has an address is safe and deliberate:
+     * httpd binds a socket, it does not need a route, and nothing can
+     * arrive in the gap. xprs_api_start() keeps a POINTER to the config, so
+     * the index handle that idx_task fills in later is picked up live; a
+     * request that beats it gets an honest 404 rather than a stale answer. */
+    s_api_cfg.callsign = s_call;
+    if (xprs_api_start(&s_api_cfg) == ESP_OK)
+        xcfg_share_attach(xprs_api_httpd());
+    heap_mark("after api");
 
     /* A wall clock makes since:/until: windows mean something; without one
      * the index still works, ordered by its own monotonic index. AFTER
@@ -2627,9 +2768,9 @@ void xapp_run(const xapp_board_t *board)
         /* The API (spec/API-HTTP.md): always on when the network is. The
          * config share joins the same server so its toggle opens and closes
          * doors, not servers. */
-        s_api_cfg.callsign = s_call;
-        if (xprs_api_start(&s_api_cfg) == ESP_OK)
-            xcfg_share_attach(xprs_api_httpd());
+        /* The server itself was started right after wifi_up() -- see the
+         * note there. What is left here is everything that only needs its
+         * handle, and which is cheap. */
         /* The walk-up hotspot rides the same server. With a STA up the AP
          * shares its channel (one radio), so ESP-NOW is untouched; alone it
          * sits on the ESP-NOW fallback channel. */
@@ -2643,10 +2784,7 @@ void xapp_run(const xapp_board_t *board)
             if (want && want[0]) snprintf(ssid, sizeof ssid, "%s", want);
             else snprintf(ssid, sizeof ssid, "XPRS-%s", s_call);
             xprs_hotspot_start(ssid, xprs_api_httpd());
-            ESP_LOGI(TAG, "heap after hotspot: %u (largest %u)",
-                     (unsigned)esp_get_free_heap_size(),
-                     (unsigned)heap_caps_get_largest_free_block(
-                         MALLOC_CAP_8BIT));
+            heap_mark("after hotspot");
         }
         xcfg_share_set_log("/idx/log/cur.txt", "/idx/log/prev.txt");
         if (xcfg_get_bool("share_on", false) &&

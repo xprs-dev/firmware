@@ -166,6 +166,21 @@ typedef struct {
     int      type;          /* -1 = any; else an xprsidx_type_t */
     const char *from;       /* NULL/"" = any author */
     /**
+     * XPRS.md 36.6 `only:` -- a CALLSIGN, matched as author or addressee.
+     * NULL/"" = any. This is not a type filter: `kind:` names a type and maps
+     * to @ref type above. Reading `only:` as a type made `only:message` appear
+     * to work while the spec's own `only:X5A3F2` matched nothing.
+     */
+    const char *only;
+    /**
+     * Serve conversation only -- what a person catching up actually wants.
+     * Set when a `cmd:history` named no `kind:`: an archiver keeps everything
+     * it hears, and on any real channel presence beacons outnumber talk, so an
+     * unfiltered page of twelve is twelve beacons. Ignored when @ref type
+     * names one type explicitly.
+     */
+    bool     talk_only;
+    /**
      * Who is asking. Mail (a record with d:) is emitted ONLY when this matches
      * its `to` or its `from` — the section 36 rule, enforced here rather than
      * left to the caller, because the caller is a radio protocol and forgetting
