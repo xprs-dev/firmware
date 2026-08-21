@@ -628,6 +628,10 @@ static void test_retention_priorities(const char *dir)
 int main(void)
 {
     const char *dir = "/tmp/xprsidx_test";
+    /* Line-buffered: piped into a log or a test runner, stdout is otherwise
+     * fully buffered and NOTHING appears until the process exits. A slow run
+     * then looks like a hung one, which is exactly how this was misread. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
     printf("xprsindex host tests\n");
     test_recent_of_a_type(dir);
     test_a_year_ago(dir);

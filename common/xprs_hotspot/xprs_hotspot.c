@@ -12,18 +12,27 @@
 
 static const char *TAG = "xprs_hotspot";
 
-extern const char XPRS_CHAT_PAGE[];
-extern const size_t XPRS_CHAT_PAGE_LEN;
+extern const unsigned char XPRS_CHAT_PAGE_GZ[];
+extern const size_t XPRS_CHAT_PAGE_GZ_LEN;
 
-/* The page, chunked -- 15 KB in one httpd_resp_send would want a contiguous
- * buffer the heap should not be asked for. */
+/* The page, gzipped in flash and chunked out -- 38 KB of HTML, JS and a
+ * base64 WOFF2 compresses to 18 KB, and it never has to be decompressed
+ * here: the browser does that. Chunked because one httpd_resp_send would
+ * want a contiguous buffer the heap should not be asked for.
+ *
+ * Content-Encoding: gzip is sent unconditionally rather than switched on
+ * Accept-Encoding. Every captive-portal WebView is Chrome or WebKit and
+ * every one of them accepts gzip; the only clients that would not are the
+ * bare connectivity probes, which discard the body anyway. */
 static esp_err_t h_page(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
-    for (size_t off = 0; off < XPRS_CHAT_PAGE_LEN; off += 1024) {
-        size_t n = XPRS_CHAT_PAGE_LEN - off;
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    for (size_t off = 0; off < XPRS_CHAT_PAGE_GZ_LEN; off += 1024) {
+        size_t n = XPRS_CHAT_PAGE_GZ_LEN - off;
         if (n > 1024) n = 1024;
-        if (httpd_resp_send_chunk(req, XPRS_CHAT_PAGE + off, n) != ESP_OK)
+        if (httpd_resp_send_chunk(req, (const char *)XPRS_CHAT_PAGE_GZ + off,
+                                  n) != ESP_OK)
             break;
     }
     return httpd_resp_send_chunk(req, NULL, 0);

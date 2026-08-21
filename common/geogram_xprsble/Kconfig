@@ -1,0 +1,24 @@
+menu "XPRS over BLE5"
+
+config XPRSBLE_BACKEND_TINYNIMBLE
+    bool "Use tinynimble instead of the NimBLE host"
+    default n
+    help
+        Speak to the BLE controller directly over HCI rather than through
+        NimBLE. The radio behaviour is identical -- one non-connectable
+        extended advertising set at 160 ms and one passive extended scan at
+        0x0060/0x0050 -- and the two have been shown hearing each other on the
+        air in both directions.
+
+        Measured on a T-Deck, same board and same test, only the stack changed:
+        21 KB less flash, 3.3 KB less static RAM, and 19,108 bytes less heap at
+        BLE init, leaving 22,300 bytes more free at steady state.
+
+        The catch: tinynimble has no GATT and no connections. A board that must
+        serve a GATT characteristic to phones needs the NimBLE host and cannot
+        use this. Everything that only broadcasts and listens can.
+
+        Turn CONFIG_BT_NIMBLE_ENABLED off as well, or the host is still linked
+        and the flash saving does not appear.
+
+endmenu

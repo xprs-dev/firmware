@@ -39,6 +39,14 @@
 #define TDECK_TFT_CS       12
 #define TDECK_TFT_DC       11
 #define TDECK_TFT_BL       42
+
+/* Bench bisect for a dark panel, OFF by default. Set to 1 to paint the glass
+ * red then green straight from st7789_fill_color() at boot, before LVGL
+ * exists. It answers the one question a UART framedump cannot: the dump is
+ * taken inside the flush callback, so a perfect screenshot proves the
+ * FRAMEBUFFER is right and says nothing about what the panel received.
+ * Colours appear -> panel, backlight, SPI and CS are fine. */
+#define TDECK_PANEL_SELFTEST 0
 #define TDECK_TFT_RST      (-1)   /* the panel resets with the board */
 #define TDECK_SD_CS        39     /* deselect: idle HIGH */
 #define TDECK_RADIO_CS      9     /* deselect: idle HIGH */

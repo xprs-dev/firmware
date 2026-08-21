@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "xprs_psram.h"
 
 static const char *TAG = "xst";
 
@@ -23,10 +24,10 @@ static char s_call[10];
 static int  s_tz_off;
 
 /* ── Who we have heard, by name ─────────────────────────────────────── */
-static xst_dev_t s_seen[XST_SEEN_MAX];
+static XPRS_PSRAM_BSS xst_dev_t s_seen[XST_SEEN_MAX];
 
 /* ── The chat ring ──────────────────────────────────────────────────── */
-static xst_chat_t s_chat[XST_CHAT_MAX];
+static XPRS_PSRAM_BSS xst_chat_t s_chat[XST_CHAT_MAX];
 static int s_chat_n;              /* total ever; ring pos = n % MAX */
 static bool s_chat_dirty;         /* something to write to storage */
 static uint32_t s_chat_seq;       /* arrival counter, survives eviction */
@@ -37,9 +38,9 @@ typedef struct {
     uint32_t rx, tx;
     uint16_t dev, pad;
 } sbucket_t;
-static sbucket_t s_sb10[XST_SB10_N];
+static XPRS_PSRAM_BSS sbucket_t s_sb10[XST_SB10_N];
 static uint32_t  s_sb10_id[XST_SB10_N];
-static sbucket_t s_sbday[XST_SBDAY_N];
+static XPRS_PSRAM_BSS sbucket_t s_sbday[XST_SBDAY_N];
 static uint32_t  s_sbday_id[XST_SBDAY_N];
 
 /* Distinct devices in the LIVE 10-minute bucket only. */
@@ -562,7 +563,7 @@ void xst_stats_load(const char *path)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return;
-    static stats_blob_t bl;      /* static: too big for a task stack */
+    static XPRS_PSRAM_BSS stats_blob_t bl;  /* too big for a task stack */
     bool ok = fread(&bl, sizeof bl, 1, f) == 1 && bl.magic == STATS_MAGIC;
     fclose(f);
     if (!ok) return;
@@ -577,7 +578,7 @@ void xst_stats_load(const char *path)
 
 void xst_stats_save(const char *path)
 {
-    static stats_blob_t bl;
+    static XPRS_PSRAM_BSS stats_blob_t bl;
     bl.magic = STATS_MAGIC;
     LOCK();
     memcpy(bl.sb10, s_sb10, sizeof bl.sb10);
@@ -586,7 +587,13 @@ void xst_stats_save(const char *path)
     memcpy(bl.sbday_id, s_sbday_id, sizeof bl.sbday_id);
     UNLOCK();
     FILE *f = fopen(path, "wb");
-    if (!f) return;
+    if (!f) {
+        /* Silent until now, and it fires on a ten-minute timer, so the whole
+         * statistics history could stop persisting without a single line of
+         * evidence beyond vfs_fat's own complaint. */
+        ESP_LOGE(TAG, "stats: cannot write %s", path);
+        return;
+    }
     fwrite(&bl, sizeof bl, 1, f);
     fclose(f);
 }

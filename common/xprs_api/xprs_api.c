@@ -96,7 +96,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\"}",
         s_cfg->app, s_cfg->board, s_cfg->callsign,
         (unsigned long)(esp_timer_get_time() / 1000000),
-        (unsigned)esp_get_free_heap_size(),
+        /* Internal: see the note in the diag handler. */
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         time_synced() ? "true" : "false",
         time_synced() ? (unsigned long)time(NULL) : 0,
         s_cfg->tz ? s_cfg->tz : "+00:00");
@@ -442,18 +443,27 @@ static esp_err_t h_diag(httpd_req_t *req)
         "\"boot\":{\"reason\":%d,\"uptime_s\":%u},"
         "\"heap\":{\"free\":%u,\"largest\":%u,\"min_ever\":%u},"
         "\"part\":{\"running\":\"%s\",\"state\":%d,\"rollback\":%s},"
-        "\"ota\":{\"busy\":%s,\"pct\":%d}",
+        "\"ota\":{\"busy\":%s,\"pct\":%d},"
+        "\"psram\":%u",
         d ? d->version : "?", d ? d->project_name : "?",
         d ? d->idf_ver : "?", d ? d->date : "?", d ? d->time : "?",
         (int)esp_reset_reason(),
         (unsigned)(esp_timer_get_time() / 1000000ULL),
-        (unsigned)esp_get_free_heap_size(),
+        /* INTERNAL, all three. They used to be free=total, largest=internal,
+         * min_ever=total, which on a PSRAM board reads as 8.3 MB free with a
+         * 17 KB largest block -- three numbers about two different memories
+         * in one object. Internal is the one that decides whether a task
+         * stack, a DMA buffer or a response buffer can be had; the PSRAM
+         * total is reported separately below where it cannot be mistaken for
+         * headroom. Same values as before on a board without PSRAM. */
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
                                                    MALLOC_CAP_8BIT),
-        (unsigned)esp_get_minimum_free_heap_size(),
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
         run ? run->label : "?", (int)st,
         esp_ota_check_rollback_is_possible() ? "true" : "false",
-        xota_busy() ? "true" : "false", xota_progress());
+        xota_busy() ? "true" : "false", xota_progress(),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     if (have_cd && n > 0 && n < 900)
         n += snprintf(out + n, 900 - n,
                       ",\"crash\":{\"task\":\"%s\",\"pc\":\"0x%08lx\"}",

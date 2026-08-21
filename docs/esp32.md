@@ -477,6 +477,8 @@ healthy:
 | what failed | how it presented |
 |---|---|
 | `xTaskCreate` could not get 8 KB | no beacons, no announcements, no clock -- everything else fine |
+| `st7789_flush`'s return was discarded by the board's `display_flush` | a panel that never received a byte looked identical to one that did: LVGL renders, the flush callback runs, the UART framedump is **perfect**, and the glass stays dark with nothing in the log |
+| `esp_get_free_heap_size()` on a board with PSRAM | the heap-floor alarm can never fire again, because free is permanently ~8 MB -- see "PSRAM does not mean more memory" |
 | `httpd_start` could not get 5,120 in one piece | served nothing on the LAN while gossiping happily over ESP-NOW and BLE |
 | `nimble_port_freertos_init` could not get 5,120 either | BLE never came up, so `relay_task` (which waits on `on_sync()`) stayed parked forever, taking the OTA self-test and the `cmd:update` answer with it |
 | a block of `sdkconfig.defaults` vanished in a repo move | nothing at all, for months, until 2,912 bytes of new static RAM ended it |
@@ -529,6 +531,28 @@ Both are library calls that create a task internally with a fixed stack. **If a
 component starts a task, its position in `app_main` is a memory decision**, and
 the fix in both cases was to move the call ahead of WiFi, the card and the
 bearers rather than to trim anything.
+
+**It happened a third time, on the T-Deck, and this time by exactly zero
+bytes.** `xprs_api_start()` was the last call in `xapp_run()` -- after WiFi, the
+LAN and ESP-NOW bearers, the SX1262 and the index. httpd asks for a 6,144-byte
+task stack. Measured internal heap across that boot:
+
+| after | internal free | largest block |
+|---|---|---|
+| before wifi | 174,824 | 110,592 |
+| after wifi | 101,180 | 38,912 |
+| at the old call site | **6,459** | **6,144** |
+
+Asked for 6,144 against a largest block of 6,144 and lost, every boot, and the
+station served nothing on the LAN while gossiping happily over ESP-NOW -- the
+same presentation as the `httpd_start` row above. Hoisted to immediately after
+`wifi_up()` it sees a 40,960-byte block. This affects **every board that uses
+the shared `xapp_run()`**, not just the one it was found on.
+
+Starting httpd before the interface has an address is safe and deliberate: it
+binds a socket, it does not need a route, and `xprs_api_start()` keeps a
+POINTER to its config, so the index handle `idx_task` fills in later is picked
+up live and a request that beats it gets an honest 404.
 
 ### Freeing memory does not fix an over-committed board -- it moves the victim
 
@@ -644,10 +668,263 @@ which from the network looks exactly like a station that answers, then stops,
 then answers again. Check the console for `***ERROR*** A stack overflow in task`
 before believing anything about the network.
 
-## Memory budget (no PSRAM)
+## PSRAM does not mean more memory
+
+*T-Deck (N16R8, 8 MB octal PSRAM), measured 2026-08-21 on X3R8XX. Read this
+before turning `CONFIG_SPIRAM` on anywhere.*
+
+PSRAM adds eight megabytes of memory that **a task stack, a DMA buffer, or
+anything touched while the flash cache is disabled can never live in**. Turning
+it on also costs internal RAM. The first attempt on this board found 8 MB, passed
+its memory test, and left the station **worse**:
+
+```
+esp_psram: Found 8MB PSRAM device / Speed: 80MHz / SPI SRAM memory test OK
+xprs: heap before wifi: 8,495,712
+E xprs_ui: draw buffer: 4480 bytes refused (free 8348892, largest DMA 64)
+           -- the panel stays dark
+E xprs:    display init failed - running headless
+E xprs_api: API failed to start: ESP_ERR_HTTPD_TASK
+```
+
+Eight megabytes free and the panel could not have four kilobytes of it. This is
+"freeing memory does not fix an over-committed board" arriving from a new
+direction: what matters is not how much memory is free, it is whether the right
+**kind** is free, and whether every subsystem actually started.
+
+### The controlled A/B, which is the only honest way to judge this
+
+Same commit, `CONFIG_SPIRAM` the only variable. Internal free heap by stage:
+
+| | PSRAM off | on, cache 32 | on, cache 16 |
+|---|---|---|---|
+| before wifi | 180,528 | 174,824 | 174,824 |
+| after wifi | 133,952 | 73,916 | **101,180** |
+| after api | 122,316 | 62,396 | **89,712** |
+| after hotspot | 31,116 | 4,272 | **25,580** |
+| largest block | 21,504 | 1,920 | **17,408** |
+| heap floor | silent | **FIRING** | silent |
+| subsystems | all up | **UI + DNS tasks died** | all up |
+
+Final cost: **5,536 bytes of internal RAM for 8,357,432 bytes of external.**
+Worth it -- but only with both settings below, and the middle column is what
+happens if you miss the second one.
+
+### Two settings that are not optional, and are not obvious
+
+**1. `SPIRAM_USE_CAPS_ALLOC`, not `SPIRAM_USE_MALLOC`.** Buried in
+`esp_wifi/Kconfig`:
+
+```
+config ESP_WIFI_DYNAMIC_TX_BUFFER
+    depends on !SPIRAM_USE_MALLOC
+```
+
+Backing ordinary `malloc()` with PSRAM therefore **forces WiFi onto static TX
+buffers** -- 16 of them, ~1.6 KB each, claimed up front in internal RAM and never
+released. WiFi's internal cost went 46,576 -> 123,804 bytes. `CAPS_ALLOC` makes
+PSRAM reachable only through `heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`, which
+also means nothing lands there by accident, and
+`CONFIG_FATFS_ALLOC_PREFER_EXTRAM` still applies (it depends on either mode), so
+the FatFs 4 KB-per-open-file sector caches still move out -- which was the actual
+"we had to turn the SD card off for the OTA to fit" complaint.
+
+**2. `ESP_WIFI_CACHE_TX_BUFFER_NUM=16`.** This queue only exists when PSRAM does
+(`depends on SPIRAM`) and defaults to **32**, each entry copying an uplayer
+packet. That default alone is ~27 KB of internal RAM nobody asked for, and it is
+the difference between the middle and right columns above -- at 32 this board
+loses its screen. 16 is the Kconfig floor.
+
+Also: `SPIRAM_IGNORE_NOTFOUND=y` is the boot-loop insurance -- without it, "PSRAM
+configured but not detected" is a startup panic indistinguishable from a bad
+flash. Keep `SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` off; this firmware writes flash
+(OTA, coredump), which disables the cache on **both** cores. And 80 MHz, not
+120: IDF's own help calls octal-at-120 experimental and warns it "will crash
+randomly" after a ~20 degree swing.
+
+`models/tdeck/firmware/sdkconfig.defaults` carries every one of these with its
+measurement written next to it. Copy that block, not a blog post.
+
+### PSRAM silently disables the heap alarm -- fix the instrument first
+
+`esp_get_free_heap_size()` counts PSRAM. On a board that has it:
+
+- `xh_heap_floor()` can never fire again, because free is permanently ~8 MB.
+  That is the check this file calls "the thing that would have caught the
+  missing sdkconfig block on the first boot instead of months later".
+- the `alive` heartbeat reported `heap=8367348` while the HTTP server and the
+  index writer were **both** failing to get a task stack.
+- `/api/diag` reported `free` and `min_ever` as totals while `largest` was
+  internal -- three numbers about two different memories in one JSON object.
+
+All three now measure `MALLOC_CAP_INTERNAL`, with PSRAM reported separately and
+labelled (`heap_mark()` in `xprs_app.c`, `xh_heap_floor()`, the API handlers).
+Identical output on a board without PSRAM. **Nothing about the configuration
+above was diagnosable until this was fixed** -- every round before it was
+guesswork. If you add PSRAM to another board, check its instruments before you
+tune anything.
+
+### Recovery, so a bad PSRAM config is not a brick
+
+Octal PSRAM claims GPIO 33-37; check the board's pin map before enabling it (the
+T-Deck uses 0,1,2,3,8-13,15-18,38-42,45 -- clear). If the config is wrong the
+symptom is a boot loop that looks exactly like a bad flash. On the T-Deck GPIO 0
+is the trackball click **and** the boot strapping pin, so holding the trackball
+down through a reset drops into ROM download mode, and `platformio.ini` already
+pins `--no-stub`, which is what that mode needs.
+
+### The one thing PSRAM is genuinely good for: moving `.bss` out of DRAM
+
+Once PSRAM is on and behaving, its real payoff is not "eight more megabytes of
+heap" -- almost nothing may live there. It is that **large CPU-only static
+buffers can stop costing internal DRAM.** Measured on X3R8XX, 2026-08-21, this
+moved 103,496 bytes and took the internal heap at the tightest point of the
+boot from 3,492 bytes (largest block 1,600) to 70,940 (largest 31,744):
+
+1. **LVGL's pool.** LVGL's TLSF heap is a plain array in `.bss`, sized by
+   `CONFIG_LV_MEM_SIZE_KILOBYTES` and spent whether the UI uses it or not --
+   50,249 B on this board. `CONFIG_LV_MEM_CUSTOM=y` plus
+   `common/tinylv_mem/`, a PSRAM-preferring allocator, moves it. The board
+   `CMakeLists.txt` `-D`s `LV_MEM_CUSTOM_INCLUDE` / `_ALLOC` / `_FREE` /
+   `_REALLOC` at the LVGL component; they are `#ifndef`-guarded in
+   `lv_conf_internal.h`, so the managed component is never patched.
+2. **Our own big statics.** `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y`
+   plus `XPRS_PSRAM_BSS` (`common/geogram_common/include/xprs_psram.h`) on
+   chat rings, device tables, statistics buckets and table-row scratch.
+
+**What may NOT carry the attribute**, because PSRAM is reached through the
+cache and is unreachable whenever the cache is off:
+
+- anything touched from an ISR;
+- anything touched by DMA -- the LVGL draw buffer and SPI TX buffers stay
+  internal, allocated with `MALLOC_CAP_DMA`;
+- anything read or written while flash is being written (NVS, OTA).
+
+The log ring is the judgement call in this tree: it is filled from a `vprintf`
+hook, so it was left internal. Six kilobytes is not worth a rare crash.
+
+### Trimming flash does not help a board that is short of DRAM
+
+This is worth stating plainly because it cost a day to learn twice. On the
+T-Deck, 171,308 bytes of flash were removed in one session -- LVGL widgets,
+the mbedTLS/WPA3 tail, a gzipped hotspot page -- and **the board could not
+feel any of it.** Flash sat at 63 %, and had sat at 71 % before. Nothing about
+the station changed until the DRAM moved.
+
+Worse, one of those flash trims *crashed the board*. Applied on its own, the
+mbedTLS config trim produced, on every boot:
+
+```
+W wifi: alloc eb len=752 type=4 fail
+Guru Meditation Error: Core 0 panic'ed (LoadProhibited)
+  ieee80211_hostap_attach <- wifi_softap_start <- _do_wifi_start
+```
+
+Nothing was wrong with the crypto -- secp256k1 still derived the right npub.
+The station was living on 3,492 bytes of internal heap with a largest block of
+1,600, and any change to the layout was a coin toss on the softAP's 752-byte
+beacon allocation. **The same config, re-applied after the DRAM had been
+freed, boots clean every time.**
+
+The rule: when a board is that close to the floor, a build that succeeds
+proves nothing and a build that crashes is not evidence the change was wrong.
+Fix the floor first, then re-run the experiment.
+
+### The FAT descriptor pool: count handles, not subsystems
+
+`CONFIG_SDCARD_MAX_FILES` was 3 on the T-Deck, chosen against a model of "one
+handle per subsystem — its index, its message store and its log". That model is
+wrong. **The index alone holds three open by construction:**
+
+| handle | closed only on |
+|---|---|
+| `xprsindex` `st->active_fp` — the current `seg_NNN` | a segment roll |
+| `xprsindex` `st->tail_fp` — the current type tail | a type change, or a query |
+| `xprs_app` `s_logfile` — `/idx/log/cur.txt` | 64 KB rotation |
+
+So the pool was full at rest, and every transient open failed. What that looked
+like:
+
+```
+E (17716) vfs_fat: open: no free file descriptors     <- twice, same millisecond
+E (600477) vfs_fat: open: no free file descriptors    <- again, ten minutes in
+```
+
+Two at one timestamp is the signature of a single site doing an `r+b` then
+`w+b` fallback — `xi_zone_write`, reached from `xi_sync_card` **while both index
+handles are still held**. The 600 s one is `xst_stats_save` on its timer
+(`last_stats_save_s` starts at 0, so it first fires at exactly `now_s == 600`).
+
+**The damage was invisible.** `xi_zone_write`, `xst_stats_save`, `xi_decl_save`,
+`xi_reg_save` and the eviction carry-forward all return `void` and logged
+nothing of their own, so the zone map, the statistics rings, the declared
+mailboxes, the regulars list and §36.11 mail retention had *all* stopped
+persisting with `vfs_fat`'s line as the only trace. They now log on a failed
+open (`XI_LOGE`). If you add a writer to this store, give it a failure line —
+a `void` save function that cannot report is how this hid.
+
+Two lessons, and the second is the general one:
+
+1. Size the pool by **counting resident handles**, then add one per concurrent
+   transient (`xi_zone_write`, a query's `read_fp`, an HTTP `/api/log` reader).
+   Six on the T-Deck.
+2. **Price it by measuring, not by reasoning.** Three extra ~4 KB `FIL`s reads
+   like 12 KB of internal DRAM, and it is not: `CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y`
+   puts them in PSRAM. Measured on X3R8XX, `heap after hotspot` went 70,940 →
+   71,100 (unchanged) while PSRAM went 8,263,228 → 8,252,152. On a board with
+   no PSRAM the 4 KB is real and internal.
+
+### Flashing the T-Deck: split the write
+
+The T-Deck talks over the ESP32-S3's native USB-serial-JTAG, and a single
+write of a ~1.4 MB image dies part-way through often enough to be a real
+hazard:
+
+```
+A serial exception error occurred: Could not configure port: (5, 'Input/output error')
+```
+
+That leaves an **invalid image**, and with a single `factory` partition there
+is nothing to fall back to: the board reboot-loops in the bootloader, which
+makes the USB device churn and the next attempt harder. Recovery is
+`erase_region` followed by a chunked write.
+
+Use `tools/flash-chunked.sh <port> <image.bin>`, which writes 256 KB at a
+time, each piece its own esptool invocation with its own reset and up to four
+retries. Also: do not raise the baud on this link -- at 460800 esptool's
+`Changing baud rate` step is itself a common failure point.
+
+### A board without Bluetooth must still compile
+
+`CONFIG_BT_ENABLED=n` does not merely disable the radio: ESP-IDF's `bt`
+component then registers with an **empty `INCLUDE_DIRS`**, so *no* BLE header
+resolves — not `nimble/nimble_port.h`, and not `esp_bt.h` either, which is why
+selecting the tinynimble backend does not rescue it.
+
+XPRS treats BLE as optional at runtime via the board descriptor's `bool ble`
+(`xprs_app.h`), but a runtime flag cannot save a build. The guard belongs in
+`geogram_xprsble/xprsble.c`, which is now `#if CONFIG_BT_ENABLED` with a stub
+arm returning `ESP_ERR_NOT_SUPPORTED` / `false` / `0` / `-1`. `xprsble.h`
+includes only `<stdint.h>`, `<stdbool.h>` and `"esp_err.h"`, so callers need no
+`#ifdef` at all — `xprsble_is_active()` answering false is already the path they
+take. `tinynimble` drops `tn_port_esp.c` under the same condition and keeps the
+IDF-free `tn_hci.c`. Cost on the M5Stack: `libgeogram_xprsble.a` links as
+**27 bytes**.
+
+The M5Stack is not merely unconfigured, it is incapable — the original ESP32
+defines `SOC_BLE_SUPPORTED` but **not** `SOC_BLE_50_SUPPORTED`, so it has only
+legacy 31-byte advertising and an XPRS frame does not fit.
+
+**None of `models/*/firmware` is in `tools/build.sh`** — it covers only the
+seven `multiboard` targets. That is why m5stack-core stayed broken for ten
+hours after a shared component gained a new REQUIRES. Adding the three board
+projects to that script is outstanding.
+
+## Memory budget -- the T-Dongle-S3, which has no PSRAM
 
 `CONFIG_SPIRAM` is **not** set on the T-Dongle, so everything comes out of
-internal SRAM, and the app partition is nearly full:
+internal SRAM, and the app partition is nearly full. (The T-Deck does have it
+now -- see the section above, and do not read the numbers here as that board's.)
 
 *Measured 2026-08-21, hub link off:*
 
@@ -721,6 +998,132 @@ LoRa-equipped board lands here, that choice belongs in config.ini
 (`[lora] local = yes/no`, default no) next to the other switches, and the
 relay/room logic reads it rather than hard-coding either answer.
 
+## Scripts (Wrench) -- what to put in them, and what never to
+
+`common/geogram_wrench/` is the vendored Wrench VM (7.2.2, MIT, two files, do
+not edit them -- every choice is a `-D` in its CMakeLists). `common/xprs_script/`
+is the station-facing host: the task, its PSRAM pool, its natives, and the
+signed-bundle loader. `common/xprs_script/xs_bundle.h` documents the container.
+
+### Be clear about what this buys, because it is not space
+
+Measured on the T-Deck, linked into the real image:
+
+| | |
+|---|---|
+| flash added | **+20,956 B** (`libgeogram_wrench.a` 18,148, `libxprs_script.a` 1,955) |
+| internal `.bss`+`.data` added | +456 B |
+| internal RAM added | **-12 KB**, permanently, for the script task's stack |
+| external RAM | -256 KB of 8 MB (the capped pool) |
+| a whole script bundle | **458 bytes** |
+
+**Scripting makes the image BIGGER, not smaller.** The panel surface it could
+replace measures ~12.6 KB of `.text`; the VM costs 21 KB. Anyone reaching for
+Wrench to fix a flash or heap problem is about to make it worse, and this file
+has a whole section on why that mistake keeps happening.
+
+What it does buy, and it is worth having:
+
+- **a change ships as a signed bundle of a few hundred bytes instead of a
+  1.37 MB image and a reboot.** That is the whole case.
+- per-deployment policy without per-deployment firmware branches.
+- a third party can add behaviour without a fork.
+
+So: **use a script when the thing changes more often than the firmware
+does.** Use C when it does not.
+
+### What belongs in a script
+
+Rare-firing, small-data, policy-shaped work: UI panel content, relay and
+digipeat rules, iGate filters, alert triggers, beacon composition, reactions to
+a new XPRS packet type.
+
+### What must never be a script
+
+Bearers, the XPRS wire codec, crypto, OTA, and **anything on a receive path or
+with a deadline**. Reticulum in particular: `libgeogram_rns.a` links at 951
+bytes and its real cost is ~12.7 KB of *heap* (a socket and two lwIP windows)
+that a script version would pay identically. There is nothing to win there.
+
+### The rules the host already enforces, which must not be relaxed
+
+- **The VM runs on ONE core-1 task and is reached only through a queue.** Never
+  call it from a bearer, a receive path or the NimBLE host task -- that is the
+  bug the top of this file is about. Extend the existing
+  `seen_note()` -> `idx_task` parking pattern instead.
+- **All script memory is a capped PSRAM pool** via `wr_setGlobalAllocator()`, so
+  a leaking script takes itself down and not the WiFi driver's keepalive frame.
+  There is deliberately **no fallback to the internal heap**: with no PSRAM the
+  host refuses to start and says so.
+- **Signed bytecode only, verified before the VM sees a byte.** Wrench's own
+  check is a CRC -- trivially forged -- and the VM does not bounds-check
+  bytecode, so malformed bytecode is a memory-safety problem, not a script
+  error. The scheme mirrors `xprs_ota`: `xprsscr1 <board> <id> <version> <len>
+  <sha256>`, bound to the board so a bundle cannot travel and an old approval
+  cannot be replayed.
+- **A separate publisher key.** Config `scriptkey`, falling back to `fwkey`. Two
+  keys so "may publish panels for this station" can be delegated without also
+  delegating "may reflash the roof". With neither set nothing verifies -- a
+  station that has not been told whom to trust runs nobody's code.
+- **`xh_expect("scripts", false)` -- the `false` is load-bearing.**
+  `xh_all_ok()` is the OTA rollback verdict. If a script's failure could make it
+  false, anyone who can publish a script could roll back the firmware. A refused
+  bundle must leave the roster reading `station up: scripts- ...`, not
+  `STATION DEGRADED`.
+- **Wrench is not a sandbox.** A script cannot reach anything it has not been
+  handed a native for, so **the native list IS the attack surface** and is the
+  only thing worth arguing about. No signing keys, no raw filesystem, no
+  sockets, no GPIO/SPI/I2C, no LVGL object handles, no `esp_restart`, and config
+  access namespaced away from `nsec`/`pass`/`fwkey`/`own*`.
+
+### Measured behaviour, so nobody re-derives it
+
+- **Script recursion does NOT consume C stack.** 8,728 bytes left at depths 1,
+  8, 32, 64, 128 and 200 alike, and unchanged after two minutes of an infinite
+  loop. Wrench recurses on its own value stack, in the pool. Upstream issue #54
+  (an instruction fetch from `0x80` on ESP32-C3) did not reproduce.
+- **`WRENCH_PROTECT_STACK_FROM_OVERFLOW` works.** A 48-entry value stack
+  overflowed at depth 32 and returned `WR_ERR_stack_overflow` cleanly -- error
+  returned, task alive, station still answering. Pass the size explicitly to
+  `wr_newState()`; a build-time define silently failed to propagate once
+  (CMakeLists said 256, the compile used 48, stale CMake cache).
+- **An infinite script does not take the station off the air**: 90 of 90 pings,
+  0% loss, while `while(1){}` ran on core 1. The script task is priority 2,
+  below `ui` (4) and `idx` (3), yields on a time slice and feeds the watchdog.
+- Slice timings measured with `esp_timer` are **wall clock, not CPU time** --
+  they span preemption by higher-priority tasks on the same core. A 55 ms "slice"
+  is mostly the script being descheduled, which is the design working.
+
+### The toolchain
+
+Scripts are compiled **on a desk**, never on the station
+(`WRENCH_WITHOUT_COMPILER` -- upstream's own header calls this required on
+embedded). `tools/build_wrenchc.sh` builds `tools/wrenchc` from the same
+vendored source the firmware runs, so the compiler and the VM cannot be
+different versions. `tools/mkbundle.py build` packs and prints the line to sign;
+sign it with `tools/sign_firmware.dart` (production) and stamp it back with
+`mkbundle.py stamp`. Bundles live in the `script_a`/`script_b` partitions, A/B
+so a bad one can be reverted.
+
+Two host tests keep the format honest and must stay green:
+`common/xprs_script/test/test_bundle_host.sh` (the packer and the device parser
+agree; malformed containers are refused) and its verification half (a signed
+bundle verifies; unsigned, tampered, replayed, cross-board and wrong-key ones do
+not), both using the firmware's own signing and hashing code.
+
+### The refusal path is the ordinary path -- make it as solid as the happy one
+
+An erased partition, no key configured, a signature that does not check: these
+are what a station sees most days, not forgeries. The first bench build
+reboot-looped on `LoadProhibited` because with no bundle loaded the VM context
+is NULL and nothing guarded it. Two more of the same shape followed: the loader
+read `scriptkey` before `xcfg_init()` had run (fixed with a weak
+`xs_app_ready()` hook called once the key is seeded -- the same
+claim-the-stack-early-then-block-on-a-flag shape as `relay_task`), and
+`scriptkey` was added to `xprs_config`'s INI-name map but not to the `s_cfg[]`
+known-key array that `xcfg_get`/`xcfg_set` actually use, so it could never be
+read or written. **`xprs_config` has two tables; a new key needs both.**
+
 ## Validating on the device
 
 - **Opening `/dev/ttyACM0` reboots the board.** `monitor-capture.sh` asserts DTR
@@ -739,6 +1142,26 @@ relay/room logic reads it rather than hard-coding either answer.
 - Change one thing at a time and keep the baseline. Four radio settings were
   changed on a wrong hypothesis before an A/B against `FEATURE_SDCARD=0` showed
   where the problem actually was.
+- **A screenshot proves the FRAMEBUFFER, not the panel.** `xui_framedump()` (the
+  `S` serial key, decoded by `tools/scripts/framedump.py`) emits its base64
+  *inside* `lcd_flush_cb`, immediately before `st7789_flush()`. So a perfect
+  320x240 image off the UART says LVGL rendered and the flush callback ran; it
+  says nothing about what the glass received. When a panel is dark and the
+  screenshot is fine, the fault is below that line -- SPI, chip select,
+  backlight, or panel power. `TDECK_PANEL_SELFTEST` in
+  `models/tdeck/firmware/src/board.h` (default 0) paints red then green straight
+  from `st7789_fill_color()`, below LVGL, which is the bisect that separates the
+  two in one boot.
+- **"Every subsystem is up" does not include the screen.** `xprs_health`'s
+  roster covers what has been `xh_expect()`ed, and the UI task is not in it, so
+  `station up: ...` is silent about a dark panel. Do not read it as one.
+- **A failed upload can leave a board that looks broken.** A `pio run -t upload`
+  that dies partway (the S3's native USB-JTAG re-enumerates, and the port can
+  come back as a DIFFERENT `/dev/ttyACM*` than it left on) leaves a half-written
+  image: dark screen, or no USB device at all. Reflash before diagnosing
+  anything. Confirm the board by MAC (`esptool.py chip_id`) rather than by port
+  number, and remember `platformio.ini` pins ONE T-Deck's `upload_port` by id --
+  the second T-Deck on the bench needs `--upload-port` given explicitly.
 
 ### Open
 

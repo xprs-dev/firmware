@@ -13,6 +13,8 @@ sdkconfig.tdeck
 sdkconfig.tdeck_plus
 sdkconfig.tdongle
 sdkconfig.espnow_probe
+# Same, for the two-deck tinynimble probe (deckA, deckB, deckA_nimble).
+tools/tinynimble_probe/sdkconfig.*
 
 # Firmware images: too big to version, and produced by a build anyone can run.
 # models/*/prebuilt/ is the deliberate exception, for images that were released.
@@ -26,3 +28,13 @@ sdkconfig.espnow_probe
 wifi_secrets.h
 igate_secrets.h
 fw_secrets.h
+
+# Built by tools/build_wrenchc.sh from the vendored Wrench source.
+tools/wrenchc
+
+# Development-only signer, built from common/geogram_xprssig.
+tools/xsign
+
+# idf.py (as opposed to PlatformIO) writes a BARE sdkconfig next to the project.
+# Generated, and from whichever IDF version happened to run -- never an input.
+sdkconfig

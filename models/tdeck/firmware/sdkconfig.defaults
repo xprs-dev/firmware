@@ -41,9 +41,424 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 
-# PSRAM is deliberately NOT enabled yet. The module is an N16R8, so it has 8MB
-# of OCTAL PSRAM and turning it on means CONFIG_SPIRAM_MODE_OCT plus a speed
-# that matches the board — get one of them wrong and the symptom is a boot
-# loop that looks exactly like a bad flash. The same firmware already fits an
-# original ESP32's SRAM on the M5Stack, so there is nothing to buy here until
-# the heap numbers say otherwise (docs/esp32.md: change one thing at a time).
+# PSRAM: ON, and here is every reason, because the last time a block like this
+# went missing in a repo move nobody noticed for months (docs/esp32.md).
+#
+# The module is an N16R8: 8MB of OCTAL PSRAM. What bought it was not flash --
+# this board is at 64% of a 2MB slot -- but heap. The T-Dongle had to have its
+# SD card switched off for an OTA to fit, and that was 32KB of *heap* being
+# fought over while 650KB of flash sat unused. FatFs keeps a 4KB sector cache
+# per open file; with MALLOC_ALWAYSINTERNAL below those move outward.
+#
+# Pin check before anything else: octal PSRAM claims GPIO 33-37. board.h uses
+# 0,1,2,3,8,9,10,11,12,13,15,16,17,18,38,39,40,41,42,45. Nothing in 33-37.
+#
+# If this is ever wrong the symptom is a boot loop indistinguishable from a bad
+# flash. Recovery is 30 seconds, not a brick: GPIO 0 is the trackball click AND
+# the strapping pin, so hold the trackball down through a reset to drop into ROM
+# download mode -- platformio.ini already pins --no-stub for exactly this.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_MEMTEST=y
+
+# 80M, not 120M. IDF's own help calls octal-at-120 experimental and warns that
+# after roughly a 20 degree C swing "accesses to/from PSRAM will crash
+# randomly" -- a field station is the wrong place for that. 80M also matches
+# CONFIG_ESPTOOLPY_FLASHFREQ_80M, which matters because this chip reports
+# CONFIG_SOC_MEMSPI_CORE_CLK_SHARED_WITH_PSRAM=y: flash and PSRAM share the
+# MSPI core clock, so 80/80 is the coherent pair.
+CONFIG_SPIRAM_SPEED_80M=y
+
+# The boot-loop insurance. Without it, "configured at compile time but not
+# found at runtime" is a CPU panic; with it the board boots, esp_psram_get_size()
+# returns 0, and the code that wanted PSRAM refuses to start and SAYS SO rather
+# than quietly eating the internal heap instead. Depends on SPIRAM_BOOT_INIT and
+# on NOT setting SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY, so that stays off.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+
+# CAPS_ALLOC, not USE_MALLOC, and this was arrived at by measurement after
+# USE_MALLOC was tried first and failed its own go/no-go.
+#
+# USE_MALLOC backs ordinary malloc() with PSRAM so everything spills outward
+# "for free". On this board it cost more than it gave, for one reason that is
+# not obvious until you read esp_wifi/Kconfig:
+#
+#     config ESP_WIFI_DYNAMIC_TX_BUFFER
+#         depends on !SPIRAM_USE_MALLOC
+#
+# Turning on USE_MALLOC therefore FORCES WiFi onto static TX buffers -- 16 of
+# them, ~1.6KB each, claimed up front in internal RAM and never released.
+# Measured across boot with USE_MALLOC on:
+#
+#     before wifi   internal 173,975 free
+#     after wifi    internal  50,171 free      <- WiFi alone: 123,804 bytes
+#     after hotspot internal   4,599 free      <- UI task could not start
+#
+# Against a pre-PSRAM baseline of 61,660 free after hotspot, that is not a
+# win, it is a 57 KB regression bought with 8MB of memory a task stack can
+# never live in. docs/esp32.md: "freeing memory does not fix an
+# over-committed board -- it moves the victim." It moved it three times.
+#
+# CAPS_ALLOC makes PSRAM reachable only through
+# heap_caps_malloc(..., MALLOC_CAP_SPIRAM). Consequences, all wanted:
+#   - !SPIRAM_USE_MALLOC holds, so WiFi keeps its dynamic TX buffers
+#   - nothing lands in PSRAM by accident, so no DMA buffer can end up there
+#   - internal RAM behaves as it did before PSRAM existed
+#   - FATFS_ALLOC_PREFER_EXTRAM still applies (it depends on
+#     SPIRAM_USE_CAPS_ALLOC || SPIRAM_USE_MALLOC), so the FatFs sector caches
+#     still move out -- which was the actual "SD card vs OTA" complaint
+#   - the script VM's pool is an explicit heap_caps_malloc, which is what
+#     wr_setGlobalAllocator() wants anyway
+#
+# SPIRAM_MALLOC_ALWAYSINTERNAL and SPIRAM_MALLOC_RESERVE_INTERNAL are gone
+# from this file on purpose: both `depends on SPIRAM_USE_MALLOC` and would be
+# silently ignored here, which is exactly the kind of dead setting
+# docs/esp32.md warns about.
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+
+# Stated rather than inherited, because it is the whole reason for CAPS_ALLOC
+# and a future change to this file must not lose it by accident.
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+
+# The other thing CONFIG_SPIRAM turns on behind your back. This queue only
+# exists when PSRAM does (`depends on SPIRAM`), it defaults to 32, and each
+# entry holds a copy of an uplayer packet. Measured, same commit, PSRAM the
+# only variable:
+#
+#     WiFi internal cost, PSRAM off : 46,576 bytes
+#     WiFi internal cost, PSRAM on  : 100,908 bytes
+#
+# 54 KB, and 32 cache buffers is almost exactly that. 16 is the floor the
+# Kconfig allows. If a future measurement shows TX packets being dropped
+# under load, raise it -- but raise it knowing what it costs.
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16
+
+
+# THE RESULT, measured on X3R8XX (T-Deck, DC:DA:0C:39:F6:54), 2026-08-21.
+# Internal free heap by boot stage, same commit, PSRAM the only variable:
+#
+#                  PSRAM off   PSRAM on, cache 32   PSRAM on, cache 16
+#   before wifi      180,528              174,824              174,824
+#   after wifi       133,952               73,916              101,180
+#   after api        122,316               62,396               89,712
+#   after hotspot     31,116                4,272               25,580
+#   largest block     21,504                1,920               17,408
+#   heap floor        silent               FIRING               silent
+#   every subsystem       up      UI+DNS tasks died                 up
+#
+# So PSRAM in this configuration costs 5,536 bytes of internal RAM and buys
+# 8,357,432 bytes of external. That is the trade worth making, and it is only
+# worth making with cache 16 -- at the default 32 the board loses its screen.
+# Reachability after the change: 118 of 120 pings, one per second, no serial
+# open. /api/diag and /api/status answer.
+
+# Task stacks stay internal. IDF's help: external stacks are only safe "for
+# tasks where the stack is never accessed while the cache is disabled", and
+# this firmware writes flash (OTA, coredump) which disables the cache on BOTH
+# cores.
+# CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY is not set
+
+# NOW SET, and the condition the previous note attached to it has been met.
+#
+# That note said to leave this off until reachability had been re-measured with
+# PSRAM on. The measurement exists now -- the boot ladder below, taken on this
+# board with BLE5 linked -- and it says WiFi is the elephant, not Bluetooth:
+#
+#   before ble    internal 141,424   largest 77,824
+#   after ble     internal 105,948   largest 43,008   <- BLE5 costs 35.5 KB
+#   after wifi    internal  32,068   largest 23,552   <- WiFi costs 73.9 KB
+#   after api     internal  20,132   largest 12,288
+#   after hotspot internal     680   largest    176   <- and the floor alarm fires
+#
+# 73.9 KB of internal RAM for WiFi on a board with 8 MB of PSRAM sitting idle is
+# the thing to fix. `depends on SPIRAM_USE_CAPS_ALLOC || SPIRAM_USE_MALLOC` and
+# CAPS_ALLOC is set above, so this is available without touching the allocator
+# policy that block defends. It tries PSRAM first and falls back to internal, so
+# nothing that genuinely needs DMA-capable memory is stranded.
+#
+# REACHABILITY IS THE ACCEPTANCE TEST, exactly as the old note demanded: the
+# station must still associate, answer /api/status, and be heard by the phone
+# over BLE. If any of those regress this comes straight back out -- but it is
+# measured now rather than assumed either way.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# The data cache stays at the IDF default 32KB/32B, and this is MEASURED, not
+# assumed. It was set to 64KB/64B first, on the theory that octal PSRAM at
+# 80MHz wants a 64-byte line. The board booted, found its 8MB, passed the
+# memory test -- and then:
+#
+#   E xprs_ui: draw buffer: 4480 bytes refused
+#              (free 8348892, largest DMA 64) -- the panel stays dark
+#   E xprs: display init failed - running headless
+#   E xprs_api: API failed to start: ESP_ERR_HTTPD_TASK
+#
+# Eight megabytes free and the panel could not have four kilobytes of it,
+# because PSRAM is not DMA-capable memory and the 64KB cache is carved out of
+# the internal DRAM that is. heap_init reported 161 KiB of internal RAM for the
+# whole system. Giving the 32KB back is the single largest recovery available.
+#
+# This is the same lesson as docs/esp32.md's "freeing memory does not fix an
+# over-committed board": what matters is not free heap, it is whether the
+# right KIND of memory is free, and whether every subsystem actually started.
+# CONFIG_ESP32S3_DATA_CACHE_64KB is not set
+# CONFIG_ESP32S3_DATA_CACHE_LINE_64B is not set
+CONFIG_ESP32S3_DATA_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_32B=y
+
+# The self-fetching half of the updater is OFF, and for a different reason
+# than the T-Dongle's. There the puller's TLS stack would not fit in 13 KB of
+# heap; here the problem is that it could not do anything if it did fit --
+# partitions.csv declares a single `factory` app slot, so there is no inactive
+# partition for esp_ota_get_next_update_partition() to hand back and nothing
+# can be installed. Linking esp_http_client and mbedTLS permanently to serve a
+# path that cannot complete is the wrong trade.
+#
+# The push door (POST /api/update) is unaffected and is the way in.
+#
+# TURN THIS BACK ON when this board grows ota_0/ota_1 -- and note that is NOT
+# a free change: adding otadata plus a second 2MB slot forces `storage` to
+# shrink and move, which erases the 11MB FAT archive. It is a deliberate
+# reformat, as the M5Stack's partitions.csv already records having done once.
+CONFIG_XPRS_OTA_PULL=n
+
+# ── BLE5, the off-grid bearer (docs/ble5.md) ────────────────────────────────
+#
+# This is an S3: CONFIG_SOC_BLE_50_SUPPORTED=y, so extended advertising is
+# available and an XPRS packet fits one AD. The M5Stack is an original ESP32
+# and can never have this -- docs/esp32.md, "Radio capability per chip".
+#
+# THIS BOARD BROADCASTS AND LISTENS. It never connects, never pairs, never
+# serves a characteristic: geogram_xprsble advertises and scans and that is the
+# whole of it. The T-Dongle is the one that needs connections -- GATT, MSP
+# custody sessions, a connectable presence advert -- and its config is sized for
+# them. Copying that config here bought a stack three times the one in use, and
+# the archive is what paid: free heap 7,136, largest block 3,584, min ever 16
+# bytes, and the FAT mount for the index could no longer get a sector cache.
+#
+# So every number below is "what a broadcaster needs", not a saving squeezed out
+# of something that was wanted. Nothing this board does was given up for it.
+#
+# Measured after: see the boot ladder at the end of this file.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_EXT_ADV=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+
+# Nothing dials this board and it dials nothing. Connection state is per-slot
+# in both the host and the controller, and three slots is three times nothing.
+# One, not zero: zero is outside the Kconfig range and is silently replaced
+# by the default of 3, which is how this spent connection slots it never uses.
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+# Security stays ON, and not because it is wanted: with it off, IDF 5.2.1's
+# ble_sm_priv.h:413 defines ble_sm_alg_aes_cmac() as a macro expanding to
+# BLE_HS_ENOTSUP and then line 435 declares the same name as a function, so the
+# host does not compile. Nothing here pairs; this is the toolchain's price, not
+# a decision.
+# GATT tables for a GATT that is not served. One, not zero: at zero IDF 5.2.1
+# compiles ble_store_config_delete_obj() and ble_store_config_find_rpa_rec()
+# out of ble_store_config.c while still calling them, and the build fails on
+# implicit declarations. One entry is the floor this toolchain allows.
+CONFIG_BT_NIMBLE_MAX_BONDS=1
+CONFIG_BT_NIMBLE_MAX_CCCDS=1
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=23
+
+# HCI event buffers: 30 x 257 B sized for a busy connection-oriented stack.
+# A broadcaster sees advertising reports and little else.
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=4
+# ACL is connection traffic. There is none.
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=3
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=2
+# One 254-byte advert on air at a time (docs/ble5.md section 3).
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=4
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=2
+
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+# One advertising set. The dongle needs two because instance 1 is its
+# connectable presence advert; this board airs XPRS and nothing else.
+CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
+
+# Controller activities: one advertising instance and one scan. The Kconfig is
+# explicit that each is allocated, and the default of 6 is sized for a device
+# that also holds connections.
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+# The extended-advertising duplicate filter. XPRS beacons are MEANT to repeat --
+# a station that is reported once and then suppressed is a station that
+# disappears -- so this table wants to be small on its own merits.
+CONFIG_BT_CTRL_ADV_DUP_FILT_MAX=5
+
+# The host on PSRAM. The CONTROLLER still takes internal DRAM whatever this
+# says, which is why xapp_run starts the radio before WiFi: started afterwards
+# it gets "BLE_INIT: Malloc failed", trips assert emi.c 164 and the interrupt
+# watchdog reboots the board every three seconds, forever.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+
+# WiFi and BLE share one radio on this chip, and this board runs both.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# Open files the FAT mount keeps a sector cache for, ~4 KB of internal RAM each
+# (FATFS_PER_FILE_CACHE=y with FATFS_SECTOR_4096=y).
+#
+# It was 3, and 3 was WRONG -- the comment it carried budgeted one handle per
+# subsystem ("its index, its message store and its log on three"), but the index
+# alone holds three open by construction:
+#
+#   xprsindex st->active_fp   the current seg_NNN, closed only on a segment roll
+#   xprsindex st->tail_fp     the current type tail, closed only on a type change
+#   xprs_app  s_logfile       /idx/log/cur.txt, closed only at 64 KB rotation
+#
+# So the pool was full at rest and every transient open failed. The evidence was
+# there and unread: `E vfs_fat: open: no free file descriptors` twice at 17.7 s
+# (xi_zone_write's r+b then w+b fallback, called from xi_sync_card while BOTH
+# index handles are still held) and once at 600.5 s (xst_stats_save, on its
+# ten-minute timer). Everything behind those opens returns void and logged
+# nothing of its own, so the zone map, the statistics rings, the declared
+# mailboxes, the regulars list and 36.11 mail carry-forward had ALL stopped
+# persisting. They now log -- see XI_LOGE in xprsindex.c.
+#
+# Six is the arithmetic, not a guess:
+#   3 resident (above)
+# + 1 xi_zone_write / xst_stats_save / xi_decl_save / xi_reg_save
+# + 1 st->read_fp, held across a range query
+# + 1 an HTTP handler reading /idx/log/cur.txt for /api/log
+#
+# MEASURED COST, and it is not what it looks like. Each slot is a ~4 KB FIL, so
+# three more reads like 12 KB of internal DRAM -- but CONFIG_FATFS_ALLOC_PREFER_EXTRAM
+# is set on this board, so FatFs takes them from PSRAM. On X3R8XX:
+#
+#                        max_files 3      max_files 6
+#   heap after hotspot   70,940           71,100      (largest 31,744 both)
+#   psram after hotspot  8,263,228        8,252,152   (-11,076)
+#
+# So it cost ~11 KB of PSRAM and nothing internal. docs/esp32.md warns against
+# raising this number and was right to when the board reached its hotspot with
+# 3,492 bytes free -- but that warning was written for a board with no PSRAM
+# headroom and no EXTRAM allocation, and both of those changed. On a board
+# WITHOUT PSRAM each extra slot is ~4 KB of internal DRAM and the old warning
+# still holds; see the M5Stack's defaults.
+CONFIG_SDCARD_MAX_FILES=6
+
+# ── tinynimble ──────────────────────────────────────────────────────────────
+# This board broadcasts and listens. It never connects, never pairs and never
+# serves a characteristic -- which is exactly the surface tinynimble covers, so
+# the NimBLE host is not linked at all.
+#
+# Measured on this board, same test, only the stack changed:
+#   flash        214,339 -> 196,987   (-17,352)
+#   static .bss    6,608 ->   3,744   ( -2,864)
+#   heap at BLE   47,396 ->  28,288   (-19,108)
+#   steady free  318,060 -> 340,360   (+22,300)
+#
+# Proven on the air in both directions: a NimBLE deck and a tinynimble deck
+# heard each other, 164 and 167 frames. See common/tinynimble/README.md.
+#
+# To go back, set BACKEND_TINYNIMBLE=n and NIMBLE_ENABLED=y -- the NimBLE path
+# in geogram_xprsble is kept, not deleted, precisely so that is one line.
+CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
+# CONFIG_BT_NIMBLE_ENABLED is not set
+
+# LVGL's examples are compiled (though --gc-sections drops them, so they cost
+# build time rather than flash). They also USE the widgets below, so they have
+# to go before anything can be trimmed.
+CONFIG_LV_BUILD_EXAMPLES=n
+
+# ── LVGL: 35 widgets enabled, 5 created ─────────────────────────────────────
+# The whole UI is label, line, table, chart and plain obj. Everything below is
+# compiled in and never instantiated anywhere in the tree -- checked by grepping
+# every lv_*_create call in common/xprs_ui and common/xprs_ui_mini.
+#
+# Trimming configuration comes before extracting anything: it is free, it is
+# one line each to undo, and on NimBLE it closed most of the gap by itself.
+# CONFIG_LV_USE_ARC is not set
+# CONFIG_LV_USE_BAR is not set
+# CONFIG_LV_USE_BTN is not set
+# CONFIG_LV_USE_BTNMATRIX is not set
+# CONFIG_LV_USE_CANVAS is not set
+# CONFIG_LV_USE_CHECKBOX is not set
+# CONFIG_LV_USE_DROPDOWN is not set
+# CONFIG_LV_USE_ROLLER is not set
+# CONFIG_LV_USE_SLIDER is not set
+# CONFIG_LV_USE_SWITCH is not set
+# CONFIG_LV_USE_TEXTAREA is not set
+# CONFIG_LV_USE_ANIMIMG is not set
+# CONFIG_LV_USE_CALENDAR is not set
+# CONFIG_LV_USE_COLORWHEEL is not set
+# CONFIG_LV_USE_IMGBTN is not set
+# CONFIG_LV_USE_KEYBOARD is not set
+# CONFIG_LV_USE_LED is not set
+# CONFIG_LV_USE_LIST is not set
+# CONFIG_LV_USE_MENU is not set
+# CONFIG_LV_USE_METER is not set
+# CONFIG_LV_USE_MSGBOX is not set
+# CONFIG_LV_USE_SPAN is not set
+# CONFIG_LV_USE_SPINBOX is not set
+# CONFIG_LV_USE_SPINNER is not set
+# CONFIG_LV_USE_TABVIEW is not set
+# CONFIG_LV_USE_TILEVIEW is not set
+# CONFIG_LV_USE_WIN is not set
+# CONFIG_LV_USE_SNAPSHOT is not set
+
+
+# LVGL allocates from PSRAM via common/tinylv_mem, not from a 48 KB array in
+# internal .bss. Internal DRAM is this board's binding constraint: measured
+# on X3R8XX, the station reached the hotspot with 3,492 B internal free and a
+# largest block of 1,600, which is not enough room for a 752-byte softAP
+# beacon buffer to be reliable. LV_MEM_SIZE_KILOBYTES stops applying once
+# this is set (Kconfig: it `depends on !LV_MEM_CUSTOM`).
+CONFIG_LV_MEM_CUSTOM=y
+
+# ── mbedTLS: 97,124 B linked, and almost none of it is ours ─────────────────
+# Our whole use of mbedcrypto is AES-CBC, base64, CTR-DRBG, entropy, HMAC,
+# SHA-256, and ECP on ONE curve (secp256k1, for nostr/xprssig keys). The map
+# shows the rest arrives as tail:
+#
+#   wpa_supplicant/crypto_mbedtls-ec.c  (WPA3/SAE)
+#     -> mbedtls_pk_parse_subpubkey -> pkparse.c -> rsa.c + rsa_alt_helpers.c
+#     -> mbedtls_pk_init -> pk.c -> pk_wrap.c -> psa_crypto.c -> the ENTIRE
+#        PSA layer (rsa, aead, cipher, mac, ecp, hash, slot mgmt, storage, ITS)
+#     -> mbedtls_oid_* -> oid.c, asn1write.c
+#   md.c's generic dispatch -> sha1.c + sha512.c + sha3.c (keccak_f1600, 1,835 B)
+#
+# So SAE is what pays for RSA and PSA. Turning it off is a REAL capability
+# loss: the station can no longer join a WPA3-only AP, nor offer WPA3 on its
+# own hotspot. WPA2 is unaffected and is what every XPRS deployment uses today.
+# To get WPA3 back, delete this block -- that is the whole revert.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+
+# No TLS client or server is linked on this board (no libmbedtls.a, no
+# libmbedx509.a in the map), so the CA bundle and PKCS7 verify nothing.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_PKCS7_C=n
+
+# One curve is used. The other eleven are tables and modular-reduction code:
+# ecp_mod_p384 2,086 B, ecp_mod_p256 1,586, ecp_mod_p224 782, plus four
+# 768-byte comb tables (brainpoolP512r1_T, brainpoolP384r1_T, secp521r1_T,
+# secp384r1_T).
+CONFIG_MBEDTLS_ECP_DP_SECP192R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP521R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP192K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP256R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP512R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
+# SECP256R1 stays: it is the default the ECP code falls back to, and it is
+# cheap next to what the group above costs.
+
+# Large, CPU-only static buffers carry XPRS_PSRAM_BSS (see
+# common/geogram_common/include/xprs_psram.h) and land in the external RAM
+# BSS segment instead of internal DRAM. Without this option that attribute
+# expands to nothing and they stay where they were, so it is what actually
+# turns the annotation on.
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y

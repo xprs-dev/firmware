@@ -5,4 +5,4 @@
 idf_component_register(
     SRCS "xprs_station.c"
     INCLUDE_DIRS "."
-    REQUIRES geogram_xprs log esp_timer)
+    REQUIRES geogram_xprs log esp_timer geogram_common)

@@ -23,6 +23,7 @@
 
 #include <stdint.h>
 #include "esp_err.h"
+#include <stdbool.h>
 #include "xprslora.h"
 
 #ifdef __cplusplus
@@ -55,6 +56,14 @@ typedef struct {
      *  which is the right answer for a board nobody has configured. */
     const char *fw_key;
     const char *fw_owner;
+    /** Publisher key for signed SCRIPT bundles, x-only hex, or NULL.
+     *
+     * Separate from fw_key on purpose: it lets an operator delegate "may
+     * publish panels for this station" without also delegating "may reflash
+     * it". Unset falls back to fw_key, and with neither set nothing verifies
+     * and no script runs -- a station that has not been told whom to trust
+     * runs nobody's code. Seeded into NVS once, like the two above. */
+    const char *script_key;
 
     const char *wifi_ssid;     /**< compiled-in default; config.ini overrides */
     const char *wifi_pass;
@@ -92,6 +101,14 @@ typedef struct {
      * same relay rules, real range.
      */
     const xprslora_cfg_t *lora;
+    /**
+     * True on a board whose radio does BLE5 extended advertising, which is the
+     * S3/C3 class and not the original ESP32 (docs/esp32.md, "Radio capability
+     * per chip"). An XPRS beacon is 112-173 bytes against legacy advertising's
+     * 31, so a board without it cannot carry this bearer at all -- leaving the
+     * flag false is how that is said, and the M5Stack says it.
+     */
+    bool ble;
 } xapp_board_t;
 
 /** Run the station. Does not return: it is the body of app_main().

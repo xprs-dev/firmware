@@ -258,7 +258,11 @@ esp_err_t tdongle_ui_init(st7735_handle_t lcd)
     static lv_color_t *buf1;
     buf1 = heap_caps_malloc(SCREEN_W * SCREEN_H * sizeof(lv_color_t), MALLOC_CAP_DMA);
     if (!buf1) {
-        buf1 = malloc(SCREEN_W * SCREEN_H * sizeof(lv_color_t));
+        /* INTERNAL, not a bare malloc: under CONFIG_SPIRAM_USE_MALLOC that
+         * would be allowed to answer out of PSRAM, and this buffer is handed
+         * to the SPI DMA engine. Identical on a board without PSRAM. */
+        buf1 = heap_caps_malloc(SCREEN_W * SCREEN_H * sizeof(lv_color_t),
+                                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     }
     if (!buf1) return ESP_ERR_NO_MEM;
 

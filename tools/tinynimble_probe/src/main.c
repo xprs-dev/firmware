@@ -1,0 +1,201 @@
+/* Two T-Decks, BLE5 extended advertising, and nothing else.
+ *
+ * The question this answers: does talking to the controller directly, with no
+ * NimBLE host, put the same bytes on the air that the real firmware does -- and
+ * can the radio be handed back afterwards?
+ *
+ * One binary for both boards. Each derives its own callsign from its MAC and
+ * advertises an XPRS-framed manufacturer advert; each scans and prints what it
+ * heard. If A hears B and B hears A with the framing intact, the transport
+ * works. If it does not, the failure is in 254 bytes of buffer and six
+ * commands rather than somewhere in a 64 KB host.
+ *
+ * Serial keys (the console is native USB-JTAG on this board):
+ *   a  advertise one frame        s  start scanning
+ *   A  advertise every 2 s        S  stop scanning
+ *   x  full teardown (tn_stop)    r  bring the controller back up
+ *   ?  status and counters
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_timer.h"
+#include "esp_heap_caps.h"
+
+#include "radio.h"
+
+static const char *TAG = "probe";
+
+/* The XPRS advert framing, verbatim from docs/esp32.md: manufacturer data,
+ * company 0xFFFF, marker 0x3E, one subtype byte. 0x41 is an APRS parcel. */
+#define XPRS_COMPANY_LO 0xFF
+#define XPRS_COMPANY_HI 0xFF
+#define XPRS_MARKER     0x3E
+#define XPRS_SUB_APRS   0x41
+
+static char s_call[10];
+static volatile uint32_t s_heard, s_heard_xprs, s_sent;
+static char s_last_from[32];
+static int  s_last_rssi;
+
+/* Who has actually been heard, by name. "last peer" is not proof that the
+ * other deck was heard -- a third XPRS device on the bench answers to that
+ * too, and one did. */
+#define PEERS_MAX 6
+#define PEER_CALL_MAX 32     /* same width as s_last_from, so no truncation */
+static struct { char call[PEER_CALL_MAX]; uint32_t n; int rssi; } s_peer[PEERS_MAX];
+
+static void note_peer(const char *call, int rssi)
+{
+    for (int i = 0; i < PEERS_MAX; i++) {
+        if (s_peer[i].call[0] == 0) {
+            snprintf(s_peer[i].call, sizeof s_peer[i].call, "%s", call);
+            s_peer[i].n = 1; s_peer[i].rssi = rssi;
+            return;
+        }
+        if (strcmp(s_peer[i].call, call) == 0) {
+            s_peer[i].n++; s_peer[i].rssi = rssi;
+            return;
+        }
+    }
+}
+
+/* May run in CONTROLLER context (tinynimble) or on the host task (NimBLE).
+ * Either way: parse, count, and get out. */
+static void on_ad(const uint8_t *data, int data_len, int rssi)
+{
+    s_heard++;
+
+    /* Walk the AD structures looking for our manufacturer frame. */
+    const uint8_t *p = data;
+    const uint8_t *end = data + data_len;
+    while (p + 2 <= end) {
+        uint8_t len = p[0];
+        if (len == 0 || p + 1 + len > end) break;
+        uint8_t type = p[1];
+        if (type == 0xFF && len >= 4 &&
+            p[2] == XPRS_COMPANY_LO && p[3] == XPRS_COMPANY_HI &&
+            len >= 5 && p[4] == XPRS_MARKER) {
+            s_heard_xprs++;
+            s_last_rssi = rssi;
+            int n = len - 5;              /* after company + marker + subtype */
+            if (n > (int)sizeof s_last_from - 1) n = sizeof s_last_from - 1;
+            if (n > 0) {
+                memcpy(s_last_from, p + 6, n);
+                s_last_from[n] = 0;
+                note_peer(s_last_from, rssi);
+            }
+            break;
+        }
+        p += 1 + len;
+    }
+}
+
+static void advertise_once(void)
+{
+    /* [len][0xFF][company lo][company hi][marker][subtype][callsign...] */
+    uint8_t ad[32];
+    /* The length byte counts everything after itself: the AD type, the two
+     * company bytes, the marker and the subtype -- five -- plus the callsign.
+     * Writing 4 here truncated the callsign by one byte on the air, and the
+     * only symptom was a peer name one character short. */
+    int body = 5 + (int)strlen(s_call);
+    int i = 0;
+    ad[i++] = (uint8_t)body;
+    ad[i++] = 0xFF;
+    ad[i++] = XPRS_COMPANY_LO;
+    ad[i++] = XPRS_COMPANY_HI;
+    ad[i++] = XPRS_MARKER;
+    ad[i++] = XPRS_SUB_APRS;
+    memcpy(ad + i, s_call, strlen(s_call));
+    i += (int)strlen(s_call);
+
+    esp_err_t err = radio_advertise(ad, i);
+    if (err == ESP_OK) s_sent++;
+    else ESP_LOGE(TAG, "advertise failed: %s", esp_err_to_name(err));
+}
+
+static void status(void)
+{
+    printf("\n  callsign     %s\n", s_call);
+    printf("  stack        %s\n", radio_name());
+    printf("  controller   %s\n", radio_is_up() ? "up" : "DOWN");
+    printf("  sent         %u\n", (unsigned)s_sent);
+    printf("  reports      %u  (xprs-framed %u)\n",
+           (unsigned)s_heard, (unsigned)s_heard_xprs);
+    for (int i = 0; i < PEERS_MAX; i++)
+        if (s_peer[i].call[0])
+            printf("  heard        %-10s x%-6u  %d dBm\n",
+                   s_peer[i].call, (unsigned)s_peer[i].n, s_peer[i].rssi);
+    printf("  internal heap %u free, largest %u, min-ever %u\n\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+
+static esp_err_t radio_up(void)
+{
+    return radio_start(on_ad);
+}
+
+static void scan_on(void)
+{
+    esp_err_t err = radio_scan_on();
+    printf("  scan %s\n", err == ESP_OK ? "on" : esp_err_to_name(err));
+}
+
+void app_main(void)
+{
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BT);
+    snprintf(s_call, sizeof s_call, "X%02X%02X", mac[4], mac[5]);
+
+    printf("\n=== BLE probe [%s] :: %s ===\n", radio_name(), s_call);
+    printf("heap before controller: %u internal\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+    if (radio_up() != ESP_OK) {
+        ESP_LOGE(TAG, "radio would not come up -- nothing to test");
+        return;
+    }
+    printf("heap after  controller: %u internal\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+
+    scan_on();
+    advertise_once();
+    printf("advertising and scanning. keys: a A s S x r ?\n");
+
+    bool repeat = true;
+    int64_t next = 0;
+    for (;;) {
+        int c = getchar();
+        if (c > 0) {
+            switch (c) {
+            case 'a': advertise_once(); printf("  sent one\n"); break;
+            case 'A': repeat = !repeat; printf("  repeat %s\n", repeat ? "on" : "off"); break;
+            case 's': scan_on(); break;
+            case 'S': radio_scan_off(); printf("  scan off\n"); break;
+            case 'x':
+                /* The teardown that matters: with the controller up an
+                 * unassociated WiFi station receives nothing. */
+                printf("  tearing down: %s\n", esp_err_to_name(radio_stop()));
+                status();
+                break;
+            case 'r': printf("  bring-up: %s\n", esp_err_to_name(radio_up()));
+                      scan_on(); break;
+            case '?': status(); break;
+            default: break;
+            }
+        }
+        if (repeat && radio_is_up() && esp_timer_get_time() > next) {
+            advertise_once();
+            next = esp_timer_get_time() + 2000000;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}

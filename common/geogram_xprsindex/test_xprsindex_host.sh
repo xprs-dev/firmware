@@ -2,6 +2,10 @@
 # Host-side test for the XPRS index: builds xprsindex.c against the real XPRS
 # codec and runs it over a temp directory, so the record layout, the derived
 # indexes and the section 36 serving rule are all checked without a card.
+#
+# It writes 18,000 records across two 9,000-record retention loops, so it is the
+# slowest test in the tree -- a few seconds, not instant. Output is line
+# buffered, so if nothing has appeared at all then it really has stopped.
 set -e
 cd "$(dirname "$0")"
 

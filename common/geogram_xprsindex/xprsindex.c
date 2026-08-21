@@ -29,6 +29,7 @@
 #ifdef XPRSIDX_HOST_TEST
 #define XI_LOGI(fmt, ...) ((void)0)
 #define XI_LOGW(fmt, ...) ((void)0)
+#define XI_LOGE(fmt, ...) ((void)0)
 static uint64_t xi_card_total(const char *d) { (void)d; return 0; }
 static uint64_t xi_card_free(const char *d) { (void)d; return 0; }
 #else
@@ -41,6 +42,7 @@ static uint64_t xi_card_free(const char *d) { (void)d; return 0; }
 static const char *TAG = "xprsidx";
 #define XI_LOGI(fmt, ...) ESP_LOGI(TAG, fmt, ##__VA_ARGS__)
 #define XI_LOGW(fmt, ...) ESP_LOGW(TAG, fmt, ##__VA_ARGS__)
+#define XI_LOGE(fmt, ...) ESP_LOGE(TAG, fmt, ##__VA_ARGS__)
 static uint64_t xi_card_total(const char *d);
 static uint64_t xi_card_free(const char *d);
 #endif
@@ -330,7 +332,15 @@ static void xi_zone_write(const xprsidx_t *st, uint32_t n, const xi_zone_t *z)
     xi_zone_path(st, path, sizeof path);
     FILE *f = fopen(path, "r+b");
     if (!f) f = fopen(path, "w+b");
-    if (!f) return;
+    if (!f) {
+        /* Say it. This is reached with active_fp AND tail_fp still held (see
+         * xi_sync_card), so a descriptor pool sized for the subsystems rather
+         * than the handles leaves the zone map silently unwritten -- and
+         * xprsindex_open() rebuilds newest_ts from that map, so catch-up
+         * (36.10) quietly stops working across reboots. */
+        XI_LOGE("zone map %s not written: %s", path, strerror(errno));
+        return;
+    }
     if (fseek(f, (long)n * (long)sizeof(xi_zone_t), SEEK_SET) == 0) {
         fwrite(z, sizeof *z, 1, f);
     }
@@ -812,7 +822,10 @@ static void xi_decl_save(xprsidx_t *st)
     char path[96];
     xi_decl_path(st, path, sizeof path);
     FILE *f = fopen(path, "w");
-    if (!f) return;
+    if (!f) {
+        XI_LOGE("declared mailboxes %s not written: %s", path, strerror(errno));
+        return;
+    }
     for (int i = 0; i < st->decl_n; i++) fprintf(f, "%s\n", st->decl[i]);
     fclose(f);
     st->decl_dirty = false;
@@ -863,7 +876,10 @@ static void xi_reg_save(xprsidx_t *st)
     char path[96];
     xi_reg_path(st, path, sizeof path);
     FILE *f = fopen(path, "w");
-    if (!f) return;
+    if (!f) {
+        XI_LOGE("regulars %s not written: %s", path, strerror(errno));
+        return;
+    }
     for (int i = 0; i < st->reg_n; i++) {
         fprintf(f, "%s %u %u\n", st->reg[i].call,
                 (unsigned)st->reg[i].days, (unsigned)st->reg[i].last_day);
@@ -1030,6 +1046,9 @@ static bool xi_evict_locked(xprsidx_t *st)
     char path[96];
     xi_seg_path(st, path, sizeof path, first);
     FILE *f = fopen(path, "rb");
+    /* Not fatal -- the segment is still dropped -- but it means 36.11 carried
+     * nothing forward, so mail somebody asked for is gone. Never silently. */
+    if (!f) XI_LOGE("evicting %s WITHOUT carry-forward: %s", path, strerror(errno));
     uint32_t now = (uint32_t)time(NULL);
     if (now < 1700000000u) now = 0;
     int carried = 0;
@@ -1345,15 +1364,32 @@ static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec)
  * Once per drained batch rather than once per record: a batch is a fraction of
  * a second of traffic, and per-record it was the SD bus running constantly
  * underneath the radio. */
+/* On the host there is no card, no FatFs and no power cut, so fsync buys
+ * nothing a test can observe — while costing everything. The host build has no
+ * writer task to batch behind (xi_write_rec_fwd calls this per record), and the
+ * suite writes 18,000 of them: 1,913 fsyncs at ~15 ms each turned a 3-second
+ * test into 4m34s of a process blocked in the ext4 journal. It looks hung, and
+ * it was killed as such more than once.
+ *
+ * fflush stays. That is the half the test can see: it pushes stdio's buffer out
+ * so any reopen inside the test reads what was written. Every assertion keeps
+ * its meaning; only the durability guarantee, which no host test can exercise,
+ * is dropped. */
+#ifdef XPRSIDX_HOST_TEST
+#define XI_FSYNC(fp) ((void)0)
+#else
+#define XI_FSYNC(fp) fsync(fileno(fp))
+#endif
+
 static void xi_sync_card(xprsidx_t *st)
 {
-    if (st->active_fp) fsync(fileno(st->active_fp));
+    if (st->active_fp) XI_FSYNC(st->active_fp);
     /* The tail needs it for the same reason the segment does: FatFs writes a
      * file's size on sync or close, and appended bytes that never reach the
      * card leave the file LONGER than its contents — the reader then finds
      * zeroes where the newest entries should be, and "the most recent N of this
      * type" answers nothing while the records sit safely in their segment. */
-    if (st->tail_fp) { fflush(st->tail_fp); fsync(fileno(st->tail_fp)); }
+    if (st->tail_fp) { fflush(st->tail_fp); XI_FSYNC(st->tail_fp); }
     xi_zone_flush(st);
 }
 

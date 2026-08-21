@@ -19,6 +19,7 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "mbedtls/base64.h"
+#include "xprs_psram.h"
 
 static const char *TAG = "xprs_ui";
 
@@ -85,7 +86,7 @@ static lv_obj_t *s_blip_lbl[XUI_BLIP_MAX];
  * preset of it; any panel may reconfigure columns and rows). */
 static lv_obj_t *s_flowtab;
 static lv_obj_t *s_flow_content;
-static char s_tab_detail[XUI_TAB_ROWS][160];
+static XPRS_PSRAM_BSS char s_tab_detail[XUI_TAB_ROWS][160];
 static int s_tab_n;
 static int s_tab_ncols = 5;
 static int s_flow_sel = -1;
@@ -806,7 +807,14 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
     for (;;) {
         size_t want = (size_t)s_w * buf_rows * sizeof(lv_color_t);
         buf1 = heap_caps_malloc(want, MALLOC_CAP_DMA);
-        if (!buf1) buf1 = malloc(want);
+        /* The fallback must stay INTERNAL. With CONFIG_SPIRAM_USE_MALLOC a
+         * bare malloc() is allowed to answer out of PSRAM, and this buffer
+         * goes straight to spi_device_transmit() -- so the fallback that
+         * exists to save the panel would instead hand the DMA engine an
+         * address it should not have. Ask for internal 8-bit memory and let
+         * the loop halve the row count if it cannot be had. */
+        if (!buf1) buf1 = heap_caps_malloc(want, MALLOC_CAP_INTERNAL |
+                                                 MALLOC_CAP_8BIT);
         if (buf1 || buf_rows <= 8) break;
         buf_rows /= 2;
     }
@@ -993,7 +1001,7 @@ void xui_flow_rows(const xui_flow_t *rows, int n)
     xui_table_setup(5, hdr, ref_w);
 
     /* Static: 8 rows of cells would not be kind to the UI task's stack. */
-    static xui_row_t tr[XUI_TAB_ROWS];
+    static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
     if (n > XUI_TAB_ROWS) n = XUI_TAB_ROWS;
     for (int i = 0; i < n; i++) {
         const xui_flow_t *r = &rows[i];

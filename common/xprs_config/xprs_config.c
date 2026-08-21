@@ -48,6 +48,12 @@ static cfg_entry_t s_cfg[] = {
     { "fwurl",     {0}, false },
     { "fwchan",    {0}, false },
     { "fwauto",    {0}, false },
+    /* Scripts (common/xprs_script). A DIFFERENT publisher key from `fwkey`,
+     * so "may publish panels for this station" can be delegated without also
+     * delegating "may reflash it". Unset falls back to fwkey; with neither
+     * set nothing verifies and no script runs. */
+    { "scripts_on", {0}, false },
+    { "scriptkey",  {0}, false },
     { "own1",      {0}, false },
     { "own2",      {0}, false },
     { "own3",      {0}, false },
@@ -237,6 +243,11 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "update",  "source",   "fwurl" },
     { "update",  "channel",  "fwchan" },
     { "update",  "auto",     "fwauto" },
+    /* Scripts are signed by a DIFFERENT key from firmware, on purpose. It
+     * lets an operator delegate "may publish panels for this station" without
+     * also delegating "may reflash the roof". Unset falls back to fwkey. */
+    { "scripts", "enabled",  "scripts_on" },
+    { "scripts", "key",      "scriptkey" },
     { "owners",  "one",      "own1" },
     { "owners",  "two",      "own2" },
     { "owners",  "three",    "own3" },

@@ -207,7 +207,11 @@ esp_err_t xum_init(int width, int height, xum_flush_fn flush, void *ctx)
     static lv_color_t *buf1;
     size_t px = (size_t)s_w * BUF_ROWS;
     buf1 = heap_caps_malloc(px * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    if (!buf1) buf1 = malloc(px * sizeof(lv_color_t));
+    /* INTERNAL, not a bare malloc: under CONFIG_SPIRAM_USE_MALLOC that
+     * would be allowed to answer out of PSRAM, and this buffer is handed
+     * to the SPI DMA engine. Identical on a board without PSRAM. */
+    if (!buf1) buf1 = heap_caps_malloc(px * sizeof(lv_color_t),
+                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!buf1) return ESP_ERR_NO_MEM;
     lv_disp_draw_buf_init(&s_draw_buf, buf1, NULL, px);
 

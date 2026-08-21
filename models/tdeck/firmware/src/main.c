@@ -24,6 +24,8 @@
 #include "i2c_bsp.h"
 #include "st7789.h"
 #include "xprs_app.h"
+#include "esp_timer.h"
+#include "xprs_script.h"   /* phase-0 spike, temporary */
 
 #include "board.h"
 #include "wifi_secrets.h"   /* gitignored; see wifi_secrets.h.example */
@@ -82,6 +84,28 @@ static esp_err_t display_init(int *w, int *h, void **ctx)
     };
     esp_err_t err = st7789_init(&cfg, &s_lcd);
     if (err != ESP_OK) return err;
+
+#if TDECK_PANEL_SELFTEST
+    /* Bench bisect, temporary. Paints the panel red then green through
+     * st7789_fill_color(), which is the shortest path from the driver to the
+     * glass -- no LVGL, no draw buffer, no flush callback.
+     *
+     *   colours appear  -> panel, backlight, SPI and CS are all fine, and
+     *                      the fault is above this line
+     *   nothing appears -> the fault is the panel, its backlight, its power
+     *                      or the shared SPI bus, and no amount of looking
+     *                      at LVGL will find it
+     *
+     * Worth having because the UART framedump proved the FRAMEBUFFER is
+     * correct, which says nothing at all about what the panel received. */
+    ESP_LOGW(TAG, "panel self-test: red, then green, 1 s each");
+    st7789_backlight(s_lcd, true);
+    st7789_fill_color(s_lcd, 0xF800);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    st7789_fill_color(s_lcd, 0x07E0);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGW(TAG, "panel self-test done");
+#endif
     *w = ST7789_WIDTH;
     *h = ST7789_HEIGHT;
     *ctx = s_lcd;
@@ -91,7 +115,25 @@ static esp_err_t display_init(int *w, int *h, void **ctx)
 static void display_flush(int x1, int y1, int x2, int y2,
                           const uint16_t *px, void *ctx)
 {
-    st7789_flush((st7789_handle_t)ctx, x1, y1, x2, y2, px);
+    /* The return was discarded here, which meant a panel that never received
+     * a byte looked exactly like a panel that did: LVGL renders, the flush
+     * callback runs, the framedump over UART is perfect, and the glass stays
+     * dark with nothing in the log. Say it once, and then once a minute, so
+     * it cannot scroll past unnoticed but also cannot flood. */
+    esp_err_t err = st7789_flush((st7789_handle_t)ctx, x1, y1, x2, y2, px);
+    if (err != ESP_OK) {
+        static int64_t last_us;
+        static unsigned suppressed;
+        int64_t now = esp_timer_get_time();
+        if (now - last_us > 60 * 1000000LL) {
+            ESP_LOGE(TAG, "panel flush failed: %s (%u suppressed since)",
+                     esp_err_to_name(err), suppressed);
+            last_us = now;
+            suppressed = 0;
+        } else {
+            suppressed++;
+        }
+    }
 }
 
 /* ── The trackball ──────────────────────────────────────────────────────── */
@@ -228,7 +270,7 @@ static const xprslora_cfg_t k_tdeck_lora = {
 
 static const xapp_board_t k_tdeck = {
     .board_id = TDECK_BOARD_ID,
-    .banner = "ESP-NOW + LAN + LoRa 868",
+    .banner = "ESP-NOW + LAN + LoRa 868 + BLE5",
     .wifi_ssid = WIFI_SSID,
     .wifi_pass = WIFI_PASS,
     .espnow_channel = ESPNOW_FALLBACK_CHANNEL,
@@ -238,11 +280,29 @@ static const xapp_board_t k_tdeck = {
     .input_poll = input_poll,
     .raw_key = keyboard_key,
     .lora = &k_tdeck_lora,
+    /* This is an S3: CONFIG_SOC_BLE_50_SUPPORTED, so extended advertising is
+     * available and an XPRS packet fits one AD. It is the only bearer here a
+     * phone can reach with no access point and no pairing. */
+    .ble = true,
+    /* BENCH KEY, temporary. The private half is
+     * 0101..01 and is in the shell history of whoever set this up, which is
+     * exactly the handling a real key must never get. Production seeds this
+     * from the gitignored src/fw_secrets.h, like fw_key does. */
+    .script_key = "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
 };
 
 void app_main(void)
 {
     board_power_up();
     keyboard_init();
+
+    /* PHASE-0 SPIKE, temporary. Claimed here, before xapp_run(), because this
+     * is where the heap is still one large block -- docs/esp32.md: "prefer
+     * claiming a large stack early over hoping it fits later". The measurement
+     * sequence is queued now and drained by the script task as it comes up;
+     * the non-terminating case waits for the station to finish booting before
+     * it starts, so reachability is measured against a running station. */
+    if (xs_start() == ESP_OK) xs_spike(120);
+
     xapp_run(&k_tdeck);
 }

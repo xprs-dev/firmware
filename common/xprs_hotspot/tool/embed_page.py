@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Regenerate chat_page.c from chat_page.html + the crypto JS.
 
-The page is served from flash as a C string. Edit chat_page.html (and, for
-the signing code, xprs_crypto.js), then run this from the component dir:
+The page is served from flash GZIPPED, with Content-Encoding: gzip -- it is
+38,845 bytes of HTML+JS+base64 font and compresses to 18,139, which is the
+single largest rodata item on the board after the LVGL fonts. Edit
+chat_page.html (and, for the signing code, xprs_crypto.js), then run this
+from the component dir:
 
     python3 tool/embed_page.py
 
@@ -33,20 +36,32 @@ if m:
     html = html.replace('/*FONTFACE*/', font)
 
 
-def c_escape(s):
+import gzip
+
+raw = html.encode('utf-8')
+# mtime=0 so regenerating an unchanged page produces an identical file and
+# the build does not relink for nothing.
+gz = gzip.compress(raw, compresslevel=9, mtime=0)
+
+
+def c_bytes(b):
     out = []
-    for line in s.split('\n'):
-        e = line.replace('\\', '\\\\').replace('"', '\\"')
-        out.append('"%s\\n"' % e)
+    for i in range(0, len(b), 16):
+        out.append('    ' + ' '.join('0x%02x,' % c for c in b[i:i + 16]))
     return '\n'.join(out)
 
 
 with open(os.path.join(here, 'chat_page.c'), 'w') as f:
     f.write('/* GENERATED from chat_page.html + xprs_crypto.js by '
-            'tool/embed_page.py -- edit those, not this. */\n')
+            'tool/embed_page.py -- edit those, not this.\n'
+            ' *\n'
+            ' * Stored gzipped and served with Content-Encoding: gzip.\n'
+            ' * %d bytes of page -> %d bytes of flash. */\n' % (len(raw), len(gz)))
     f.write('#include <stddef.h>\n\n')
-    f.write('const char XPRS_CHAT_PAGE[] =\n')
-    f.write(c_escape(html))
-    f.write(';\n\nconst size_t XPRS_CHAT_PAGE_LEN = sizeof(XPRS_CHAT_PAGE) - 1;\n')
+    f.write('const unsigned char XPRS_CHAT_PAGE_GZ[] = {\n')
+    f.write(c_bytes(gz))
+    f.write('\n};\n\nconst size_t XPRS_CHAT_PAGE_GZ_LEN = '
+            'sizeof(XPRS_CHAT_PAGE_GZ);\n')
 
-print('chat_page.c: %d bytes of page' % len(html))
+print('chat_page.c: %d bytes of page -> %d gzipped (%d%%)'
+      % (len(raw), len(gz), 100 * len(gz) // len(raw)))

@@ -54,4 +54,12 @@ CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
 # files -- and could not accept a firmware push at all. docs/esp32.md warns
 # against raising this number; four is the compromise that keeps a query
 # able to open a file while the store holds its own.
-CONFIG_SDCARD_MAX_FILES=4
+#
+# Four is still one short of the design: the index holds active_fp + tail_fp and
+# xprs_app holds the log, so a range query's read_fp is the fourth and
+# xi_zone_write's has nowhere to go. See the long note in the T-Deck's defaults
+# for the full arithmetic and the errors it produces. Five, not six, because
+# this board is an original ESP32 with no PSRAM -- it cannot spend 12 KB the way
+# the T-Deck now can, and one more slot removes the failure that fires on every
+# drain. NOT VALIDATED ON HARDWARE: no M5Stack is connected.
+CONFIG_SDCARD_MAX_FILES=5

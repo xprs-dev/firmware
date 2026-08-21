@@ -86,9 +86,26 @@ void xh_report(bool force)
 
 void xh_heap_floor(unsigned expected_free)
 {
-    unsigned free_now = (unsigned)esp_get_free_heap_size();
+    /* INTERNAL, deliberately, and this is not a refinement -- it is the
+     * difference between this check working and not existing.
+     *
+     * esp_get_free_heap_size() counts every byte the allocator can hand
+     * out, and on a board with PSRAM that is eight megabytes. The floor
+     * would then never be crossed and this function would go quiet
+     * forever, which is precisely the failure it was written to catch.
+     *
+     * Measured on the T-Deck the day PSRAM was switched on: the heartbeat
+     * reported heap=8,367,348 while the HTTP server and the index writer
+     * had both failed to get a task stack, because a task stack cannot
+     * live in PSRAM. Free memory was never the problem; free memory OF
+     * THE RIGHT KIND was.
+     *
+     * On a board without PSRAM this is the same number as before. */
+    unsigned free_now = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     unsigned largest  =
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    unsigned min_ever =
+        (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     bool below = expected_free && free_now < expected_free;
 
     /* Edge-triggered, because this is called both at the end of boot and
@@ -104,19 +121,19 @@ void xh_heap_floor(unsigned expected_free)
     s_below_floor = below;
 
     if (!below) {
-        ESP_LOGW(TAG, "heap: free=%u largest=%u min-ever=%u (floor %u)",
-                 free_now, largest,
-                 (unsigned)esp_get_minimum_free_heap_size(), expected_free);
+        ESP_LOGW(TAG, "heap: internal free=%u largest=%u min-ever=%u (floor %u)",
+                 free_now, largest, min_ever, expected_free);
         return;
     }
     /* Loud, because this is the shape of the bug that hides every other
      * bug: the board still boots, still talks, and has quietly lost the
      * margin something else was relying on. */
-    ESP_LOGE(TAG, "HEAP BELOW THE DOCUMENTED FLOOR: free=%u largest=%u, "
-                  "expected at least %u -- something that used to be "
-                  "configured is not (min-ever %u). Check this board's "
+    ESP_LOGE(TAG, "INTERNAL HEAP BELOW THE DOCUMENTED FLOOR: free=%u "
+                  "largest=%u, expected at least %u -- something that used "
+                  "to be configured is not (min-ever %u). Check this board's "
                   "sdkconfig against the tables in docs/esp32.md before "
-                  "chasing anything else.",
-             free_now, largest, expected_free,
-             (unsigned)esp_get_minimum_free_heap_size());
+                  "chasing anything else. NOTE: on a PSRAM board the total "
+                  "heap can be megabytes while this number is the one that "
+                  "decides whether a task stack or a DMA buffer can be had.",
+             free_now, largest, expected_free, min_ever);
 }

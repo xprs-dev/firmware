@@ -35,6 +35,7 @@
 #include "xprs.h"
 #include "xprsnow.h"
 #include "xprslan.h"
+#include "xprsble.h"
 #include "xprslora.h"
 #include "xprsid.h"
 #include "xprschan.h"
@@ -91,6 +92,7 @@ static char s_pass[64];
 #include "esp_task_wdt.h"
 #include "esp_core_dump.h"
 #include "esp_system.h"
+#include "xprs_psram.h"
 
 static const char *TAG = "xprs";
 
@@ -341,6 +343,7 @@ static uint8_t bearer_code(const char *name)
     if (strcmp(name, "espnow") == 0) return XI_B_ESPNOW;
     if (strcmp(name, "lan") == 0)    return XI_B_LAN;
     if (strcmp(name, "lora") == 0)   return XI_B_LORA;
+    if (strcmp(name, "ble") == 0)    return XI_B_BLE;
     return XI_B_UNKNOWN;
 }
 
@@ -674,6 +677,33 @@ static void on_lan(const char *wire, int len, uint32_t ip)
     }
 }
 
+/*
+ * One frame off the BLE5 air (docs/ble5.md §2). Subtypes other than XPRS on
+ * this radio belong to other software -- Reticulum 0x55, the compact APRS
+ * frame 0x41, the route beacon 0x4D -- and are not this station's business.
+ *
+ * Runs on the NimBLE host task, beside the controller. seen_note() only copies
+ * into the index queue and parks a history ask, which is what that task can
+ * afford; every heavier thing it leads to happens on idx_task.
+ */
+static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
+{
+    if (subtype != XPRSBLE_SUB_XPRS || len <= 0 || len > XPRS_MAX_WIRE) return;
+    char wire[XPRS_MAX_WIRE + 1];
+    memcpy(wire, payload, (size_t)len);
+    wire[len] = 0;
+
+    s_heard_count++;
+    seen_note(wire, len, "ble", rssi);
+    xprs_t p;
+    if (xprs_parse(wire, len, &p)) {
+        char type[16];
+        xprs_type(&p, type, sizeof type);
+        if (strcmp(type, "identity") == 0) identity_heard(&p);
+    }
+    ESP_LOGI(TAG, "ble    %19d dBm %3dB  %s", rssi, len, wire);
+}
+
 static void on_lora(const char *wire, int len, int rssi)
 {
     s_heard_count++;
@@ -713,6 +743,30 @@ static int lan_beacon(char *out, int cap)
     if (!s_call[0]) return 0;
     return snprintf(out, (size_t)cap, "t:observation f:%s link:lan peers:%d",
                     s_call, xprslan_peer_count(600));
+}
+
+/*
+ * The BLE5 beacon, aired from the status tick rather than by the bearer.
+ *
+ * ESP-NOW and the LAN each own a task with a beacon timer in it; the BLE
+ * component is the radio and nothing else, deliberately, so the cadence lives
+ * with the station. §10.6.1's rule still holds -- a reading belongs to the
+ * bearer it names -- so this says link:ble and no other beacon may.
+ *
+ * This is the one a phone hears. Nothing else this station transmits reaches a
+ * device with no access point and no pairing.
+ */
+static void air_ble_beacon(void)
+{
+    if (!s_call[0] || !xprsble_is_active()) return;
+    char wire[XPRS_MAX_WIRE + 1];
+    int n = snprintf(wire, sizeof wire,
+                     "t:observation f:%s link:ble peers:%d", s_call,
+                     xprsnow_peer_count(600) + xprslan_peer_count(600));
+    if (n <= 0 || n > XPRS_MAX_WIRE) return;
+    n = sign_wire(wire, n, (int)sizeof wire);
+    if (!xprsble_send(wire, n))
+        ESP_LOGW(TAG, "BLE5 beacon refused by the radio");
 }
 
 /* ── Meeting on a working channel (§23.7) ───────────────────────────────── */
@@ -781,6 +835,9 @@ static void air_identity(void)
     if (n <= 0 || n > XPRS_MAX_WIRE) return;
     n = sign_wire(wire, n, (int)sizeof wire);
     xprsnow_send(wire, n);
+    /* And on BLE, or a phone can never check a signature of ours and meters us
+     * as a stranger for good -- two history replays an hour instead of six. */
+    if (xprsble_is_active()) xprsble_send(wire, n);
 }
 
 /* ── Status, every 15 s, the same shape the dongle prints ───────────────── */
@@ -809,6 +866,10 @@ static void status_task(void *arg)
          */
         n++;
         if (n == 60 || n % 3600 == 0) air_identity();     /* 30 s, then 30 min */
+        /* The BLE5 beacon, every 30 s. A phone scans in bursts and a station it
+         * has not heard is a station it cannot ask, so this is the one cadence
+         * that decides whether an off-grid device catches up at all. */
+        if (n % 60 == 0) air_ble_beacon();
 
         /* Rollback self-test (25.8). A new image is on probation until it
          * has held together for two minutes: the API listening, a bearer
@@ -994,7 +1055,7 @@ static int  s_peer_n;
  * twenty, and the M5Stack answered ESP_ERR_HTTPD_TASK and drew a black
  * screen for want of it. The UI is a single task, so one copy is all there
  * has ever been a need for. */
-static xst_chat_t s_chat_scratch[XST_CHAT_MAX];
+static XPRS_PSRAM_BSS xst_chat_t s_chat_scratch[XST_CHAT_MAX];
 static bool s_room_unread[RM_FIXED + CHAT_PEERS_MAX];
 static char s_compose[121];               /* what has been typed          */
 static int  s_compose_n;
@@ -1295,7 +1356,7 @@ static void ui_render(void)
         static const int cw[4] = { 80, 74, 60, 106 };
         xui_table_setup(4, hdr, cw);
 
-        static xui_row_t tr[XUI_TAB_ROWS];
+        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
         xst_dev_t devs[XUI_TAB_ROWS];
         int nr = xst_devices(devs, XUI_TAB_ROWS, UI_INRANGE_SEC);
         for (int i = 0; i < nr; i++) {
@@ -1332,7 +1393,7 @@ static void ui_render(void)
         static const int cw[2] = { 110, 210 };
         xui_table_setup(2, hdr, cw);
 
-        static xui_row_t tr[XUI_TAB_ROWS];
+        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
         int nr = 0;
         #define NROW(c0, val, det) do { \
             snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
@@ -1390,7 +1451,7 @@ static void ui_render(void)
         static const int cw[2] = { 170, 150 };
         xui_table_setup(2, hdr, cw);
 
-        static xui_row_t tr[XUI_TAB_ROWS];
+        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
         int nr = 0;
         #define SROW(c0, val, det) do { \
             snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
@@ -1595,7 +1656,7 @@ static void ui_render(void)
         static const int cw[3] = { 68, 176, 76 };
         xui_table_setup(3, hdr, cw);
 
-        static xui_row_t tr[XUI_TAB_ROWS];
+        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
         xst_chat_t rows[XUI_TAB_ROWS];
         int nr = xst_chat(rows, XUI_TAB_ROWS);
         uint32_t nowep = xst_epoch_now();
@@ -1718,6 +1779,7 @@ static void idx_air(const char *bearer, const char *wire, int len)
     ESP_LOGI(TAG, "replay on %s: %.*s", bearer, len > 70 ? 70 : len, wire);
     if (strcmp(bearer, "espnow") == 0)    xprsnow_send(wire, len);
     else if (strcmp(bearer, "lora") == 0) xprslora_send(wire, len);
+    else if (strcmp(bearer, "ble") == 0)  xprsble_send(wire, len);
     else                                  xprslan_send(wire, len);
 }
 
@@ -2644,6 +2706,31 @@ void xapp_run(const xapp_board_t *board)
     xh_expect(XH_ADDR,  true);
     xh_expect(XH_INDEX, true);
 
+    /*
+     * BLE5 goes up BEFORE WiFi, and the order is the whole difference between
+     * a working radio and a boot loop.
+     *
+     * The BT controller wants a contiguous block of INTERNAL DRAM -- PSRAM does
+     * not satisfy it however the host is configured. Started after WiFi and the
+     * hotspot have taken theirs, it gets "BLE_INIT: Malloc failed", trips
+     * `assert emi.c 164` inside the controller, and the interrupt watchdog
+     * reboots the board about three and a half seconds in, forever. Started
+     * here there is ~140 KB internal free and it fits with room to spare.
+     *
+     * docs/esp32.md says it in one line: "the boot order is the allocator --
+     * whoever starts last gets the fragments." The radio cannot live on
+     * fragments; the HTTP server can.
+     */
+    if (board->ble) {
+        heap_mark("before ble");
+        if (xprsble_start(s_call) == ESP_OK) {
+            xprsble_set_rx_cb(on_ble);
+        } else {
+            ESP_LOGE(TAG, "BLE5 failed to start -- carrying on without");
+        }
+        heap_mark("after ble");
+    }
+
     heap_mark("before wifi");
     wifi_up();
     heap_mark("after wifi");
@@ -2728,6 +2815,7 @@ void xapp_run(const xapp_board_t *board)
         else
             ESP_LOGE(TAG, "LoRa radio failed to start -- carrying on without");
     }
+
 
     /* 6 KB, not 3: once a minute this task calls air_identity(), and signing
      * is several KB of secp256k1 stack -- the same trap that once PANIC'd
