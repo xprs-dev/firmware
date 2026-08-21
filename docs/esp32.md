@@ -118,6 +118,25 @@ mesh identity is the iGate callsign from NVS, fallback `TDONGLE`).
 - `build.sh` menu does NOT list tdongle_s3 or rns_ble5 -- build those directly
   (`pio run -e tdongle_s3` at the root, or `pio run` inside `rns_ble5/`).
 - A full cold build takes >10 min (IDF from scratch); incremental is fast.
+- **Three boards are on this bench and two of them answer to "the M5Stack" if
+  you are careless.** `/dev/ttyACM0` is the T-Dongle (X3WWAJ, 192.168.178.102);
+  `/dev/ttyUSB0` is the M5Stack Core (X3LTSH, 192.168.178.119); `/dev/ttyACM1`
+  is X3R8XX, has an sx1262, and is neither -- though it logs under the same
+  `xprs:` tag and is indistinguishable in a capture. An hour once went into
+  instrumenting a code path that was never reached, because the command under
+  test had been addressed to the board that did not have the firmware, while
+  the console being read belonged to a third one. **Compare `uptime_s` between
+  the serial `alive` line and `/api/status` before believing a capture belongs
+  to the board you just flashed**, and address stations by the callsign the
+  station itself reports.
+- The M5Stack is a CP2104. `monitor-capture.sh -r` drives DTR/RTS in the
+  combination that puts it into `DOWNLOAD_BOOT` and leaves it there; recover
+  with `esptool --after hard_reset chip_id`, or reset it with RTS alone while
+  holding DTR low.
+- `version.txt` is read at CMake configure time. Editing it and running
+  `pio run -t upload` flashes a NEW binary carrying the OLD version string,
+  which then looks exactly like an upload that did not take. Check the build
+  timestamp in `/api/diag`, not the version, to tell whether a flash landed.
 
 ## The two processors -- the rule that matters most
 
@@ -301,23 +320,37 @@ reading a boot log. **Check the return of every `xTaskCreate`, and prefer
 claiming a large stack early over hoping it fits later.**
 
 Measured heap by boot stage on the T-Dongle-S3 (`heap_mark()` in `main.c`), which
-is how the above was found and the first thing to re-run when it recurs:
+is how the above was found and the first thing to re-run when it recurs.
+
+**Numbers in this file drift with the feature set, so they carry a date and a
+configuration.** A table with no provenance is what let a whole `sdkconfig`
+block go missing unnoticed for months -- see below.
+
+*2026-08-21, LVGL pool 16 KB, hub link off, `CONFIG_SDCARD_MAX_FILES=3`:*
 
 | after | free | largest block |
 |---|---|---|
-| boot | 234,244 | 172,032 |
-| `model_init` (NVS + LCD) | 205,096 | 139,264 |
-| `nimble_port_init` | 158,136 | 94,208 |
-| `igate_start` (WiFi STA + lwip) | 90,952 | 31,744 |
-| `sdcard_init` | 59,224 | 31,744 |
-| the three XPRS bearers | 48,648 | 31,744 |
-| `api_start` (httpd) | 39,792 | 31,744 |
-| `rns_tcp_start` | 27,128 | 18,432 |
+| boot | 208,208 | 139,264 |
+| `nimble_port_init` | 141,724 | 77,824 |
+| `igate_start` (WiFi STA + lwip) | 135,564 | 73,728 |
+| `api_start` (httpd) | 73,140 -> 68,844 | 31,744 |
+| BLE host + `gatt_mesh` | 62,804 | 31,744 |
+| `sdcard_init` | 23,968 | 9,728 |
+| the three XPRS bearers | ~8,200 | 3,584 |
+| steady state, associated | **14,304** | 4,096 |
+
+*Superseded (kept because the deltas are still the lesson): an earlier build
+booted with 234,244 free and reached `api_start` with 39,792. The costs, not the
+totals, are what carries over.*
 
 WiFi (62 KB), NimBLE (47 KB) and the SD card (32 KB) are the three that matter;
 everything else is noise beside them. Steady state after association is around
-13 KB, so **there is no room for a new 8 KB anything** -- take it at boot or
+14 KB, so **there is no room for a new 8 KB anything** -- take it at boot or
 reclaim first (`sdkconfig` buffer counts) and measure again.
+
+Note the order in that table. `api_start` and the BLE host now come BEFORE the
+card and the bearers, and that is not tidiness -- see "The boot order is the
+allocator" below.
 
 The whole cycle repeated on the M5Stack Core the day it grew an indexer, and
 the same medicine worked: `xprsidx_wr`'s 8 KB start became a coin toss at
@@ -435,6 +468,127 @@ maintains the generated one at the project root and that is what the build uses.
 The fragment had asked for `MSYS_1=6` and no central role for who knows how
 long, and the build had 12 and central enabled.
 
+### Nothing here fails loudly
+
+Four times now the station has been taken off the air by something that
+returned an error nobody read, and every time it kept running and kept looking
+healthy:
+
+| what failed | how it presented |
+|---|---|
+| `xTaskCreate` could not get 8 KB | no beacons, no announcements, no clock -- everything else fine |
+| `httpd_start` could not get 5,120 in one piece | served nothing on the LAN while gossiping happily over ESP-NOW and BLE |
+| `nimble_port_freertos_init` could not get 5,120 either | BLE never came up, so `relay_task` (which waits on `on_sync()`) stayed parked forever, taking the OTA self-test and the `cmd:update` answer with it |
+| a block of `sdkconfig.defaults` vanished in a repo move | nothing at all, for months, until 2,912 bytes of new static RAM ended it |
+
+The rule generalises past `xTaskCreate`: **anything that allocates can fail
+here, and eventually will. Check it, and keep checking after boot** -- three of
+those four were still true an hour later, and only one of them was visible in a
+boot log anybody was reading.
+
+The evidence for the BLE one had been printing all along. The heartbeat says
+`relay=<loops>` precisely so a parked task is visible, and it had been sitting
+at `relay=0` for a long time. **A number in a log line is not an alarm.**
+
+So `common/xprs_health/` keeps a register of what a board is supposed to have,
+declared *before* anything starts -- a part registered only when it succeeds can
+never be reported missing -- and names whatever is absent at `ESP_LOGE`, at the
+end of boot and from the heartbeat thereafter. `xh_all_ok()` is also the
+verdict the OTA rollback self-test consumes, so "healthy enough to keep this
+firmware" and "healthy enough to stop complaining" are one function and cannot
+drift apart.
+
+It also turns the tables in this file into a check. `xh_heap_floor()` shouts
+when free heap is under what the board is documented to boot with -- the thing
+that would have caught the missing `sdkconfig` block on the first boot instead
+of months later. It is edge-triggered and runs periodically, because **a
+subsystem that stops working does not stop existing**: proved on the bench with
+a deliberately over-committed build, where the roster still read `http api+`
+while every request went unanswered, and the floor check was the only thing
+that said anything (`free=2412 largest=1728, expected at least 4000`). The
+handle was valid the whole time. The handlers just could not allocate.
+
+### Register a callback before you start the thing that fires it
+
+`ble_hs_cfg.sync_cb` was assigned at the end of `app_main`, which was harmless
+only because the host was started at the end too. Moving the host earlier meant
+it synced against an unset callback: BLE came up and `on_sync` never ran. The
+controller is ready immediately, so this race always loses -- there is no window
+in which "start it, then wire it up" works on this chip.
+
+### The boot order is the allocator
+
+Whoever starts last gets the fragments. This file already says to claim big task
+stacks early; extend it, because the two worst cases were not `xTaskCreate` calls
+anyone can see in this repo:
+
+- `httpd_start` wants 5,120 bytes in one piece and found 2,816
+- `nimble_port_freertos_init` wants 5,120 and found 3,584
+
+Both are library calls that create a task internally with a fixed stack. **If a
+component starts a task, its position in `app_main` is a memory decision**, and
+the fix in both cases was to move the call ahead of WiFi, the card and the
+bearers rather than to trim anything.
+
+### Freeing memory does not fix an over-committed board -- it moves the victim
+
+Halving the LVGL pool handed back 16 KB and made the end-of-boot free number
+*worse*. That is not a paradox: `rns_tcp` and `gatt_mesh` had been failing
+quietly, and with room to succeed they took theirs. Every reclaim was absorbed
+by whatever had been losing before it, and three rounds of this bought nothing.
+
+**Judge by min-ever, and by whether every subsystem actually started -- never by
+"free heap went up".**
+
+What ended it was writing the budget down and subtracting:
+
+*T-Dongle-S3, 2026-08-21, everything running:*
+
+| subsystem | cost |
+|---|---|
+| WiFi + APRS-IS iGate | 55.7 KB |
+| NimBLE + controller | 59.3 KB |
+| SD card (3 open files) | 32.0 KB |
+| Reticulum hub link | 12.7 KB |
+| LAN + ESP-NOW bearers | 10.5 KB |
+| HTTP server + its response buffer | 11.0 KB |
+| LVGL pool | 16.0 KB |
+
+against about 208 KB at boot -- roughly 12 KB more than exists. The answer was
+not another reshuffle, it was **giving a feature up**: the hub link is off on
+this board (`-DRNS_HUB_LINK` to restore it, and expect to lose something else).
+When the arithmetic does not close, stop moving memory and decide what the board
+is for.
+
+### A boot-trace delta says what a subsystem cost, not what stopping it returns
+
+The trace shows `heap after hotspot: 30,448`, down from 139,440, so the SoftAP
+and its DHCP server and netif look like ~109 KB of recoverable memory. Dropping
+to `WIFI_MODE_STA` returns **3,312 bytes** of it (7,628 -> 10,940, measured).
+The rest was claimed when the interface was created and a mode change does not
+give it back; that would mean tearing the netif down. Do not budget for memory
+you have only seen disappear.
+
+### Defaults are sized for a JSON request, not for bulk over flash
+
+`httpd_config_t.recv_wait_timeout` is five seconds. A firmware push is over a
+megabyte arriving while the same task erases flash -- and an erase stops the
+cache for **both** cores. Two pushes died mid-transfer with `recv=-3` at 44 KB
+and 403 KB while every `esp_ota_write` returned `ESP_OK`, which reads as a
+storage fault and is a socket one. Both boards now use 30 s.
+
+The same shape appears wherever a default assumes a small, quick transaction:
+check it before blaming the thing that looks broken.
+
+### "Quiesce" means hand resources back, not pause writes
+
+The first version of `ota_quiesce()` paused the index writer and nothing else,
+so a 1.4 MB transfer competed with the hub link, ESP-NOW and the bearers for
+lwip buffers; the window shut and never reopened. Standing the station down --
+`rns_tcp_pause()` giving up its socket and both TCP windows, `xprsnow_stop()`
+its queues -- is what made the transfer complete, in 34 seconds. Resume on the
+failure path too: a refused image must not cost the station its radios.
+
 ### A component that spawns a task must be asked before it dies
 
 `xprsindex_open()` creates the store's writer task and hands it the store
@@ -495,11 +649,19 @@ before believing anything about the network.
 `CONFIG_SPIRAM` is **not** set on the T-Dongle, so everything comes out of
 internal SRAM, and the app partition is nearly full:
 
+*Measured 2026-08-21, hub link off:*
+
 | | |
 |---|---|
-| App partition | 1,966,080 B |
-| Current app | ~1,860,000 B (~105 KB spare) |
-| Free heap after httpd starts | ~104 KB, largest block ~40 KB |
+| App slot (`ota_0`/`ota_1`, two of them) | 2,097,152 B each |
+| Current app | ~1,446,000 B |
+| Free heap when httpd starts | 73,140, largest block 31,744 |
+| Free heap at steady state | **14,304**, largest 4,096, min-ever 4,724 |
+
+The two app slots are the OTA layout (XPRS.md 25.8); there is no `factory`
+partition. The old single-slot figure of 1,966,080 B with ~105 KB spare no
+longer applies, and neither does "~104 KB free after httpd" -- that was
+measured when httpd started last, before the boot order changed.
 
 Consequences that have already bitten:
 

@@ -48,6 +48,26 @@
 #include "fw_secrets.h"     /* gitignored; see fw_secrets.h.example */
 #include "xprs_auth.h"
 #include "xprs_config.h"
+#include "xprs_health.h"
+
+/* What this board is supposed to have running. Names are literals and are
+ * borrowed, not copied (xprs_health.h), and they are what an ESP_LOGE will
+ * print at 3am, so they read as things rather than as symbols. */
+#define XH_HTTP   "http api"
+#define XH_BLE    "ble host"
+#define XH_LAN    "lan bearer"
+#define XH_NOW    "esp-now"
+#define XH_RELAY  "relay task"
+#define XH_CARD   "sd card"
+
+/* What this board is documented to boot with, from the table in
+ * docs/esp32.md. Measured 2026-08-21 with the hub link off: end of
+ * app_main sits around 5 KB with the bearers just started and settles
+ * near 14 KB once association finishes, so the floor is set below the
+ * transient and above the failure. It exists to catch a step change --
+ * a setting that stopped being applied -- not to police a few hundred
+ * bytes of drift. Raise it when the board genuinely gets roomier. */
+#define TDONGLE_HEAP_FLOOR 4000
 #include "xprs_ota.h"
 #include "xprs_station.h"
 #include "xprs_ui_mini.h"
@@ -1564,9 +1584,11 @@ static void api_start(void)
                                      .handler = api_update_post, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &uup);
     s_api = srv;
+    xh_set(XH_HTTP, true);
     ESP_LOGI(TAG, "HTTP API up: /api/xprs, /api/xprs/dir, /api/diag, "
                   "POST /api/update");
 }
+
 
 static void heartbeat_task(void *arg)
 {
@@ -1626,6 +1648,22 @@ static void heartbeat_task(void *arg)
                  (unsigned)xs.count, (unsigned)qwait, (unsigned)qdrop,
                  xprslan_is_active() ? xprslan_peer_count(600) : -1,
                  (unsigned)s_relay_ticks);
+
+        /* The parts that can die after boot, re-read every beat. relay is
+         * the one that matters most and the one that went unnoticed for
+         * months: the count was printed all along, at zero, and a number
+         * in a log line is not an alarm. Ticking is the test, not
+         * existing -- a parked task still has a counter. */
+        static uint32_t last_relay;
+        xh_set(XH_RELAY, s_relay_ticks != last_relay);
+        last_relay = s_relay_ticks;
+        xh_set(XH_LAN, xprslan_is_active());
+        xh_set(XH_NOW, xprsnow_channel() != 0);
+        xh_set(XH_CARD, sdcard_is_mounted());
+        xh_set(XH_HTTP, s_api != NULL);
+        xh_set(XH_BLE, s_ble_up);
+        xh_report(false);
+        xh_heap_floor(TDONGLE_HEAP_FLOOR);
     }
 }
 
@@ -3174,6 +3212,7 @@ static void on_sync(void)
     /* The task itself was claimed in app_main, when there was still a heap to
      * claim it from. All that happens here is releasing it: it owns ext-adv
      * instance 0, so it must not touch the radio before the host has synced. */
+    xh_set(XH_BLE, true);        /* on_sync ran: the host is genuinely up */
     s_relay_may_run = true;
 }
 
@@ -3961,6 +4000,16 @@ void app_main(void)
     }
 
     s_relay_mtx = xSemaphoreCreateMutex();
+    /* Declare the roster before starting anything. A part that is only
+     * registered when it succeeds can never be reported missing, and
+     * "never started at all" is precisely the failure this catches. */
+    xh_expect(XH_HTTP,  true);
+    xh_expect(XH_BLE,   true);
+    xh_expect(XH_LAN,   true);
+    xh_expect(XH_NOW,   true);
+    xh_expect(XH_RELAY, true);
+    xh_expect(XH_CARD,  false);   /* a station without a card still works */
+
     heap_mark("before nimble_init");
     if (nimble_port_init() != ESP_OK) {
         ESP_LOGE(TAG, "nimble_port_init failed");
@@ -4195,4 +4244,15 @@ void app_main(void)
     xTaskCreate(console_task, "console", 4096, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "RNS-BLE5 full node + repeater + UI + APRS-IS iGate up");
+
+    /* Everything above has now had its chance. Name whatever did not take
+     * it, and complain if this board came up with less room than
+     * docs/esp32.md records for it -- the check that would have caught a
+     * whole sdkconfig block going missing in a repo move. The BLE host is
+     * still associating at this point, so it is not judged yet; the
+     * heartbeat picks it up within fifteen seconds. */
+    xh_set(XH_LAN, xprslan_is_active());
+    xh_set(XH_NOW, xprsnow_channel() != 0);
+    xh_set(XH_CARD, sdcard_is_mounted());
+    xh_heap_floor(TDONGLE_HEAP_FLOOR);
 }

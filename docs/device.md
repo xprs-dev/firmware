@@ -105,6 +105,25 @@ flash, no LVGL pool contention, ~22 KB free); the m5stack takes a push
 over its own access point instead, which costs no HTTP client at all.
 
 
+### It must be able to say whether it is doing all this
+
+Everything above is a list of things a station does, and the failure mode of
+such a list is a board that quietly stops doing one of them. That has happened
+four times on this hardware -- a task, an HTTP server and a BLE host that never
+started, and a config block that went missing -- and in every case the station
+kept running and looked healthy from the air.
+
+So a station declares what it is supposed to have (`common/xprs_health/`,
+`xh_expect()`) BEFORE starting any of it, marks each part up as it comes alive,
+and names whatever is missing at `ESP_LOGE` -- at the end of boot and from its
+heartbeat forever after. The same verdict, `xh_all_ok()`, is what the OTA
+rollback self-test consumes, so a board cannot consider itself well enough to
+keep a new firmware while telling its log otherwise.
+
+It also asserts its own documented heap floor, which is what turns the measured
+tables in `docs/esp32.md` into something that fails loudly on the day a setting
+stops being applied.
+
 ## 6.1 What was actually proved, and on what
 
 Every line below was run against a T-Dongle-S3 on the bench, over the

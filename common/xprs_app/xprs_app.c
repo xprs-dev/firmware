@@ -61,6 +61,23 @@ static char s_pass[64];
 #include "xprs_ui.h"
 #include "xprs_config.h"
 #include "xprs_api.h"
+#include "xprs_health.h"
+
+/* What this station is supposed to have running (xprs_health.h). One
+ * roster, consumed by the boot log, the heartbeat and the OTA rollback
+ * self-test alike, so "healthy enough to keep this firmware" and "healthy
+ * enough to stop complaining" cannot drift apart. */
+#define XH_HTTP  "http api"
+#define XH_LAN   "lan bearer"
+#define XH_NOW   "esp-now"
+#define XH_ADDR  "wifi address"
+#define XH_INDEX "archive"
+
+/* What this board is documented to boot with; see docs/esp32.md. Measured
+ * 2026-08-21 at CONFIG_SDCARD_MAX_FILES=4: about 12 KB free once the
+ * archive has opened its files. The floor catches a step change -- a
+ * setting that stopped being applied -- not ordinary drift. */
+#define M5_HEAP_FLOOR 6000
 #include "xprs_auth.h"
 #include "xprs_ota.h"
 #include "xprs_hotspot.h"
@@ -750,10 +767,11 @@ static void status_task(void *arg)
          * radios came up and then the heap ran out on the first signature"
          * is exactly the failure this exists to catch. */
         if (n == 240) {
-            bool healthy = xprs_api_httpd() != NULL &&
-                           (xprslan_is_active() || xprsnow_is_active()) &&
-                           (!xcfg_get_bool("wifi_on", true) || s_ip_str[0]) &&
-                           esp_reset_reason() != ESP_RST_PANIC;
+            /* One definition, not a second copy of the same predicate:
+             * the roster below is what the log and the heartbeat judge
+             * too. A panic behind us is the one extra condition, because
+             * it is about the boot rather than about what is running. */
+            bool healthy = xh_all_ok() && esp_reset_reason() != ESP_RST_PANIC;
             if (healthy) xota_mark_healthy();
             else         xota_mark_unhealthy();
         }
@@ -767,6 +785,16 @@ static void status_task(void *arg)
          * send callback existed, and the difference is where a rendezvous that
          * "sent" its acceptance and was not heard shows up. */
         xprsnow_tx_stats(&issued, &done, &failed);
+        /* Re-read the parts that can die after boot, not only fail to
+         * start. Then say so only when the picture changes. */
+        xh_set(XH_HTTP, xprs_api_httpd() != NULL);
+        xh_set(XH_LAN, xprslan_is_active());
+        xh_set(XH_NOW, xprsnow_is_active());
+        xh_set(XH_ADDR, !xcfg_get_bool("wifi_on", true) || s_ip_str[0] != 0);
+        xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
+        xh_report(false);
+        xh_heap_floor(M5_HEAP_FLOOR);
+
         ESP_LOGW(TAG, "alive %us heap=%u call=%s ch=%u espnow rx=%u tx=%u "
                       "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u",
                  (unsigned)(esp_timer_get_time() / 1000000ULL),
@@ -2490,6 +2518,15 @@ void xapp_run(const xapp_board_t *board)
         s_ssid[0] = 0;
         ESP_LOGI(TAG, "WiFi/LAN disabled by config (radio up for ESP-NOW only)");
     }
+    /* Declare the roster before starting anything: a part registered only
+     * on success can never be reported missing, and "never started" is
+     * the failure this catches (xprs_health.h). */
+    xh_expect(XH_HTTP,  true);
+    xh_expect(XH_LAN,   true);
+    xh_expect(XH_NOW,   true);
+    xh_expect(XH_ADDR,  true);
+    xh_expect(XH_INDEX, true);
+
     ESP_LOGI(TAG, "heap before wifi: %u (largest %u)",
              (unsigned)esp_get_free_heap_size(),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
@@ -2616,4 +2653,14 @@ void xapp_run(const xapp_board_t *board)
             xcfg_get_bool("wifi_on", true))
             xcfg_share_start();
     }
+
+    /* Everything has had its chance now. Name whatever did not take it,
+     * and complain if this board came up with less room than the tables
+     * in docs/esp32.md record for it. WiFi may still be associating, so
+     * the address is not judged here -- the heartbeat picks it up. */
+    xh_set(XH_HTTP, xprs_api_httpd() != NULL);
+    xh_set(XH_LAN, xprslan_is_active());
+    xh_set(XH_NOW, xprsnow_is_active());
+    xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
+    xh_heap_floor(M5_HEAP_FLOOR);
 }
