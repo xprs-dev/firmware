@@ -889,9 +889,18 @@ is nothing to fall back to: the board reboot-loops in the bootloader, which
 makes the USB device churn and the next attempt harder. Recovery is
 `erase_region` followed by a chunked write.
 
-Use `tools/flash-chunked.sh <port> <image.bin>`, which writes 256 KB at a
-time, each piece its own esptool invocation with its own reset and up to four
-retries. Also: do not raise the baud on this link -- at 460800 esptool's
+Use `tools/flash-chunked.sh <port> <image.bin> <offset>`, which writes 256 KB
+at a time, each piece its own esptool invocation with its own reset and up to
+four retries. The offset is required and comes from the board's
+`partitions.csv` (the T-Deck app now starts at `0x20000`, `ota_0`). The script
+accepts `0x0` (bootloader) and `0x8000` (partition table) so a board can be
+moved to a new layout over the same link, and refuses anything else below
+`0x10000`, which is nvs/otadata. Moving a board from the single-`factory`
+layout to OTA slots needs all three writes -- bootloader, table, app -- and
+an `erase_region 0xF000 0x2000` so stale otadata does not point at a slot
+that is not there. A board that did not get the table write keeps its old
+layout and reports `"running":"factory"` in `/api/diag`; it cannot take an
+OTA until this is done by cable. Also: do not raise the baud on this link -- at 460800 esptool's
 `Changing baud rate` step is itself a common failure point.
 
 ### A board without Bluetooth must still compile
@@ -953,6 +962,49 @@ And the settings bug that every board carried: `ui_render()` excluded panel 6
 from the one block that calls `xui_table_select()`, so the highlight never
 moved, the table never scrolled, and the selection grew unbounded into
 `settings_ok()`'s `default:`. One condition; all boards.
+
+### Bring the panel up early, and give it something to say
+
+The screen used to be the last thing `xapp_run()` started, on the reasoning
+that everything it reads already exists by then. That is true and it was
+still wrong: `st7789_init` raises the backlight over GRAM it never clears, so
+the user got several seconds of undefined pixels and then a finished
+dashboard, with nothing in between to say the station was working.
+
+Moving `display_init` + `xui_init` to just before `wifi_up()` costs nothing
+and pays twice. Measured on X3R8XX:
+
+| | display last | display before WiFi |
+|---|---|---|
+| draw buffer | 15 rows (9,600 B) | **30 rows (19,200 B)** |
+| splash on screen at | 3,417 ms | **2,437 ms** |
+
+The draw buffer is adaptive -- it takes an eighth of the screen when it can
+get one contiguous DMA block and halves down to a floor of eight rows when it
+cannot. Early in the boot the heap is still whole, so it gets the full
+eighth and every later frame flushes in half as many SPI slices. **Do not
+move it ahead of BLE**: the controller wants contiguous internal DRAM, and
+the note above about `BLE_INIT: Malloc failed` is what taking it away looks
+like.
+
+Three rules that came out of doing it:
+
+1. **A splash that arrives after the boot is decoration; one that arrives
+   during it is information.** Give it the real step names — the sequence
+   already has them — and drain `stdin` for `'S'` while it is up, because
+   `ui_task` is what normally answers a framedump request and it does not
+   exist yet. Without that there is no way to photograph the splash *during*
+   boot, and therefore no way to prove it was ever on screen.
+2. **Vectors, not a bitmap.** Ten stroked shapes are 212 bytes of `.rodata`
+   and fit any panel; the same mark as 320x240 RGB565 is 153,600 bytes and
+   fits exactly one. `lv_line` does not copy its points — the array has to
+   outlive the objects and be freed with them.
+3. **Only log what you can measure.** LVGL's pool is a fixed array on a board
+   without PSRAM (`lv_mem_monitor` reports it exactly) and PSRAM on a board
+   with it (`lv_mem_monitor` is inert). Free PSRAM across the splash's
+   lifetime is not a measure of the splash — the rest of the boot allocates
+   tens of kilobytes in that window. Report the real figure where there is
+   one and say nothing where there is not.
 
 ## Memory budget -- the T-Dongle-S3, which has no PSRAM
 

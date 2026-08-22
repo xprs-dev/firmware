@@ -125,6 +125,36 @@ colours, orientation, inversion. Only looking at the board does that.
 The S3 has room the original ESP32 did not, which is why PSRAM is left off
 (see `firmware/sdkconfig.defaults`).
 
+## Updating over the air
+
+Two app slots and rollback, like the other boards -- this one used to have a
+single `factory` partition and could only be reflashed by cable. The push
+door is the shared one (`docs/device.md` §6); `tools/push_firmware.sh` is the
+procedure. The archive gave up 2 MB for the second slot and moved, so the
+first boot on the new table reformatted it once; NVS did not move and the
+station kept its identity.
+
+## The boot splash
+
+The Geogram triad, drawn as strokes rather than stored as a picture: the ten
+shapes in `spec/artwork/splash/geogram-triad-dark.svg` are a coordinate table
+in `common/xprs_art/` (212 bytes of `.rodata`) and ten `lv_line` objects, the
+same idiom the radar's rings use. A 320x240 RGB565 bitmap would have been
+153,600 bytes and useless on the T-Dongle's 160x80 panel.
+
+It carries a line naming what is starting -- `network`, `services`, `mesh`,
+`identity`, `radio`, `ready` -- and goes as soon as the dashboard behind it
+has been filled in once.
+
+**The panel now comes up before WiFi rather than after everything.** It used
+to be last, which was defensible ("everything it reads already exists by
+then") but meant the glass stayed dark through the whole slow part and then
+showed a finished dashboard. Two things fall out of the move: the splash
+covers seconds that used to be blank, and the draw buffer gets the contiguous
+DMA block it wants -- **30 rows instead of 15**, so every frame afterwards
+flushes in half as many SPI slices. It is deliberately **not** moved ahead of
+BLE, whose controller needs internal DRAM this would take.
+
 ## Not done yet
 
 - **Battery state** is inferred from the voltage TREND (six samples a minute

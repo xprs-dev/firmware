@@ -422,6 +422,27 @@ static const char *ok_key(void)
     return (s_board && s_board->raw_key) ? "Enter" : "OK";
 }
 static uint32_t now_ms(void);
+static bool s_display_up;   /* the panel and LVGL are alive */
+
+/*
+ * Name the step that is starting, on the splash and in the log.
+ *
+ * Also drains stdin for 'S': ui_task is what normally answers a framedump
+ * request, and during boot it does not exist yet -- without this there is no
+ * way to photograph the splash WHILE the station is still coming up, which
+ * is the only evidence that distinguishes a splash from a picture of a
+ * finished boot.
+ */
+static void splash_step(const char *what)
+{
+    for (int i = 0; i < 8; i++) {
+        int c = getchar();
+        if (c <= 0) break;
+        if (c == 'S' || c == 's') xui_framedump();
+    }
+    ESP_LOGI(TAG, "splash: %s", what);
+    xui_splash_status(what);
+}
 
 /* Keyboard backlight: lit by a keypress, out after this many ms of none. */
 #define KB_LIGHT_MS 5000
@@ -1033,8 +1054,8 @@ static void status_task(void *arg)
         /* Re-read the parts that can die after boot, not only fail to
          * start. Then say so only when the picture changes. */
         xh_set(XH_HTTP, xprs_api_httpd() != NULL);
-        xh_set(XH_LAN, xprslan_is_active());
-        xh_set(XH_NOW, xprsnow_is_active());
+        xh_set(XH_LAN, xprslan_is_active() || !xcfg_get_bool("wifi_on", true));
+        xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
         xh_set(XH_ADDR, !xcfg_get_bool("wifi_on", true) || s_ip_str[0] != 0);
         xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
         xh_report(false);
@@ -2748,6 +2769,35 @@ static void ui_task(void *arg)
          * these works from the device as well as from a script. */
         int ch = getchar();
 
+        /* The cable, on this console too. The single-key commands below
+         * are the console's whole vocabulary, so a LINE is gathered only
+         * when it starts with "cfg" -- "cfg set fwkey <hex>" is how a pinned
+         * key is rotated with a USB lead and nothing else, on every board,
+         * by the one implementation in xprs_config (see xcfg_console). */
+        {
+            static char cfgline[160];
+            static int  cfgn = -1;           /* -1: not inside a cfg line */
+            if (cfgn < 0 && ch == 'c') { cfgn = 0; }
+            /* Inside a cfg line, drain everything that has arrived. One
+             * character per 10 ms tick is slower than a pasted 76-char
+             * "cfg set own1 npub..." and the USB-JTAG ring then drops the
+             * tail, which once saved a mangled owner key. */
+            while (cfgn >= 0 && ch > 0) {
+                if (ch == '\n' || ch == '\r') {
+                    cfgline[cfgn] = 0;
+                    if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0) xcfg_console(cfgline);
+                    cfgn = -1;
+                    ch = 0;
+                } else if (cfgn < (int)sizeof cfgline - 1) {
+                    cfgline[cfgn++] = (char)ch;
+                    /* Not a cfg line after all: hand the key back. */
+                    if (cfgn <= 3 && strncmp(cfgline, "cfg", cfgn) != 0) { cfgn = -1; break; }
+                    ch = getchar();            /* consumed; take the next now */
+                } else { cfgn = -1; ch = 0; }
+            }
+            if (cfgn >= 0 && ch < 0) ch = 0;   /* mid-line, ring empty: wait */
+        }
+
         /* The serial console can type too, and it has to: without it there
          * is no way to exercise the composer from a script, and "it works,
          * I pressed the keys myself" is not a test. While a room is open,
@@ -2825,13 +2875,23 @@ static void ui_task(void *arg)
         }
         battery_tick();
         screen_tick();
+        static bool s_rendered_once, s_splash_gone;
         if (!s_screen_off && (force || now_us >= next_render_us)) {
             ui_render();
+            s_rendered_once = true;
             /* Scope and flow settle every 10 s; the counter panels at 2 s. */
             next_render_us = now_us +
                 ((s_panel == 0 || s_panel == 4 || s_panel == 2)
                      ? 10000000ULL : 2000000ULL);
         }
+
+        /* The splash goes once the dashboard behind it has been filled in
+         * at least once, so nothing flashes an empty screen -- and BEFORE
+         * xui_update(), so the deletion's invalidation is served by the same
+         * lv_timer_handler pass: one repaint, not two. Latched, or this
+         * would ask a hundred times a second forever. */
+        if (s_rendered_once && !s_splash_gone)
+            s_splash_gone = xui_splash_dismiss();
 
         xui_update();
         esp_task_wdt_reset();
@@ -2986,9 +3046,15 @@ void xapp_run(const xapp_board_t *board)
     /* Declare the roster before starting anything: a part registered only
      * on success can never be reported missing, and "never started" is
      * the failure this catches (xprs_health.h). */
+    /* A part the config switched OFF is not a part that failed. This used to
+     * expect every bearer unconditionally, and the OTA self-test consumes the
+     * same verdict -- so a station with ESP-NOW (or WiFi) disabled by its
+     * owner condemned every new image at 120 s and rolled back, for a
+     * setting. The expectation follows the config; the heartbeat below
+     * re-reads it the same way. */
     xh_expect(XH_HTTP,  true);
-    xh_expect(XH_LAN,   true);
-    xh_expect(XH_NOW,   true);
+    xh_expect(XH_LAN,   xcfg_get_bool("wifi_on", true));
+    xh_expect(XH_NOW,   xcfg_get_bool("espnow_on", true));
     xh_expect(XH_ADDR,  true);
     xh_expect(XH_INDEX, true);
 
@@ -3017,6 +3083,34 @@ void xapp_run(const xapp_board_t *board)
         heap_mark("after ble");
     }
 
+    /*
+     * The screen, before WiFi rather than after everything.
+     *
+     * It used to be last, on the reasoning that everything it reads already
+     * exists by then. True, but it meant the glass stayed dark through the
+     * whole of the slow part -- association, SNTP, the bearers, a secp256k1
+     * signature -- and st7789_init raises the backlight over GRAM it never
+     * clears, so what the user saw was several seconds of nothing and then a
+     * dashboard. A splash that arrives after the boot it is meant to cover
+     * is decoration; here it is the thing that makes those seconds legible.
+     *
+     * It is also cheaper here. The draw buffer wants one contiguous DMA
+     * block and takes an eighth of the screen when it can get it: measured
+     * on X3R8XX, 15 rows at the old site against the full 30 here, so the
+     * panel flushes a frame in half as many slices for the rest of the run.
+     *
+     * NOT before BLE, though: the controller wants contiguous internal DRAM
+     * and this firmware has already learned what happens when it does not
+     * get it -- see the note on BLE_INIT above.
+     */
+    int lcd_w = 0, lcd_h = 0;
+    void *lcd = NULL;
+    s_display_up = board->display_init(&lcd_w, &lcd_h, &lcd) == ESP_OK &&
+                   xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK;
+    if (!s_display_up)
+        ESP_LOGE(TAG, "display init failed -- running headless");
+
+    splash_step("network");
     heap_mark("before wifi");
     wifi_up();
     heap_mark("after wifi");
@@ -3048,6 +3142,7 @@ void xapp_run(const xapp_board_t *board)
     if (xprs_api_start(&s_api_cfg) == ESP_OK)
         xcfg_share_attach(xprs_api_httpd());
     heap_mark("after api");
+    splash_step("services");
 
     /* A wall clock makes since:/until: windows mean something; without one
      * the index still works, ordered by its own monotonic index. AFTER
@@ -3074,6 +3169,7 @@ void xapp_run(const xapp_board_t *board)
      * re-air queue and beacon, ESP-NOW included. Starting ESP-NOW without it
      * would leave nothing driving either — which xprsnow_start() says out loud
      * rather than letting it be discovered in the field. */
+    splash_step("mesh");
     if (xprslan_start(s_call) == ESP_OK) {
         xprslan_set_rx_cb(on_lan);
         xprslan_set_beacon(lan_beacon, 60, 10);
@@ -3090,12 +3186,14 @@ void xapp_run(const xapp_board_t *board)
          * a minute between beacons is a long time to watch a serial console. */
         xprsnow_set_beacon(espnow_beacon, 60, 5);
         xprschan_init(s_call, &k_chan_ops);
+    splash_step("identity");
         air_identity();
     }
 
     /* The LoRa radio, on the boards that have one. After the LAN bearer,
      * whose task is what pumps this one's queue too. */
     if (board->lora) {
+        splash_step("radio");
         if (xprslora_start(s_call, board->lora) == ESP_OK)
             xprslora_set_rx_cb(on_lora);
         else
@@ -3113,17 +3211,21 @@ void xapp_run(const xapp_board_t *board)
     xTaskCreate(inet_probe_task, "inet", 3072, NULL, 1, NULL);
 
 
-    /* The screen last: everything it reads already exists by now. The
-     * board brings its own panel up and hands back its size. */
-    int lcd_w = 0, lcd_h = 0;
-    void *lcd = NULL;
-    if (board->display_init(&lcd_w, &lcd_h, &lcd) == ESP_OK &&
-        xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK) {
+    /*
+     * The panel itself came up far earlier (see the splash, above); what is
+     * left here is the two things that genuinely need a finished station.
+     *
+     * ui_task renders from the bearers, the station store and the channel
+     * table, none of which existed before xst_init; and xui_touch_enable
+     * registers an LVGL input device whose read callback drives the I2C bus
+     * the keyboard shares, which must not start polling while the board is
+     * still bringing that bus up.
+     */
+    if (s_display_up) {
         if (s_board->touch_read) xui_touch_enable(s_board->touch_read);
+        splash_step("ready");
         if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
             ESP_LOGE(TAG, "UI task failed to start");
-    } else {
-        ESP_LOGE(TAG, "display init failed — running headless");
     }
 
     /* The station's LAN face: AFTER the screen, but no longer INSIDE it.
@@ -3173,7 +3275,7 @@ void xapp_run(const xapp_board_t *board)
      * the address is not judged here -- the heartbeat picks it up. */
     xh_set(XH_HTTP, xprs_api_httpd() != NULL);
     xh_set(XH_LAN, xprslan_is_active());
-    xh_set(XH_NOW, xprsnow_is_active());
+    xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
     xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
     xh_heap_floor(M5_HEAP_FLOOR);
 }

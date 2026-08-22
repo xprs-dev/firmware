@@ -63,3 +63,10 @@ CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
 # the T-Deck now can, and one more slot removes the failure that fires on every
 # drain. NOT VALIDATED ON HARDWARE: no M5Stack is connected.
 CONFIG_SDCARD_MAX_FILES=5
+
+# The task watchdog the partition table's rollback argument relies on. It
+# said "the 90 s task watchdog (panic on trigger) is what turns a hang into
+# the reset that rolls back" -- and the built config had a 5 s warn-only
+# watchdog, so a new image that hung simply sat there. Now it is true.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y

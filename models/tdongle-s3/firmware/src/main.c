@@ -1519,63 +1519,9 @@ static esp_err_t api_diag_get(httpd_req_t *req)
     return rc;
 }
 
-/* The push door: the caller already holds the image. Same verification as
- * the pull path, and the same gate in front of it. */
-static esp_err_t api_update_post(httpd_req_t *req)
-{
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    char ver[24] = "", sig[80] = "";
-    /* The auth header and the body chunks share the one buffer: the header
-     * is consumed into a verdict before the first chunk is read. */
-    char *auth = s_api_buf;
-    auth[0] = 0;
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Version", ver, sizeof ver);
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Sig", sig, sizeof sig);
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, 300);
-    char who[16] = "";
-    xauth_verdict_t v = xauth_check_http(auth, s_aprs_call, NULL, who);
-    if (v != XAUTH_OK) {
-        ESP_LOGW(TAG, "update refused: %s",
-                 v == XAUTH_403 ? "signer not allowed" :
-                 v == XAUTH_408 ? "stale or no clock" : "unsigned");
-        httpd_resp_set_status(req, v == XAUTH_408 ? "408 Request Timeout"
-                                                  : "403 Forbidden");
-        return httpd_resp_sendstr(req, "this station takes updates only from "
-                                       "its owner\n");
-    }
-    if (!ver[0] || !sig[0] || req->content_len <= 0) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        return httpd_resp_sendstr(req, "need version, signature and an image\n");
-    }
-    if (xota_push_begin(ver, (size_t)req->content_len, sig) != ESP_OK) {
-        httpd_resp_set_status(req, "409 Conflict");
-        return httpd_resp_sendstr(req, "busy, or it does not fit\n");
-    }
-    /* The verdict is already taken, so the header half of the buffer is
-     * free again; the body reads into the second half regardless. */
-    char *buf = s_api_buf + 512;
-    int left = req->content_len;
-    while (left > 0) {
-        int want = left > 1024 ? 1024 : left;
-        int got = httpd_req_recv(req, buf, want);
-        esp_err_t wr = got > 0 ? xota_push_write(buf, (size_t)got) : ESP_OK;
-        if (got <= 0 || wr != ESP_OK) {
-            ESP_LOGE(TAG, "push stopped after %d of %d: recv=%d write=%s",
-                     (int)req->content_len - left, (int)req->content_len,
-                     got, esp_err_to_name(wr));
-            xota_push_abort();
-            httpd_resp_set_status(req, "400 Bad Request");
-            return httpd_resp_sendstr(req, "transfer died\n");
-        }
-        left -= got;
-    }
-    ESP_LOGW(TAG, "%s pushed %s (%d bytes)", who, ver, (int)req->content_len);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true,\"installing\":true}");
-    if (xota_push_finish() != ESP_OK)
-        ESP_LOGE(TAG, "push refused at the last step -- nothing installed");
-    return ESP_OK;
-}
+/* POST /api/update is the shared door in common/xprs_ota/xota_http.c;
+ * this board registers it on its own server in api_start(). The copy that
+ * lived here had already drifted from xprs_api's. */
 
 
 static void api_start(void)
@@ -1621,9 +1567,7 @@ static void api_start(void)
     static const httpd_uri_t udg = { .uri = "/api/diag", .method = HTTP_GET,
                                      .handler = api_diag_get, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &udg);
-    static const httpd_uri_t uup = { .uri = "/api/update", .method = HTTP_POST,
-                                     .handler = api_update_post, .user_ctx = NULL };
-    httpd_register_uri_handler(srv, &uup);
+    xota_http_register(srv, s_aprs_call);
     s_api = srv;
     xh_set(XH_HTTP, true);
     ESP_LOGI(TAG, "HTTP API up: /api/xprs, /api/xprs/dir, /api/diag, "
@@ -3700,6 +3644,7 @@ static void console_recv_begin(const char *path);
 
 static void console_handle(char *line)
 {
+    if (xcfg_console(line)) return;   /* cfg get/set/del: the shared cable */
     if (strncmp(line, "chan ", 5) == 0) {
         /* chan <peer> <channel> [seconds] [lr] — §23.7 step 1. */
         char peer[10] = {0};

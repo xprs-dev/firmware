@@ -15,6 +15,7 @@
 #include <math.h>
 #include "lvgl.h"
 #include "esp_log.h"
+#include "xprs_art.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -49,6 +50,17 @@ static lv_obj_t      *s_bar_zone[3];
 static xui_ev_t       s_ev[XUI_EV_RING];
 static int            s_ev_w, s_ev_r;
 static bool           s_touch_was_down;
+
+/* The boot splash. Everything it owns is deleted together; the point array
+ * is LVGL-pool memory because lv_line keeps the pointer rather than copying,
+ * so it has to outlive the objects and die with them. */
+static lv_obj_t   *s_splash;
+static lv_obj_t   *s_splash_status;
+static lv_point_t *s_splash_pts;
+static lv_style_t  s_splash_pen;
+static uint32_t    s_splash_t0_ms;
+static size_t      s_splash_pool0;      /* pool free before it was built */
+static bool        s_splash_pool_known;
 
 static void ev_push(xui_ev_type_t type, int arg)
 {
@@ -812,6 +824,14 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
      * and the ~11 KB saved is what lets the indexer's writer task start on
      * a busy station. */
     int buf_rows = s_h / 8;
+#if !defined(CONFIG_SPIRAM)
+    /* No PSRAM means the LVGL pool, every task stack and this buffer all
+     * come out of the same internal SRAM, so the panel does not get to claim
+     * an eighth of the screen merely because it now asks early. A board with
+     * PSRAM can afford the big buffer; one without keeps the small one it
+     * has always had, just claimed sooner. */
+    buf_rows = 8;
+#endif
     static lv_color_t *buf1;
     /* Take the biggest slice the heap will actually give, not the biggest
      * we would like. An eighth of the screen is 19 KB in one piece, and on
@@ -869,6 +889,17 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
     s_disp_drv.draw_buf = &s_draw_buf;
     s_disp = lv_disp_drv_register(&s_disp_drv);
 
+    /* Paint the ground before anything else is built. st7789_init raises the
+     * backlight over GRAM it never clears, so until the first flush the glass
+     * shows whatever survived the reset -- noise on a cold boot, the previous
+     * frame on a warm one. One full-screen fill costs about 31 ms of SPI at
+     * 40 MHz, once, and means the splash's own background is what appears.
+     * build_ui() sets black over this, but that never reaches the panel: the
+     * next refresh is the splash's. */
+    lv_obj_set_style_bg_color(lv_scr_act(), XART_DARK, 0);
+    lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
+    lv_refr_now(s_disp);
+
     lv_theme_t *th = lv_theme_default_init(s_disp,
                                            lv_palette_main(LV_PALETTE_BLUE),
                                            lv_palette_main(LV_PALETTE_GREY),
@@ -882,6 +913,8 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
     s_title[0] = 0; s_title_dirty = false;
     s_dev_count = 0; s_dev_dirty = false;
     s_last_tick_us = esp_timer_get_time();
+
+    xui_splash_show();
 
     ESP_LOGI(TAG, "XPRS UI initialised (%dx%d) -- call xui_update() "
                   "from the UI task", s_w, s_h);
@@ -1764,4 +1797,171 @@ void xui_flush_enable(bool on)
     if (on == s_flush_on) return;
     s_flush_on = on;
     if (on) lv_obj_invalidate(lv_scr_act());   /* repaint what was skipped */
+}
+
+
+/* ── Boot splash ─────────────────────────────────────────────────────────── */
+
+/*
+ * Whether the splash leaked, on the board that can actually answer.
+ *
+ * Where the LVGL pool is a fixed array -- no PSRAM -- lv_mem_monitor reports
+ * it exactly, and that is the board where a leak matters, because the pool
+ * is small and running it dry SPINS rather than fails. Where LV_MEM_CUSTOM
+ * sends the pool to PSRAM, lv_mem_monitor is inert and the only other
+ * measure available is free PSRAM, which is useless here: between the
+ * splash going up and coming down the rest of the boot allocates tens of
+ * kilobytes, so the reading says everything except what the splash did.
+ *
+ * So: report the real figure where there is one, and say nothing rather
+ * than something false where there is not.
+ */
+static bool splash_pool_free(size_t *out)
+{
+    lv_mem_monitor_t mm;
+    lv_mem_monitor(&mm);
+    if (!mm.total_size) return false;      /* custom allocator: cannot say */
+    if (out) *out = mm.free_size;
+    return true;
+}
+
+void xui_splash_show(void)
+{
+    if (s_splash || !s_disp) return;
+
+    /* On a board with a fixed internal pool, running it dry does not return
+     * an error -- it spins. Ask first, and decline rather than gamble. */
+    lv_mem_monitor_t mm;
+    lv_mem_monitor(&mm);
+    if (mm.free_biggest_size && mm.free_biggest_size < 2048) {
+        ESP_LOGW(TAG, "splash skipped: LVGL pool free %u, largest %u",
+                 (unsigned)mm.free_size, (unsigned)mm.free_biggest_size);
+        return;
+    }
+    size_t pool_before = 0;
+    bool pool_known = splash_pool_free(&pool_before);
+
+    s_splash_pts = lv_mem_alloc(sizeof(lv_point_t) * XART_PTS_TRIAD);
+    if (!s_splash_pts) {
+        ESP_LOGW(TAG, "splash skipped: no room for %d points", XART_PTS_TRIAD);
+        return;
+    }
+
+    /* lv_layer_top() sits above the screen's children whatever their order,
+     * so the splash covers the dashboard without touching it and deleting
+     * the splash gives it back with no z-order bookkeeping. */
+    s_splash = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_splash);
+    lv_obj_set_size(s_splash, s_w, s_h);
+    lv_obj_set_pos(s_splash, 0, 0);
+    lv_obj_set_style_bg_color(s_splash, XART_DARK, 0);
+    lv_obj_set_style_bg_opa(s_splash, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(s_splash, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_splash, LV_OBJ_FLAG_CLICKABLE);
+
+    /* The mark gets the top two thirds; the wordmark and the status line
+     * share what is left. A narrow panel takes the star alone -- three signs
+     * at 160 px wide would be three smudges. */
+    bool wide = s_w >= 240;
+    int mark_h = wide ? (s_h * 166) / 240 : s_h - 22;
+    xart_poly_t poly[XART_POLY_TRIAD];
+    int pen = 0;
+    int n = xart_build(wide ? XART_G_TRIAD : XART_G_STAR,
+                       0, wide ? 6 : 4, wide ? s_w : s_h, mark_h,
+                       s_splash_pts, XART_PTS_TRIAD,
+                       poly, XART_POLY_TRIAD, &pen);
+    if (n < 0) {
+        ESP_LOGW(TAG, "splash skipped: the mark does not fit %dx%d", s_w, s_h);
+        lv_obj_del(s_splash); s_splash = NULL;
+        lv_mem_free(s_splash_pts); s_splash_pts = NULL;
+        return;
+    }
+
+    /* One style for all ten strokes. Ten local styles would be ten separate
+     * property arrays out of the same pool this function just checked. */
+    lv_style_init(&s_splash_pen);
+    lv_style_set_line_width(&s_splash_pen, pen);
+    lv_style_set_line_color(&s_splash_pen, XART_BONE);
+    lv_style_set_line_rounded(&s_splash_pen, true);   /* stroke-linecap round */
+
+    int mark_x0 = s_w, mark_x1 = 0, mark_y0 = s_h, mark_y1 = 0;
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *ln = lv_line_create(s_splash);
+        lv_line_set_points(ln, poly[i].pts, poly[i].n);
+        lv_obj_add_style(ln, &s_splash_pen, 0);
+        lv_obj_set_pos(ln, 0, 0);
+        for (int k = 0; k < poly[i].n; k++) {
+            if (poly[i].pts[k].x < mark_x0) mark_x0 = poly[i].pts[k].x;
+            if (poly[i].pts[k].x > mark_x1) mark_x1 = poly[i].pts[k].x;
+            if (poly[i].pts[k].y < mark_y0) mark_y0 = poly[i].pts[k].y;
+            if (poly[i].pts[k].y > mark_y1) mark_y1 = poly[i].pts[k].y;
+        }
+    }
+
+    /* The wordmark, in a font already linked -- a fifth Montserrat would be
+     * about 20 KB of flash for four glyphs. */
+    lv_obj_t *word = lv_label_create(s_splash);
+    lv_label_set_text(word, "XPRS");
+    lv_obj_set_style_text_font(word, wide ? &lv_font_montserrat_20
+                                          : &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(word, XART_BONE, 0);
+    lv_obj_set_style_text_letter_space(word,
+        (wide ? lv_font_montserrat_20.line_height
+              : lv_font_montserrat_14.line_height) / 3, 0);
+    lv_obj_align(word, LV_ALIGN_TOP_MID, 0, mark_h + (wide ? 6 : 0));
+
+    s_splash_status = lv_label_create(s_splash);
+    lv_label_set_text(s_splash_status, "");
+    lv_obj_set_style_text_font(s_splash_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_splash_status, XART_BONE, 0);
+    lv_obj_set_style_text_opa(s_splash_status, LV_OPA_70, 0);
+    lv_obj_align(s_splash_status, LV_ALIGN_BOTTOM_MID, 0, -8);
+
+    s_splash_t0_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    s_splash_pool0 = pool_before;
+    s_splash_pool_known = pool_known;
+    size_t pool_now = 0;
+    if (pool_known && splash_pool_free(&pool_now))
+        ESP_LOGI(TAG, "splash up (mark %dx%d at %d,%d pen %d, %u B of pool)",
+                 mark_x1 - mark_x0, mark_y1 - mark_y0, mark_x0, mark_y0, pen,
+                 (unsigned)(pool_before - pool_now));
+    else
+        ESP_LOGI(TAG, "splash up (mark %dx%d at %d,%d pen %d, %d points)",
+                 mark_x1 - mark_x0, mark_y1 - mark_y0, mark_x0, mark_y0, pen,
+                 XART_PTS_TRIAD);
+    xui_update();
+    lv_refr_now(s_disp);
+}
+
+void xui_splash_status(const char *what)
+{
+    if (!s_splash || !s_splash_status || !what) return;
+    lv_label_set_text(s_splash_status, what);
+    xui_update();
+    lv_refr_now(s_disp);
+}
+
+bool xui_splash_dismiss(void)
+{
+    if (!s_splash) return true;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now - s_splash_t0_ms < XUI_SPLASH_MIN_MS) return false;
+
+    /* Objects first, then their points: the other order leaves ten lines
+     * holding a freed array for as long as it takes to delete them. */
+    lv_obj_del(s_splash);
+    s_splash = NULL;
+    s_splash_status = NULL;
+    lv_mem_free(s_splash_pts);
+    s_splash_pts = NULL;
+    lv_obj_invalidate(lv_scr_act());
+    /* On a fixed pool this must come back to where it started; a negative
+     * figure is an object or a point array that outlived the delete. */
+    size_t pool_now = 0;
+    if (s_splash_pool_known && splash_pool_free(&pool_now))
+        ESP_LOGI(TAG, "splash down (pool %+d B vs before it was built)",
+                 (int)((long)pool_now - (long)s_splash_pool0));
+    else
+        ESP_LOGI(TAG, "splash down");
+    return true;
 }

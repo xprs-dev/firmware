@@ -4,5 +4,5 @@
 idf_component_register(
     SRCS "xprs_ui.c"
     INCLUDE_DIRS "."
-    REQUIRES mbedtls log lvgl__lvgl esp_timer geogram_common
+    REQUIRES mbedtls log lvgl__lvgl esp_timer geogram_common xprs_art
 )

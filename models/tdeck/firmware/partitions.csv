@@ -2,27 +2,24 @@
 # NVS at the standard 0x9000 so the callsign, the identity and the WiFi
 # credentials survive a reflash, exactly as on the other boards.
 nvs,      data, nvs,     0x9000,   0x6000
-phy_init, data, phy,     0xf000,   0x1000
-# 2MB, not the M5Stack's 1.5MB: the same firmware is already at 83% there, and
-# the S3's code is bigger than the original ESP32's for the same source.
-factory,  app,  factory, 0x10000,  0x200000
-# Everything the indexer stores: a wear-levelled FAT filling the rest of the
-# 16MB flash.
-storage,  data, fat,     0x210000, 0xD70000
-# Where a panic writes its last words: task, PC, backtrace. Read at the next
-# boot and put into the rotating log, so a freeze names its culprit.
+otadata,  data, ota,     0xf000,   0x2000
+phy_init, data, phy,     0x11000,  0x1000
+# Two app slots for over-the-air updates (XPRS.md 25.8), the same shape as
+# the M5Stack and the T-Dongle. There used to be a single `factory` slot
+# here, which made this the one board in the fleet that could not take an
+# update without a cable: esp_ota_get_next_update_partition() had nothing to
+# hand back and the push door answered 409 before a byte was written.
+# 2 MB each; the image is about 1.35 MB.
+ota_0,    app,  ota_0,   0x20000,  0x200000
+ota_1,    app,  ota_1,   0x220000, 0x200000
+# The indexer's store: a wear-levelled FAT over the spare flash. It paid for
+# the second slot -- 13.4 MB down to 11.4 MB, and it MOVED, so the first
+# boot on this table reformats it once. The archive, stats and logs are lost
+# that one time; NVS above is untouched and the station keeps its identity.
+storage,  data, fat,     0x420000, 0xB60000
 coredump, data, coredump, 0xF80000, 0x10000
-# The 448KB nobody was using. The chip ends at 0x1000000 and coredump ended at
-# 0xF90000, so everything below is APPENDED: no offset above moves, which is
-# the whole point -- the 11MB FAT archive is not touched by adding these.
-#
-# Raw, not FAT, and that is deliberate. esp_partition_read works before any
-# filesystem is mounted, so the splash draws without FatFs (4-8KB of heap, per
-# docs/esp32.md) and without caring about mount order. Same trick as the
-# T-Dongle's raw `logs` partition.
+# Raw partitions the station reads before any filesystem exists:
+# script bundles (xprs_script) and assets (xprs_assets).
 assets,   data, 0x40,     0xF90000, 0x30000
-# A and B, so a bad script bundle reverts to the last good one instead of
-# taking the panels down. Laid out now, used when the script host lands, so
-# the partition table is changed once and not twice.
 script_a, data, 0x41,     0xFC0000, 0x20000
 script_b, data, 0x41,     0xFE0000, 0x20000

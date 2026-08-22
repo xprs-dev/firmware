@@ -223,6 +223,10 @@ CONFIG_ESP32S3_DATA_CACHE_LINE_32B=y
 # reformat, as the M5Stack's partitions.csv already records having done once.
 CONFIG_XPRS_OTA_PULL=n
 
+# Two app slots now (partitions.csv), so a new image that cannot come up is
+# replaced by the one that could. The verdict is the health roster at 120 s.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 # ── BLE5, the off-grid bearer (docs/ble5.md) ────────────────────────────────
 #
 # This is an S3: CONFIG_SOC_BLE_50_SUPPORTED=y, so extended advertising is
@@ -462,3 +466,10 @@ CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
 # expands to nothing and they stay where they were, so it is what actually
 # turns the annotation on.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+
+# The task watchdog the partition table's rollback argument relies on. It
+# said "the 90 s task watchdog (panic on trigger) is what turns a hang into
+# the reset that rolls back" -- and the built config had a 5 s warn-only
+# watchdog, so a new image that hung simply sat there. Now it is true.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y

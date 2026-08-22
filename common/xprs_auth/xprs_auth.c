@@ -95,6 +95,11 @@ static const char *owner_npub(int i)
         "own1", "own2", "own3", "own4"
     };
     if (i < 0 || i >= XAUTH_OWNERS_MAX) return "";
+#ifdef XAUTH_BENCH_NPUB
+    /* Bench only: slot 0 is a compiled-in owner, never written to config.
+     * Pairs with XOTA_BENCH_PUBHEX; same warning, same reason. */
+    if (i == 0) { ESP_LOGE(TAG, "BENCH OWNER in use (XAUTH_BENCH_NPUB)"); return XAUTH_BENCH_NPUB; }
+#endif
     return xcfg_get(keys[i], "");
 }
 

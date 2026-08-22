@@ -160,3 +160,10 @@ CONFIG_SDCARD_MAX_FILES=3
 CONFIG_BT_NIMBLE_ENABLED=n
 CONFIG_BT_CONTROLLER_ENABLED=y
 CONFIG_BT_CONTROLLER_ONLY=y
+
+# The task watchdog the partition table's rollback argument relies on. It
+# said "the 90 s task watchdog (panic on trigger) is what turns a hang into
+# the reset that rolls back" -- and the built config had a 5 s warn-only
+# watchdog, so a new image that hung simply sat there. Now it is true.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y

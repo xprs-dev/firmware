@@ -111,7 +111,22 @@ xota_code_t xota_request(const char *version, const char *url,
  */
 esp_err_t xota_push_begin(const char *version, size_t size, const char *sig);
 esp_err_t xota_push_write(const void *data, size_t len);
-esp_err_t xota_push_finish(void);   /**< verifies, then reboots on success */
+esp_err_t xota_push_finish(void);
+/** finish() in two halves, for a door that must answer before it restarts:
+ *  verify() checks completeness and the approval and leaves the boot
+ *  partition alone; commit() switches it and restarts. */
+esp_err_t xota_push_verify(void);
+esp_err_t xota_push_commit(void);
+
+/**
+ * The push door, shared. Registers POST /api/update on @p srv: auth header,
+ * approval, streamed body, verify, answer, commit. Every board with an HTTP
+ * server calls this rather than carrying its own copy -- there were two,
+ * and they had already drifted. @p callsign is the station's own, for the
+ * auth check; the buffers are static and sized for a board at 14 KB free.
+ */
+#include "esp_http_server.h"
+esp_err_t xota_http_register(httpd_handle_t srv, const char *callsign);   /**< verifies, then reboots on success */
 void      xota_push_abort(void);
 
 /** Progress for the screen and for /api/diag: -1 idle, else 0..100. */

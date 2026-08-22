@@ -199,6 +199,39 @@ typedef struct {
     bool outgoing;           /* right-aligned, no name, time underneath     */
 } xui_msg_t;
 
+/* ── Boot splash ─────────────────────────────────────────────────────────── */
+
+/**
+ * The Geogram mark over a flat ground, with a line naming what is starting.
+ *
+ * Built by xui_init() and pumped by whichever task owns LVGL -- which,
+ * before ui_task exists, is the boot task itself. That is safe precisely
+ * because ui_task does not exist yet, so LVGL still has exactly one caller;
+ * ownership passes at the single statement that creates it.
+ *
+ * Refuses to build rather than risk the pool: on a board without PSRAM the
+ * LVGL heap is a fixed internal array, and an exhausted LVGL heap does not
+ * fail, it SPINS inside LV_ASSERT_MALLOC with the UI frozen and nothing
+ * said. If there is not comfortably enough room the splash simply does not
+ * appear, which costs a logo and nothing else.
+ */
+void xui_splash_show(void);
+
+/** Name what is starting ("network", "archive"), and put it on the glass.
+ *  No-op once the splash is gone. */
+void xui_splash_status(const char *what);
+
+/**
+ * Delete the splash, once it has been up at least XUI_SPLASH_MIN_MS.
+ * Returns true when it is gone -- including "was never up" -- so a caller
+ * can latch on the first true and stop asking every tick.
+ */
+bool xui_splash_dismiss(void);
+
+/* Long enough that a fast boot still reads as a greeting rather than a
+ * flicker; short enough that nobody waits for it. */
+#define XUI_SPLASH_MIN_MS 600
+
 /* ── Touch ───────────────────────────────────────────────────────────────── */
 
 /**

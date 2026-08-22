@@ -31,10 +31,16 @@ set -u
 PORT=${1:?usage: flash-chunked.sh <port> <image.bin> <offset>}
 IMG=${2:?usage: flash-chunked.sh <port> <image.bin> <offset>}
 BASE=${3:?usage: flash-chunked.sh <port> <image.bin> <offset> -- see partitions.csv, it differs per board}
-if [ $(( BASE )) -lt $(( 0x10000 )) ]; then
-    echo "refusing: offset $BASE is below 0x10000 and would overwrite nvs/otadata" >&2
-    exit 1
-fi
+# 0x0 is the bootloader and 0x8000 the partition table: both are legitimate
+# targets when a board is being moved to a new layout. Anything else below
+# 0x10000 is nvs/otadata, which an app image must never land on.
+case $(( BASE )) in
+    0|$(( 0x8000 ))) ;;
+    *) if [ $(( BASE )) -lt $(( 0x10000 )) ]; then
+           echo "refusing: offset $BASE is nvs/otadata territory (0x0 bootloader, 0x8000 table, >=0x10000 app)" >&2
+           exit 1
+       fi ;;
+esac
 CHUNK=$((256 * 1024))
 ET=~/.platformio/packages/tool-esptoolpy/esptool.py
 PY=~/.platformio/penv/bin/python

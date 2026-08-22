@@ -153,6 +153,8 @@ static bool xs_sc_valid(const uint8_t d[32])
 #else  /* on the device */
 
 #include "mbedtls/ecp.h"
+#include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "mbedtls/bignum.h"
 #include "mbedtls/sha256.h"
 #include "esp_random.h"
@@ -202,6 +204,18 @@ static int xs_lift_x(mbedtls_ecp_group *grp, mbedtls_ecp_point *p,
     return mbedtls_ecp_point_read_binary(grp, p, buf, sizeof buf);
 }
 
+/* Name the step and the mbedtls code, and say plainly when the cause was
+ * memory rather than maths: that one is the station's problem, not the
+ * signer's, and the fix is different. */
+static void xs_log_fail(const char *step, int rc)
+{
+    bool oom = rc == MBEDTLS_ERR_MPI_ALLOC_FAILED || rc == MBEDTLS_ERR_ECP_ALLOC_FAILED;
+    ESP_LOGW("xprssig", "ecp %s failed: -0x%04x%s (heap free %u, largest %u)",
+             step, (unsigned)(-rc), oom ? " OUT OF MEMORY" : "",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+}
+
 static bool xs_mul_g_add_p(const uint8_t a[32], const uint8_t *b,
                            const uint8_t p_x[32],
                            uint8_t out_x[32], bool *out_y_odd)
@@ -215,23 +229,32 @@ static bool xs_mul_g_add_p(const uint8_t a[32], const uint8_t *b,
     mbedtls_mpi_init(&ba); mbedtls_mpi_init(&bb);
     mbedtls_mpi_init(&x);  mbedtls_mpi_init(&y);
     bool ok = false;
+    int rc = 0;
+    const char *step = "";
 
-    if (mbedtls_mpi_read_binary(&ba, a, 32) != 0) goto done;
+    /* Every failure used to collapse to `false`, which the callers report as
+     * "does not verify". An allocation failure inside mbedtls is not a bad
+     * signature, and on a 36 KB-heap board it looked exactly like one. */
+#define XS_STEP(what, call) do { step = what; if ((rc = (call)) != 0) goto done; } while (0)
+    XS_STEP("read a", mbedtls_mpi_read_binary(&ba, a, 32));
     if (b && p_x) {
-        if (mbedtls_mpi_read_binary(&bb, b, 32) != 0) goto done;
-        if (xs_lift_x(grp, &P, p_x) != 0) goto done;
+        XS_STEP("read b", mbedtls_mpi_read_binary(&bb, b, 32));
+        XS_STEP("lift P", xs_lift_x(grp, &P, p_x));
         /* R = a·G + b·P */
-        if (mbedtls_ecp_muladd(grp, &R, &ba, &grp->G, &bb, &P) != 0) goto done;
+        XS_STEP("muladd", mbedtls_ecp_muladd(grp, &R, &ba, &grp->G, &bb, &P));
     } else {
-        if (mbedtls_ecp_mul(grp, &R, &ba, &grp->G, xs_rng, NULL) != 0) goto done;
+        XS_STEP("mul", mbedtls_ecp_mul(grp, &R, &ba, &grp->G, xs_rng, NULL));
     }
-    if (mbedtls_ecp_is_zero(&R)) goto done;
-    if (mbedtls_mpi_write_binary(&R.MBEDTLS_PRIVATE(X), out_x, 32) != 0) goto done;
+#undef XS_STEP
+    if (mbedtls_ecp_is_zero(&R)) { step = "R is zero"; goto done; }
+    if ((rc = mbedtls_mpi_write_binary(&R.MBEDTLS_PRIVATE(X), out_x, 32)) != 0) { step = "write R"; goto done; }
     if (out_y_odd) {
         *out_y_odd = (mbedtls_mpi_get_bit(&R.MBEDTLS_PRIVATE(Y), 0) != 0);
     }
     ok = true;
 done:
+    if (!ok)
+        xs_log_fail(step, rc);
     mbedtls_ecp_point_free(&R); mbedtls_ecp_point_free(&P);
     mbedtls_mpi_free(&ba); mbedtls_mpi_free(&bb);
     mbedtls_mpi_free(&x);  mbedtls_mpi_free(&y);

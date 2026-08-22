@@ -44,6 +44,16 @@ esp_err_t xcfg_set(const char *key, const char *value);
 
 esp_err_t xcfg_set_bool(const char *key, bool value);
 
+/**
+ * The cable. `cfg get <key>`, `cfg set <key> <value>`, `cfg del <key>` on
+ * any board's serial console, so a pinned key, an owner or a setting can be
+ * changed with a USB lead and nothing else -- which is what the docs
+ * promised ("re-writable with a cable") and what no board actually had.
+ * Returns true when @p line was a cfg command (handled, answer printed).
+ * One implementation; every console calls it first.
+ */
+bool xcfg_console(const char *line);
+
 /** Render the whole configuration as config.ini text. The stored nsec is
  *  never printed -- the file shows a blank slot to write one into. */
 int xcfg_ini_render(char *buf, size_t cap);

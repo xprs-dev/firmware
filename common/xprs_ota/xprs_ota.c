@@ -84,6 +84,15 @@ static bool unhex32(const char *hex, uint8_t out[32])
  * Both are re-writable with a cable, which is the point. */
 static bool publisher_key(uint8_t out[32])
 {
+#ifdef XOTA_BENCH_PUBHEX
+    /* A throwaway key for proving the door on a bench, compiled in and
+     * never written to config -- so the real pinned key survives the test
+     * and the next ordinary build is back on it. Announced at every use:
+     * a shipped image with this flag would be a station anyone with the
+     * bench key could reflash. */
+    ESP_LOGE(TAG, "BENCH FIRMWARE KEY in use (XOTA_BENCH_PUBHEX) -- not for a roof");
+    return unhex32(XOTA_BENCH_PUBHEX, out);
+#endif
     const char *k = xcfg_get("fwkey", "");
     if (strlen(k) == 64 && unhex32(k, out)) return true;
     if (!k[0]) ESP_LOGW(TAG, "no firmware key pinned -- nothing can install");
@@ -545,6 +554,7 @@ static struct {
     char    sig[XPRSSIG_B85_LEN + 1];
     size_t  size, got;
     bool    open;
+    bool verified;        /* verify() passed; commit() may restart */
 } s_push;
 
 esp_err_t xota_push_begin(const char *version, size_t size, const char *sig)
@@ -617,9 +627,14 @@ void xota_push_abort(void)
     if (s_cfg.quiesce) s_cfg.quiesce(false);
 }
 
-esp_err_t xota_push_finish(void)
+/* The end of a push is two steps on purpose. verify() answers "is this
+ * image genuine and complete" and leaves the boot partition alone, so the
+ * door can tell the pusher the truth in its HTTP reply; commit() then
+ * switches the boot partition and restarts. finish() is both, for a caller
+ * with nobody to answer. */
+esp_err_t xota_push_verify(void)
 {
-    if (!s_push.open) return ESP_ERR_INVALID_STATE;
+    if (!s_push.open || s_push.verified) return ESP_ERR_INVALID_STATE;
     uint8_t sha[32];
     mbedtls_sha256_finish(&s_sha, sha);
     mbedtls_sha256_free(&s_sha);
@@ -635,9 +650,24 @@ esp_err_t xota_push_finish(void)
         if (s_cfg.quiesce) s_cfg.quiesce(false);
         return ESP_ERR_INVALID_CRC;
     }
-
     esp_err_t err = esp_ota_end(s_push.h);
-    if (err == ESP_OK) err = esp_ota_set_boot_partition(s_push.part);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "push refused: image rejected by esp_ota_end (%s)",
+                 esp_err_to_name(err));
+        memset(&s_push, 0, sizeof s_push);
+        s_busy = false;
+        s_pct = -1;
+        if (s_cfg.quiesce) s_cfg.quiesce(false);
+        return err;
+    }
+    s_push.verified = true;
+    return ESP_OK;
+}
+
+esp_err_t xota_push_commit(void)
+{
+    if (!s_push.open || !s_push.verified) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = esp_ota_set_boot_partition(s_push.part);
     if (err != ESP_OK) {
         memset(&s_push, 0, sizeof s_push);
         s_busy = false;
@@ -651,6 +681,12 @@ esp_err_t xota_push_finish(void)
     vTaskDelay(pdMS_TO_TICKS(400));
     esp_restart();
     return ESP_OK;
+}
+
+esp_err_t xota_push_finish(void)
+{
+    esp_err_t err = xota_push_verify();
+    return err == ESP_OK ? xota_push_commit() : err;
 }
 
 /* ── the two sides of a reboot ───────────────────────────────────────── */

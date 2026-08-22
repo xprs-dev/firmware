@@ -124,6 +124,93 @@ It also asserts its own documented heap floor, which is what turns the measured
 tables in `docs/esp32.md` into something that fails loudly on the day a setting
 stops being applied.
 
+### One door, every board
+
+`POST /api/update` is `common/xprs_ota/xota_http.c`, registered by whichever
+HTTP server a board runs -- `xprs_api` on the T-Deck and the M5Stack, the
+T-Dongle's own server on the dongle. It replaced two near-identical copies
+that had already drifted. A firmware door is the last place to keep copies:
+a fix to the auth check that lands in one and not the other is a station
+that can be updated by the wrong person.
+
+What the shared door does that neither copy did:
+
+- **Answers after verifying, not before.** The old handlers replied
+  `{"ok":true,"installing":true}` and *then* checked the approval, so a
+  refused image looked like success to whoever pushed it. Now
+  `xota_push_verify()` runs first and a bad approval is a `422` with a
+  reason; only a verified image gets the `200` and the restart
+  (`xota_push_commit()`).
+- **Binds the authorisation to the approval.** `xauth_check_http` was
+  called with the body hash skipped, so a captured `X-XPRS-Auth` header
+  replayed against a different image for 300 s. The body is 1.4 MB that has
+  not arrived when the header is checked, so it cannot be hashed first --
+  what is bound is `zsha = sha256(X-XPRS-Fw-Sig)[0:16]`, the approval, whose
+  own signature already covers the image's bytes, board, version and size.
+  Authorising an approval is authorising exactly one image.
+- **Says why it refused.** `409 busy, or it does not fit` used to cover a
+  board with no OTA slot at all. Now: *no OTA slot*, *does not fit*, or
+  *busy / awaiting its self-test* -- three different things a person does
+  differently about.
+
+### The verdict follows the config
+
+`xh_expect()` used to demand every bearer unconditionally, and the OTA
+self-test consumes the same `xh_all_ok()`. So a station whose owner had
+switched ESP-NOW (or WiFi) off condemned every new image at 120 s and rolled
+back -- for a setting. The expectation now follows `espnow_on` / `wifi_on`,
+as `XH_ADDR` and `XH_INDEX` always did.
+
+### The watchdog the partition tables promised
+
+Both OTA partition tables said *"the 90 s task watchdog (panic on trigger)
+is what turns a hang into the reset that rolls back."* The built configs had
+a five-second warn-only watchdog; a hung new image sat in `PENDING_VERIFY`
+until someone pulled the plug. `CONFIG_ESP_TASK_WDT_TIMEOUT_S=90` and
+`CONFIG_ESP_TASK_WDT_PANIC=y` are set on all three boards now, so the claim
+is true.
+
+### The T-Deck has two slots
+
+It was the one board in the fleet that could not take an update without a
+cable: a single `factory` slot, no `otadata`, no rollback, and no pinned
+key. It now has `ota_0`/`ota_1` at 2 MB each, rollback, and seeds `fwkey`
+and `own1` from its own gitignored `fw_secrets.h` like the others. The
+archive moved to pay for the second slot (13.4 MB -> 11.4 MB), which
+reformatted it once.
+
+### The cable, made real
+
+The docs promised a pinned key is "re-writable with a cable". Nothing did
+that: the compiled-in default was seeded into NVS once and from then on
+only the config share could change it -- and the T-Dongle has no share.
+So rotating a key on a dongle meant erasing its identity with it.
+
+Now every console answers `cfg get <key>`, `cfg set <key> <value>`,
+`cfg del <key>` -- one implementation (`xcfg_console` in
+`common/xprs_config`), one line to hook into each board's console. Over a
+USB lead:
+
+```
+cfg set fwkey 3c755c6e...b3041
+cfg set own1 npub18364...8whm6
+cfg get fwkey
+```
+
+On the app boards (T-Deck, M5Stack) the console is single-key; a line is
+gathered only when it starts with `cfg`, so the key vocabulary is untouched.
+
+### Pushing, from the desk
+
+`tools/push_firmware.sh --host <ip> --board <id> --version <v> --bin <file>
+--fw-nsec <publisher> --owner-nsec <owner> --from <owner callsign>`. Two
+keys on purpose: the publisher approves the *image*, an owner authorises
+*this station* to take it. The script reads the station's callsign, checks
+the image embeds the version being approved (a mismatch is not a refusal --
+the new image boots and wrongly reports itself rolled back), signs both,
+pushes, and watches the station come back. The signing tools live in the
+flutter checkout (`XPRS_FLUTTER`), because they share its crypto.
+
 ## 6.1 What was actually proved, and on what
 
 Every line below was run against a T-Dongle-S3 on the bench, over the

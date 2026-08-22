@@ -442,6 +442,9 @@ static esp_err_t h_diag(httpd_req_t *req)
 
     int n = snprintf(out, 900,
         "{\"ok\":true,"
+        /* Who and what, first: the push tooling reads these from every board
+         * with an updater, and the dongle's diag already had them. */
+        "\"callsign\":\"%s\",\"board\":\"%s\","
         "\"fw\":{\"version\":\"%s\",\"project\":\"%s\",\"idf\":\"%s\","
         "\"built\":\"%s %s\"},"
         "\"boot\":{\"reason\":%d,\"uptime_s\":%u},"
@@ -449,6 +452,7 @@ static esp_err_t h_diag(httpd_req_t *req)
         "\"part\":{\"running\":\"%s\",\"state\":%d,\"rollback\":%s},"
         "\"ota\":{\"busy\":%s,\"pct\":%d},"
         "\"psram\":%u",
+        s_cfg->callsign ? s_cfg->callsign : "", s_cfg->board ? s_cfg->board : "",
         d ? d->version : "?", d ? d->project_name : "?",
         d ? d->idf_ver : "?", d ? d->date : "?", d ? d->time : "?",
         (int)esp_reset_reason(),
@@ -481,72 +485,8 @@ static esp_err_t h_diag(httpd_req_t *req)
     return rc;
 }
 
-/* The push door: the caller already holds the image (a phone on this
- * station's own access point, a laptop on the bench). Same verification as
- * the pull path -- the approval is checked against what actually arrived,
- * so a truncated or altered body is refused after the transfer and the
- * running image is untouched.
- *
- * Headers: X-XPRS-Fw-Version, X-XPRS-Fw-Sig (60 base85), X-XPRS-Auth (a
- * complete signed t:command from an allow-listed owner). */
-static esp_err_t h_update(httpd_req_t *req)
-{
-    resp_json(req);
-    char ver[24] = "", sig[80] = "";
-    char *auth = malloc(300);
-    if (!auth) return resp_error(req, "503 Service Unavailable", "no memory");
-    auth[0] = 0;
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Version", ver, sizeof ver);
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Fw-Sig", sig, sizeof sig);
-    httpd_req_get_hdr_value_str(req, "X-XPRS-Auth", auth, 300);
-
-    char who[16] = "";
-    xauth_verdict_t v = xauth_check_http(auth, s_cfg->callsign, NULL, who);
-    free(auth);
-    if (v != XAUTH_OK) {
-        ESP_LOGW(TAG, "update refused: %s",
-                 v == XAUTH_403 ? "signer not allowed" :
-                 v == XAUTH_408 ? "stale or no clock" : "unsigned");
-        return resp_error(req, v == XAUTH_408 ? "408 Request Timeout"
-                                              : "403 Forbidden",
-                          "this station takes updates only from its owner");
-    }
-    if (!ver[0] || !sig[0])
-        return resp_error(req, "400 Bad Request", "need version and signature");
-    if (req->content_len <= 0)
-        return resp_error(req, "400 Bad Request", "no image");
-
-    if (xota_push_begin(ver, (size_t)req->content_len, sig) != ESP_OK)
-        return resp_error(req, "409 Conflict", "busy, or the image does not fit");
-
-    char *buf = malloc(1024);
-    if (!buf) { xota_push_abort();
-                return resp_error(req, "503 Service Unavailable", "no memory"); }
-    int left = req->content_len;
-    while (left > 0) {
-        int want = left > 1024 ? 1024 : left;
-        int got = httpd_req_recv(req, buf, want);
-        if (got <= 0) {
-            free(buf); xota_push_abort();
-            return resp_error(req, "400 Bad Request", "transfer died");
-        }
-        if (xota_push_write(buf, (size_t)got) != ESP_OK) {
-            free(buf); xota_push_abort();
-            return resp_error(req, "500 Internal Server Error", "write failed");
-        }
-        left -= got;
-    }
-    free(buf);
-    ESP_LOGW(TAG, "%s pushed %s (%d bytes)", who, ver, req->content_len);
-    /* Answers before it verifies-and-reboots, so the caller hears something:
-     * on success the connection simply dies with the restart, and the
-     * station says code:200 over the air once the image proves itself. */
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, "{\"ok\":true,\"installing\":true}");
-    if (xota_push_finish() != ESP_OK)
-        ESP_LOGE(TAG, "push refused at the last step -- image not installed");
-    return ESP_OK;
-}
+/* /api/update lives in common/xprs_ota/xota_http.c -- one door for every
+ * board, registered on this server in xprs_api_start(). */
 
 /* The crash itself, not the one-line summary: whatever the panic wrote,
  * streamed out as the ELF espcoredump.py wants. Read in 1 KB pieces --
@@ -623,11 +563,11 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
         { .uri = "/api/diag", .method = HTTP_GET, .handler = h_diag },
-        { .uri = "/api/update", .method = HTTP_POST, .handler = h_update },
         { .uri = "/api/coredump", .method = HTTP_GET, .handler = h_coredump },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(s_httpd, &uris[i]);
     ESP_LOGI(TAG, "HTTP API up on port 80 (spec/API-HTTP.md)");
+    xota_http_register(s_httpd, s_cfg->callsign);
     return ESP_OK;
 }

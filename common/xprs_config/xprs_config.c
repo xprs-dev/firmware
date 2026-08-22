@@ -420,10 +420,26 @@ static esp_err_t h_page(httpd_req_t *req)
 
 static esp_err_t h_get_ini(httpd_req_t *req)
 {
-    char buf[1024];
-    int n = xcfg_ini_render(buf, sizeof buf);
+    /* Measured, then sized. This used to render into 1,024 bytes on the
+     * httpd task's stack and send snprintf's RETURN value -- the length the
+     * file would have had -- so once the template outgrew the buffer (a
+     * 64-character fwkey and four owner lines did it) every download was
+     * truncated at [time] and followed by seven hundred bytes of whatever
+     * lay above that buffer on the stack. Over HTTP, to anyone on the LAN
+     * while the share was on. */
+    int need = xcfg_ini_render(NULL, 0);
+    if (need < 0) return httpd_resp_send_500(req);
+    char *buf = malloc((size_t)need + 1);
+    if (!buf) {
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "no memory for config.ini right now\n");
+    }
+    int n = xcfg_ini_render(buf, (size_t)need + 1);
+    if (n > need) n = need;
     httpd_resp_set_type(req, "text/plain");
-    return httpd_resp_send(req, buf, n);
+    esp_err_t err = httpd_resp_send(req, buf, n);
+    free(buf);
+    return err;
 }
 
 static esp_err_t h_post_ini(httpd_req_t *req)
@@ -510,4 +526,62 @@ void xcfg_share_stop(void)
 bool xcfg_share_running(void)
 {
     return s_registered;
+}
+
+
+/* ---- the cable: cfg get/set/del on a serial console ---------------------- */
+
+/* Shape rules for values that are keys. own1..own4 hold an npub (63 chars,
+ * bech32 charset); every *key (fwkey, the script publisher) holds 64 hex. */
+static const char *key_shape_error(const char *key, const char *val)
+{
+    size_t n = strlen(val);
+    if (strncmp(key, "own", 3) == 0) {
+        if (n != 63 || strncmp(val, "npub1", 5) != 0) return "an npub is 63 chars starting npub1";
+        for (const char *c = val + 5; *c; c++)
+            if (!strchr("qpzry9x8gf2tvdw0s3jn54khce6mua7l", *c)) return "not a bech32 npub";
+    } else if (n > 3 && strcmp(key + strlen(key) - 3, "key") == 0) {
+        if (n != 64) return "a key is 64 hex chars";
+        for (const char *c = val; *c; c++)
+            if (!isxdigit((unsigned char)*c)) return "a key is 64 hex chars";
+    }
+    return NULL;
+}
+
+bool xcfg_console(const char *line)
+{
+    if (!line || strncmp(line, "cfg", 3) != 0) return false;
+    if (line[3] != ' ' && line[3] != 0) return false;
+    const char *p = line + 3;
+    while (*p == ' ') p++;
+    if (!*p) {
+        printf("cfg get <key> | cfg set <key> <value> | cfg del <key>\n");
+        return true;
+    }
+    char verb[8] = "", key[32] = "";
+    int n = 0;
+    if (sscanf(p, "%7s %31s %n", verb, key, &n) < 2) {
+        printf("cfg: need a verb and a key\n");
+        return true;
+    }
+    const char *val = p + n;
+    if (strcmp(verb, "get") == 0) {
+        const char *v = xcfg_get(key, "");
+        printf("%s=%s\n", key, v);
+    } else if (strcmp(verb, "set") == 0) {
+        if (!*val) { printf("cfg set %s: no value\n", key); return true; }
+        /* A key typed over a serial console can arrive with bytes missing
+         * (USB-JTAG drops them on a long line), and a mangled owner or
+         * publisher key locks the board to nobody. Check the shape first. */
+        const char *bad = key_shape_error(key, val);
+        if (bad) { printf("cfg set %s: refused, %s\n", key, bad); return true; }
+        esp_err_t e = xcfg_set(key, val);
+        printf("%s=%s (%s)\n", key, val, e == ESP_OK ? "saved" : esp_err_to_name(e));
+    } else if (strcmp(verb, "del") == 0) {
+        esp_err_t e = xcfg_set(key, "");
+        printf("%s cleared (%s)\n", key, e == ESP_OK ? "saved" : esp_err_to_name(e));
+    } else {
+        printf("cfg: unknown verb '%s'\n", verb);
+    }
+    return true;
 }
