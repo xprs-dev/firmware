@@ -62,6 +62,10 @@ int xprsble_silent_for(void) { return -1; }
 
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
+
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
@@ -101,13 +105,97 @@ static int64_t  s_last_disc_us = -1;
 /* ── Receive ─────────────────────────────────────────────────────────────── */
 
 /*
+ * THE RECEIVE PATH RUNS ON A BORROWED TASK, SO IT HANDS OFF IMMEDIATELY.
+ *
+ * Under tinynimble the scan callback is the VHCI callback, which the BT
+ * controller calls on ITS OWN task. Under NimBLE it is the host task. Neither
+ * stack is ours and neither is sized for what a caller may do.
+ *
+ * This was not a theoretical worry, it was a reboot loop. `xprs_app`'s
+ * callback verifies signatures, and one secp256k1 `mbedtls_ecp_muladd` deep in
+ * `xprssig_verify` is several kilobytes of frames:
+ *
+ *   vhci_recv -> tn_hci_feed_evt -> handle_ad -> on_ble -> identity_heard
+ *             -> xprsid_verify -> xprssig_verify -> mbedtls_ecp_muladd
+ *   ***ERROR*** A stack overflow in task btController has been detected.
+ *
+ * Nine boots in twenty-six seconds, and only once a SECOND station started
+ * airing signed identity beacons over BLE -- with one deck on the bench there
+ * was nothing to verify and the bug was invisible. NimBLE hid it too: its host
+ * task has 5,120 bytes to lose, the controller task does not.
+ *
+ * So the radio callback now does the one thing it is allowed to do -- copy the
+ * bytes and post them -- and xb_rx_task, whose stack we own and size, runs the
+ * walk and the caller's callback.
+ */
+
+/* 254 is the most an extended AD can carry, and the depth is deliberately
+ * short: BLE beacons repeat (scan dedup is off on purpose, see tn_scan_cfg),
+ * so a burst that does not fit is better dropped than queued into staleness. */
+typedef struct {
+    uint8_t  data[254];
+    uint8_t  len;
+    int8_t   rssi;
+} ad_item_t;
+
+#define AD_Q_DEPTH 6
+
+static QueueHandle_t s_ad_q;
+static uint32_t      s_ad_dropped;
+
+static void handle_ad(const uint8_t *p, int n, int rssi);
+
+/* Called on the controller's / host's task: copy, post, return. */
+static void queue_ad(const uint8_t *p, int n, int rssi)
+{
+    if (n <= 0) return;
+    if (n > (int)sizeof ((ad_item_t *)0)->data) n = (int)sizeof ((ad_item_t *)0)->data;
+    if (!s_ad_q) { handle_ad(p, n, rssi); return; }   /* task not up yet */
+
+    ad_item_t it;
+    memcpy(it.data, p, (size_t)n);
+    it.len  = (uint8_t)n;
+    it.rssi = (int8_t)(rssi < -128 ? -128 : (rssi > 127 ? 127 : rssi));
+    /* Never block: blocking here stalls the radio. */
+    if (xQueueSend(s_ad_q, &it, 0) != pdTRUE) {
+        /* Rate-limited, because the whole point is not to spend time here. */
+        if ((++s_ad_dropped % 200) == 1)
+            ESP_LOGW(TAG, "receive queue full, %u ADs dropped so far",
+                     (unsigned)s_ad_dropped);
+    }
+}
+
+static void xb_rx_task(void *arg)
+{
+    (void)arg;
+    ad_item_t it;
+    for (;;)
+        if (xQueueReceive(s_ad_q, &it, portMAX_DELAY) == pdTRUE)
+            handle_ad(it.data, it.len, it.rssi);
+}
+
+/* 6144 because the caller's callback verifies secp256k1 signatures, and that
+ * is what overflowed the controller's stack. The same figure xprs_app uses for
+ * its own signing task, and for the same reason. */
+static esp_err_t rx_task_start(void)
+{
+    if (s_ad_q) return ESP_OK;
+    s_ad_q = xQueueCreate(AD_Q_DEPTH, sizeof(ad_item_t));
+    if (!s_ad_q) return ESP_ERR_NO_MEM;
+    if (xTaskCreate(xb_rx_task, "xprsble_rx", 6144, NULL, 5, NULL) != pdPASS) {
+        vQueueDelete(s_ad_q);
+        s_ad_q = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+/*
  * The AD walk, shared by both backends because the wire is the same wire --
  * proven on air, a NimBLE deck and a tinynimble deck hearing each other in
  * both directions (common/tinynimble/README.md).
  *
- * Anything heavier than a memcpy belongs on another task. Under tinynimble
- * this runs in the CONTROLLER's context, which makes that rule stricter, not
- * looser.
+ * Runs on xb_rx_task, never on the radio's task -- see queue_ad above.
  */
 static void handle_ad(const uint8_t *p, int n, int rssi)
 {
@@ -137,7 +225,7 @@ static void handle_ad(const uint8_t *p, int n, int rssi)
 static void tn_report(const tn_adv_report_t *r, void *ctx)
 {
     (void)ctx;
-    handle_ad(r->data, r->data_len, r->rssi);
+    queue_ad(r->data, r->data_len, r->rssi);
 }
 
 #else
@@ -147,7 +235,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     if (event->type != BLE_GAP_EVENT_EXT_DISC) return 0;
     struct ble_gap_ext_disc_desc *d = &event->ext_disc;
-    handle_ad(d->data, d->length_data, d->rssi);
+    queue_ad(d->data, d->length_data, d->rssi);
     return 0;
 }
 
@@ -277,6 +365,13 @@ esp_err_t xprsble_start(const char *callsign)
 {
     if (callsign) snprintf(s_call, sizeof s_call, "%s", callsign);
 
+    /* Before the radio, so no report can arrive with nowhere to go. */
+    esp_err_t qerr = rx_task_start();
+    if (qerr != ESP_OK) {
+        ESP_LOGE(TAG, "receive task: %s", esp_err_to_name(qerr));
+        return qerr;
+    }
+
     esp_err_t err = tn_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "tn_start: %s -- was WiFi started first?",
@@ -339,6 +434,14 @@ static void host_task(void *arg)
 esp_err_t xprsble_start(const char *callsign)
 {
     if (callsign) snprintf(s_call, sizeof s_call, "%s", callsign);
+
+    /* The host task has more room than the controller's, but it is still not
+     * ours to spend on secp256k1 -- both backends hand off. */
+    esp_err_t qerr = rx_task_start();
+    if (qerr != ESP_OK) {
+        ESP_LOGE(TAG, "receive task: %s", esp_err_to_name(qerr));
+        return qerr;
+    }
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {

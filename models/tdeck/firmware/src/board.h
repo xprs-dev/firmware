@@ -47,6 +47,25 @@
  * FRAMEBUFFER is right and says nothing about what the panel received.
  * Colours appear -> panel, backlight, SPI and CS are fine. */
 #define TDECK_PANEL_SELFTEST 0
+
+/* Bench probe for the inputs nobody has measured on this board: what bytes
+ * the keyboard MCU emits for Shift/Alt/Sym, whether a host write drives its
+ * backlight, which address the GT911 answers at and how its axes lie, and
+ * what the battery ADC reads. Logs only; never returns. Off in any build
+ * that ships. */
+#define TDECK_INPUT_PROBE 0
+
+/* Temporary instrumentation, on a build that still runs the station: log
+ * every keyboard byte and every touch point (raw AND mapped), and sweep
+ * candidate keyboard-backlight commands at boot. This is how the axis
+ * constants and the backlight command get settled -- the earlier probe
+ * never captured a keypress. Off before this ships. */
+#define TDECK_INPUT_TRACE 0
+
+/* The backlight command is known now (LilyGO's 0x01 + level), so the sweep
+ * has done its job -- and it cost 21 s of vTaskDelay in app_main, which
+ * delayed the UI and the touch device with it. */
+#define TDECK_KB_BL_SWEEP 0
 #define TDECK_TFT_RST      (-1)   /* the panel resets with the board */
 #define TDECK_SD_CS        39     /* deselect: idle HIGH */
 #define TDECK_RADIO_CS      9     /* deselect: idle HIGH */
@@ -59,7 +78,26 @@
 #define TDECK_I2C_SDA      18
 #define TDECK_I2C_SCL       8
 #define TDECK_KBD_ADDR   0x55
+/* LilyGO's keyboard MCU takes a two-byte command: 0x01 then a brightness
+ * level (their UnitTest.ino, setKeyboardBrightness). */
+#define TDECK_KB_BRIGHTNESS_CMD 0x01
+#define TDECK_KB_BRIGHTNESS     0xC8   /* bright enough to read by, not a lamp */
 #define TDECK_TOUCH_INT    16
+#define TDECK_BAT_ADC      4      /* 100k/100k divider: Vbat = mV * 2 */
+/* How the GT911's axes lie against the 320x240 landscape panel. The
+ * controller reports in its own orientation; these three say how to turn
+ * that into screen pixels. Set from the Phase-0 probe's corner readings. */
+/* LilyGO's own UnitTest.ino, which is the reference for this panel:
+ *     touch.setMaxCoordinates(320, 240);
+ *     touch.setSwapXY(true);
+ *     touch.setMirrorXY(false, true);
+ * Swap the axes, then mirror Y. Getting the mirror wrong is not subtle and
+ * not obvious either: every tap lands vertically inverted, so the bottom bar
+ * hit-tests up in the title strip where nothing is clickable, and touch
+ * looks completely dead while the controller is in fact reporting fine. */
+#define TDECK_TOUCH_SWAP_XY 1
+#define TDECK_TOUCH_FLIP_X  0
+#define TDECK_TOUCH_FLIP_Y  1
 
 /* The trackball. Four direction pins and a click. LilyGO's own code reads
  * these as levels and acts on a CHANGE rather than on a state -- the ball
@@ -76,6 +114,8 @@
 
 /* One UI step per this many contact changes. The ball is geared finely
  * enough that raw changes scroll a list past reading speed. */
-#define TDECK_TB_DIVIDER    2
+#define TDECK_TB_DIVIDER    4
+/* And a floor on how often the ball may emit, whatever the divider says. */
+#define TDECK_TB_MIN_GAP_MS 140
 
 #endif /* TDECK_BOARD_H */

@@ -42,6 +42,11 @@ typedef struct {
     int (*serve_json)(char *buf, size_t cap);
     int (*features_json)(char *buf, size_t cap);
 
+    /** Extra members for /api/status, e.g. `"battery":{...}` -- written
+     *  AFTER a leading comma is emitted, so just the members. NULL for
+     *  nothing extra. Must not block: it runs on the HTTP task. */
+    int (*status_json)(char *buf, size_t cap);
+
     /** The rotating log files (newest lines at the END of cur). NULL when
      *  the board keeps no log. */
     const char *log_cur, *log_prev;

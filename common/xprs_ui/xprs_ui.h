@@ -199,6 +199,51 @@ typedef struct {
     bool outgoing;           /* right-aligned, no name, time underneath     */
 } xui_msg_t;
 
+/* ── Touch ───────────────────────────────────────────────────────────────── */
+
+/**
+ * Give the UI a touch panel. Registers an LVGL pointer device whose read
+ * callback is @p fn (screen coordinates, true while down), and turns the
+ * things a finger can usefully hit into tap targets: the three bottom-bar
+ * slots, the table rows, the chat rooms and the composer. LVGL polls @p fn
+ * from inside xui_update(), so it runs on the UI task -- the only task that
+ * may touch the I2C bus the panel shares with the keyboard.
+ *
+ * What a tap MEANS stays with the app: nothing here changes panel, row or
+ * room. Taps become events in a small ring the app drains every tick. Call
+ * once, after xui_init().
+ */
+typedef bool (*xui_touch_fn)(int *x, int *y);
+void xui_touch_enable(xui_touch_fn fn);
+
+typedef enum {
+    XUI_EV_NONE = 0,
+    XUI_EV_PRESS,        /* any finger-down anywhere: the wake signal      */
+    XUI_EV_ROW,          /* table row tapped; arg = row (0-based, no header)*/
+    XUI_EV_BAR,          /* bottom-bar slot tapped; arg = 0 left .. 2 right */
+    XUI_EV_ROOM,         /* chat room tapped; arg = room index              */
+    XUI_EV_COMPOSER,     /* chat composer tapped                            */
+    XUI_EV_SWIPE_LEFT,   /* horizontal swipe on the centre of the screen    */
+    XUI_EV_SWIPE_RIGHT,
+} xui_ev_type_t;
+
+typedef struct { xui_ev_type_t type; int arg; } xui_ev_t;
+
+/** Pop the oldest pending touch event. False when the ring is empty. */
+bool xui_ev_pop(xui_ev_t *out);
+
+/** Tell LVGL the user did something it could not see (a key, the ball), so
+ *  xui_idle_ms() restarts. Touch counts by itself. */
+void xui_activity(void);
+
+/** Milliseconds since the last touch or xui_activity(). */
+uint32_t xui_idle_ms(void);
+
+/** False: the flush callback returns without driving the panel -- used
+ *  while the screen is asleep, so LVGL keeps polling touch but the SPI
+ *  stays idle. True (the default) resumes it and repaints everything. */
+void xui_flush_enable(bool on);
+
 /** Show the chat panel (true) or the plain text body (false). UI task only. */
 void xui_show_chat(bool show);
 

@@ -35,6 +35,33 @@ static int s_flow_h;                 /* table height; content strip below */
 /* ---- state -------------------------------------------------------------- */
 
 static xui_flush_fn         s_flush;
+static bool                 s_flush_on = true;   /* false while the screen sleeps */
+
+/* Touch: one pointer device, and a ring the app drains. Producer (LVGL's
+ * indev timer) and consumer (the app's tick) are the same task, so there is
+ * nothing to lock. */
+static xui_touch_fn   s_touch_fn;
+static lv_indev_drv_t s_indev_drv;
+static lv_indev_t    *s_indev;
+static lv_obj_t      *s_bot;            /* bottom bar; tap zones hang off it */
+static lv_obj_t      *s_bar_zone[3];
+#define XUI_EV_RING 8
+static xui_ev_t       s_ev[XUI_EV_RING];
+static int            s_ev_w, s_ev_r;
+static bool           s_touch_was_down;
+
+static void ev_push(xui_ev_type_t type, int arg)
+{
+    int nw = (s_ev_w + 1) % XUI_EV_RING;
+    if (nw == s_ev_r) return;          /* full: drop the newest, keep order */
+    s_ev[s_ev_w].type = type;
+    s_ev[s_ev_w].arg  = arg;
+    s_ev_w = nw;
+}
+
+static void table_click_cb(lv_event_t *e);
+static void room_click_cb(lv_event_t *e);
+static void composer_click_cb(lv_event_t *e);
 static void                *s_flush_ctx;
 static lv_disp_draw_buf_t   s_draw_buf;
 static lv_disp_drv_t        s_disp_drv;
@@ -165,6 +192,7 @@ static bool s_dump_active;
 static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                          lv_color_t *color_p)
 {
+    if (!s_flush_on) { lv_disp_flush_ready(drv); return; }   /* asleep */
     uint32_t size = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
     uint16_t *px = (uint16_t *)color_p;
 
@@ -662,6 +690,7 @@ static void build_ui(void)
     lv_table_set_cell_value(s_flowtab, 0, 4, "When");
     lv_obj_add_event_cb(s_flowtab, flow_draw_cb, LV_EVENT_DRAW_PART_BEGIN,
                         NULL);
+    lv_obj_add_event_cb(s_flowtab, table_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(s_flowtab, LV_OBJ_FLAG_HIDDEN);
 
     /* The reading strip: visibly its own box -- inset from the edges, a
@@ -728,7 +757,7 @@ static void build_ui(void)
 
 
     /* ---- Bottom bar (grey): button legend + device count ---- */
-    lv_obj_t *bot = lv_obj_create(scr);
+    lv_obj_t *bot = s_bot = lv_obj_create(scr);
     lv_obj_set_size(bot, s_w, s_bot_h);
     lv_obj_set_style_bg_color(bot, lv_color_make(128, 128, 128), 0);
     lv_obj_set_style_border_width(bot, 0, 0);
@@ -1041,16 +1070,36 @@ void xui_table_select(int idx)
     s_flow_sel = idx;
     flow_show_content();
     if (s_flowtab) {
-        /* Keep the selection in view: rows are ~25px; scroll so the selected
-         * one sits inside the table's window. */
-        if (idx >= 0) {
-            int row_h = 25;
-            int y_top = (idx + 1) * row_h;
-            int view = s_flow_h - row_h;
-            int want = y_top + row_h > view ? y_top + row_h - view : 0;
-            lv_obj_scroll_to_y(s_flowtab, want, LV_ANIM_OFF);
-        } else {
-            lv_obj_scroll_to_y(s_flowtab, 0, LV_ANIM_OFF);
+        /* Keep the selection in view, using the rows' REAL heights. This
+         * used to assume 25 px; Montserrat-12 plus the 4 px pads and the
+         * 1 px border is 23, and two pixels per row is a visible drift by
+         * the twelfth row of Settings. LVGL keeps the measured heights in
+         * the table's own row_h[] (refreshed on every cell write), so read
+         * those after a layout pass.
+         *
+         * Scrolls in BOTH directions -- the old code only ever scrolled
+         * down -- and only when the index actually changed, so a finger
+         * dragging the table is not snapped back by the periodic re-render. */
+        static int last_idx = -2;
+        if (idx != last_idx) {
+            last_idx = idx;
+            if (idx >= 0) {
+                lv_obj_update_layout(s_flowtab);
+                const lv_table_t *t = (const lv_table_t *)s_flowtab;
+                int y_top = 0;
+                for (int r = 0; r <= idx && r < t->row_cnt; r++)
+                    y_top += t->row_h[r];               /* header + rows above */
+                int row_h = (idx + 1 < t->row_cnt) ? t->row_h[idx + 1] : 23;
+                int y_bot = y_top + row_h;
+                int sy = lv_obj_get_scroll_y(s_flowtab);
+                int want = sy;
+                if (y_bot > sy + s_flow_h)   want = y_bot - s_flow_h;
+                else if (y_top < sy)         want = y_top;
+                if (want < 0) want = 0;
+                if (want != sy) lv_obj_scroll_to_y(s_flowtab, want, LV_ANIM_OFF);
+            } else {
+                lv_obj_scroll_to_y(s_flowtab, 0, LV_ANIM_OFF);
+            }
         }
         lv_obj_invalidate(s_flowtab);
     }
@@ -1364,6 +1413,9 @@ static void chat_build(void)
     lv_obj_clear_flag(s_chat_rail, LV_OBJ_FLAG_SCROLLABLE);
     for (int i = 0; i < XUI_CHAT_ROOMS; i++) {
         s_room_row[i] = lv_obj_create(s_chat_rail);
+        lv_obj_add_flag(s_room_row[i], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_room_row[i], room_click_cb, LV_EVENT_CLICKED,
+                            (void *)(intptr_t)i);
         lv_obj_remove_style_all(s_room_row[i]);
         lv_obj_set_size(s_room_row[i], s_rail_w - 1, XUI_ROOM_H);
         lv_obj_set_style_bg_opa(s_room_row[i], LV_OPA_TRANSP, 0);
@@ -1401,6 +1453,8 @@ static void chat_build(void)
 
     /* The composer. */
     s_chat_input = lv_obj_create(s_chat);
+    lv_obj_add_flag(s_chat_input, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_chat_input, composer_click_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_remove_style_all(s_chat_input);
     lv_obj_set_size(s_chat_input, s_w - s_rail_w - 8, XUI_COMPOSE_H - 6);
     lv_obj_set_pos(s_chat_input, s_rail_w + 4, XUI_HEAD_H + s_msgs_h + 2);
@@ -1598,4 +1652,116 @@ void xui_chat_input(const char *text, bool focused)
     snprintf(s_input_text, sizeof s_input_text, "%s", text ? text : "");
     s_input_focused = focused;
     chat_input_render();
+}
+
+
+/* ── Touch ───────────────────────────────────────────────────────────────── */
+
+/* LVGL's pointer read. Runs from lv_timer_handler() inside xui_update(), so
+ * on the UI task -- the one place the shared I2C bus may be read from. A
+ * press edge is reported by itself so the app can wake a sleeping screen
+ * without caring what was under the finger. */
+static void touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
+{
+    (void)drv;
+    int x = 0, y = 0;
+    bool down = s_touch_fn && s_touch_fn(&x, &y);
+    if (down) {
+        if (x < 0) x = 0;
+        if (x >= s_w) x = s_w - 1;
+        if (y < 0) y = 0;
+        if (y >= s_h) y = s_h - 1;
+        data->point.x = x;
+        data->point.y = y;
+        if (!s_touch_was_down) ev_push(XUI_EV_PRESS, 0);
+    }
+    data->state = down ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    s_touch_was_down = down;
+}
+
+static void bar_click_cb(lv_event_t *e)
+{
+    ev_push(XUI_EV_BAR, (int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void table_click_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_flowtab) return;
+    uint16_t row = LV_TABLE_CELL_NONE, col = LV_TABLE_CELL_NONE;
+    lv_table_get_selected_cell(s_flowtab, &row, &col);
+    /* Row 0 is the header; the app numbers rows from the first data row. */
+    if (row != LV_TABLE_CELL_NONE && row >= 1 && (int)row <= s_tab_n)
+        ev_push(XUI_EV_ROW, (int)row - 1);
+}
+
+static void room_click_cb(lv_event_t *e)
+{
+    ev_push(XUI_EV_ROOM, (int)(intptr_t)lv_event_get_user_data(e));
+}
+
+static void composer_click_cb(lv_event_t *e)
+{
+    (void)e;
+    ev_push(XUI_EV_COMPOSER, 0);
+}
+
+static void gesture_cb(lv_event_t *e)
+{
+    (void)e;
+    lv_dir_t d = lv_indev_get_gesture_dir(lv_indev_get_act());
+    if (d == LV_DIR_LEFT)       ev_push(XUI_EV_SWIPE_LEFT, 0);
+    else if (d == LV_DIR_RIGHT) ev_push(XUI_EV_SWIPE_RIGHT, 0);
+}
+
+void xui_touch_enable(xui_touch_fn fn)
+{
+    if (!fn || s_indev) return;
+    s_touch_fn = fn;
+
+    lv_indev_drv_init(&s_indev_drv);
+    s_indev_drv.type    = LV_INDEV_TYPE_POINTER;
+    s_indev_drv.read_cb = touch_read_cb;
+    s_indev = lv_indev_drv_register(&s_indev_drv);
+    ESP_LOGI("xui", "touch: %s", s_indev ? "ready" : "indev registration FAILED");
+    if (!s_indev) { s_touch_fn = NULL; return; }
+
+    /* Three invisible slots over the bottom bar, created on top of the
+     * legends so they take the hit. Only a touch board pays for them. */
+    if (s_bot) {
+        int w = s_w / 3;
+        for (int i = 0; i < 3; i++) {
+            lv_obj_t *z = s_bar_zone[i] = lv_obj_create(s_bot);
+            lv_obj_set_size(z, w, s_bot_h);
+            lv_obj_set_pos(z, i * w, 0);
+            lv_obj_set_style_bg_opa(z, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_border_width(z, 0, 0);
+            lv_obj_set_style_pad_all(z, 0, 0);
+            lv_obj_clear_flag(z, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(z, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(z, bar_click_cb, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)i);
+        }
+    }
+
+    /* Horizontal swipes anywhere are panel changes. */
+    lv_obj_add_event_cb(lv_scr_act(), gesture_cb, LV_EVENT_GESTURE, NULL);
+}
+
+bool xui_ev_pop(xui_ev_t *out)
+{
+    if (s_ev_r == s_ev_w) return false;
+    if (out) *out = s_ev[s_ev_r];
+    s_ev_r = (s_ev_r + 1) % XUI_EV_RING;
+    return true;
+}
+
+void xui_activity(void)      { lv_disp_trig_activity(NULL); }
+uint32_t xui_idle_ms(void)   { return lv_disp_get_inactive_time(NULL); }
+
+void xui_flush_enable(bool on)
+{
+    if (on == s_flush_on) return;
+    s_flush_on = on;
+    if (on) lv_obj_invalidate(lv_scr_act());   /* repaint what was skipped */
 }

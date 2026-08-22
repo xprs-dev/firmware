@@ -391,10 +391,144 @@ static int s_flow_n;
 
 static int s_tz_off;      /* seconds east of UTC, from config (Node clock) */
 static int s_sel[7];      /* per-panel selected row (7 = UI_PANEL_COUNT) */
+static int s_list_n;      /* rows the current panel rendered; the key
+                           * handlers bound the selection to it, because
+                           * "render clamps it later" was never true for
+                           * Settings -- see the note at the clamp below */
 /* Settings is modal: A stays the Menu key until the arrows dive into the
  * list, then it becomes OK; climbing back out above the top row hands the
  * Menu key back. */
 static bool s_set_focus;
+/* Touch state. s_compose_focus is the caret: on a keyboard board typing
+ * always lands in the composer, this only says whether it is drawn focused.
+ * s_rail_room maps a tapped rail row back to a room id (-1 = a heading).
+ * s_bar is what each bottom-bar slot DOES on a touch board; on a button
+ * board the slots are legends for physical keys and the actions are unused. */
+static bool s_compose_focus = true;
+static int  s_rail_room[XUI_CHAT_ROOMS];
+enum { BAR_NONE = 0, BAR_KEY_HOME, BAR_KEY_NEXT, BAR_KEY_PREV, BAR_KEY_DOWN,
+       BAR_OK, BAR_NEXT_PANEL };
+static struct { const char *txt; int act; } s_bar[3];
+static void set_bar(void);
+static void settings_ok(int row);
+
+/* What the user must press to change the selected setting. A board with a
+ * keyboard says "Enter", because there a trackball click is too easy to make
+ * by accident; a board with only buttons says "OK", which is its middle
+ * button. The help text under each row has to agree with the bottom bar, or
+ * the station is telling the user to press something that does nothing. */
+static const char *ok_key(void)
+{
+    return (s_board && s_board->raw_key) ? "Enter" : "OK";
+}
+static uint32_t now_ms(void);
+
+/* Keyboard backlight: lit by a keypress, out after this many ms of none. */
+#define KB_LIGHT_MS 5000
+static bool     s_kb_lit;
+static uint32_t s_kb_off_ms;
+
+/* Battery. Six samples ten seconds apart: one minute of trend. The state
+ * is what the trend says, not the voltage -- a full battery on USB and a
+ * full battery just unplugged read the same millivolts. */
+#define BAT_RING 6
+#define BAT_SAMPLE_MS 10000
+#define BAT_TREND_MV 40      /* outside the ADC's own wander */
+#define BAT_USB_MV   4300    /* above any lithium cell: USB is present */
+enum { BAT_UNKNOWN = 0, BAT_CHARGING, BAT_DISCHARGING };
+static int      s_bat_mv = -1;
+static int      s_bat_ring[BAT_RING];
+static int      s_bat_n;              /* samples taken, saturates at BAT_RING */
+static int      s_bat_state = BAT_UNKNOWN;
+static uint32_t s_bat_next_ms;
+static bool     s_screen_off;
+static bool     s_touch_pressed;      /* a finger went down this tick */
+
+static const char *bat_state_name(void)
+{
+    return s_bat_state == BAT_CHARGING ? "charging"
+         : s_bat_state == BAT_DISCHARGING ? "discharging" : "unknown";
+}
+
+static void battery_tick(void)
+{
+    if (!s_board->battery_mv) return;
+    uint32_t now = now_ms();
+    if ((int32_t)(now - s_bat_next_ms) < 0) return;
+    s_bat_next_ms = now + BAT_SAMPLE_MS;
+    int mv = s_board->battery_mv();
+    if (mv < 0) return;
+    s_bat_mv = mv;
+    for (int i = BAT_RING - 1; i > 0; i--) s_bat_ring[i] = s_bat_ring[i - 1];
+    s_bat_ring[0] = mv;
+    if (s_bat_n < BAT_RING) s_bat_n++;
+
+    int was = s_bat_state;
+    /* First the hard fact: a lithium cell never exceeds ~4.2 V, so a node
+     * reading above 4.3 V is being held up by USB. The trend cannot be
+     * trusted there -- measured on a bench T-Deck, the ADC wandered between
+     * 4456 and 4568 mV on USB, which a 15 mV threshold read as "discharging"
+     * and put the screen out. Below that, the trend decides, with a band
+     * wide enough to sit outside that noise, and only once a full minute of
+     * samples exists. */
+    if (mv >= BAT_USB_MV) {
+        s_bat_state = BAT_CHARGING;
+    } else if (s_bat_n >= BAT_RING) {
+        int delta = s_bat_ring[0] - s_bat_ring[BAT_RING - 1];
+        if (delta <= -BAT_TREND_MV)      s_bat_state = BAT_DISCHARGING;
+        else if (delta >= BAT_TREND_MV)  s_bat_state = BAT_CHARGING;
+        /* flat and below the USB line: whatever it was, unchanged */
+    }
+    if (s_bat_state != was)
+        ESP_LOGI(TAG, "battery %d mV %s", mv, bat_state_name());
+    else
+        ESP_LOGD(TAG, "battery %d mV %s", mv, bat_state_name());
+}
+
+static void screen_wake(const char *why)
+{
+    if (!s_screen_off) return;
+    s_screen_off = false;
+    if (s_board->screen_power) s_board->screen_power(true);
+    xui_flush_enable(true);
+    xui_activity();
+    ESP_LOGI(TAG, "screen: wake (%s)", why);
+}
+
+static void screen_tick(void)
+{
+    if (s_screen_off || !s_board->screen_power) return;
+    int off_s = atoi(xcfg_get("screen_off_s", "120"));
+    if (off_s <= 0) return;                         /* 0 = never */
+    if (s_bat_state != BAT_DISCHARGING) return;     /* on power: stay lit */
+    if (xui_idle_ms() < (uint32_t)off_s * 1000u) return;
+    s_screen_off = true;
+    xui_flush_enable(false);
+    s_board->screen_power(false);
+    ESP_LOGI(TAG, "screen: off after %d s idle on battery", off_s);
+}
+
+static void kb_light_tick(int kb)
+{
+    if (!s_board->kb_backlight) return;
+    uint32_t now = now_ms();
+    if (kb > 0) {
+        if (!s_kb_lit) { s_board->kb_backlight(true); s_kb_lit = true;
+                         ESP_LOGD(TAG, "kbd light 1"); }
+        s_kb_off_ms = now + KB_LIGHT_MS;
+    } else if (s_kb_lit && (int32_t)(now - s_kb_off_ms) >= 0) {
+        s_board->kb_backlight(false); s_kb_lit = false;
+        ESP_LOGD(TAG, "kbd light 0");
+    }
+}
+
+static int api_status_json(char *buf, size_t cap)
+{
+    /* Cached values only -- this runs on the HTTP task. */
+    return snprintf(buf, cap,
+        "\"battery\":{\"mv\":%d,\"state\":\"%s\"},\"screen\":\"%s\"",
+        s_bat_mv, bat_state_name(), s_screen_off ? "off" : "on");
+}
 static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */
 /* Rotate: C on the home panel starts a 30 s tour of Home, Stats, Chat;
  * any button ends it and hands the wheel back. */
@@ -1424,6 +1558,17 @@ static void ui_render(void)
         snprintf(val, sizeof val, "%u KB", heap / 1024);
         snprintf(det, sizeof det, "%u bytes of internal RAM free.", heap);
         NROW("Heap", val, det);
+        if (s_board->battery_mv) {
+            if (s_bat_mv >= 0) snprintf(val, sizeof val, "%d mV", s_bat_mv);
+            else snprintf(val, sizeof val, "--");
+            snprintf(det, sizeof det, "%s%s. The screen blanks after %s s "
+                     "idle on battery; any key or touch wakes it.",
+                     bat_state_name()[0] == 'c' ? "Charging" :
+                     bat_state_name()[0] == 'd' ? "Discharging" : "Trend unknown",
+                     s_bat_n < BAT_RING ? " (first minute)" : "",
+                     xcfg_get("screen_off_s", "120"));
+            NROW("Battery", val, det);
+        }
 
         NROW("Rendezvous", xprschan_busy() ? "Busy" : "Idle",
              xprschan_busy()
@@ -1458,51 +1603,60 @@ static void ui_render(void)
             snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], "%s", val); \
             snprintf(tr[nr].detail, sizeof tr[nr].detail, "%s", det); \
             nr++; } while (0)
+        /* Same, but the detail is a format -- the help has to name the key
+         * that actually acts on THIS board, and that is only known at run
+         * time (ok_key()). */
+        #define SROWF(c0, val, ...) do { \
+            snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
+            snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], "%s", val); \
+            snprintf(tr[nr].detail, sizeof tr[nr].detail, __VA_ARGS__); \
+            nr++; } while (0)
 
-        SROW("WiFi / LAN", xcfg_get_bool("wifi_on", true) ? "On" : "Off",
+        SROWF("WiFi / LAN", xcfg_get_bool("wifi_on", true) ? "On" : "Off",
              "Join the WiFi network and speak XPRS over the LAN. "
-             "OK toggles; applies after restart.");
-        SROW("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
+             "%s toggles; applies after restart.", ok_key());
+        SROWF("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
              "The 2.4 GHz radio link between nearby stations. "
-             "OK toggles; applies after restart.");
-        SROW("Digipeater", xcfg_get_bool("digi_on", false) ? "On" : "Off",
+             "%s toggles; applies after restart.", ok_key());
+        SROWF("Digipeater", xcfg_get_bool("digi_on", false) ? "On" : "Off",
              "Re-air packets heard on ESP-NOW back onto ESP-NOW, for "
-             "stations past our reach. OK toggles; applies at once.");
-        SROW("Bridge", xcfg_get_bool("bridge_on", true) ? "On" : "Off",
+             "stations past our reach. %s toggles; applies at once.", ok_key());
+        SROWF("Bridge", xcfg_get_bool("bridge_on", true) ? "On" : "Off",
              "Carry LAN traffic onto the ESP-NOW radio. "
-             "OK toggles; applies at once.");
-        SROW("iGate", xcfg_get_bool("igate_on", true) ? "On" : "Off",
+             "%s toggles; applies at once.", ok_key());
+        SROWF("iGate", xcfg_get_bool("igate_on", true) ? "On" : "Off",
              "Carry ESP-NOW traffic onto the LAN, toward the internet "
-             "side. OK toggles; applies at once.");
+             "side. %s toggles; applies at once.", ok_key());
         char idet[160];
         if (s_index) {
             xprsidx_stats_t ist;
             xprsindex_stats(s_index, &ist);
             snprintf(idet, sizeof idet,
                      "Keep every packet heard, answer cmd:history, hold "
-                     "mail. Holding %lu packet%s. OK toggles.",
-                     (unsigned long)ist.count, ist.count == 1 ? "" : "s");
+                     "mail. Holding %lu packet%s. %s toggles.",
+                     (unsigned long)ist.count, ist.count == 1 ? "" : "s",
+                     ok_key());
         } else {
             snprintf(idet, sizeof idet,
                      "Keep every packet heard, answer cmd:history, hold "
-                     "mail. Storage not mounted. OK toggles.");
+                     "mail. Storage not mounted. %s toggles.", ok_key());
         }
         SROW("Indexer", xcfg_get_bool("index_on", true) ? "On" : "Off", idet);
         char det[160];
         if (xcfg_share_running())
             snprintf(det, sizeof det,
                      "Serving now: open http://%s/ in a browser to edit "
-                     "config.ini (WiFi, name, nsec). OK turns it off.",
-                     s_ip_str[0] ? s_ip_str : "<ip>");
+                     "config.ini (WiFi, name, nsec). %s turns it off.",
+                     s_ip_str[0] ? s_ip_str : "<ip>", ok_key());
         else
             snprintf(det, sizeof det,
-                     "Off. OK starts a browser editor for config.ini "
+                     "Off. %s starts a browser editor for config.ini "
                      "(WiFi, name, nsec)%s.",
-                     s_ip_str[0] ? "" : " -- needs WiFi first");
+                     ok_key(), s_ip_str[0] ? "" : " -- needs WiFi first");
         SROW("Config share", xcfg_share_running() ? "On" : "Off", det);
-        SROW("Hotspot", xcfg_get_bool("ap_on", true) ? "On" : "Off",
+        SROWF("Hotspot", xcfg_get_bool("ap_on", true) ? "On" : "Off",
              "The walk-up WiFi: an open network whose sign-in page is the "
-             "chat. OK toggles; applies after restart.");
+             "chat. %s toggles; applies after restart.", ok_key());
         SROW("Name", xcfg_get("name", "--"),
              "The device's friendly name. Set it through the config "
              "share above.");
@@ -1531,9 +1685,9 @@ static void ui_render(void)
                 xprsindex_stats(s_index, &wst);
                 snprintf(wdet, sizeof wdet,
                          "Delete every packet this station holds -- the "
-                         "chats it hosts included. %lu held now. OK wipes "
+                         "chats it hosts included. %lu held now. %s wipes "
                          "at once; there is no undo.",
-                         (unsigned long)wst.count);
+                         (unsigned long)wst.count, ok_key());
             } else {
                 snprintf(wdet, sizeof wdet,
                          "Delete every packet this station holds. "
@@ -1541,8 +1695,8 @@ static void ui_render(void)
             }
             SROW("Wipe archive", "--", wdet);
         }
-        SROW("Restart", "--",
-             "OK restarts the station so pending changes take effect.");
+        SROWF("Restart", "--",
+             "%s restarts the station so pending changes take effect.", ok_key());
         #undef SROW
         xui_table_rows(tr, nr);
         list_n = nr;
@@ -1559,6 +1713,7 @@ static void ui_render(void)
         int rn = 0, sel = 0;
         static const char *const fixed[RM_FIXED] = { "Local", "Global",
                                                      "Social" };
+        for (int i = 0; i < XUI_CHAT_ROOMS; i++) s_rail_room[i] = -1;
         snprintf(rr[rn].name, sizeof rr[rn].name, "ROOMS");
         rr[rn].heading = true; rr[rn].unread = false; rn++;
         for (int i = 0; i < RM_FIXED && rn < XUI_CHAT_ROOMS; i++) {
@@ -1571,6 +1726,7 @@ static void ui_render(void)
             rr[rn].heading = false;
             rr[rn].unread = s_room_unread[i];
             if (s_room == i) sel = rn;
+            s_rail_room[rn] = i;
             rn++;
         }
         if (s_peer_n && rn < XUI_CHAT_ROOMS) {
@@ -1582,6 +1738,7 @@ static void ui_render(void)
             rr[rn].heading = false;
             rr[rn].unread = s_room_unread[RM_FIXED + i];
             if (s_room == RM_FIXED + i) sel = rn;
+            s_rail_room[rn] = RM_FIXED + i;
             rn++;
         }
         xui_chat_rooms(rr, rn, sel);
@@ -1647,7 +1804,7 @@ static void ui_render(void)
             xui_chat_msgs(mm, mn, head);
         }
 
-        xui_chat_input(s_compose, true);
+        xui_chat_input(s_compose, s_compose_focus);
 
         xui_set_title("Chat 2/7");
         break;
@@ -1746,7 +1903,14 @@ static void ui_render(void)
     /* Every list panel keeps its own selection: clamp it to what is on the
      * screen, and take the first row when rows appear after the panel was
      * visited empty. */
-    if (s_panel != 0 && s_panel != 6 && !chat_active()) {
+    /* Settings (6) was excluded here for a long time, which made the two
+     * lines below that mention it unreachable: on that panel nothing ever
+     * moved the highlight or scrolled the table, rows past the fifth could
+     * be selected but never seen, and the selection grew without bound
+     * until settings_ok() hit its default case and did nothing. Every
+     * board had it. */
+    s_list_n = list_n;
+    if (s_panel != 0 && !chat_active()) {
         if (s_sel[s_panel] >= list_n) s_sel[s_panel] = list_n - 1;
         if (s_sel[s_panel] < 0 && list_n > 0) s_sel[s_panel] = 0;
         if (s_panel == 6 && !s_set_focus)
@@ -1758,15 +1922,108 @@ static void ui_render(void)
     /* The bottom bar tells the user what the three buttons under it do:
      * A cycles the menus (long press goes home), B and C move the selection
      * on the panels that have one. */
-    if (chat_active())
-        /* The ball picks the room; the keyboard does everything else. */
-        xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
-    else if (s_panel == 6)
-        xui_set_keys(s_set_focus ? "OK" : "Menu", XUI_KEY_UP, XUI_KEY_DOWN);
-    else if (s_panel != 0)
-        xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
-    else
-        xui_set_keys("Menu", "", s_rotate ? "Stop" : "Rotate");
+    set_bar();
+}
+
+/* The bottom bar. On a board with buttons the three slots are legends for
+ * the physical keys under them and nothing here changes -- those strings
+ * are byte-for-byte what the M5Stack has always shown. On a board with a
+ * touch panel there are no buttons to label, so each slot names what a TAP
+ * does, and s_bar[].act is what touch_events() performs. */
+#define BAR(i, t, a) do { s_bar[i].txt = (t); s_bar[i].act = (a); } while (0)
+static void set_bar(void)
+{
+    if (!s_board->touch_read) {
+        if (chat_active())
+            /* The ball picks the room; the keyboard does everything else. */
+            xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
+        else if (s_panel == 6)
+            xui_set_keys(s_set_focus ? "OK" : "Menu", XUI_KEY_UP, XUI_KEY_DOWN);
+        else if (s_panel != 0)
+            xui_set_keys("Menu", XUI_KEY_UP, XUI_KEY_DOWN);
+        else
+            xui_set_keys("Menu", "", s_rotate ? "Stop" : "Rotate");
+        return;
+    }
+    BAR(0, "Home", BAR_KEY_HOME);
+    if (s_panel == 0) {
+        BAR(1, s_rotate ? "Stop" : "Rotate", BAR_KEY_DOWN);
+        BAR(2, "Next", BAR_KEY_NEXT);
+    } else if (s_panel == 6 && s_set_focus) {
+        BAR(1, s_board->raw_key ? "Enter" : "OK", BAR_OK);
+        BAR(2, "Next", BAR_NEXT_PANEL);
+    } else {
+        BAR(1, "Prev", BAR_KEY_PREV);
+        BAR(2, "Next", BAR_KEY_NEXT);
+    }
+    xui_set_keys(s_bar[0].txt, s_bar[1].txt, s_bar[2].txt);
+}
+
+/* Drain the touch ring. Bar taps and swipes come back as the key they mean,
+ * so they flow through the same state machine as the ball and the buttons;
+ * row, room and composer taps act here, because they name a target the
+ * keys never could. Returns the key to process this tick, if any. */
+static xapp_key_t touch_events(xapp_key_t key, bool *force)
+{
+    xui_ev_t ev;
+    while (xui_ev_pop(&ev)) {
+        switch (ev.type) {
+        case XUI_EV_PRESS:
+            s_touch_pressed = true;     /* the wake signal; see ui_task */
+            break;
+        case XUI_EV_BAR: {
+            int act = ev.arg >= 0 && ev.arg < 3 ? s_bar[ev.arg].act : BAR_NONE;
+            ESP_LOGI(TAG, "touch: bar %d (%s)", ev.arg,
+                     ev.arg >= 0 && ev.arg < 3 && s_bar[ev.arg].txt ? s_bar[ev.arg].txt : "?");
+            if (key != XAPP_KEY_NONE) break;       /* a real key wins */
+            switch (act) {
+            case BAR_KEY_HOME: key = XAPP_KEY_HOME; break;
+            case BAR_KEY_NEXT: key = XAPP_KEY_NEXT; break;
+            case BAR_KEY_PREV: key = XAPP_KEY_PREV; break;
+            case BAR_KEY_DOWN: key = XAPP_KEY_DOWN; break;
+            case BAR_OK:       settings_ok(s_sel[6]); *force = true; break;
+            case BAR_NEXT_PANEL: s_set_focus = false; key = XAPP_KEY_NEXT; break;
+            default: break;
+            }
+            break;
+        }
+        case XUI_EV_SWIPE_LEFT:
+            ESP_LOGI(TAG, "touch: swipe left");
+            if (key == XAPP_KEY_NONE) { s_set_focus = false; key = XAPP_KEY_NEXT; }
+            break;
+        case XUI_EV_SWIPE_RIGHT:
+            ESP_LOGI(TAG, "touch: swipe right");
+            if (key == XAPP_KEY_NONE) { s_set_focus = false; key = XAPP_KEY_PREV; }
+            break;
+        case XUI_EV_ROW:
+            ESP_LOGI(TAG, "touch: row %d", ev.arg);
+            if (s_panel == 6) {
+                /* First tap selects; a second tap on the selected row acts. */
+                if (s_set_focus && s_sel[6] == ev.arg) settings_ok(ev.arg);
+                else { s_set_focus = true; s_sel[6] = ev.arg; }
+            } else if (s_panel != 0 && s_panel != 2 && !chat_active()) {
+                s_sel[s_panel] = ev.arg;
+            }
+            *force = true;
+            break;
+        case XUI_EV_ROOM:
+            if (ev.arg >= 0 && ev.arg < XUI_CHAT_ROOMS && s_rail_room[ev.arg] >= 0) {
+                ESP_LOGI(TAG, "touch: room %d -> %d", ev.arg, s_rail_room[ev.arg]);
+                s_room = s_rail_room[ev.arg];
+                s_compose_focus = false;
+                *force = true;
+            }
+            break;
+        case XUI_EV_COMPOSER:
+            ESP_LOGI(TAG, "touch: composer");
+            s_compose_focus = true;
+            *force = true;
+            break;
+        default:
+            break;
+        }
+    }
+    return key;
 }
 
 /* ── idx_task: the indexer's writer, announcer and replayer (core 1) ────── */
@@ -2264,6 +2521,7 @@ static void idx_task(void *arg)
  * toggles persist and apply on restart; the config share flips live. */
 static void settings_ok(int row)
 {
+    ESP_LOGI(TAG, "ok: settings row %d", row);
     switch (row) {
     case 0:
         xcfg_set_bool("wifi_on", !xcfg_get_bool("wifi_on", true));
@@ -2363,6 +2621,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .send_wire = api_send_wire,
     .serve_json = api_serve_json,
     .features_json = api_features_json,
+    .status_json = api_status_json,
     .log_cur = "/idx/log/cur.txt",
     .log_prev = "/idx/log/prev.txt",
     .tz = "+00:00",
@@ -2389,6 +2648,14 @@ static void ui_task(void *arg)
         bool force = false;
         xapp_key_t key = s_board->input_poll ? s_board->input_poll()
                                              : XAPP_KEY_NONE;
+        s_touch_pressed = false;
+        key = touch_events(key, &force);
+        if (s_screen_off && (key != XAPP_KEY_NONE || s_touch_pressed)) {
+            screen_wake(key != XAPP_KEY_NONE ? "key" : "touch");
+            key = XAPP_KEY_NONE;        /* it woke the screen; that is all it does */
+            force = true;
+        }
+        if (key != XAPP_KEY_NONE) xui_activity();
 
         /* NEXT steps to the next panel, or answers OK on a focused
          * Settings row; HOME is ESC, back to the dashboard. Which gesture
@@ -2400,8 +2667,13 @@ static void ui_task(void *arg)
             ESP_LOGI(TAG, "key: home");
         } else if (key == XAPP_KEY_NEXT || key == XAPP_KEY_PREV) {
             if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
-            if (key == XAPP_KEY_NEXT && s_panel == 6 && s_set_focus) {
-                /* Inside the Settings list, NEXT is OK. */
+            if (key == XAPP_KEY_NEXT && s_panel == 6 && s_set_focus &&
+                !s_board->raw_key) {
+                /* Inside the Settings list, NEXT is OK -- but only on a board
+                 * whose only controls are buttons. Where there is a keyboard,
+                 * a trackball click is far too easy to make by accident while
+                 * rolling to a row, and it was silently flipping radios; there
+                 * ENTER is the deliberate act that changes a value. */
                 settings_ok(s_sel[6]);
             } else {
                 s_panel = key == XAPP_KEY_NEXT
@@ -2451,11 +2723,11 @@ static void ui_task(void *arg)
             if (s_rotate) { s_rotate = false; ESP_LOGI(TAG, "rotate: off"); }
             else if (s_panel == 6) {
                 if (!s_set_focus) { s_set_focus = true; s_sel[6] = 0; }
-                else s_sel[6]++;             /* render clamps to the list */
+                else if (s_sel[6] < s_list_n - 1) s_sel[6]++;
             } else if (s_panel == 2) {
                 s_stats_view = (s_stats_view + 1) % 3;
             } else if (s_panel != 0) {
-                s_sel[s_panel]++;
+                if (s_sel[s_panel] < s_list_n - 1) s_sel[s_panel]++;
             }
             force = true;
             ESP_LOGI(TAG, "key: down (sel %d)", s_sel[s_panel]);
@@ -2498,7 +2770,19 @@ static void ui_task(void *arg)
          * still take a screenshot of the very panel being typed into, which
          * is the only way to see what it looks like mid-sentence. */
         int kb = s_board->raw_key ? s_board->raw_key() : 0;
+        if (kb > 0 && s_screen_off) { screen_wake("keyboard"); kb = 0; force = true; }
+        kb_light_tick(kb);
+        /* Enter is what changes a setting on a keyboard board -- see the note
+         * at the NEXT handler above. Taken before the console mapping, or the
+         * 0x0d would be folded into something else. */
+        if (kb == 0x0d && s_panel == 6 && s_set_focus && !chat_active()) {
+            settings_ok(s_sel[6]);
+            force = true;
+            kb = 0;
+        }
         if (kb > 0) {
+            xui_activity();
+            s_compose_focus = true;
             if (chat_active()) {
                 if (chat_key(kb)) force = true;
             } else {
@@ -2523,7 +2807,7 @@ static void ui_task(void *arg)
         if (ch == 'D' && s_panel != 0) {
             if (s_panel == 6 && !s_set_focus) { s_set_focus = true; s_sel[6] = 0; }
             else if (s_panel == 2) s_stats_view = (s_stats_view + 1) % 3;
-            else s_sel[s_panel]++;
+            else if (s_sel[s_panel] < s_list_n - 1) s_sel[s_panel]++;
             force = true;
         }
         if (ch == 'K' && s_panel == 6 && s_set_focus) {
@@ -2539,7 +2823,9 @@ static void ui_task(void *arg)
             s_panel = s_panel == 0 ? 2 : s_panel == 2 ? 1 : 0;
             force = true;
         }
-        if (force || now_us >= next_render_us) {
+        battery_tick();
+        screen_tick();
+        if (!s_screen_off && (force || now_us >= next_render_us)) {
             ui_render();
             /* Scope and flow settle every 10 s; the counter panels at 2 s. */
             next_render_us = now_us +
@@ -2833,6 +3119,7 @@ void xapp_run(const xapp_board_t *board)
     void *lcd = NULL;
     if (board->display_init(&lcd_w, &lcd_h, &lcd) == ESP_OK &&
         xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK) {
+        if (s_board->touch_read) xui_touch_enable(s_board->touch_read);
         if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
             ESP_LOGE(TAG, "UI task failed to start");
     } else {

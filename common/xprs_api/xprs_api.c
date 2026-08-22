@@ -101,6 +101,10 @@ static esp_err_t h_status(httpd_req_t *req)
         time_synced() ? "true" : "false",
         time_synced() ? (unsigned long)time(NULL) : 0,
         s_cfg->tz ? s_cfg->tz : "+00:00");
+    if (s_cfg->status_json) {
+        n += snprintf(buf + n, sizeof buf - n, ",");
+        n += s_cfg->status_json(buf + n, sizeof buf - n);
+    }
     if (s_cfg->index) {
         xprsidx_stats_t st;
         xprsindex_stats(s_cfg->index, &st);

@@ -266,6 +266,20 @@ esp_err_t st7789_fill_color(st7789_handle_t handle, uint16_t color)
     return ESP_OK;
 }
 
+void st7789_sleep(st7789_handle_t handle, bool sleep)
+{
+    if (!handle) return;
+    if (sleep) {
+        lcd_cmd(handle, 0x28);                    /* DISPOFF */
+        lcd_cmd(handle, 0x10);                    /* SLPIN   */
+        vTaskDelay(pdMS_TO_TICKS(5));
+    } else {
+        lcd_cmd(handle, 0x11);                    /* SLPOUT  */
+        vTaskDelay(pdMS_TO_TICKS(120));           /* datasheet: 120 ms before anything */
+        lcd_cmd(handle, 0x29);                    /* DISPON  */
+    }
+}
+
 void st7789_backlight(st7789_handle_t handle, bool on)
 {
     if (!handle || handle->bl_pin < 0) return;

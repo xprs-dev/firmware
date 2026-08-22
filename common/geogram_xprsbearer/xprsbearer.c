@@ -155,7 +155,9 @@ static void xb_peer_touch(xb_t *b, uint64_t peer, uint32_t now)
 
 void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi)
 {
-    if (!b || len <= 0 || len > XB_WIRE_MAX) return;
+    /* NULL-ops-safe too: a frame handed to a bearer that is not running is
+     * dropped, rather than timestamped against a clock that does not exist. */
+    if (!b || !b->active || len <= 0 || len > XB_WIRE_MAX) return;
     if (!xprs_looks_like((const uint8_t *)wire, len)) return;
 
     char id[XB_ID_LEN];
@@ -223,7 +225,12 @@ void xb_set_beacon(xb_t *b, xb_beacon_cb_t cb, uint32_t interval_sec,
     if (!b) return;
     b->beacon_cb = cb;
     b->beacon_every_ms = interval_sec * 1000u;
-    b->beacon_due_ms = b->ops.now_ms() + first_delay_sec * 1000u;
+    /* Same NULL-ops hazard, but NOT guarded on `active`: a caller is allowed
+     * to configure the beacon before the bearer starts, and refusing that
+     * would silently leave it unset. Only the clock read needs the guard;
+     * xb_start stamps the real due time. */
+    b->beacon_due_ms = (b->ops.now_ms ? b->ops.now_ms() : 0u)
+                     + first_delay_sec * 1000u;
 }
 
 static void xb_beacon_tick(xb_t *b, uint32_t now)
@@ -291,7 +298,15 @@ bool xb_is_active(const xb_t *b) { return b && b->active; }
 
 int xb_peer_count(const xb_t *b, uint32_t max_age_sec)
 {
-    if (!b) return 0;
+    /* `active`, not merely `b`: ops is filled in by xb_start, so on a bearer
+     * that never started every function pointer in it is NULL and
+     * b->ops.now_ms() fetches instructions from nothing. Not hypothetical --
+     * a T-Deck carrying espnow_on=false in its NVS logged "ESP-NOW disabled
+     * by config" and then reboot-looped on InstrFetchProhibited every status
+     * tick, because status_task asks each bearer for its peer count whether
+     * or not that bearer is running. Turning a bearer off in config must
+     * never be able to panic a station. */
+    if (!b || !b->active) return 0;
     uint32_t now = b->ops.now_ms();
     int n = 0;
     for (int i = 0; i < XB_PEERS_MAX; i++) {

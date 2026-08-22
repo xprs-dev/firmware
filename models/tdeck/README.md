@@ -58,6 +58,32 @@ The trackball is the M5Stack's three buttons, plus one:
 | roll up / down | move the selection; down on home starts the rotating tour |
 | roll left / right | previous / next panel |
 
+And the glass is a touch panel (GT911, on the keyboard's I2C bus):
+
+| Touch | Does |
+|---|---|
+| tap the bottom bar | what the slot says: **Home**, **Prev**/**Next**, **OK** on Settings |
+| swipe left / right | next / previous panel |
+| tap a table row | select it; on Settings a second tap on the selected row is OK |
+| drag a table | scrolls it, and it stays where you left it |
+| tap a room (chat) | open it; tap the composer to put the caret back |
+| any touch or key while the screen is dark | wakes it, and does nothing else |
+
+Changing a setting takes **Enter**, not a trackball click. A click is far too
+easy to make by accident while rolling to a row, and it was silently flipping
+radios; the bottom bar names the key that actually acts. The ball is also rate
+limited (`TDECK_TB_MIN_GAP_MS`), so one flick moves one row however fast it
+spins.
+
+The bottom bar names what a tap does because this board has no buttons
+under it; a board with buttons (the M5Stack) keeps its button legends.
+
+**Keyboard backlight** lights on any keypress and goes out after 5 s idle.
+**Screen** blanks after `screen_off_s` (config.ini, default 120, 0 = never)
+seconds idle -- but only once the battery trend says it is discharging, so
+a station on the bench stays lit. Both panel and backlight sleep; the radios
+and LVGL's touch polling do not.
+
 A trackball is not a button: rolling it makes and breaks a contact several
 times per turn, so `main.c` counts contact CHANGES rather than debouncing a
 press, and divides them (`TDECK_TB_DIVIDER`) so one flick is not twenty rows.
@@ -101,8 +127,11 @@ The S3 has room the original ESP32 did not, which is why PSRAM is left off
 
 ## Not done yet
 
-- **Touch.** The GT911 is on the I2C bus. The eight-panel UI has no touch
-  targets, so there is nothing for it to do until there is.
+- **Battery state** is inferred from the voltage TREND (six samples a minute
+  apart, ±15 mV), not from a charger pin -- the T-Deck has none. It cannot
+  tell "full on USB" from "full and just unplugged" for the first minute.
+- **Keyboard modifiers.** Shift and Alt are the keyboard MCU's: it sends the
+  shifted or symbol byte. Nothing on the S3 side interprets them.
 - **The T-Deck Plus** is this board plus a GPS and a battery gauge: a build
   flag, not a project, and `platformio.ini` has the env commented out ready.
   The **T-Deck Pro** is e-paper and shares only the name; it would get its own

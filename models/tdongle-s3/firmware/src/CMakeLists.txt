@@ -1,7 +1,7 @@
 idf_component_register(
-    SRCS "main.c" "tweetnacl.c" "gatt_mesh.c"
+    SRCS "main.c" "tweetnacl.c"
     INCLUDE_DIRS "."
-    REQUIRES bt nvs_flash log esp_timer mbedtls esp_hw_support xprs_health
+    REQUIRES bt tinynimble nvs_flash log esp_timer mbedtls esp_hw_support xprs_health
              esp_wifi esp_event esp_netif lwip driver
              geogram_model_tdongle_s3 geogram_st7735 xprs_station xprs_ui_mini
              xprs_config xprs_auth xprs_ota app_update esp_app_format espcoredump

@@ -61,6 +61,12 @@ esp_err_t st7789_fill_color(st7789_handle_t handle, uint16_t color);
 
 void st7789_backlight(st7789_handle_t handle, bool on);
 
+/** Put the panel to sleep (DISPOFF + SLPIN) or wake it (SLPOUT, 120 ms,
+ *  DISPON). The backlight is separate: turn it off too, or the sleeping
+ *  panel glows white. Waking redraws nothing by itself -- the caller
+ *  invalidates the screen. */
+void st7789_sleep(st7789_handle_t handle, bool sleep);
+
 /** Colour inversion. ST7789 panels are almost always wired so that this
  *  belongs ON, which is the default; flip it if a photograph of the board
  *  shows a negative image. */

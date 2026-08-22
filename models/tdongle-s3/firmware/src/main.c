@@ -31,14 +31,8 @@
 
 #include "driver/gpio.h"
 
-#include "nimble/nimble_port.h"
-#include "nimble/nimble_port_freertos.h"
-#include "os/os_mbuf.h"
-#include "nimble/ble.h"
-#include "nimble/hci_common.h"
-#include "host/ble_hs.h"
-#include "host/ble_gap.h"
-#include "host/util/util.h"
+#include "esp_mac.h"
+#include "tinynimble.h"
 
 #include "model_init.h"
 #include "st7735.h"
@@ -85,7 +79,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include "blemesh.h"
-#include "gatt_mesh.h"
 #include "sdcard.h"
 
 /* XPRS (aurora docs/XPRS.md): the text wire format the whole device fleet
@@ -331,20 +324,67 @@ static volatile uint32_t s_disc_count;
 static volatile int s_rssi_min = 0, s_rssi_max = -127;
 static volatile uint32_t s_rssi_sum, s_rssi_n;
 
-static int gap_event(struct ble_gap_event *event, void *arg)
+/*
+ * THE RADIO CALLBACK RUNS ON THE CONTROLLER'S OWN TASK, SO IT ONLY COPIES.
+ *
+ * tinynimble delivers reports straight out of the VHCI callback, which the BT
+ * controller calls on its task, not ours. Everything reached from here --
+ * Reticulum decode, APRS, mesh routing, XPRS signature verification -- is far
+ * too heavy for that stack. The T-Deck learned this the expensive way: doing
+ * the work inline overflowed btController and reboot-looped the station nine
+ * times in twenty-six seconds. Copy, post, return.
+ */
+typedef struct {
+    uint8_t data[254];
+    uint8_t len;
+    int8_t  rssi;
+} ad_item_t;
+
+#define AD_Q_DEPTH 6
+static QueueHandle_t s_ad_q;
+static uint32_t      s_ad_dropped;
+
+static void handle_ad(const uint8_t *p, int n, int rssi);
+
+/* Controller context: nothing here may block or allocate. */
+static void tn_report(const tn_adv_report_t *r, void *ctx)
 {
-    (void)arg;
-    if (event->type != BLE_GAP_EVENT_EXT_DISC) return 0;
+    (void)ctx;
+    if (!r || r->data_len == 0) return;
     s_last_disc = now_sec();
     s_disc_count++;
-    int r = event->ext_disc.rssi;
-    if (r < s_rssi_min) s_rssi_min = r;
-    if (r > s_rssi_max) s_rssi_max = r;
-    s_rssi_sum += (uint32_t)(-r);
+    int rssi = r->rssi;
+    if (rssi < s_rssi_min) s_rssi_min = rssi;
+    if (rssi > s_rssi_max) s_rssi_max = rssi;
+    s_rssi_sum += (uint32_t)(-rssi);
     s_rssi_n++;
-    struct ble_gap_ext_disc_desc *d = &event->ext_disc;
-    const uint8_t *p = d->data;
-    int n = d->length_data;
+
+    if (!s_ad_q) return;
+    ad_item_t it;
+    int n = r->data_len > (uint8_t)sizeof it.data
+          ? (int)sizeof it.data : (int)r->data_len;
+    memcpy(it.data, r->data, (size_t)n);
+    it.len  = (uint8_t)n;
+    it.rssi = (int8_t)rssi;
+    if (xQueueSend(s_ad_q, &it, 0) != pdTRUE) {
+        if ((++s_ad_dropped % 200) == 1)
+            ESP_LOGW(TAG, "BLE receive queue full, %u dropped",
+                     (unsigned)s_ad_dropped);
+    }
+}
+
+/* Our task, our stack -- this is where the AD is actually understood. */
+static void ble_rx_task(void *arg)
+{
+    (void)arg;
+    ad_item_t it;
+    for (;;)
+        if (xQueueReceive(s_ad_q, &it, portMAX_DELAY) == pdTRUE)
+            handle_ad(it.data, it.len, it.rssi);
+}
+
+static void handle_ad(const uint8_t *p, int n, int rssi)
+{
     for (int i = 0; i + 2 <= n;) {
         int adlen = p[i];
         if (adlen == 0 || i + 1 + adlen > n) break;
@@ -354,20 +394,19 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             if (mlen >= 4 && m[0] == COMPANY_LO && m[1] == COMPANY_HI &&
                 m[2] == MARKER) {
                 if (m[3] == SUBTYPE) {            /* Reticulum (encrypted) */
-                    handle_rns_packet(&m[4], mlen - 4, d->rssi); /* serial decode */
-                    maybe_relay(&m[4], mlen - 4, d->rssi);       /* repeater + UI */
+                    handle_rns_packet(&m[4], mlen - 4, rssi);
+                    maybe_relay(&m[4], mlen - 4, rssi);
                 } else if (m[3] == SUBTYPE_APRS) { /* APRS (plaintext) */
-                    handle_aprs(&m[4], mlen - 4, d->rssi);       /* show + relay */
+                    handle_aprs(&m[4], mlen - 4, rssi);
                 } else if (m[3] == SUBTYPE_MESH) { /* street-mesh route beacon */
-                    handle_mesh(&m[4], mlen - 4, d->rssi);
-                } else if (m[3] == SUBTYPE_XPRS) { /* XPRS text (beacons, pings) */
-                    handle_xprs(&m[4], mlen - 4, d->rssi, SUBTYPE_XPRS);
+                    handle_mesh(&m[4], mlen - 4, rssi);
+                } else if (m[3] == SUBTYPE_XPRS) { /* XPRS text */
+                    handle_xprs(&m[4], mlen - 4, rssi, SUBTYPE_XPRS);
                 }
             }
         }
         i += 1 + adlen;
     }
-    return 0;
 }
 
 /* ---- identity ----------------------------------------------------------- */
@@ -468,7 +507,6 @@ static bool s_adv_configured = false;
  * While it is false, every path that would touch NimBLE must return instead of
  * calling into a host that is not there. */
 static volatile bool s_ble_up;
-static void host_task(void *param);
 /* Section 23.7 asks for these through the ops in k_chan_ops, which is composed
  * long before the NimBLE glue is defined. */
 static void ble_stack_down(void);
@@ -486,30 +524,33 @@ static uint8_t s_ad[256];
 static void air_raw_ad(const uint8_t *ad, int n)
 {
     if (!s_ble_up) return;      /* away on a working channel; see s_ble_up */
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(ad, n);
-    if (!om) { ESP_LOGW(TAG, "mbuf alloc failed"); return; }
     if (!s_adv_configured) {
-        struct ble_gap_ext_adv_params p = {0};
-        p.connectable = 0;
-        p.scannable = 0;
-        p.legacy_pdu = 0;
-        p.own_addr_type = s_own_addr_type;
-        p.primary_phy = BLE_HCI_LE_PHY_1M;
-        p.secondary_phy = BLE_HCI_LE_PHY_1M;
-        p.sid = 0;
-        p.tx_power = 127;
-        p.itvl_min = 0x100;   /* 160 ms */
-        p.itvl_max = 0x100;
-        int rc = ble_gap_ext_adv_configure(0, &p, NULL, gap_event, NULL);
-        if (rc != 0) { ESP_LOGE(TAG, "ext_adv_configure rc=%d", rc); os_mbuf_free_chain(om); return; }
+        /* Configure ONCE and keep the set: re-creating it makes the controller
+         * rotate its random address, which fragments every peer's address
+         * book. Same rule geogram_xprsble follows. */
+        tn_adv_cfg_t cfg = {
+            .handle        = 0,
+            .props         = 0,      /* non-connectable, non-scannable */
+            .itvl_min      = 0x100,  /* 160 ms */
+            .itvl_max      = 0x100,
+            .chan_map      = 0x07,
+            .own_addr_type = s_own_addr_type,
+            .tx_power      = 127,
+            .primary_phy   = TN_PHY_1M,
+            .secondary_phy = TN_PHY_1M,
+            .sid           = 0,
+        };
+        esp_err_t err = tn_adv_configure(&cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "tn_adv_configure: %s", esp_err_to_name(err));
+            return;
+        }
         s_adv_configured = true;
-    } else {
-        ble_gap_ext_adv_stop(0);
     }
-    int rc = ble_gap_ext_adv_set_data(0, om);
-    if (rc != 0) { ESP_LOGE(TAG, "ext_adv_set_data rc=%d", rc); return; }
-    rc = ble_gap_ext_adv_start(0, 0, 0);
-    if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGE(TAG, "ext_adv_start rc=%d", rc);
+    /* tn_adv_set_data does the stop -> set -> start itself. */
+    esp_err_t err = tn_adv_set_data(ad, (size_t)n);
+    if (err != ESP_OK)
+        ESP_LOGE(TAG, "tn_adv_set_data: %s", esp_err_to_name(err));
 }
 
 /* A fresh connection announces immediately; after that, at most this often.
@@ -635,7 +676,7 @@ static void relay_remember(uint32_t hash)
     s_rdedup_cnt++;
 }
 
-static volatile bool s_relay_may_run;   /* set by on_sync() */
+static volatile bool s_relay_may_run;   /* set by ble_bring_up() */
 /* Loops the relay task has completed. Printed in the heartbeat: a task that
  * dies, never starts, or blocks forever is otherwise invisible from outside,
  * and this one carries the beacons, the announcements, the history replay and
@@ -1914,12 +1955,26 @@ static void xprs_service_air(void)
 
     int n = xprsindex_directory(s_xprs_index, s_dir, XPRS_DIR_MAX);
 
+    /* count: is RECORDS held, never callsigns heard from (XPRS.md 24.0.1).
+     *
+     * This sent the directory's callsign count, and that number fails silently
+     * in the one job the field has. A listener remembers it and asks for
+     * history when it moves; a station that has heard from six peers for a
+     * month reports six however much those six say, so the listener sees a
+     * number that never changes, concludes there is nothing to fetch, and
+     * stops -- while the archive fills up behind it. It looks like a working
+     * poller, which is why this had to be settled rather than left. The
+     * directory is still built above: it is what 36.9 exchanges, and it is a
+     * different question from how much is held. */
+    xprsidx_stats_t st;
+    xprsindex_stats(s_xprs_index, &st);
+
     char wire[XPRS_MAX_WIRE + 1];
     char ts[24];
     xprs_time_field(ts, sizeof ts);
     int len = snprintf(wire, sizeof wire,
-                       "t:service f:%s serve:archive count:%d %s",
-                       s_aprs_call, n, ts);
+                       "t:service f:%s serve:archive count:%lu %s",
+                       s_aprs_call, (unsigned long)st.count, ts);
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
     len = xprs_sign_wire(wire, len, (int)sizeof wire);
 
@@ -1929,7 +1984,8 @@ static void xprs_service_air(void)
     if (s_xprs_index) {
         xprsindex_add(s_xprs_index, wire, len, 0, true, (uint32_t)time(NULL));
     }
-    ESP_LOGI(TAG, "announced serve:archive — %d callsigns archived", n);
+    ESP_LOGI(TAG, "announced serve:archive — %lu record(s) held, %d callsign(s)",
+             (unsigned long)st.count, n);
 }
 
 /* This station, on the bearer it is describing (§10.6). Built on the bearer's
@@ -2833,9 +2889,11 @@ static void mesh_beacon_air(void)
     b.storage_bucket = sdcard_is_mounted() ? 3 : 0;
     b.dv_count = (uint8_t)blemesh_table_export(b.dv, 48);
     /* M2 trailer: invite dial-ins while we carry mail/files (we cannot dial). */
-    int pm = blemesh_scf_count(), pb = gatt_mesh_bulk_pending();
+    /* GATT is retired with the move to tinynimble, so there is no bulk spool
+     * and no session to dial: mail still counts, files no longer exist here. */
+    int pm = blemesh_scf_count();
     b.pending_msgs = (uint8_t)(pm > 255 ? 255 : pm);
-    b.pending_bulk = (uint8_t)(pb > 255 ? 255 : pb);
+    b.pending_bulk = 0;
 
     uint8_t payload[200];
     int pn = blemesh_beacon_encode(&b, payload, sizeof(payload));
@@ -2859,7 +2917,7 @@ static void relay_task(void *arg)
     (void)arg;
     static uint8_t pick[256];
     /* Created first, run last. The stack comes out of a heap nobody has touched
-     * yet; the work waits for on_sync() to say the BLE host is up. */
+     * yet; the work waits for ble_bring_up() to release it. */
     while (!s_relay_may_run) vTaskDelay(pdMS_TO_TICKS(50));
     announce("tdongle-s3 online", 17);   /* configures instance 0 + first announce */
     uint32_t last_own = now_sec();
@@ -2894,7 +2952,6 @@ static void relay_task(void *arg)
 #endif
         }
         uint32_t t = now_sec();
-        gatt_mesh_tick();   /* MSP session timeouts (politeness/stall) */
         xprs_catchup_air(); /* parked 36.10 ask: signed on THIS stack */
 
         /* A hub learns nothing about a station that has not spoken since it
@@ -2965,7 +3022,7 @@ static void relay_task(void *arg)
             ESP_LOGW(TAG, "scan silent %lus (disc=%lu) - restarting discovery",
                      (unsigned long)(t - s_last_disc),
                      (unsigned long)s_disc_count);
-            ble_gap_disc_cancel();
+            tn_scan_stop();
             start_scan();
         }
         /* Triggered update: topology changed -> beacon early (light debounce
@@ -3008,13 +3065,16 @@ static void relay_task(void *arg)
 
 static void start_scan(void)
 {
-    struct ble_gap_ext_disc_params uncoded = {
-        .itvl = 0x0060, .window = 0x0050, .passive = 1,
+    tn_scan_cfg_t cfg = {
+        .own_addr_type = s_own_addr_type,
+        .passive       = 1,          /* XPRS never scan-requests */
+        .itvl          = 0x0060,     /* ~83% duty, unchanged */
+        .window        = 0x0050,
+        .phy           = TN_PHY_1M,
     };
-    int rc = ble_gap_ext_disc(s_own_addr_type, 0, 0, 0, 0, 0, &uncoded, NULL,
-                              gap_event, NULL);
-    if (rc != 0) ESP_LOGE(TAG, "ext_disc rc=%d", rc);
-    else ESP_LOGI(TAG, "extended scanning…");
+    esp_err_t err = tn_scan_start(&cfg, tn_report, NULL);
+    if (err != ESP_OK) ESP_LOGE(TAG, "tn_scan_start: %s", esp_err_to_name(err));
+    else ESP_LOGI(TAG, "extended scanning...");
 }
 
 /* ---- the screen: three views, rotating hands-off ------------------------- */
@@ -3192,37 +3252,27 @@ static void ui_task(void *arg)
     }
 }
 
-static void on_sync(void)
+/*
+ * With tinynimble there is no host task and no sync callback: the controller
+ * is up when tn_start() returns, so this is called directly rather than waited
+ * for. Kept as a function because two paths need it -- first boot, and coming
+ * back from the ESP-NOW working-channel exchange.
+ */
+static void ble_bring_up(void)
 {
-    ble_hs_id_infer_auto(0, &s_own_addr_type);
+    /* One address for the life of the station. Recreating the advertising set
+     * would rotate it and fragment every peer's address book. */
+    uint8_t mac[6];
+    esp_read_mac(mac, ESP_MAC_BT);
+    mac[0] |= 0xC0;                     /* static random */
+    tn_set_random_addr(mac);
+    s_own_addr_type = 0x01;
+
     start_scan();
-    /* Mesh M2 data plane: connectable presence advert (instance 1) so phones
-     * can dial a GATT custody session (the identity may still be the NVS
-     * fallback here; the advert re-airs on every disconnect anyway). */
-    gatt_mesh_start(s_aprs_call[0] ? s_aprs_call : "TDONGLE", s_own_addr_type);
-    /* relay_task owns ext-adv instance 0 (own announce + relayed packets). It has
-     * a generous stack because Ed25519 signing for our own announce is heavy. */
-    /* CORE 1, like everything else that blocks. This task signs with secp256k1
-     * every ten minutes and now reads the card for every packet of a
-     * cmd:history replay, and docs/esp32.md puts both on the other processor:
-     * core 0 carries the BLE controller, the NimBLE host, WiFi and app_main, and
-     * SD work there took this station from 178 of 182 pings to 1 of 96. Pinning
-     * an existing task moves work OFF the radio's processor; adding a new one
-     * would spend 8 KB of a heap that has none, which is its own documented way
-     * of taking the station off the air.
-     *
-     * CHECK IT. This returned pdFAIL once, for want of heap, and the silence
-     * cost an afternoon: no relay task means no beacons, no service
-     * announcements and no replay, while every other task carried on and the
-     * board looked healthy from the outside. */
-    /* The task itself was claimed in app_main, when there was still a heap to
-     * claim it from. All that happens here is releasing it: it owns ext-adv
-     * instance 0, so it must not touch the radio before the host has synced. */
-    xh_set(XH_BLE, true);        /* on_sync ran: the host is genuinely up */
+    xh_set(XH_BLE, true);
     s_relay_may_run = true;
 }
 
-static void on_reset(int reason) { ESP_LOGW(TAG, "nimble reset, reason=%d", reason); }
 
 /*
  * Take Bluetooth off the air for the length of a section 23.7 exchange, and put
@@ -3247,12 +3297,9 @@ static void ble_stack_down(void)
 {
     if (!s_ble_up) return;
     s_ble_up = false;               /* first: stop anyone else airing into it */
-    ble_gap_disc_cancel();
-    if (s_adv_configured) ble_gap_ext_adv_stop(0);
-    int rc = nimble_port_stop();
-    if (rc != 0) ESP_LOGW(TAG, "nimble_port_stop rc=%d", rc);
-    nimble_port_deinit();
-    s_adv_configured = false;       /* the instance is gone with the host */
+    tn_scan_stop();
+    tn_stop();                      /* gives the controller's DRAM back too */
+    s_adv_configured = false;       /* the set is gone with the controller */
     ESP_LOGW(TAG, "Bluetooth off for the exchange, heap %u",
              (unsigned)esp_get_free_heap_size());
 }
@@ -3260,26 +3307,18 @@ static void ble_stack_down(void)
 static void ble_stack_up(void)
 {
     if (s_ble_up) return;
-    if (nimble_port_init() != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed on the way back -- this station "
-                      "has lost Bluetooth until it reboots");
+    esp_err_t err = tn_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "tn_start failed on the way back (%s) -- this station "
+                      "has lost Bluetooth until it reboots", esp_err_to_name(err));
         return;
     }
-    ble_hs_cfg.sync_cb = on_sync;   /* re-arms the scan and the presence advert */
-    ble_hs_cfg.reset_cb = on_reset;
-    gatt_mesh_svcs_init();          /* the table does not survive a deinit */
-    nimble_port_freertos_init(host_task);
     s_ble_up = true;
+    ble_bring_up();                 /* address, scan, relay release */
     ESP_LOGW(TAG, "Bluetooth back, heap %u",
              (unsigned)esp_get_free_heap_size());
 }
 
-static void host_task(void *param)
-{
-    (void)param;
-    nimble_port_run();
-    nimble_port_freertos_deinit();
-}
 
 /* ---- APRS-IS iGate (WiFi STA -> APRS-IS, gating BLE5 APRS both ways) ----- */
 
@@ -3835,16 +3874,10 @@ static void console_handle(char *line)
         printf("purged %d\n", blemesh_scf_ack(line + 4));
         return;
     }
-    if (strncmp(line, "sendfile ", 9) == 0) {
-        char *to = line + 9;
-        char *sp = strchr(to, ' ');
-        if (!sp) { printf("usage: sendfile <to> <path>\n"); return; }
-        *sp = 0;
-        gatt_mesh_sendfile(to, sp + 1);
-        return;
-    }
-    if (strcmp(line, "transfers") == 0 || strcmp(line, "spool") == 0) {
-        gatt_mesh_print_status();
+    if (strncmp(line, "sendfile ", 9) == 0 ||
+        strcmp(line, "transfers") == 0 || strcmp(line, "spool") == 0) {
+        printf("gone: this station is broadcast-only since the move to "
+               "tinynimble -- no GATT, so no bulk transfer\n");
         return;
     }
     if (strcmp(line, "wifioff") == 0) {
@@ -3853,10 +3886,8 @@ static void console_handle(char *line)
         printf("wifi stopped\n");
         return;
     }
-    if (strcmp(line, "advoff") == 0) { gatt_mesh_conn_adv(false); printf("conn advert off\n"); return; }
-    if (strcmp(line, "advon") == 0) { gatt_mesh_conn_adv(true); printf("conn advert on\n"); return; }
     if (strcmp(line, "scankick") == 0) {
-        ble_gap_disc_cancel(); start_scan(); printf("scan restarted\n"); return;
+        tn_scan_stop(); start_scan(); printf("scan restarted\n"); return;
     }
     if (strncmp(line, "recv ", 5) == 0) {
         /* Preload a file onto the SD over the (fast, native-USB) console:
@@ -3975,7 +4006,7 @@ void app_main(void)
     /* THE RELAY TASK'S STACK, CLAIMED FIRST.
      *
      * This is eight kilobytes in one piece, and it used to be asked for from
-     * on_sync() — after WiFi, NimBLE, the SD card, the HTTP server and the
+     * ble_bring_up() — after WiFi, BLE, the SD card, the HTTP server and the
      * Reticulum hub had each taken their share. Measured there: 15,308 bytes
      * free but the largest block only 7,680, so the creation failed, and the
      * station ran on with no beacons, no service announcements, no history
@@ -4016,10 +4047,17 @@ void app_main(void)
     xh_expect(XH_RELAY, true);
     xh_expect(XH_CARD,  false);   /* a station without a card still works */
 
-    heap_mark("before nimble_init");
-    if (nimble_port_init() != ESP_OK) {
-        ESP_LOGE(TAG, "nimble_port_init failed");
-        return;
+    /* The controller only. There is no NimBLE host on this station any more:
+     * tinynimble speaks HCI to the controller directly, which is where the
+     * host's msys pools, its ACL transport buffers and its 5,120-byte task
+     * stack used to go -- and this board has no PSRAM to hide them in. */
+    heap_mark("before ble_init");
+    {
+        esp_err_t berr = tn_start();
+        if (berr != ESP_OK) {
+            ESP_LOGE(TAG, "tn_start failed: %s", esp_err_to_name(berr));
+            return;
+        }
     }
     heap_mark("before identity");
     identity_init();
@@ -4097,39 +4135,33 @@ void app_main(void)
     heap_mark("before blemesh");
     blemesh_table_init(s_aprs_call[0] ? s_aprs_call : "TDONGLE");
 
-    /* The BLE host, brought up here rather than at the end of app_main.
+    /* BLE, brought up here rather than at the end of app_main.
      *
-     * nimble_port_freertos_init() creates the host task with a 5,120-byte
-     * stack, and a stack is one contiguous allocation. Started last it
-     * found 5,256 bytes free in a largest block of 3,584 and simply did
-     * not start -- silently, because nothing checks it. The station then
-     * ran with no BLE at all, and relay_task, which waits on on_sync()
-     * before its first loop, waited forever. That task carries the
-     * firmware self-test and the answer to an over-the-air cmd:update, so
-     * a freshly installed image sat in PENDING_VERIFY until the next
-     * reboot rolled it back, and no update command was ever answered.
-     * `relay=0` on the alive line is the tell.
+     * The old reason was the NimBLE host task: 5,120 bytes of contiguous
+     * stack, which started last found 5,256 free in a largest block of 3,584
+     * and silently did not start -- leaving the station with no BLE while
+     * relay_task, which waits on the host, waited forever, taking the firmware
+     * self-test and the cmd:update answer with it. `relay=0` on the alive line
+     * was the tell.
      *
-     * Here the heap is still one 31 KB block. docs/esp32.md, again:
+     * tinynimble removes that whole failure mode: there is no host task to
+     * fail to allocate, and no sync callback to race, because the controller
+     * is up when tn_start() returns. The receive TASK is ours and is claimed
+     * here, early, while the heap is still one large block -- docs/esp32.md:
      * claim the big stacks early or do not claim them.
      *
-     * The GATT table still goes up before the host, which is the only
-     * ordering this actually requires. */
-    heap_mark("before gatt_mesh");
-    gatt_mesh_svcs_init();   /* GATT service table before the host starts */
-    s_ble_up = true;
-    /* The callbacks BEFORE the host task, not after it. They used to be
-     * set at the very end of app_main, which was harmless only because the
-     * host was started at the very end too. Moving the host up without
-     * them meant it synced against an unset sync_cb: BLE came up, on_sync
-     * never ran, and relay_task -- which waits on it -- stayed parked for
-     * good, taking the firmware self-test and the cmd:update answer with
-     * it. Registering a callback after the thing that fires it is a race
-     * that always loses here, because the controller is already ready. */
-    ble_hs_cfg.sync_cb = on_sync;
-    ble_hs_cfg.reset_cb = on_reset;
-    heap_mark("before nimble_host");
-    nimble_port_freertos_init(host_task);
+     * 6144 bytes because the receive path verifies secp256k1 signatures, and
+     * that is precisely what overflowed the borrowed controller stack on the
+     * T-Deck. */
+    heap_mark("before ble_rx_task");
+    s_ad_q = xQueueCreate(AD_Q_DEPTH, sizeof(ad_item_t));
+    if (!s_ad_q ||
+        xTaskCreate(ble_rx_task, "ble_rx", 6144, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "BLE receive task did not start -- no BLE this boot");
+    } else {
+        s_ble_up = true;
+        ble_bring_up();          /* address, scan, relay release */
+    }
     const char *scf_path = NULL;
     heap_mark("before sdcard");
     if (sdcard_init() == ESP_OK && sdcard_is_mounted()) {

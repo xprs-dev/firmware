@@ -13,11 +13,28 @@
 # 256 KB pieces, each its own esptool invocation with its own reset, works;
 # an individual piece that fails is simply retried.
 #
-# Usage: tools/flash-chunked.sh <port> <image.bin> [offset]
+# Usage: tools/flash-chunked.sh <port> <image.bin> <offset>
+#
+# THE OFFSET IS REQUIRED, and it is not the same on every board. It used to
+# default to 0x10000, which is the T-Deck's `factory` slot -- and that default
+# quietly wrote a T-Dongle image 0x10000 low, over otadata and phy_init, with
+# ota_0 left holding mid-image bytes instead of a header. Read the board's
+# partitions.csv:
+#
+#   T-Deck        factory  0x10000
+#   T-Dongle-S3   ota_0    0x20000
+#   M5Stack-Core  ota_0    0x20000
+#
+# NVS lives at 0x9000 on every board and must never be in the written range --
+# it holds the callsign, the identity and the WiFi credentials.
 set -u
-PORT=${1:?usage: flash-chunked.sh <port> <image.bin> [offset]}
-IMG=${2:?usage: flash-chunked.sh <port> <image.bin> [offset]}
-BASE=${3:-0x10000}
+PORT=${1:?usage: flash-chunked.sh <port> <image.bin> <offset>}
+IMG=${2:?usage: flash-chunked.sh <port> <image.bin> <offset>}
+BASE=${3:?usage: flash-chunked.sh <port> <image.bin> <offset> -- see partitions.csv, it differs per board}
+if [ $(( BASE )) -lt $(( 0x10000 )) ]; then
+    echo "refusing: offset $BASE is below 0x10000 and would overwrite nvs/otadata" >&2
+    exit 1
+fi
 CHUNK=$((256 * 1024))
 ET=~/.platformio/packages/tool-esptoolpy/esptool.py
 PY=~/.platformio/penv/bin/python

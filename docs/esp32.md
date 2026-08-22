@@ -920,6 +920,40 @@ seven `multiboard` targets. That is why m5stack-core stayed broken for ten
 hours after a shared component gained a new REQUIRES. Adding the three board
 projects to that script is outstanding.
 
+### Touch, and the three rules it arrived with
+
+The T-Deck's GT911 is polled -- no interrupt -- by LVGL's own indev timer,
+which runs inside `xui_update()` on the UI task. That is the same task that
+reads the keyboard, so the shared I2C bus, which has no mutex, still has one
+reader. Keep it that way: never read the panel or the keys from anywhere else.
+
+What a tap MEANS is decided by the app, not by LVGL. Clickable objects push a
+small event (`XUI_EV_ROW 3`, `XUI_EV_BAR 2`, a swipe) into a ring and the app
+drains it every tick, translating bar taps and swipes into the same
+`XAPP_KEY_*` the trackball produces. No LVGL groups, no focus tree: the app's
+`s_panel` / `s_sel[]` / `s_set_focus` stay the single source of truth, and a
+board without a panel sees none of it.
+
+Three rules that came out of building it:
+
+1. **The bar is capability-driven, byte-for-byte.** `touch_read == NULL`
+   means the M5Stack's legends are emitted by the exact code they always
+   were. A touch board's slots name what a tap does. Diff the M5 framedump
+   against its baseline after touching the bar code.
+2. **Waking is all a sleeping screen's first input does.** Key, trackball or
+   touch: it brings the panel back and is then dropped. A blind keypress
+   cannot type into the composer or toggle a setting.
+3. **"On battery" is a trend, not a voltage.** Six samples a minute apart;
+   ≤ −15 mV is discharging, ≥ +15 charging. The screen blanks only when
+   discharging, so a bench station never goes dark, and a station fresh off
+   the charger keeps its screen for the first minute. That is the
+   conservative error, and it is deliberate.
+
+And the settings bug that every board carried: `ui_render()` excluded panel 6
+from the one block that calls `xui_table_select()`, so the highlight never
+moved, the table never scrolled, and the selection grew unbounded into
+`settings_ok()`'s `default:`. One condition; all boards.
+
 ## Memory budget -- the T-Dongle-S3, which has no PSRAM
 
 `CONFIG_SPIRAM` is **not** set on the T-Dongle, so everything comes out of

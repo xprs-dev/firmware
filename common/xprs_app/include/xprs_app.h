@@ -96,6 +96,30 @@ typedef struct {
     int (*raw_key)(void);
 
     /**
+     * Touch, if the board has a panel over its screen. Fills SCREEN
+     * coordinates -- already rotated and flipped to match what the display
+     * shows -- and returns true while a finger is down. Polled by the UI.
+     *
+     * NULL says "no touch", and that is a statement about the BAR too: a
+     * board with buttons keeps the button legends; one with a panel gets
+     * tap targets instead. Same idiom as raw_key: offering the hook is what
+     * earns the behaviour.
+     */
+    bool (*touch_read)(int *x, int *y);
+
+    /** Keyboard backlight, if the keyboard has one. The app lights it on
+     *  every keypress and puts it out after a few idle seconds. NULL: none. */
+    void (*kb_backlight)(bool on);
+
+    /** Battery in millivolts, or -1 when the board cannot say. Read by
+     *  the UI task every ten seconds; cheap enough for that, no more. */
+    int (*battery_mv)(void);
+
+    /** Screen power. false puts the panel to sleep and the backlight out;
+     *  true brings both back. NULL: the screen is never blanked. */
+    void (*screen_power)(bool on);
+
+    /**
      * The board's LoRa radio, or NULL for a board without one. The station
      * brings it up as a third bearer beside ESP-NOW and the LAN: same wire,
      * same relay rules, real range.
