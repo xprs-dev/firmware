@@ -207,6 +207,10 @@ static int sign_wire(char *wire, int len, int cap)
 #define LOGRING_N 6144
 static char s_logring[LOGRING_N];
 static volatile int s_logring_w, s_logring_r;
+/* Bytes the ring had to refuse. Boot is the noisy part and the storage it
+ * drains to is not mounted yet, so this is where a hole appears -- and a
+ * hole nobody is told about is the failure that costs a day. */
+static volatile uint32_t s_logring_lost;
 static portMUX_TYPE s_logring_mux = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t s_log_orig;
 
@@ -251,7 +255,10 @@ static int log_hook(const char *fmt, va_list ap)
         if (c == 0x1b) { in_esc = true; continue; }
         if (c == '\r') continue;
         int nw = (s_logring_w + 1) % LOGRING_N;
-        if (nw == s_logring_r) break;          /* full: drop the tail */
+        if (nw == s_logring_r) {               /* full: drop the rest */
+            s_logring_lost += (uint32_t)(n - i);
+            break;
+        }
         s_logring[s_logring_w] = c;
         s_logring_w = nw;
     }
@@ -260,12 +267,25 @@ static int log_hook(const char *fmt, va_list ap)
     return out;
 }
 
+/* How full the ring is, read without the lock: idx_task uses it to decide
+ * whether to drain early, and an answer one line stale is harmless. */
+static int log_fill(void)
+{
+    int w = s_logring_w, r = s_logring_r;
+    return w >= r ? w - r : LOGRING_N - r + w;
+}
+
 #define LOG_ROTATE_BYTES (64 * 1024)
 static FILE *s_logfile;
 static long  s_logfile_len;
 
-/* idx_task only. Append what the ring holds, rotate at the cap. */
-static void log_drain(void)
+/* idx_task only. Append what the ring holds, rotate at the cap.
+ *
+ * [sync] false is the drain that only exists to stop the ring overflowing:
+ * it gets the bytes out of RAM and leaves them to the filesystem's own
+ * cadence. The periodic drain syncs, so a freeze still leaves the last ten
+ * seconds on the flash -- which is the promise this log makes. */
+static void log_drain(bool sync)
 {
     char chunk[512];
     for (;;) {
@@ -286,9 +306,25 @@ static void log_drain(void)
         fwrite(chunk, 1, n, s_logfile);
         s_logfile_len += n;
     }
+    /* Say what was lost, in the file, where the hole is. */
+    uint32_t lost = s_logring_lost;
+    if (lost && s_logfile) {
+        s_logring_lost -= lost;
+        char note[120];
+        uint32_t ep = xst_epoch_now();
+        int n = ep ? snprintf(note, sizeof note, "%lu ", (unsigned long)ep)
+                   : snprintf(note, sizeof note, "+%lu ",
+                              (unsigned long)(esp_timer_get_time() / 1000));
+        n += snprintf(note + n, sizeof note - n,
+                      "W log: %lu bytes never reached this file -- the ring "
+                      "filled faster than it drained\n", (unsigned long)lost);
+        fwrite(note, 1, (size_t)n, s_logfile);
+        s_logfile_len += n;
+    }
+
     if (s_logfile) {
         fflush(s_logfile);
-        fsync(fileno(s_logfile));
+        if (sync) fsync(fileno(s_logfile));
         if (s_logfile_len >= LOG_ROTATE_BYTES) {
             fclose(s_logfile);
             s_logfile = NULL;
@@ -2340,11 +2376,15 @@ static void idx_task(void *arg)
                  esp_err_to_name(err));
     }
 
+    /* The first drain, the moment there is a file to drain into: everything
+     * the station said while it was mounting is still in the ring. */
+    mkdir("/idx/log", 0777);
+    log_drain(true);
+
     xst_stats_load("/idx/stats.bin");
     /* The conversation, from whichever storage this board has: an SD card
      * where there is one, the internal flash where there is not. */
     xst_chat_load("/idx/chat.bin");
-    mkdir("/idx/log", 0777);
     esp_task_wdt_add(NULL);   /* a wedged storage task becomes a logged reboot */
 
     uint32_t last_announce_s = 0;
@@ -2570,10 +2610,17 @@ static void idx_task(void *arg)
         }
 
         /* The log ring hits the flash every 10 s -- a freeze leaves the
-         * last moments readable at /log.txt on the config share. */
-        if (now_s - last_logflush_s >= 10) {
-            last_logflush_s = now_s;
-            log_drain();
+         * last moments readable at /log.txt on the config share.
+         *
+         * And whenever it is a quarter full, which is what boot needs: the ring
+         * holds six kilobytes, a booting station says far more than that in
+         * its first ten seconds, and on the old cadence the middle of every
+         * boot -- the part worth reading -- was refused and never written.
+         * This task wakes four times a second, so the check is free. */
+        bool due = now_s - last_logflush_s >= 10;
+        if (due || log_fill() > LOGRING_N / 4) {
+            if (due) last_logflush_s = now_s;
+            log_drain(due);
         }
 
         esp_task_wdt_reset();
