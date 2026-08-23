@@ -91,7 +91,11 @@ static esp_err_t h_update(httpd_req_t *req)
     if (v != XAUTH_OK) {
         ESP_LOGW(TAG, "update refused: %s",
                  v == XAUTH_403 ? "signer not allowed, or auth not bound to this approval" :
-                 v == XAUTH_408 ? "stale, or this station has no clock" : "unsigned");
+                 v == XAUTH_408 ? "stale, or this station has no clock" :
+                 v == XAUTH_429 ? "no memory to check the signature" : "unsigned");
+        if (v == XAUTH_429)
+            return reply(req, "503 Service Unavailable",
+                         "no memory to check the signature just now -- push again");
         return reply(req, v == XAUTH_408 ? "408 Request Timeout" : "403 Forbidden",
                      "this station takes updates only from its owner");
     }

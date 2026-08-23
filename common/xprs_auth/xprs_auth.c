@@ -14,6 +14,7 @@
 #include "nostr_keys.h"
 #include "xprs_config.h"
 #include "xprsid.h"
+#include "xprssig.h"
 
 static const char *TAG = "xauth";
 
@@ -200,6 +201,15 @@ xauth_verdict_t xauth_check(const xprs_t *p, const char *self_call,
         return XAUTH_403;
     }
     if (!xprsid_verify(p, pub)) {
+        /* "Does not verify" and "could not be verified" are different
+         * facts. On a small board a 1.4 MB upload can leave the curve
+         * maths with no memory, and answering a good signature with
+         * silence -- the answer a forgery gets -- made a station look
+         * unreachable when it was merely busy. */
+        if (xprssig_last_result() == XPRSSIG_NO_MEM) {
+            ESP_LOGW(TAG, "no memory to verify %s right now -- ask again", from);
+            return XAUTH_429;
+        }
         ESP_LOGW(TAG, "command claiming %s does not verify -- discarded", from);
         return XAUTH_SILENT;
     }

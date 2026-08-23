@@ -211,6 +211,16 @@ the new image boots and wrongly reports itself rolled back), signs both,
 pushes, and watches the station come back. The signing tools live in the
 flutter checkout (`XPRS_FLUTTER`), because they share its crypto.
 
+### The floor is not a number, it is a moment
+
+`docs/esp32.md` says an OTA host wants roughly 25 KB free at rest. At rest
+is the easy part: what matters is the heap at the instant the signature is
+checked, which is the instant the image being checked is arriving as fast
+as the sender can push it. The M5Stack sat comfortably above the floor and
+still could not be updated, because the WiFi driver had taken the room the
+curve maths needed. See esp32.md, "A board with no PSRAM must survive its
+own updates".
+
 ### Diagnosing over the air
 
 A roof board is usually reachable on ESP-NOW or LoRa and nothing else, so

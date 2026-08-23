@@ -54,7 +54,8 @@ typedef enum {
     XAUTH_SILENT,     /**< discard, answer nothing at all */
     XAUTH_403,        /**< verified, but not permitted here */
     XAUTH_408,        /**< expired, or this station has no clock */
-    XAUTH_429,        /**< busy: the station is already doing this */
+    XAUTH_429,        /**< busy: the station is already doing this, or had
+                       *   no memory to check the signature -- ask again */
     XAUTH_REPEAT      /**< seen before: re-air [prev_code], do not act */
 } xauth_verdict_t;
 

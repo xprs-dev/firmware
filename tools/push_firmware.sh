@@ -68,11 +68,24 @@ ZSHA=$(printf '%s' "$SIG" | sha256sum | cut -c1-16)
 AUTH=$(cd "$FLUTTER" && dart run tool/sign_command.dart --to "$CALL" --cmd update --from "$FROM" --nsec-file "$(realpath "$OWNNSEC")" "ver=$VERSION" "zsha=$ZSHA")
 
 echo "pushing ..."
-HTTP=$(curl -sS --max-time 300 -o /tmp/push_reply.json -w '%{http_code}' \
-  -X POST "http://$HOST/api/update" \
-  -H "X-XPRS-Fw-Version: $VERSION" -H "X-XPRS-Fw-Sig: $SIG" -H "X-XPRS-Auth: $AUTH" \
-  -H "Content-Type: application/octet-stream" --data-binary "@$BIN") || true
-echo "reply $HTTP: $(cat /tmp/push_reply.json 2>/dev/null)"
+# A small board can be too busy to check the signature while the image it
+# is checking is still arriving (503), and a starved socket simply dies
+# (curl 52, empty reply). Both are "try again", not "no", so try -- three
+# times, spaced, before believing it.
+for attempt in 1 2 3; do
+  HTTP=$(curl -sS --max-time 300 -o /tmp/push_reply.json -w '%{http_code}' \
+    -X POST "http://$HOST/api/update" \
+    -H "X-XPRS-Fw-Version: $VERSION" -H "X-XPRS-Fw-Sig: $SIG" -H "X-XPRS-Auth: $AUTH" \
+    -H "Content-Type: application/octet-stream" --data-binary "@$BIN") || true
+  echo "reply $HTTP: $(cat /tmp/push_reply.json 2>/dev/null)"
+  case "$HTTP" in
+    200) break;;
+    503|000) [ "$attempt" = 3 ] && exit 1
+             echo "  the station was too busy to take it; waiting 15 s and pushing again"
+             sleep 15;;
+    *) exit 1;;
+  esac
+done
 [ "$HTTP" = 200 ] || exit 1
 
 # The station restarts into the new image and must prove itself within

@@ -56,6 +56,21 @@ bool xprssig_sign(const uint8_t digest[32], const uint8_t priv[XPRSSIG_KEY_LEN],
                   uint8_t out[XPRSSIG_LEN]);
 
 /** @brief Verify a 48-byte signature against an x-only public key. */
+/** Why the last xprssig_verify() on this task said no.
+ *
+ * A signature that does not verify and a signature the station had no
+ * memory to check are the same `false` to a caller, and they are not the
+ * same fact: one is a forgery, the other is a station too busy to answer
+ * and worth asking again. Reported separately so a refusal can be
+ * truthful (docs/device.md, "Says why it refused"). */
+typedef enum {
+    XPRSSIG_OK = 0,     /**< it verified */
+    XPRSSIG_BAD,        /**< it is not a signature over these bytes */
+    XPRSSIG_NO_MEM      /**< the curve maths could not allocate */
+} xprssig_result_t;
+
+xprssig_result_t xprssig_last_result(void);
+
 bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
                     const uint8_t pub_x[XPRSSIG_KEY_LEN]);
 

@@ -1046,6 +1046,45 @@ the hot path; the coredump summary (~220 B) is read on the init stack
 once. The pump runs on idx_task / relay_task, the tasks that already pay
 for `xauth_check`'s secp256k1.
 
+### A board with no PSRAM must survive its own updates
+
+The M5Stack could not be updated over the air. Every push died the same
+way -- `curl: (52) Empty reply from server` -- and the board's own log,
+once it could say why, named it:
+
+```
+xprssig: ecp muladd failed: -0x0010 OUT OF MEMORY (heap free 2756, largest 1088)
+xauth:   command claiming X38364 does not verify -- discarded
+xota_http: update refused: unsigned
+```
+
+A good signature, refused as unsigned. The WiFi driver takes its dynamic
+buffers from the same internal heap everything else lives in, and the
+defaults -- 32 receive and 32 transmit, about 1.6 KB each -- are sized for
+a board with room to spare. This one has about 33 KB free once the hotspot
+is up. A 1.4 MB push at full speed let the driver swallow the heap while
+the update handler was still checking the signature, so the curve maths
+had nothing to allocate.
+
+Capped at 12 and 16, with the TCP window down from 5,760 to 2,880 so the
+sender cannot outrun the board (`sdkconfig.defaults`). A push now takes
+about forty seconds instead of thirty, and it finishes. The T-Deck keeps
+the defaults: it has PSRAM.
+
+**Two traps on the way.** The option is `CONFIG_ESP_WIFI_*` in ESP-IDF 5 --
+`CONFIG_ESP32_WIFI_*` is a compatibility alias and setting *that* in
+`sdkconfig.defaults` changes nothing. And the generated `sdkconfig.<env>`
+is checked in, so it wins over `sdkconfig.defaults` for a board that has
+been built before; change both, or delete the generated file.
+
+And the refusal itself was a lie. "Does not verify" and "could not be
+verified" are different facts, and the second one is worth asking again
+about. `xprssig_last_result()` now reports which, `xauth_check` answers
+`XAUTH_429` when the maths ran out of memory rather than the silence a
+forgery gets, and the door replies `503 ... push again` instead of `403
+this station takes updates only from its owner`. `tools/push_firmware.sh`
+retries three times on that and on a dead socket.
+
 ## What the T-Dongle stores and speaks
 
 - `geogram_msgstore` -- the APRS archives (`/sdcard/aprs/msg`, `.../beacon`),

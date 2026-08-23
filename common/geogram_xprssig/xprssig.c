@@ -47,6 +47,13 @@ static void xs_random(uint8_t *out, size_t len);
 #define XS_TAG_NONCE          "XPRS/nonce"
 #define XS_TAG_CHALLENGE      "XPRS/challenge"
 
+/* Shared by both backends: the host harness links the OpenSSL branch and
+ * the device the mbedtls one, and a caller asking why is asking the same
+ * question either way. */
+static xprssig_result_t s_last = XPRSSIG_OK;
+
+xprssig_result_t xprssig_last_result(void) { return s_last; }
+
 #ifdef XPRSSIG_HOST_TEST
 /* Set by the test to reproduce section 9.1.2's worked example. */
 bool xprssig_test_zero_aux;
@@ -210,6 +217,7 @@ static int xs_lift_x(mbedtls_ecp_group *grp, mbedtls_ecp_point *p,
 static void xs_log_fail(const char *step, int rc)
 {
     bool oom = rc == MBEDTLS_ERR_MPI_ALLOC_FAILED || rc == MBEDTLS_ERR_ECP_ALLOC_FAILED;
+    s_last = oom ? XPRSSIG_NO_MEM : XPRSSIG_BAD;
     ESP_LOGW("xprssig", "ecp %s failed: -0x%04x%s (heap free %u, largest %u)",
              step, (unsigned)(-rc), oom ? " OUT OF MEMORY" : "",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
@@ -400,6 +408,7 @@ bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
                     const uint8_t pub_x[XPRSSIG_KEY_LEN])
 {
     if (!digest || !sig || !pub_x) return false;
+    s_last = XPRSSIG_BAD;              /* until the maths says otherwise */
 
     uint8_t e[32] = {0};
     memcpy(e + 16, sig, 16);
@@ -418,6 +427,7 @@ bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
 
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++) diff |= (uint8_t)(sig[i] ^ e2[i]);
+    if (diff == 0) s_last = XPRSSIG_OK;
     return diff == 0;
 }
 

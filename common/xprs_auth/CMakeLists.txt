@@ -4,4 +4,4 @@
 idf_component_register(
     SRCS "xprs_auth.c"
     INCLUDE_DIRS "."
-    REQUIRES geogram_xprs geogram_xprsid geogram_nostr xprs_config log)
+    REQUIRES geogram_xprs geogram_xprsid geogram_xprssig geogram_nostr xprs_config log)

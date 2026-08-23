@@ -70,3 +70,28 @@ CONFIG_SDCARD_MAX_FILES=5
 # watchdog, so a new image that hung simply sat there. Now it is true.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# ── A board with no PSRAM must survive its own updates ──────────────────
+#
+# The WiFi driver takes its dynamic buffers from the same internal heap
+# everything else lives in, and the defaults (32 rx + 32 tx, ~1.6 KB each)
+# are sized for a board with room to spare. This one has about 33 KB free
+# once the hotspot is up, so a fast 1.4 MB push let the driver swallow the
+# heap while the update handler was still checking the signature:
+#
+#   xprssig: ecp muladd failed: -0x0010 OUT OF MEMORY (heap free 2756,
+#            largest 1088)
+#   xauth:   command claiming X38364 does not verify -- discarded
+#   xota_http: update refused: unsigned
+#
+# A valid signature, refused as unsigned, because the maths ran out of
+# memory: the station could not be updated over the air at all. Capping
+# the driver's appetite and asking the sender for a smaller window costs
+# throughput (a push takes longer) and buys the one thing that matters --
+# that it finishes. The T-Deck keeps the defaults; it has PSRAM.
+# ESP-IDF 5 spells these CONFIG_ESP_WIFI_*; the CONFIG_ESP32_WIFI_* names
+# are compatibility aliases and setting THOSE here changes nothing.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
