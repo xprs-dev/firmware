@@ -65,7 +65,14 @@ SIG=$(cd "$FLUTTER" && dart run tool/sign_firmware.dart --board "$BOARD" --versi
       | sed -n 's/^signature *: *//p' | head -1)
 [ ${#SIG} -eq 60 ] || { echo "approval is not 60 base85 characters: '$SIG'" >&2; exit 1; }
 ZSHA=$(printf '%s' "$SIG" | sha256sum | cut -c1-16)
-AUTH=$(cd "$FLUTTER" && dart run tool/sign_command.dart --to "$CALL" --cmd update --from "$FROM" --nsec-file "$(realpath "$OWNNSEC")" "ver=$VERSION" "zsha=$ZSHA")
+# Signed per attempt, not once: an authorisation is only good for five
+# minutes, and a station that has just rebooted has no clock until NTP
+# answers -- so a retry carrying the first attempt's timestamp is refused
+# as stale (408) exactly when the retry was needed most.
+sign_auth() {
+  cd "$FLUTTER" && dart run tool/sign_command.dart --to "$CALL" --cmd update \
+    --from "$FROM" --nsec-file "$(realpath "$OWNNSEC")" "ver=$VERSION" "zsha=$ZSHA"
+}
 
 echo "pushing ..."
 # A small board can be too busy to check the signature while the image it
@@ -73,6 +80,7 @@ echo "pushing ..."
 # (curl 52, empty reply). Both are "try again", not "no", so try -- three
 # times, spaced, before believing it.
 for attempt in 1 2 3; do
+  AUTH=$(sign_auth) || exit 1
   HTTP=$(curl -sS --max-time 300 -o /tmp/push_reply.json -w '%{http_code}' \
     -X POST "http://$HOST/api/update" \
     -H "X-XPRS-Fw-Version: $VERSION" -H "X-XPRS-Fw-Sig: $SIG" -H "X-XPRS-Auth: $AUTH" \
@@ -80,9 +88,9 @@ for attempt in 1 2 3; do
   echo "reply $HTTP: $(cat /tmp/push_reply.json 2>/dev/null)"
   case "$HTTP" in
     200) break;;
-    503|000) [ "$attempt" = 3 ] && exit 1
-             echo "  the station was too busy to take it; waiting 15 s and pushing again"
-             sleep 15;;
+    408|503|000) [ "$attempt" = 3 ] && exit 1
+             echo "  the station could not take it just now ($HTTP); waiting 20 s and signing a fresh push"
+             sleep 20;;
     *) exit 1;;
   esac
 done

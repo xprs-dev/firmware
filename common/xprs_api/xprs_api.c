@@ -439,15 +439,21 @@ static esp_err_t h_log(httpd_req_t *req)
 static esp_err_t h_diag(httpd_req_t *req)
 {
     resp_json(req);
-    char *out = malloc(900);      /* borrowed per request, never resident */
-    if (!out) return resp_error(req, "503 Service Unavailable", "no memory");
+    /* Static, like the send door above and for the same reason: httpd has
+     * one worker task, so one request at a time. These were a malloc and a
+     * free per request on the endpoint everything polls, and a board with
+     * no PSRAM pays for that in fragmentation -- an M5Stack ran itself down
+     * to thirty kilobytes free with no single kilobyte contiguous, which
+     * left it answering XPRS on the air while its own HTTP was dead. */
+    static char out[900];
+    static esp_core_dump_summary_t cd_buf;
     const esp_app_desc_t *d = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
     if (run) esp_ota_get_state_partition(run, &st);
 
-    esp_core_dump_summary_t *cd = malloc(sizeof *cd);
-    bool have_cd = cd && esp_core_dump_get_summary(cd) == ESP_OK;
+    esp_core_dump_summary_t *cd = &cd_buf;
+    bool have_cd = esp_core_dump_get_summary(cd) == ESP_OK;
 
     int n = snprintf(out, 900,
         "{\"ok\":true,"
@@ -485,13 +491,10 @@ static esp_err_t h_diag(httpd_req_t *req)
         n += snprintf(out + n, 900 - n,
                       ",\"crash\":{\"task\":\"%s\",\"pc\":\"0x%08lx\"}",
                       cd->exc_task, (unsigned long)cd->exc_pc);
-    free(cd);
     if (n > 0 && n < 900)
         n += snprintf(out + n, 900 - n, "}");
     httpd_resp_set_type(req, "application/json");
-    esp_err_t rc = httpd_resp_send(req, out, n);
-    free(out);
-    return rc;
+    return httpd_resp_send(req, out, n);
 }
 
 /* /api/update lives in common/xprs_ota/xota_http.c -- one door for every
