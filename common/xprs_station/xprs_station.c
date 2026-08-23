@@ -292,6 +292,29 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
     return n;
 }
 
+int xst_hears_render(const char *bearer, int ttl_sec,
+                     char *out, int cap, int *total)
+{
+    if (total) *total = 0;
+    if (!out || cap <= 0) return 0;
+    out[0] = 0;
+    xst_dev_t rows[XST_SEEN_MAX];
+    int n = xst_devices(rows, XST_SEEN_MAX, ttl_sec);   /* freshest first */
+    int w = 0, count = 0;
+    for (int i = 0; i < n; i++) {
+        if (rows[i].hops != 0) continue;                 /* direct only */
+        if (bearer && bearer[0] && strcmp(rows[i].bearer, bearer) != 0)
+            continue;                                    /* per-bearer truth */
+        count++;
+        int need = (int)strlen(rows[i].call) + (w ? 1 : 0);
+        if (w + need >= cap) continue;   /* truncated; total keeps counting */
+        if (w) out[w++] = ',';
+        w += snprintf(out + w, (size_t)(cap - w), "%s", rows[i].call);
+    }
+    if (total) *total = count;
+    return w;
+}
+
 int xst_devices_in_range(int in_range_sec)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);

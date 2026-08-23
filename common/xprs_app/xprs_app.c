@@ -673,6 +673,69 @@ static struct {
     volatile bool pending;
 } s_upd;
 
+/* A recipient just heard directly, whose held mail idx_task should try to
+ * deliver (XPRS.md 36.8.1). Parked like every other job that costs storage
+ * or curve time: the radio task decides WHETHER, idx_task does the work. */
+static struct {
+    char call[10];
+    char bearer[8];
+    volatile bool pending;
+} s_rel;
+
+/* One delivery attempt per recipient per period, however chatty their
+ * beacons: the trigger is cheap, the replay is airtime. */
+#define REL_THROTTLE_SEC 600
+static struct { char call[10]; uint32_t at_s; } s_rel_seen[16];
+
+/* Gossip, need-to-know sized (36.9.4): who else heard whom, from the
+ * hears: lists of verified-enough observations. Feeds the 404's m:try --
+ * a miss is not a dead end when somebody nearby has what was asked for. */
+static struct { char call[10]; char gw[10]; uint32_t at_s; } s_goss[32];
+static int s_goss_w;
+
+static void goss_note(const char *call, const char *gw, uint32_t now_s)
+{
+    for (int i = 0; i < 32; i++) {
+        if (strcasecmp(s_goss[i].call, call) == 0 &&
+            strcasecmp(s_goss[i].gw, gw) == 0) {
+            s_goss[i].at_s = now_s;
+            return;
+        }
+    }
+    snprintf(s_goss[s_goss_w].call, sizeof s_goss[s_goss_w].call, "%s", call);
+    snprintf(s_goss[s_goss_w].gw, sizeof s_goss[s_goss_w].gw, "%s", gw);
+    s_goss[s_goss_w].at_s = now_s;
+    s_goss_w = (s_goss_w + 1) % 32;
+}
+
+/* Freshest gateways for [call], for m:try. Never names [self]. */
+static int goss_try(const char *call, const char *self, char *out, int cap)
+{
+    int w = 0;
+    uint32_t best[3] = {0, 0, 0};
+    int idx[3] = {-1, -1, -1};
+    for (int i = 0; i < 32; i++) {
+        if (!s_goss[i].call[0]) continue;
+        if (strcasecmp(s_goss[i].call, call) != 0) continue;
+        if (strcasecmp(s_goss[i].gw, self) == 0) continue;
+        for (int k = 0; k < 3; k++) {
+            if (s_goss[i].at_s > best[k]) {
+                for (int m = 2; m > k; m--) { best[m] = best[m-1]; idx[m] = idx[m-1]; }
+                best[k] = s_goss[i].at_s;
+                idx[k] = i;
+                break;
+            }
+        }
+    }
+    for (int k = 0; k < 3 && idx[k] >= 0; k++) {
+        int need = (int)strlen(s_goss[idx[k]].gw) + (w ? 1 : 0);
+        if (w + need >= cap) break;
+        if (w) out[w++] = ',';
+        w += snprintf(out + w, (size_t)(cap - w), "%s", s_goss[idx[k]].gw);
+    }
+    return w;
+}
+
 /* One answer to a command, on the bearer it arrived on -- a reply aired
  * somewhere else is a reply the asker never hears. Signed, because a
  * result is evidence and an unsigned one proves nothing (9.1). */
@@ -771,6 +834,58 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     /* The diagnostics asks (cmd:zdiag/zcore/zlog, xprs_diag): parked the
      * same way, verified and answered on idx_task. */
     xdiag_park_parsed(&sp, wire, len, bearer);
+
+    /* ── 36.8.1: deliver held mail the moment its recipient is heard ────
+     * The trigger is the packet itself, never a poll. Cheap here (a ring
+     * compare); the index query and the paced re-air run on idx_task. */
+    do {
+        /* call[10]: the ring rows are 10 wide, and a callsign that long is
+         * already past section 3's shape -- truncate at parse, not at copy. */
+        char from[10] = "", via[8];
+        if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
+        if (strcasecmp(from, s_call) == 0) break;
+        if (xprs_get_str(&sp, "via", via, sizeof via)) break; /* direct only */
+        uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        int free_slot = 0;
+        bool throttled = false;
+        for (int i = 0; i < 16; i++) {
+            if (strcasecmp(s_rel_seen[i].call, from) == 0) {
+                throttled = now_s - s_rel_seen[i].at_s < REL_THROTTLE_SEC;
+                free_slot = i;
+                break;
+            }
+            if (s_rel_seen[i].at_s <= s_rel_seen[free_slot].at_s) free_slot = i;
+        }
+        if (throttled || s_rel.pending) break;
+        snprintf(s_rel_seen[free_slot].call, sizeof s_rel_seen[free_slot].call,
+                 "%s", from);
+        s_rel_seen[free_slot].at_s = now_s;
+        snprintf(s_rel.call, sizeof s_rel.call, "%s", from);
+        snprintf(s_rel.bearer, sizeof s_rel.bearer, "%s", bearer);
+        s_rel.pending = true;                 /* published last */
+    } while (0);
+
+    /* ── Gossip intake (36.9.4): who else heard whom ───────────────────
+     * hears: is directly-heard-only by 10.6.3, so each listed callsign
+     * pairs with the OBSERVER as its gateway. Ring-bounded: this station
+     * keeps gossip in proportion to its duties. */
+    do {
+        char type[16], from[10], hears[96];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "observation") != 0) break;
+        if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
+        if (strcasecmp(from, s_call) == 0) break;
+        if (!xprs_get_str(&sp, "hears", hears, sizeof hears)) break;
+        uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        char *tok = hears, *next;
+        int fed = 0;
+        while (tok && *tok && fed < 8) {
+            next = strchr(tok, ',');
+            if (next) *next = 0;
+            if (*tok) { goss_note(tok, from, now_s); fed++; }
+            tok = next ? next + 1 : NULL;
+        }
+    } while (0);
 
     /* A serve:archive announcement from a station that was away: ask it
      * for the window we missed (XPRS.md 36.10), before ingesting makes it
@@ -942,18 +1057,32 @@ static void on_lora(const char *wire, int len, int rssi)
 /* t:observation f:<call> link:espnow peers:<n> — §10.6, and §10.6.1's rule that
  * a reading belongs to the bearer it names, which is why this says espnow and
  * the LAN beacon below says lan. */
-static int espnow_beacon(char *out, int cap)
+/* One beacon body, per bearer: peers: is the FULL count of directly-heard
+ * CALLSIGNS on that bearer (the corrected quantity -- the address count the
+ * bearers keep is a different number wearing the same name), and hears:
+ * lists as many of them as fit (10.6.3, truncation per 10.6.4). hears: is
+ * what makes this station's gossip (36.9.4) worth listening to. */
+static int observation_beacon(const char *bearer, char *out, int cap)
 {
     if (!s_call[0]) return 0;
-    return snprintf(out, (size_t)cap, "t:observation f:%s link:espnow peers:%d",
-                    s_call, xprsnow_peer_count(600));
+    char hears[96];
+    int total = 0;
+    int hn = xst_hears_render(bearer, 600, hears, sizeof hears, &total);
+    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d",
+                     s_call, bearer, total);
+    if (hn > 0 && n > 0 && n < cap)
+        n += snprintf(out + n, (size_t)(cap - n), " hears:%s", hears);
+    return n;
+}
+
+static int espnow_beacon(char *out, int cap)
+{
+    return observation_beacon("espnow", out, cap);
 }
 
 static int lan_beacon(char *out, int cap)
 {
-    if (!s_call[0]) return 0;
-    return snprintf(out, (size_t)cap, "t:observation f:%s link:lan peers:%d",
-                    s_call, xprslan_peer_count(600));
+    return observation_beacon("lan", out, cap);
 }
 
 /*
@@ -971,9 +1100,7 @@ static void air_ble_beacon(void)
 {
     if (!s_call[0] || !xprsble_is_active()) return;
     char wire[XPRS_MAX_WIRE + 1];
-    int n = snprintf(wire, sizeof wire,
-                     "t:observation f:%s link:ble peers:%d", s_call,
-                     xprsnow_peer_count(600) + xprslan_peer_count(600));
+    int n = observation_beacon("ble", wire, (int)sizeof wire);
     if (n <= 0 || n > XPRS_MAX_WIRE) return;
     n = sign_wire(wire, n, (int)sizeof wire);
     if (!xprsble_send(wire, n))
@@ -2129,8 +2256,20 @@ static void app_stats(uint32_t out[8])
     out[7] = (uint32_t)xprsnow_peer_count(600);
 }
 
+static void idx_result_m(const char *bearer, const char *to,
+                         const char *cmdid, int code, const char *m);
+
 static void idx_result(const char *bearer, const char *to, const char *cmdid,
                        int code)
+{
+    idx_result_m(bearer, to, cmdid, code, NULL);
+}
+
+/* As idx_result, with an optional m: tail -- the 404's `m:try <peers>`
+ * redirect of 36.9: a miss is not a dead end when gossip knows who has
+ * what was asked for. */
+static void idx_result_m(const char *bearer, const char *to,
+                         const char *cmdid, int code, const char *m)
 {
     char w[XPRSIDX_WIRE_MAX + 1];
     time_t t = time(NULL);
@@ -2147,6 +2286,8 @@ static void idx_result(const char *bearer, const char *to, const char *cmdid,
         n = snprintf(w, sizeof w, "t:result f:%s d:%s r:%s code:%d",
                      s_call, to, cmdid, code);
     }
+    if (m && m[0] && n > 0 && n < (int)sizeof w - 4)
+        n += snprintf(w + n, sizeof w - (size_t)n, " m:%s", m);
     n = sign_wire(w, n, sizeof w);
     idx_air(bearer, w, n);
 }
@@ -2330,7 +2471,13 @@ static void idx_answer_history(void)
 
     if (s_page.n == 0) {
         ESP_LOGI(TAG, "history for %s - nothing in that window (404)", from);
-        idx_result(bearer, from, cmdid, 404);
+        char tries[40] = "";
+        if (only[0]) {
+            char list[32];
+            if (goss_try(only, s_call, list, sizeof list) > 0)
+                snprintf(tries, sizeof tries, "try %s", list);
+        }
+        idx_result_m(bearer, from, cmdid, 404, tries[0] ? tries : NULL);
         return;
     }
     hist_record(from, now_s);
@@ -2422,6 +2569,47 @@ static void idx_task(void *arg)
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
             xprslan_send(w, n);
+        }
+
+        /* 36.8.1: a recipient was heard; re-air what the index holds FOR
+         * them, paced, on the bearer they were heard on. The stored wires
+         * are the authors' originals; the receipt (13.7) is what ends the
+         * retries, via the throttle ring on the trigger side. */
+        if (s_rel.pending && s_index && xcfg_get_bool("index_on", true)) {
+            char rcall[10], rbearer[8];
+            snprintf(rcall, sizeof rcall, "%s", (const char *)s_rel.call);
+            snprintf(rbearer, sizeof rbearer, "%s", (const char *)s_rel.bearer);
+            s_rel.pending = false;
+            xprsidx_query_t q = {
+                .type = -1,
+                .types = xprsidx_type_mask("message"),
+                .only = rcall,
+                .asker = rcall,          /* xi_may_serve: their own mail */
+                .limit = 4,
+                .newest_first = true,
+            };
+            s_page.n = 0;
+            s_page.more = false;
+            xprsindex_query(s_index, &q, hist_collect, NULL);
+            int aired = 0;
+            for (int i = 0; i < s_page.n; i++) {
+                /* only: matched from OR to; mail is what carries d:THEM.
+                 * Their own sayings are not deliveries. */
+                xprs_t mp;
+                char mto[16] = "";
+                if (!xprs_parse(s_page.wire[i], s_page.len[i], &mp)) continue;
+                if (!xprs_get_str(&mp, "d", mto, sizeof mto)) continue;
+                if (strncasecmp(mto, rcall, strlen(rcall)) != 0) continue;
+                vTaskDelay(pdMS_TO_TICKS(1500));
+                esp_task_wdt_reset();
+                idx_air(rbearer, s_page.wire[i], s_page.len[i]);
+                aired++;
+            }
+            if (aired)
+                ESP_LOGI(TAG, "released %d held for %s on %s (36.8.1)",
+                         aired, rcall, rbearer);
+        } else if (s_rel.pending) {
+            s_rel.pending = false;   /* index down: the slot must not latch */
         }
 
         if (s_ask.pending) {

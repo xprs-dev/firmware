@@ -85,6 +85,22 @@ void xst_tx_total(uint32_t tx_total_now);
 /* Snapshots (copied out under the lock). Devices: freshest first, only
  * rows heard within [in_range_sec]. Chat: newest first. */
 int  xst_devices(xst_dev_t *out, int max, int in_range_sec);
+
+/**
+ * @brief `hears:` for a beacon (XPRS.md 10.6.3, 36.9.4) -- the callsigns this
+ *        station heard DIRECTLY (hops == 0) on [bearer] within [ttl_sec],
+ *        most recent first, comma-joined into [out].
+ *
+ * Per-bearer truth: a `link:lan` beacon lists only stations heard on the LAN,
+ * because a claim about one radio proven on another is the lie 10.6.3 warns
+ * about. [*total] gets the FULL fresh count even when the list is truncated
+ * to fit, so `peers:` stays honest (10.6.4) -- and note that this counts
+ * CALLSIGNS, not transport addresses, which is the corrected quantity the
+ * T-Dongle already reports.
+ * @return characters written (0 = nobody fresh on that bearer).
+ */
+int xst_hears_render(const char *bearer, int ttl_sec,
+                     char *out, int cap, int *total);
 int  xst_devices_in_range(int in_range_sec);
 int  xst_chat(xst_chat_t *out, int max);
 /* Find a chat row by its section-5 id (reply-parent lookup). 1 = found. */
