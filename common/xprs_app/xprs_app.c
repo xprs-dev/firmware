@@ -2246,7 +2246,13 @@ static void idx_answer_history(void)
         return;
     }
 
-    char since[24] = "", until[24] = "", only[16] = "", kind[16] = "";
+    /* kind: may be a comma-separated LIST of types (XPRS.md 25.2) --
+     * `kind:info,warning,event,status,blog,message` is the neighbourhood
+     * redundancy ask of 36.9.3 and is 37 characters. The old kind[16]
+     * truncated it, xprsidx_type_code mapped the fragment to OTHER, and the
+     * replay served packets of type "other": nothing, silently, for exactly
+     * the asks the spec now standardises. */
+    char since[24] = "", until[24] = "", only[16] = "", kind[64] = "";
     xprs_get_str(&p, "since", since, sizeof since);
     xprs_get_str(&p, "until", until, sizeof until);
     xprs_get_str(&p, "only", only, sizeof only);
@@ -2259,7 +2265,8 @@ static void idx_answer_history(void)
     xprsidx_query_t q = {
         .since_ts = since[0] ? xprsindex_ts_to_epoch(since, strlen(since)) : 0,
         .until_ts = until[0] ? xprsindex_ts_to_epoch(until, strlen(until)) : 0,
-        .type = kind[0] ? xprsidx_type_code(kind) : -1,
+        .type = -1,
+        .types = xprsidx_type_mask(kind),
         .only = only[0] ? only : NULL,
         .talk_only = !kind[0],
         .asker = from,

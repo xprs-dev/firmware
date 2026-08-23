@@ -2492,18 +2492,21 @@ static int xprs_hist_query(void)
         return -1;
     }
 
-    char since[24], until[24], only[10], kind[16] = "";
-    /* `kind:` names a TYPE (25.2); `only:` names a CALLSIGN (36.6) and is
-     * applied by hist_emit below. With no kind: named, serve the talking
-     * rather than the beacons an archiver also keeps -- otherwise a page of
-     * the newest twelve is twelve presence records. */
+    char since[24], until[24], only[10], kind[64] = "";
+    /* `kind:` names a TYPE, or a comma-separated list of them (25.2 -- the
+     * 36.9.3 neighbourhood ask lists six and runs 37 characters, which is why
+     * the buffer is not 16). `only:` names a CALLSIGN (36.6) and is applied
+     * by hist_emit below. With no kind: named, serve the talking rather than
+     * the beacons an archiver also keeps -- otherwise a page of the newest
+     * twelve is twelve presence records. */
     xprs_get_str(&p, "kind", kind, sizeof kind);
     xprsidx_query_t q = {
         .since_ts = xprs_get_str(&p, "since", since, sizeof since)
                         ? xprsindex_ts_to_epoch(since, (int)strlen(since)) : 0,
         .until_ts = xprs_get_str(&p, "until", until, sizeof until)
                         ? xprsindex_ts_to_epoch(until, (int)strlen(until)) : 0,
-        .type     = kind[0] ? xprsidx_type_code(kind) : -1,
+        .type     = -1,
+        .types    = xprsidx_type_mask(kind),
         .talk_only = !kind[0],
         .from     = NULL,
         .asker    = s_hist.to,
