@@ -1,5 +1,5 @@
 /*
- * lanwatch — passive listener on the Aurora LAN discovery UDP broadcast.
+ * lanwatch — passive listener on the XPRS app LAN discovery UDP broadcast.
  *
  * Wire format (aurora rns_lan_interface.dart): one raw RNS packet per UDP
  * datagram, announces only. We parse just enough of an ANNOUNCE to (a) verify
@@ -160,7 +160,7 @@ esp_err_t lanwatch_start(uint16_t port)
         close(fd);
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "listening for Aurora LAN announces on UDP %u", port);
+    ESP_LOGI(TAG, "listening for XPRS LAN announces on UDP %u", port);
     return ESP_OK;
 }
 

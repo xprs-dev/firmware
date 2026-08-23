@@ -1,7 +1,7 @@
 /*
- * lanwatch — passive LAN presence watcher for geogram/Aurora devices.
+ * lanwatch — passive LAN presence watcher for geogram/XPRS devices.
  *
- * Aurora nodes on the same LAN run a UDP discovery interface (aurora
+ * XPRS nodes on the same LAN run a UDP discovery interface (aurora
  * rns_lan_interface.dart): every node broadcasts its Reticulum ANNOUNCE
  * packets to 255.255.255.255 on a shared port (42671), one raw RNS packet
  * per datagram. This component just LISTENS on that socket — it never
@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-/* Shared Aurora LAN discovery port (rns_service.dart _lanDiscoveryPort). */
+/* Shared XPRS LAN discovery port (rns_service.dart _lanDiscoveryPort). */
 #define LANWATCH_DEFAULT_PORT  42671
 
 #define LANWATCH_CALLSIGN_MAX  12   /* chars (buffers are MAX+1 for the NUL) */

@@ -2,7 +2,7 @@
  * @file aprsis.c
  * @brief APRS-IS iGate — bridges APRS-IS <-> BLE on the T-Dongle.
  *
- * Protocol logic (passcode, TNC2 parse/build) mirrors the Aurora desktop/
+ * Protocol logic (passcode, TNC2 parse/build) mirrors the XPRS app desktop/
  * Android client (wapps/aprs/aprs.c); transport is lwip BSD sockets.
  */
 

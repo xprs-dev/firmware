@@ -4,7 +4,7 @@
  *
  * The station's XPRS wires ride Reticulum as signed wapp-datagram announces
  * -- app_data `[len]"xprs"[wire]` on the station's own `xprs.wapp`
- * destination -- which is byte-for-byte the lane the Aurora app already
+ * destination -- which is byte-for-byte the lane the XPRS app already
  * speaks (`wappBroadcast` / `XprsIngest.reticulum`). Nothing on the phone or
  * desktop side changes: an ESP32 archiver simply starts appearing on the
  * same funnel, its `t:service` archived under the mailbox-declaration rule,
@@ -14,7 +14,7 @@
  * The uplink is `geogram_rns`'s TCP interface, pointed wherever the operator
  * says: a public hub, or -- the configuration that actually makes a station
  * reachable, given that community hubs do not cross-forward announces
- * between their own clients -- a nearby Aurora node's TCP server on 4242,
+ * between their own clients -- a nearby XPRS node's TCP server on 4242,
  * which ingests directly and relays onward.
  *
  * config.ini:

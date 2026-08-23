@@ -46,9 +46,9 @@ int ble_hello_device_count(void);
 bool ble_hello_is_active(void);
 
 /**
- * @brief Callback for a received Aurora APRS-over-BLE frame.
+ * @brief Callback for a received XPRS APRS-over-BLE frame.
  *
- * Aurora desktops/peers advertise compact APRS frames in manufacturer data
+ * XPRS desktops/peers advertise compact APRS frames in manufacturer data
  * (company 0xFFFF, NO 0x3E marker) with the payload `<from>\x1f<to>\x1f<text>`.
  * `to` may be a callsign (1:1), "#GRP" (group), "!" (position; text=lat,lon),
  * or empty (geo-chat). All strings are NUL-terminated and only valid during the
@@ -58,7 +58,7 @@ typedef void (*ble_hello_aprs_cb_t)(const char *from, const char *to,
                                     const char *text, int rssi);
 
 /**
- * @brief Register a callback for received Aurora APRS-over-BLE frames.
+ * @brief Register a callback for received XPRS APRS-over-BLE frames.
  *        Pass NULL to disable. Keeps this component UI-agnostic.
  */
 void ble_hello_set_aprs_cb(ble_hello_aprs_cb_t cb);
@@ -91,7 +91,7 @@ void ble_hello_set_xprs_cb(ble_hello_xprs_cb_t cb);
 
 /**
  * @brief Put one XPRS packet on the BLE air, verbatim, through the
- *        broadcast-parcel chunker that Aurora scanners already reassemble.
+ *        broadcast-parcel chunker that XPRS scanners already reassemble.
  *
  * For packets that arrived on another bearer. Content-deduped like every other
  * relay, so airing the same packet twice is free of charge and does nothing.
@@ -128,7 +128,7 @@ bool ble_hello_broadcast(const char *from, const char *to, const char *text);
 int ble_hello_get_heard(char calls[][8], int max, uint32_t max_age_sec);
 
 /**
- * @brief Relay an APRS frame out over BLE as a compact Aurora frame
+ * @brief Relay an APRS frame out over BLE as a compact XPRS frame
  *        (`<from>\x1f<to>\x1f<text>`), so nearby BLE devices receive it.
  *
  * Built for the iGate's APRS-IS -> BLE path. The frame is queued into the same

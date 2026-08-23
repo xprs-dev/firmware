@@ -4,7 +4,7 @@
  *
  * This is the whole point of the file: two implementations agreeing on their
  * own output proves nothing, so every crypto assertion below is a byte string
- * that came out of the other one. If the ESP32 and Aurora ever stop
+ * that came out of the other one. If the ESP32 and XPRS ever stop
  * understanding each other, it should fail here rather than on a rooftop.
  */
 

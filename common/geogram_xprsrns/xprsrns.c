@@ -73,7 +73,7 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     (void)ctx;
     if (!frame && len == 0) {
         /* Freshly connected. Say we exist: the peer cannot address a station
-         * it has never heard, and Aurora's ingest learns the wapp lane from
+         * it has never heard, and XPRS's ingest learns the wapp lane from
          * exactly this announce shape. */
         char hello[8];
         int hn = snprintf(hello, sizeof hello, "%cxprs", 4);

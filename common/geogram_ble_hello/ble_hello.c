@@ -41,7 +41,7 @@ static const char *TAG = "ble_hello";
 #define MAX_SEEN            16
 #define EXPIRE_SEC          60
 
-/* APRS-over-BLE mesh repeater: rebroadcast each received Aurora frame once,
+/* APRS-over-BLE mesh repeater: rebroadcast each received XPRS frame once,
  * suppressing any frame whose content was already relayed in the last 10 min
  * (loop/storm control). Relayed frames are advertised for RELAY_TTL_SEC so
  * neighbours catch them within a scan window. */
@@ -66,7 +66,7 @@ static const char *TAG = "ble_hello";
  * (BlueAPRS): a compact frame that overflows the primary legacy advert carries
  * the remainder in the active-scan SCAN_RSP, so any active scanner reassembles
  * it (works on all devices). The primary advert stays the bare compact form
- * (company id + payload) so the Aurora app still reads the first part; the
+ * (company id + payload) so the XPRS app still reads the first part; the
  * SCAN_RSP continuation is marked so it isn't mis-parsed:
  *   ADV mfg:      [0xFF,0xFF, <payload[0 .. ADV_PAYLOAD_CAP)>]
  *   SCAN_RSP mfg: [0xFF,0xFF, 0x3E, 'B', <payload[ADV_PAYLOAD_CAP ..])>] */
@@ -86,7 +86,7 @@ static const char *TAG = "ble_hello";
  * IMPORTANT: we send each chunk as its own PRIMARY advert (<=12B payload) and do
  * NOT pack the overflow into a 0x51 scan-response continuation. The primary and
  * its scan response both carry company id 0xFFFF, and Android's ScanRecord keeps
- * only ONE manufacturer-data entry per company id (last wins), so the Aurora app
+ * only ONE manufacturer-data entry per company id (last wins), so the XPRS app
  * would receive only the continuation (an orphan, dropped) or only the primary
  * (never completes) — a frame needing a continuation (e.g. the 13-byte
  * "<call>\x1f?IGATE" beacon) would never reassemble on a phone. Multiple bare
@@ -171,7 +171,7 @@ typedef struct {
 static seen_entry_t s_seen[MAX_SEEN];
 static int          s_seen_count;
 
-/* Aurora APRS-over-BLE receive callback (optional, set by app) */
+/* XPRS APRS-over-BLE receive callback (optional, set by app) */
 static ble_hello_aprs_cb_t s_aprs_cb;
 
 /* Messages archive queried over the BLE aprs_query GATT path (set by the owner;
@@ -517,7 +517,7 @@ static void relay_enqueue_broadcast(const uint8_t *payload, int len,
 /* Pick the next live broadcast chunk (round-robin), reaping expired slots;
  * returns its index, or -1 if none pending. */
 /* Put one XPRS packet on the BLE air, verbatim, through the broadcast-parcel
- * chunker every Aurora scanner already reassembles. High priority: a packet
+ * chunker every XPRS scanner already reassembles. High priority: a packet
  * that came from another bearer is a message somebody is waiting on, not a
  * position beacon. Content-deduped by relay_seen() like every other relay. */
 bool ble_hello_air_xprs(const char *wire, int len)
@@ -1167,7 +1167,7 @@ static const struct ble_gatt_svc_def s_gatt_svcs[] = {
     { 0 }, /* sentinel */
 };
 
-/* ---- Aurora APRS-over-BLE decode ---------------------------------------- */
+/* ---- XPRS APRS-over-BLE decode ---------------------------------------- */
 
 void ble_hello_set_aprs_cb(ble_hello_aprs_cb_t cb)
 {
@@ -1494,7 +1494,7 @@ static void handle_mail(const char *from, const char *text) {
     mail_pump();
 }
 
-/* Decode a compact Aurora APRS payload `<from>\x1f<to>\x1f<text>` (the bytes
+/* Decode a compact XPRS APRS payload `<from>\x1f<to>\x1f<text>` (the bytes
  * after the 2-byte company id) and deliver it via the registered callback.
  * Returns true when the frame was a ping/pong control frame (handled here —
  * the caller must NOT show it or relay it verbatim).
@@ -1505,7 +1505,7 @@ static bool aprs_decode(const uint8_t *payload, int len, int rssi)
 
     /* Every compact frame, GATT parcel and reassembled broadcast reaches this
      * function, so it is the one place the indexer needs. An XPRS packet has no
-     * 0x1F separators and would be dropped below as "not an Aurora frame"; it
+     * 0x1F separators and would be dropped below as "not an XPRS frame"; it
      * is offered here first, before any of that. */
     xprs_ingest(payload, len, rssi);
 
@@ -1527,9 +1527,9 @@ static bool aprs_decode(const uint8_t *payload, int len, int rssi)
         }
         if (fp < caps[fi]) fields[fi][fp++] = (char)b;
     }
-    if (!saw_sep) return false;     /* not an Aurora APRS frame */
+    if (!saw_sep) return false;     /* not an XPRS APRS frame */
 
-    /* An Aurora frame can carry an XPRS packet inside TEXT (docs/ble5.md §2:
+    /* An XPRS frame can carry an XPRS packet inside TEXT (docs/ble5.md §2:
      * subtype 0x41 carries XPRS mail). The envelope was already offered above
      * and refused; the payload is the packet. */
     xprs_ingest((const uint8_t *)text, (int)strlen(text), rssi);
@@ -1841,7 +1841,7 @@ static int ble_hello_gap_event(struct ble_gap_event *event, void *arg)
             track_device(addr);
             if (mlen > 4) heard_add((const char *)&mfg[4], mlen - 4);
         } else if (mlen >= 4) {
-            /* Compact Aurora APRS frame (no marker). Hold it until the next
+            /* Compact XPRS APRS frame (no marker). Hold it until the next
              * scan event reveals whether a SCAN_RSP continuation follows. */
             track_device(addr);
             int n = mlen > APRS_MFG_MAX ? APRS_MFG_MAX : mlen;

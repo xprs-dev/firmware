@@ -58,7 +58,7 @@ typedef struct {
 void xprs_sha256(const uint8_t *in, size_t len, uint8_t out[32]);
 
 /* Is [wire] an XPRS packet at all? The seam mirrored from mesh_frame.dart:
- * starts "t:" and contains no 0x1F byte (a compact Aurora parcel has two). */
+ * starts "t:" and contains no 0x1F byte (a compact XPRS parcel has two). */
 bool xprs_looks_like(const uint8_t *wire, int len);
 
 /* Parse one wire packet. Returns false only when it is not XPRS at all (no

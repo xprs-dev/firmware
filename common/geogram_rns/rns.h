@@ -235,7 +235,7 @@ typedef struct {
  *   - the signature covers dest+pub+name_hash+random_hash+app, in that order.
  *   - announcing one destination faster than about once an hour to a PUBLIC
  *     hub burns its reputation there. Pacing is the caller's duty; toward a
- *     directly-connected peer (an Aurora node's own TCP server) there is no
+ *     directly-connected peer (an XPRS node's own TCP server) there is no
  *     such police and the caller may pace by channel sense instead.
  *
  * @param id       must hold the private half.

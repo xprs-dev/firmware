@@ -74,7 +74,7 @@
 #include "esp_wifi.h"
 #include "aprsis.h"
 
-/* LAN presence: passive listener on the Aurora UDP discovery broadcast. */
+/* LAN presence: passive listener on the XPRS app UDP discovery broadcast. */
 #include "lanwatch.h"
 
 /* BLE street mesh (aurora docs/mesh.md): route beacon + DV table + SCF. */
@@ -823,9 +823,9 @@ static void maybe_relay(const uint8_t *pkt, int len, int rssi)
              (unsigned)s_relayed_count);
 }
 
-/* Split an Aurora APRS parcel — from <0x1F> to <0x1F> text — into NUL-terminated
+/* Split an XPRS APRS parcel — from <0x1F> to <0x1F> text — into NUL-terminated
  * fields (the caller zeroes them). Returns false if there is no 0x1F separator
- * (a non-Aurora frame we still show/relay but do not gate). */
+ * (a non-XPRS frame we still show/relay but do not gate). */
 static bool split_aprs_fields(const uint8_t *p, int len,
                               char *from, int fcap, char *to, int tcap,
                               char *text, int xcap)
@@ -871,7 +871,7 @@ static void handle_aprs(const uint8_t *payload, int len, int rssi)
 {
     if (len <= 0) return;
     /* The format seam (aurora mesh_frame.dart): an XPRS packet starts `t:`
-     * and holds no 0x1F byte; a compact Aurora parcel holds two. Chat and
+     * and holds no 0x1F byte; a compact XPRS parcel holds two. Chat and
      * carried mail both ride this subtype as XPRS now — the compact path
      * below stays for the leftovers (?ACK, ?MAIL, ?IGATE) only. */
     if (xprs_looks_like(payload, len)) {
@@ -882,12 +882,12 @@ static void handle_aprs(const uint8_t *payload, int len, int rssi)
     if (relay_seen(ch)) return;              /* already handled (dedup) */
     relay_remember(ch);
 
-    /* Split the Aurora parcel: from <0x1F> to <0x1F> text. */
+    /* Split the XPRS app parcel: from <0x1F> to <0x1F> text. */
     char from[CALLSIGN_MAX] = {0}, to[12] = {0}, text[160] = {0};
     bool aurora = split_aprs_fields(payload, len, from, sizeof from,
                                     to, sizeof to, text, sizeof text);
     if (!aurora) {
-        /* Non-Aurora frame: printable dump for the dashboard, not gated. */
+        /* Non-XPRS frame: printable dump for the dashboard, not gated. */
         int t = 0;
         for (int i = 0; i < len && t < (int)sizeof(text) - 1; i++) {
             uint8_t c = payload[i];
@@ -3676,7 +3676,7 @@ static void igate_start(void)
         ESP_LOGW(TAG, "SNTP failed to start — announces will be ignored");
     }
 
-    /* LAN reach: listen for the Aurora UDP discovery broadcast (announces) so
+    /* LAN reach: listen for the XPRS app UDP discovery broadcast (announces) so
      * the dashboard can count geogram devices on the same network. Passive
      * (receive-only); datagrams start flowing once the STA has an IP. */
     lanwatch_start(LANWATCH_DEFAULT_PORT);

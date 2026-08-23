@@ -3,7 +3,7 @@
  * @brief Persistent, queryable APRS message log on microSD (index-based).
  *
  * The iGate persists every APRS message it observes to the SD card and lets
- * other devices (the Aurora app, other ESP32s) fetch "messages since index N",
+ * other devices (the XPRS app, other ESP32s) fetch "messages since index N",
  * optionally filtered by callsign or message kind. The ESP32 has no reliable
  * wall clock, so ordering/resume is by a MONOTONIC INDEX, not timestamps.
  *

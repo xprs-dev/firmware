@@ -12,7 +12,7 @@
  *   - TX (BLE -> Internet): gates frames heard locally over BLE up to APRS-IS
  *     (third-party format), so messages from BLE-only devices reach the world.
  *
- * Mirrors the Aurora desktop/Android APRS client (same passcode + TNC2 logic).
+ * Mirrors the XPRS app desktop/Android APRS client (same passcode + TNC2 logic).
  * Runs on its own FreeRTOS task; safe to start once at boot.
  */
 #ifndef GEOGRAM_APRSIS_H

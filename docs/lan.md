@@ -15,7 +15,7 @@ broadcast to everyone on the network, and heard from everyone on it.
 gateway, nothing that leaves the wire it is attached to. A packet on this bearer
 reaches the machines in the building and stops there.
 
-Aurora's Reticulum LAN discovery uses UDP 42671 and is a different protocol on a
+XPRS's Reticulum LAN discovery uses UDP 42671 and is a different protocol on a
 different socket. The ESP32 firmware listens to it separately
 (`geogram_lanwatch`) and nothing here changes that.
 
@@ -78,7 +78,7 @@ not a special case:
   (`sos` and `warning` 9 hops, everything else 3). A packet that names this
   station in `via:` already is not relayed (section 13.2).
 - **LAN to Bluetooth.** The same, in reverse, through the broadcast-parcel
-  chunker any Aurora scanner already reassembles.
+  chunker any XPRS scanner already reassembles.
 
 `scope:local` packets **do** cross, because both are short-range bearers
 (section 13.11.1). They still never reach APRS-IS or the internet: that gateway
