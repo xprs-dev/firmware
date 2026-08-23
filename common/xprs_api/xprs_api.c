@@ -4,6 +4,7 @@
  */
 
 #include "xprs_api.h"
+#include "xapi_send.h"
 #include "xprs_auth.h"
 #include "xprs_ota.h"
 #include <string.h>
@@ -31,37 +32,26 @@ httpd_handle_t xprs_api_httpd(void) { return s_httpd; }
 
 /* ---- small helpers ------------------------------------------------------ */
 
-static void resp_json(httpd_req_t *req)
-{
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-}
+/* The one response buffer this server ever uses.
+ *
+ * Every handler here used to own a private static, or malloc per request:
+ * eight buffers, 4,592 bytes of internal DRAM held whether or not anything
+ * ever called the endpoint, on boards where the steady-state largest free
+ * block is a couple of kilobytes. docs/esp32.md settled this once already
+ * for the T-Dongle's own server ("One response buffer, claimed at boot and
+ * shared") and this file did not follow it.
+ *
+ * Claimed before httpd_start, and if it cannot be had the server does not
+ * start: a server that accepts a connection and then says nothing is the
+ * hardest failure on this board to read from outside. esp_http_server runs
+ * its handlers on ONE task, so one buffer is all there can ever be in use.
+ */
+#define API_BUF_SIZE 2048
+static char *s_api_buf;
 
-static esp_err_t resp_error(httpd_req_t *req, const char *status,
-                            const char *why)
-{
-    resp_json(req);
-    httpd_resp_set_status(req, status);
-    char buf[128];
-    int n = snprintf(buf, sizeof buf, "{\"ok\":false,\"error\":\"%s\"}", why);
-    return httpd_resp_send(req, buf, n);
-}
-
-/* JSON string escape into out; returns bytes written (excluding NUL). */
-static int jesc(char *out, size_t cap, const char *in, int inlen)
-{
-    size_t o = 0;
-    for (int i = 0; i < inlen && in[i]; i++) {
-        unsigned char c = (unsigned char)in[i];
-        if (o + 7 >= cap) break;
-        if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = c; }
-        else if (c == '\n') { out[o++] = '\\'; out[o++] = 'n'; }
-        else if (c < 0x20) o += snprintf(out + o, cap - o, "\\u%04x", c);
-        else out[o++] = (char)c;
-    }
-    out[o] = 0;
-    return (int)o;
-}
+#define resp_json(req)              xapi_resp_json(req)
+#define resp_error(req, st, why)    xapi_resp_error((req), (st), (why))
+#define jesc(o, c, i, l)            xapi_jesc((o), (c), (i), (l))
 
 static bool time_synced(void) { return time(NULL) > 1700000000; }
 
@@ -89,8 +79,9 @@ static bool call_matches(const char *want, const char *have)
 
 static esp_err_t h_status(httpd_req_t *req)
 {
-    char buf[512];
-    int n = snprintf(buf, sizeof buf,
+    char *buf = s_api_buf;              /* shared; see API_BUF_SIZE */
+    const size_t cap = API_BUF_SIZE;
+    int n = snprintf(buf, cap,
         "{\"ok\":true,\"app\":\"%s\",\"board\":\"%s\",\"callsign\":\"%s\","
         "\"uptime_s\":%lu,\"heap_free\":%u,"
         "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\"}",
@@ -102,18 +93,18 @@ static esp_err_t h_status(httpd_req_t *req)
         time_synced() ? (unsigned long)time(NULL) : 0,
         s_cfg->tz ? s_cfg->tz : "+00:00");
     if (s_cfg->status_json) {
-        n += snprintf(buf + n, sizeof buf - n, ",");
-        n += s_cfg->status_json(buf + n, sizeof buf - n);
+        n += snprintf(buf + n, cap - n, ",");
+        n += s_cfg->status_json(buf + n, cap - n);
     }
     if (s_cfg->index) {
         xprsidx_stats_t st;
         xprsindex_stats(s_cfg->index, &st);
-        n += snprintf(buf + n, sizeof buf - n,
+        n += snprintf(buf + n, cap - n,
                       ",\"indexer\":{\"enabled\":true,\"count\":%lu,"
                       "\"epoch\":\"%c\"}",
                       (unsigned long)st.count, st.epoch);
     }
-    n += snprintf(buf + n, sizeof buf - n, "}");
+    n += snprintf(buf + n, cap - n, "}");
     resp_json(req);
     return httpd_resp_send(req, buf, n);
 }
@@ -122,15 +113,22 @@ static esp_err_t h_status(httpd_req_t *req)
 
 static esp_err_t h_services(httpd_req_t *req)
 {
-    char serve[128] = "", feats[256] = "";
-    if (s_cfg->serve_json) s_cfg->serve_json(serve, sizeof serve);
-    if (s_cfg->features_json) s_cfg->features_json(feats, sizeof feats);
-    char buf[640];
-    int n = snprintf(buf, sizeof buf,
-        "{\"ok\":true,\"serve\":[%s],\"features\":{%s},"
-        "\"api\":[\"status\",\"services\",\"history\",\"mail\",\"send\","
-        "\"log\"]}",
-        serve, feats);
+    /* The board writes its two fragments straight into the answer where
+     * they belong, the way status_json already does. Composing them in
+     * separate slices of this same buffer and then printing one into the
+     * other is what -Wrestrict objects to, and it needs the slices. */
+    char *buf = s_api_buf;
+    const size_t cap = API_BUF_SIZE;
+    int n = snprintf(buf, cap, "{\"ok\":true,\"serve\":[");
+    if (s_cfg->serve_json && n < (int)cap)
+        n += s_cfg->serve_json(buf + n, cap - n);
+    if (n < (int)cap) n += snprintf(buf + n, cap - n, "],\"features\":{");
+    if (s_cfg->features_json && n < (int)cap)
+        n += s_cfg->features_json(buf + n, cap - n);
+    if (n < (int)cap)
+        n += snprintf(buf + n, cap - n,
+            "},\"api\":[\"status\",\"services\",\"history\",\"mail\","
+            "\"send\",\"log\"]}");
     resp_json(req);
     return httpd_resp_send(req, buf, n);
 }
@@ -157,17 +155,21 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     const char *sig = !(rec->flags & XI_F_SIGNED)   ? "none"
                       : (rec->flags & XI_F_VERIFIED) ? "verified"
                                                       : "unverified";
-    static char wire[2 * XPRSIDX_WIRE_MAX + 8];
-    jesc(wire, sizeof wire, rec->wire, rec->len);
-    static char row[2 * XPRSIDX_WIRE_MAX + 192];
-    int n = snprintf(row, sizeof row,
+    /* One record at a time out of the shared buffer: the escaped packet in
+     * the head, the row built after it. */
+    char *row = s_api_buf;
+    const size_t ROW = API_BUF_SIZE;
+    int n = snprintf(row, ROW,
         "%s{\"ts\":%lu,\"bearer\":\"%s\",\"rssi\":%d,\"from\":\"%s\","
         "\"to\":\"%s\",\"type\":\"%s\",\"sig\":\"%s\",\"own\":%s,"
-        "\"wire\":\"%s\"}",
+        "\"wire\":\"",
         c->emitted ? "," : "", (unsigned long)rec->ts,
         xprsidx_bearer_name(rec->bearer), (int)rec->rssi,
         rec->from, rec->to, xprsidx_type_name(rec->type), sig,
-        own ? "true" : "false", wire);
+        own ? "true" : "false");
+    if (n < 0 || n >= (int)ROW) return true;
+    n += jesc(row + n, ROW - (size_t)n, rec->wire, rec->len);
+    if (n + 3 < (int)ROW) { row[n++] = '"'; row[n++] = '}'; row[n] = 0; }
     c->emitted++;
     return httpd_resp_send_chunk(c->req, row, n) == ESP_OK;
 }
@@ -238,98 +240,13 @@ static esp_err_t h_mail(httpd_req_t *req)
 
 /* ---- /api/xprs/send ------------------------------------------------------ */
 
-/* The door itself, with the transmitter passed in: a board that runs its
- * own httpd (the dongle) registers this on its server and lends it its
- * bearers, rather than growing a second copy of the validation. */
-esp_err_t xprs_api_send_handler(httpd_req_t *req,
-                                bool (*send)(const char *wire, int len))
-{
-    if (!send)
-        return resp_error(req, "404 Not Found", "no transmitter");
-
-    /* Static: httpd has ONE worker task, so one request at a time, and its
-     * stack is no place for three buffers this size (docs/esp32.md). */
-    static char body[600];
-    int total = 0;
-    if (req->method == HTTP_GET) {
-        /* The captive-WebView fallback: ?wire=<urlencoded packet>. Some
-         * sign-in popups cannot POST at all (the old chat page's lesson). */
-        static char query[600];
-        if (httpd_req_get_url_query_str(req, query, sizeof query) != ESP_OK ||
-            httpd_query_key_value(query, "wire", body, sizeof body) != ESP_OK)
-            return resp_error(req, "400 Bad Request", "need wire=");
-        /* httpd_query_key_value leaves %xx and + in place. */
-        char *o = body;
-        for (const char *c = body; *c; c++) {
-            if (*c == '+') { *o++ = ' '; continue; }
-            if (*c == '%' && c[1] && c[2]) {
-                char hx[3] = { c[1], c[2], 0 };
-                *o++ = (char)strtol(hx, NULL, 16);
-                c += 2;
-                continue;
-            }
-            *o++ = *c;
-        }
-        *o = 0;
-        total = (int)(o - body);
-    } else {
-        while (total < req->content_len && total < (int)sizeof body - 1) {
-            int r = httpd_req_recv(req, body + total, sizeof body - 1 - total);
-            if (r <= 0) return resp_error(req, "400 Bad Request", "short body");
-            total += r;
-        }
-        body[total] = 0;
-    }
-
-    /* Either JSON {"wire":"..."} or the packet as plain text. */
-    char wire[XPRS_MAX_WIRE + 1];
-    const char *w = body;
-    char *j = strstr(body, "\"wire\"");
-    if (j) {
-        j = strchr(j + 6, '"');
-        if (!j) return resp_error(req, "400 Bad Request", "bad json");
-        j++;
-        int o = 0;
-        while (*j && *j != '"' && o < (int)sizeof wire - 1) {
-            if (*j == '\\' && j[1]) j++;
-            wire[o++] = *j++;
-        }
-        wire[o] = 0;
-        w = wire;
-    }
-    int wlen = (int)strlen(w);
-    while (wlen > 0 && (w[wlen - 1] == '\n' || w[wlen - 1] == '\r')) wlen--;
-
-    /* Validation only, section 4: the caller composed it, the caller owns
-     * it -- including the callsign it wrote into f:. */
-    if (wlen <= 0 || wlen > XPRS_MAX_WIRE)
-        return resp_error(req, "400 Bad Request", "length");
-    if (strncmp(w, "t:", 2) != 0)
-        return resp_error(req, "400 Bad Request", "must start with t:");
-    xprs_t pk;
-    if (!xprs_parse(w, wlen, &pk))
-        return resp_error(req, "400 Bad Request", "does not parse");
-    char from[16];
-    if (!xprs_get_str(&pk, "f", from, sizeof from))
-        return resp_error(req, "400 Bad Request", "no f:");
-
-    if (!send(w, wlen))
-        return resp_error(req, "503 Service Unavailable", "no bearer took it");
-
-    char id[XPRS_ID_LEN];
-    xprs_id(&pk, id);
-    static char esc[2 * XPRS_MAX_WIRE + 8];
-    jesc(esc, sizeof esc, w, wlen);
-    static char out[2 * XPRS_MAX_WIRE + 64];
-    int n = snprintf(out, sizeof out,
-                     "{\"ok\":true,\"id\":\"%s\",\"wire\":\"%s\"}", id, esc);
-    resp_json(req);
-    return httpd_resp_send(req, out, n);
-}
-
+/* The door lives in xapi_send.c so a board with its own server can take
+ * just that object (see the note there). Here it borrows this server's
+ * one buffer, like every other handler. */
 static esp_err_t h_send(httpd_req_t *req)
 {
-    return xprs_api_send_handler(req, s_cfg->send_wire);
+    return xprs_api_send_handler(req, s_api_buf, API_BUF_SIZE,
+                                 s_cfg->send_wire);
 }
 
 /* ---- /api/log ------------------------------------------------------------ */
@@ -350,16 +267,18 @@ static bool log_emit(httpd_req_t *req, const char *line, int len, bool first)
         tbuf[o] = 0;
         while (i < len && line[i] == ' ') i++;
     }
-    char m[360];
-    jesc(m, sizeof m, line + i, len - i);
-    char row[420];
-    int n;
-    if (tbuf[0] == '+')
-        n = snprintf(row, sizeof row, "%s{\"t\":\"%s\",\"m\":\"%s\"}",
-                     first ? "" : ",", tbuf, m);
-    else
-        n = snprintf(row, sizeof row, "%s{\"t\":%s,\"m\":\"%s\"}",
-                     first ? "" : ",", tbuf, m);
+    /* The httpd task's stack is 6 KB here and 5 KB on the dongle, and
+     * docs/esp32.md is explicit that a couple of 600-byte buffers on it
+     * take the server down. These two live in the shared buffer's tail;
+     * log_reversed owns the head while it walks. */
+    char *row = s_api_buf + API_BUF_SIZE - 800;
+    const size_t ROW = 800;
+    int n = tbuf[0] == '+'
+          ? snprintf(row, ROW, "%s{\"t\":\"%s\",\"m\":\"", first ? "" : ",", tbuf)
+          : snprintf(row, ROW, "%s{\"t\":%s,\"m\":\"", first ? "" : ",", tbuf);
+    if (n < 0 || n >= (int)ROW) return true;
+    n += jesc(row + n, ROW - (size_t)n, line + i, len - i);
+    if (n + 3 < (int)ROW) { row[n++] = '"'; row[n++] = '}'; row[n] = 0; }
     return httpd_resp_send_chunk(req, row, n) == ESP_OK;
 }
 
@@ -372,9 +291,12 @@ static int log_reversed(httpd_req_t *req, const char *path, int budget,
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
     long pos = ftell(f);
 
-    char carry[200];
+    /* Head of the shared buffer: 512-byte block plus the carry, while
+     * log_emit uses the tail. 1,248 bytes total, no stack, no malloc. */
+    char *carry = s_api_buf;
+    char *blk = s_api_buf + 200;
+    const int CARRY = 200;
     int carry_n = 0, sent = 0;
-    char blk[512 + sizeof carry];
     while (pos > 0 && budget > 0) {
         int n = pos > 512 ? 512 : (int)pos;
         pos -= n;
@@ -399,7 +321,7 @@ static int log_reversed(httpd_req_t *req, const char *path, int budget,
                 *first = false; sent++; budget--;
             }
         } else {
-            carry_n = end > (int)sizeof carry ? (int)sizeof carry : end;
+            carry_n = end > CARRY ? CARRY : end;
             memcpy(carry, blk + end - carry_n, carry_n);
         }
     }
@@ -439,14 +361,13 @@ static esp_err_t h_log(httpd_req_t *req)
 static esp_err_t h_diag(httpd_req_t *req)
 {
     resp_json(req);
-    /* Static, like the send door above and for the same reason: httpd has
-     * one worker task, so one request at a time. These were a malloc and a
-     * free per request on the endpoint everything polls, and a board with
-     * no PSRAM pays for that in fragmentation -- an M5Stack ran itself down
-     * to thirty kilobytes free with no single kilobyte contiguous, which
-     * left it answering XPRS on the air while its own HTTP was dead. */
-    static char out[900];
-    static esp_core_dump_summary_t cd_buf;
+    /* The shared buffer, like every handler here. This was a malloc and a
+     * free per request on the endpoint everything polls -- and then, worse,
+     * a private static of its own, which is 1.1 KB of DRAM held for ever on
+     * the board least able to spare it. */
+    char *out = s_api_buf;
+    const size_t cap = API_BUF_SIZE;
+    esp_core_dump_summary_t cd_buf;     /* ~212 B, and only while asked */
     const esp_app_desc_t *d = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
     esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
@@ -455,7 +376,7 @@ static esp_err_t h_diag(httpd_req_t *req)
     esp_core_dump_summary_t *cd = &cd_buf;
     bool have_cd = esp_core_dump_get_summary(cd) == ESP_OK;
 
-    int n = snprintf(out, 900,
+    int n = snprintf(out, cap,
         "{\"ok\":true,"
         /* Who and what, first: the push tooling reads these from every board
          * with an updater, and the dongle's diag already had them. */
@@ -487,12 +408,12 @@ static esp_err_t h_diag(httpd_req_t *req)
         esp_ota_check_rollback_is_possible() ? "true" : "false",
         xota_busy() ? "true" : "false", xota_progress(),
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    if (have_cd && n > 0 && n < 900)
-        n += snprintf(out + n, 900 - n,
+    if (have_cd && n > 0 && n < (int)cap)
+        n += snprintf(out + n, cap - n,
                       ",\"crash\":{\"task\":\"%s\",\"pc\":\"0x%08lx\"}",
                       cd->exc_task, (unsigned long)cd->exc_pc);
-    if (n > 0 && n < 900)
-        n += snprintf(out + n, 900 - n, "}");
+    if (n > 0 && n < (int)cap)
+        n += snprintf(out + n, cap - n, "}");
     httpd_resp_set_type(req, "application/json");
     return httpd_resp_send(req, out, n);
 }
@@ -526,19 +447,14 @@ static esp_err_t h_coredump(httpd_req_t *req)
     httpd_resp_set_hdr(req, "Content-Disposition", disp);
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
 
-    char *buf = malloc(1024);
-    if (!buf) return resp_error(req, "503 Service Unavailable", "no memory");
+    char *buf = s_api_buf;              /* the shared buffer as the chunk */
     size_t off = 0;
     while (off < size) {
         size_t want = size - off > 1024 ? 1024 : size - off;
         if (esp_partition_read(part, off, buf, want) != ESP_OK) break;
-        if (httpd_resp_send_chunk(req, buf, want) != ESP_OK) {
-            free(buf);
-            return ESP_FAIL;
-        }
+        if (httpd_resp_send_chunk(req, buf, want) != ESP_OK) return ESP_FAIL;
         off += want;
     }
-    free(buf);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
@@ -561,6 +477,17 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
     hc.send_wait_timeout = 30;
     hc.max_uri_handlers = 16;
     hc.lru_purge_enable = true;
+    /* Claimed here, while the heap is still one large block, and never
+     * released. A server that cannot answer is worse than one that never
+     * started, so this failing is fatal to the server rather than to the
+     * first request that needs it. */
+    if (!s_api_buf) s_api_buf = malloc(API_BUF_SIZE);
+    if (!s_api_buf) {
+        ESP_LOGE(TAG, "no room for the %d-byte response buffer; not starting",
+                 API_BUF_SIZE);
+        return ESP_ERR_NO_MEM;
+    }
+
     esp_err_t ret = httpd_start(&s_httpd, &hc);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "API failed to start: %s", esp_err_to_name(ret));

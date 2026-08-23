@@ -1035,16 +1035,63 @@ Consequences that have already bitten:
   responses straight into the response buffer
 - SQLite does not fit, which is why `geogram_xprsindex` is what it is
 
+### One response buffer, and the day this page was ignored
+
+The rule three sections up -- *one response buffer, claimed at boot and
+shared* -- was written for the T-Dongle's own server and never applied to
+`common/xprs_api`, which every other board uses. That file had grown eight
+private statics: 4,592 bytes of internal DRAM held whether or not anything
+ever called the endpoint, plus a `malloc` per request in `/api/coredump`
+and two 600-byte buffers on the httpd stack. Then, "fixing" a per-request
+`malloc` in `/api/diag`, another 1,112 bytes of private static went in --
+on the M5Stack, the board with no PSRAM, while the stated goal was to
+*reduce* its fragmentation.
+
+Worse, the T-Dongle was made to `REQUIRE` the whole component so it could
+reuse one handler. A linker takes objects, not functions, so that board --
+the one this page records at 14,304 bytes free -- inherited every static
+in the file for a function it could have been handed.
+
+*Measured 2026-08-23, all three boards, same commit either side:*
+
+| component `.bss`/`.data` | T-Deck | M5Stack | T-Dongle |
+|---|---|---|---|
+| `xprs_api`, before | 4,592 | 4,592 | 3,480 |
+| `xprs_api`, after | 8 | 8 | **0** |
+| `xprs_diag` internal, before | 2,537 | 2,537 | 2,537 |
+| `xprs_diag` internal, after | 1,141 | 1,141 | 1,141 |
+| net internal DRAM | **-3,932** | **-3,932** | **-4,876** |
+
+The app boards' net includes the one 2,048-byte buffer now claimed at
+boot; the dongle's is a straight saving because it already had one.
+
+Three things did it, and they are the general shape of this mistake:
+
+1. **The shared door became its own translation unit** (`xapi_send.c`),
+   holding no statics and taking the caller's buffer. The dongle now pulls
+   that object and nothing else -- check with
+   `grep -o 'libxprs_api\.a([a-z_]*\.c\.o)' <map> | sort -u`.
+2. **Every handler in `xprs_api.c` builds into the one buffer**, claimed
+   before `httpd_start` and fatal to the server if it cannot be had. The
+   history rows and log lines came off the httpd stack at the same time.
+3. **Compose in place, never slice-to-slice.** `snprintf`ing one slice of
+   a buffer into another is what `-Wrestrict` refuses, and the fix is not
+   a second buffer: write the prefix, escape straight into the answer
+   after it, close the string. That deleted three slices on its own.
+
 ### xprs_diag, on every board
 
-`common/xprs_diag` costs about 1.4 KB of internal `.bss` (one parked ask,
-one wire, one 712-byte file block, the frozen last words) plus 1,036 bytes
-of `.rtc_noinit` -- RTC slow memory, 8 KB on the S3 and on the classic
-ESP32, otherwise unused here. The dongle, which keeps no log on flash,
-adds a 1.8 KB RAM tail so `cmd:zlog` has something to serve. No malloc on
-the hot path; the coredump summary (~220 B) is read on the init stack
-once. The pump runs on idx_task / relay_task, the tasks that already pay
-for `xauth_check`'s secp256k1.
+`common/xprs_diag` costs **1,141 bytes** of internal `.bss` (one parked
+ask, one wire, a 384-byte file block) plus 2,024 bytes of `.rtc_noinit` --
+RTC slow memory, 8 KB on the S3 and on the classic ESP32, and nothing else
+in this firmware uses any of it. Two generations live there so the words of
+a boot that crashed stay readable while this boot writes; the first version
+froze them into a kilobyte of DRAM instead, which is a duplicate of memory
+the chip was already holding for free. The dongle, which keeps no log on
+flash, adds a 1.8 KB RAM tail so `cmd:zlog` has something to serve. No
+malloc on the hot path; the coredump summary (~220 B) is read on the init
+stack once. The pump runs on idx_task / relay_task, the tasks that already
+pay for `xauth_check`'s secp256k1.
 
 ### A board with no PSRAM must survive its own updates
 

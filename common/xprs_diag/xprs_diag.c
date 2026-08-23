@@ -101,15 +101,23 @@ typedef struct {
     uint32_t check;
 } rtc_words_t;
 
-static RTC_NOINIT_ATTR rtc_words_t s_rtc;
+/* Two generations, both in RTC: this boot writes into one while the words
+ * of the boot that crashed stay readable in the other. The obvious version
+ * -- freeze the ring into a static copy at startup -- spent a kilobyte of
+ * internal DRAM on a duplicate of memory the chip was already holding for
+ * free, on the boards docs/esp32.md says have the least of it. RTC slow
+ * memory is 8 KB here and nothing else in this firmware uses any of it. */
+static RTC_NOINIT_ATTR rtc_words_t s_rtc[2];
 static portMUX_TYPE s_rtc_mux = portMUX_INITIALIZER_UNLOCKED;
-
-static uint32_t rtc_check(void) { return s_rtc.magic ^ (s_rtc.w * 2654435761u) ^ 0xa5a5a5a5u; }
-
-/* What the previous boot said, frozen at init when it died talking. */
-static char s_last[XD_RTC_SLOTS][XD_RTC_LINE];
-static int  s_last_n;
+static int s_gen;                  /* the half this boot writes */
+static int s_last_gen = -1;        /* the half the last words are in, if any */
+static int s_last_n;
 static bool s_last_valid;
+
+static uint32_t rtc_check(const rtc_words_t *r)
+{
+    return r->magic ^ (r->w * 2654435761u) ^ 0xa5a5a5a5u;
+}
 
 /* Boards without a log on flash keep a short tail in RAM for cmd:zlog. */
 #define XD_TAIL_SLOTS 16
@@ -117,34 +125,48 @@ static bool s_last_valid;
 static char     (*s_tail)[XD_TAIL_LINE];
 static uint32_t s_tail_w;
 
-static void rtc_reset(void)
+static void rtc_begin(int gen)
 {
     portENTER_CRITICAL(&s_rtc_mux);
-    memset(&s_rtc, 0, sizeof s_rtc);
-    s_rtc.magic = XD_RTC_MAGIC;
-    s_rtc.check = rtc_check();
+    memset(&s_rtc[gen], 0, sizeof s_rtc[gen]);
+    s_rtc[gen].magic = XD_RTC_MAGIC;
+    s_rtc[gen].check = rtc_check(&s_rtc[gen]);
+    s_gen = gen;
     portEXIT_CRITICAL(&s_rtc_mux);
+}
+
+static bool rtc_valid(const rtc_words_t *r)
+{
+    return r->magic == XD_RTC_MAGIC && r->check == rtc_check(r) && r->w > 0;
+}
+
+/* The i-th line of [gen], newest first. NULL past the end. */
+static const char *rtc_line(int gen, int i)
+{
+    const rtc_words_t *r = &s_rtc[gen];
+    int have = r->w < XD_RTC_SLOTS ? (int)r->w : XD_RTC_SLOTS;
+    if (gen < 0 || i < 0 || i >= have) return NULL;
+    return r->line[(r->w - 1 - (uint32_t)i) % XD_RTC_SLOTS];
 }
 
 static void last_words_recover(void)
 {
-    bool valid = s_rtc.magic == XD_RTC_MAGIC && s_rtc.check == rtc_check() &&
-                 s_rtc.w > 0;
-    if (valid && s_crash_boot) {
-        int n = s_rtc.w < XD_RTC_SLOTS ? (int)s_rtc.w : XD_RTC_SLOTS;
-        for (int i = 0; i < n; i++) {
-            /* newest first, as zlog serves them */
-            uint32_t slot = (s_rtc.w - 1 - (uint32_t)i) % XD_RTC_SLOTS;
-            memcpy(s_last[i], s_rtc.line[slot], XD_RTC_LINE);
-            s_last[i][XD_RTC_LINE - 1] = 0;
-        }
-        s_last_n = n;
+    /* Whichever half the last boot was writing: keep it, write the other. */
+    int prev = -1;
+    for (int g = 0; g < 2; g++)
+        if (rtc_valid(&s_rtc[g]) &&
+            (prev < 0 || s_rtc[g].w > s_rtc[prev].w)) prev = g;
+
+    if (prev >= 0 && s_crash_boot) {
+        s_last_gen = prev;
+        s_last_n = s_rtc[prev].w < XD_RTC_SLOTS ? (int)s_rtc[prev].w : XD_RTC_SLOTS;
         s_last_valid = true;
         /* Into this boot's log too, so the flash copy has them as well. */
         ESP_LOGW(TAG, "last words before the %s, newest first:", reset_word(s_reset));
-        for (int i = 0; i < n; i++) ESP_LOGW(TAG, "  %s", s_last[i]);
+        for (int i = 0; i < s_last_n; i++)
+            ESP_LOGW(TAG, "  %s", rtc_line(prev, i));
     }
-    rtc_reset();
+    rtc_begin(prev == 0 ? 1 : 0);
 }
 
 void xdiag_log_line(const char *line, int n)
@@ -184,12 +206,13 @@ void xdiag_log_line(const char *line, int n)
     }
     int k = n < XD_RTC_LINE - 1 ? n : XD_RTC_LINE - 1;
     portENTER_CRITICAL(&s_rtc_mux);
-    if (keep && s_rtc.magic == XD_RTC_MAGIC) {
-        char *dst = s_rtc.line[s_rtc.w % XD_RTC_SLOTS];
+    if (keep && s_rtc[s_gen].magic == XD_RTC_MAGIC) {
+        rtc_words_t *r = &s_rtc[s_gen];
+        char *dst = r->line[r->w % XD_RTC_SLOTS];
         memcpy(dst, line, (size_t)k);
         dst[k] = 0;
-        s_rtc.w++;
-        s_rtc.check = rtc_check();
+        r->w++;
+        r->check = rtc_check(r);
     }
     if (s_tail) {
         int t = n < XD_TAIL_LINE - 1 ? n : XD_TAIL_LINE - 1;
@@ -536,11 +559,14 @@ static int file_nth_line(const char *path, int *skip, char *out, int cap)
     if (!f) return 0;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return 0; }
     long pos = ftell(f);
-    static char carry[200];
-    static char blk[512 + sizeof carry];
+    /* 256 + 128 rather than 512 + 200: this walks backwards looking for
+     * newlines, and the block only has to be comfortably longer than one
+     * log line. docs/esp32.md counts every static on these boards. */
+    static char carry[128];
+    static char blk[256 + sizeof carry];
     int carry_n = 0, found = 0;
     while (pos > 0 && !found) {
-        int n = pos > 512 ? 512 : (int)pos;
+        int n = pos > 256 ? 256 : (int)pos;
         pos -= n;
         if (fseek(f, pos, SEEK_SET) != 0) break;
         if (fread(blk, 1, (size_t)n, f) != (size_t)n) break;
@@ -586,9 +612,11 @@ static int next_line(char *out, int cap)
     int skip = s_pg.sent;
     if (s_pg.src == SRC_LAST) {
         for (int i = 0; i < s_last_n; i++) {
-            int ln = (int)strlen(s_last[i]);
-            if (!line_passes(s_last[i], ln)) continue;
-            if (skip-- == 0) { snprintf(out, cap, "%s", s_last[i]); return ln; }
+            const char *l = rtc_line(s_last_gen, i);
+            if (!l) break;
+            int ln = (int)strlen(l);
+            if (!line_passes(l, ln)) continue;
+            if (skip-- == 0) { snprintf(out, cap, "%s", l); return ln; }
         }
         return 0;
     }

@@ -44,7 +44,7 @@
 #include "xprs_config.h"
 #include "xprs_health.h"
 #include "xprs_diag.h"
-#include "xprs_api.h"
+#include "xapi_send.h"
 
 /* What this board is supposed to have running. Names are literals and are
  * borrowed, not copied (xprs_health.h), and they are what an ESP_LOGE will
@@ -1054,11 +1054,6 @@ static bool xdiag_gateway_send(const char *wire, int len)
     return any || true;
 }
 
-static esp_err_t api_xprs_send(httpd_req_t *req)
-{
-    return xprs_api_send_handler(req, xdiag_gateway_send);
-}
-
 /* Air one wire on the bearer named, for the updater's answers. */
 static void ota_air(const char *bearer, const char *wire, int len)
 {
@@ -1368,6 +1363,15 @@ static void digi_record(uint32_t idh, uint32_t now)
  * honest missing one. */
 #define API_BUF_SIZE 2048
 static char *s_api_buf;
+
+/* The shared door, lent this server's one response buffer (see the note
+ * above s_api_buf, and xapi_send.h for why it is a separate object). */
+static esp_err_t api_xprs_send(httpd_req_t *req)
+{
+    return xprs_api_send_handler(req, s_api_buf, API_BUF_SIZE,
+                                 xdiag_gateway_send);
+}
+
 
 /*
  * GET /api/xprs?type=&recent=&since=&until=&days=&from=&asker=&limit=
