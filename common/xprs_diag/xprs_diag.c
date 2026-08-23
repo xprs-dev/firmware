@@ -153,9 +153,29 @@ void xdiag_log_line(const char *line, int n)
     while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
     if (n <= 0) return;
 
-    /* Ten slots fill in a second with INFO on a busy board -- the first
-     * real crash handed back ten BLE sightings and nothing else. The RTC
-     * ring keeps warnings and errors; the RAM tail keeps everything. */
+    /* Strip the colour here rather than trusting the caller to. The app
+     * strips on the way into ITS ring and hands us the raw line, so the
+     * escapes were reaching the air -- and hiding the level letter from
+     * the filter below, which is why the first captured crash came back
+     * as ten BLE sightings. */
+    char buf[XD_TAIL_LINE];
+    int o = 0;
+    bool esc = false;
+    for (int i = 0; i < n && o < (int)sizeof buf - 1; i++) {
+        char c = line[i];
+        if (esc) { if (isalpha((unsigned char)c)) esc = false; continue; }
+        if (c == 0x1b) { esc = true; continue; }
+        if (c == '\r') continue;
+        buf[o++] = c;
+    }
+    buf[o] = 0;
+    if (o <= 0) return;
+    line = buf;
+    n = o;
+
+    /* Ten slots fill in a second with INFO on a busy board. The RTC ring
+     * keeps warnings and errors -- what a post-mortem is made of -- and
+     * the RAM tail keeps everything. */
     bool keep = true;
     {
         const char *sp = memchr(line, ' ', (size_t)n);
@@ -290,8 +310,18 @@ static void air_result(const char *to, const char *bearer, const char *id,
                      id, code);
     if (n <= 0 || n >= (int)sizeof w) return;
     if (fields && fields[0]) {
-        int k = snprintf(w + n, sizeof w - n, " %s", fields);
-        if (k > 0 && n + k < (int)sizeof w) n += k;
+        /* Room for the signature is reserved first. What does not fit is
+         * cut at a field boundary and said out loud -- a diagnostic that
+         * silently drops its own contents is worse than none. */
+        int room = XD_WIRE_CAP - XD_SIG_BYTES - n - 1;
+        int fl = (int)strlen(fields);
+        if (fl > room) {
+            while (room > 0 && fields[room] != ' ') room--;
+            ESP_LOGW(TAG, "result %s trimmed to %d of %d bytes of fields",
+                     id, room, fl);
+            fl = room;
+        }
+        if (fl > 0) n += snprintf(w + n, sizeof w - n, " %.*s", fl, fields);
     }
     if (m && m[0]) {
         int room = XD_WIRE_CAP - XD_SIG_BYTES - n - 3;
@@ -306,6 +336,57 @@ static void air_result(const char *to, const char *bearer, const char *id,
     s_cfg.air(bearer, w, n);
 }
 
+/* ── Metering (31.2) ────────────────────────────────────────────────────
+ *
+ * Every asker here is an allow-listed owner: xauth_check said so before
+ * this is reached. The history meter would file them as strangers -- it
+ * classifies by whether a signing key was learned from the air, which an
+ * owner known only by npub never is -- and hand them two pages an hour.
+ * So the pages are counted here at the KNOWN rate, and also recorded in
+ * the history meter, so diagnostics and replays together cannot cost a
+ * station more than replays alone were already allowed to.
+ */
+#define XD_PAGES_PH   6
+#define XD_GLOBAL_PH 12
+static struct { char call[16]; uint32_t when[XD_PAGES_PH]; } s_asks[4];
+static uint32_t s_global[XD_GLOBAL_PH];
+
+static bool page_budget(const char *from, uint32_t now_s)
+{
+    int g = 0;
+    for (int i = 0; i < XD_GLOBAL_PH; i++)
+        if (s_global[i] && now_s - s_global[i] < 3600) g++;
+    if (g >= XD_GLOBAL_PH) return false;
+    for (int a = 0; a < 4; a++) {
+        if (strcasecmp(s_asks[a].call, from) != 0) continue;
+        int n = 0;
+        for (int i = 0; i < XD_PAGES_PH; i++)
+            if (s_asks[a].when[i] && now_s - s_asks[a].when[i] < 3600) n++;
+        return n < XD_PAGES_PH;
+    }
+    return true;
+}
+
+static void page_record(const char *from, uint32_t now_s)
+{
+    for (int i = 0; i < XD_GLOBAL_PH; i++)
+        if (!s_global[i] || now_s - s_global[i] >= 3600) { s_global[i] = now_s; break; }
+    int slot = 0;
+    for (int a = 0; a < 4; a++) {
+        if (strcasecmp(s_asks[a].call, from) == 0) { slot = a; goto have; }
+        if (!s_asks[a].call[0]) slot = a;
+    }
+    snprintf(s_asks[slot].call, sizeof s_asks[0].call, "%s", from);
+    memset(s_asks[slot].when, 0, sizeof s_asks[0].when);
+have:
+    for (int i = 0; i < XD_PAGES_PH; i++)
+        if (!s_asks[slot].when[i] || now_s - s_asks[slot].when[i] >= 3600) {
+            s_asks[slot].when[i] = now_s;
+            break;
+        }
+    if (s_cfg.budget_record) s_cfg.budget_record(from, now_s);
+}
+
 /* ── The parked ask ─────────────────────────────────────────────────────── */
 
 enum { XD_NONE = 0, XD_DIAG, XD_CORE, XD_LOG };
@@ -315,7 +396,17 @@ static struct {
     char wire[XPRS_MAX_WIRE + 1];
     int  len;
     char bearer[8];
+    uint32_t heard_ms;      /* when the first copy landed */
 } s_ask;
+
+/* How long to let the other copies of one ask arrive before answering.
+ * A gateway airs on every bearer it has and they do not land together:
+ * LoRa is seconds behind the LAN. Answering the first copy heard means
+ * answering on whichever bearer happened to win, and a page that would
+ * take eighteen seconds on ESP-NOW takes two minutes on LoRa. Waiting a
+ * second and a half costs nothing next to that, and it also collapses the
+ * duplicates into one answer instead of one answer each. */
+#define XD_SETTLE_MS 1500
 
 static int cmd_code(const char *cmd)
 {
@@ -381,6 +472,7 @@ bool xdiag_park_parsed(const xprs_t *p, const char *wire, int len,
     s_ask.wire[len] = 0;
     s_ask.len = len;
     snprintf(s_ask.bearer, sizeof s_ask.bearer, "%s", bearer ? bearer : "lan");
+    s_ask.heard_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_ask.pending = true;                     /* published last */
     return true;
 }
@@ -639,11 +731,27 @@ static void answer_zlog(const xprs_t *p, const char *from, const char *bearer,
     xauth_remember(id, 202);
 }
 
+/* A repeat is not a mistake: a gateway airs one ask on every bearer it
+ * has, so the same command arrives two or three times and 25.4 says to
+ * answer again without doing the work twice. Answering it with a bare
+ * code, though, hands the asker a worse copy of what it already has --
+ * so a repeated zdiag is simply answered again (the data is live and it
+ * is one frame), while a repeated zlog or zcore, whose page is already
+ * on its way, gets the code and no second page. */
+static void answer_repeat(const xprs_t *p, const char *cmd, const char *from,
+                          const char *bearer, const char *id, int prev,
+                          uint32_t now_ms)
+{
+    (void)p; (void)now_ms;
+    if (cmd_code(cmd) == XD_DIAG) answer_zdiag(from, bearer, id);
+    else                          air_result(from, bearer, id, prev, NULL, NULL);
+}
+
 /* ── The pump ───────────────────────────────────────────────────────────── */
 
 void xdiag_pump(uint32_t now_ms)
 {
-    if (s_ask.pending) {
+    if (s_ask.pending && (int32_t)(now_ms - s_ask.heard_ms) >= XD_SETTLE_MS) {
         s_ask.pending = false;
         xprs_t p;
         if (xprs_parse(s_ask.wire, s_ask.len, &p)) {
@@ -654,7 +762,7 @@ void xdiag_pump(uint32_t now_ms)
             ESP_LOGW(TAG, "cmd:%s from %s on %s -> verdict %d", cmd, from,
                      s_ask.bearer, (int)v);
             if (v == XAUTH_REPEAT) {
-                air_result(from, s_ask.bearer, id, prev, NULL, NULL);
+                answer_repeat(&p, cmd, from, s_ask.bearer, id, prev, now_ms);
             } else if (v == XAUTH_403) {
                 air_result(from, s_ask.bearer, id, 403, NULL, "not on the allow list");
             } else if (v == XAUTH_408) {
@@ -670,13 +778,13 @@ void xdiag_pump(uint32_t now_ms)
                 } else {
                     uint32_t now_s = s_cfg.epoch_now ? s_cfg.epoch_now() : 0;
                     if (!now_s) now_s = (uint32_t)(esp_timer_get_time() / 1000000);
-                    if (s_cfg.budget && !s_cfg.budget(from, now_s)) {
+                    if (!page_budget(from, now_s)) {
                         /* Refuse out loud (31.2): silence means "did not
                          * arrive", and this did. */
                         air_result(from, s_ask.bearer, id, 429, NULL, "over budget, ask later");
                         xauth_remember(id, 429);
                     } else {
-                        if (s_cfg.budget_record) s_cfg.budget_record(from, now_s);
+                        page_record(from, now_s);
                         if (c == XD_CORE) answer_zcore(from, s_ask.bearer, id, now_ms);
                         else              answer_zlog(&p, from, s_ask.bearer, id, now_ms);
                     }

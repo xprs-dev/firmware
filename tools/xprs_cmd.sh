@@ -34,6 +34,11 @@ done
 [ -n "$GW" ] && [ -n "$TO" ] && [ -n "$CMD" ] && [ -n "$FROM" ] && [ -n "$NSEC" ] || {
   sed -n 2,20p "$0"; exit 2; }
 
+# One ask, one collection. A result is not retried by the station and not
+# relayed (25.3), so a single lost frame is silence -- and the protocol's
+# answer to silence is to ask again, which is free because the id makes a
+# repeat idempotent (25.4). So: ask, wait, and ask once more before giving up.
+ask_once() {
 WIRE=$(cd "$FLUTTER" && dart run tool/sign_command.dart --to "$TO" --cmd "$CMD" \
          --from "$FROM" --nsec-file "$(realpath "$NSEC")" "${EXTRA[@]}") || {
   echo "signing failed" >&2; exit 2; }
@@ -49,6 +54,7 @@ echo "id  : $ID  (waiting up to ${TIMEOUT}s for $TO)"
 # Results are archived by the gateway like anything it hears. The app
 # boards filter with only=/call=, the dongle with type=/from=; try both.
 seen=""
+done_code=0
 deadline=$(( $(date +%s) + TIMEOUT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
   sleep 2
@@ -64,8 +70,18 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
     # sig: sits before m: (the signer splices it there), so strip it anywhere
     body=$(echo "$w" | sed 's/^t:result f:[^ ]* d:[^ ]* \(ts:[^ ]* \)\?r:[0-9a-f]* //; s/ sig:[^ ]*//')
     echo "$code : $body"
-    case $code in 200|4??|5??) exit 0;; esac
+    case $code in 200|4??|5??) done_code=1;; esac
   done <<< "$rows"
+  # Finish the batch before leaving: a duplicate ask (a gateway airs on
+  # every bearer) produces a second answer, and the terminal one is not
+  # always the first row polled.
+  [ "${done_code:-0}" = 1 ] && exit 0
 done
-echo "timeout: no terminal answer from $TO within ${TIMEOUT}s" >&2
+return 1
+}
+
+ask_once && exit 0
+echo "no answer in ${TIMEOUT}s -- asking once more (a lost result is not retried by the station)" >&2
+ask_once && exit 0
+echo "timeout: no terminal answer from $TO" >&2
 exit 1
