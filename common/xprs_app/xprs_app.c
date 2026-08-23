@@ -312,9 +312,13 @@ static void log_drain(bool sync)
         s_logring_lost -= lost;
         char note[120];
         uint32_t ep = xst_epoch_now();
-        int n = ep ? snprintf(note, sizeof note, "%lu ", (unsigned long)ep)
-                   : snprintf(note, sizeof note, "+%lu ",
-                              (unsigned long)(esp_timer_get_time() / 1000));
+        /* The line the ring cut short lost its newline with its tail, so
+         * start one: without this the note reads as the end of a sentence
+         * it has nothing to do with. */
+        int n = snprintf(note, sizeof note, "\n");
+        n += ep ? snprintf(note + n, sizeof note - n, "%lu ", (unsigned long)ep)
+                : snprintf(note + n, sizeof note - n, "+%lu ",
+                           (unsigned long)(esp_timer_get_time() / 1000));
         n += snprintf(note + n, sizeof note - n,
                       "W log: %lu bytes never reached this file -- the ring "
                       "filled faster than it drained\n", (unsigned long)lost);
