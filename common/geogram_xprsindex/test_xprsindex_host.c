@@ -547,6 +547,66 @@ static void test_only_is_a_callsign(const char *dir)
     xprsindex_close(st);
 }
 
+/* XPRS.md 25.2: kind: may be a comma-separated list, and 36.9.3's
+ * neighbourhood ask depends on it. The failure this pins: the responder used
+ * to truncate the list into a 16-byte buffer, xprsidx_type_code mapped the
+ * fragment to OTHER, and the replay served nothing -- silently, for exactly
+ * the ask the spec standardises. */
+static void test_kind_takes_a_list(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+
+    const char *m = "t:message f:X1AAAA ts:" TS_2026 " m:town channel";
+    const char *i = "t:info f:X1BBBB pos:38.72,-9.14 kind:rain ts:" TS_2026;
+    const char *w = "t:warning f:X3RLY7 kind:fire sev:danger ts:" TS_2026;
+    const char *o = "t:observation f:X1AAAA ts:" TS_2026 " link:lan peers:1";
+    xprsindex_add(st, m, (int)strlen(m), 0, false, 0);
+    xprsindex_add(st, i, (int)strlen(i), 0, false, 0);
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    xprsindex_add(st, o, (int)strlen(o), 0, false, 0);
+
+    /* The mask parser itself. */
+    CHECK(xprsidx_type_mask(NULL) == 0, "NULL did not map to no-mask");
+    CHECK(xprsidx_type_mask("") == 0, "empty did not map to no-mask");
+    CHECK(xprsidx_type_mask("message") == (1u << XI_T_MESSAGE),
+          "single name did not map to its bit");
+    CHECK(xprsidx_type_mask("info,warning") ==
+              ((1u << XI_T_INFO) | (1u << XI_T_WARNING)),
+          "list did not OR its bits");
+    CHECK(xprsidx_type_mask("nonsense") == (1u << XI_T_OTHER),
+          "unknown name did not map to OTHER, as storage does");
+
+    /* The 36.9.3 ask, minus the kinds this store happens not to hold. */
+    xprsidx_query_t q = {
+        .type = -1,
+        .types = xprsidx_type_mask("info,warning,event,status,blog,message"),
+        .limit = 10, .trusted = true,
+    };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 3,
+          "the list ask did not match every listed type");
+
+    /* A one-entry list behaves exactly like the single form. */
+    xprsidx_query_t q1 = { .type = -1, .types = xprsidx_type_mask("message"),
+                           .limit = 10, .trusted = true };
+    collect_t c1 = { 0 };
+    CHECK(xprsindex_query(st, &q1, collect, &c1) == 1,
+          "a one-entry list diverged from the single form");
+
+    /* The mask REPLACES talk_only: the asker said what it wants, and what it
+     * wants here includes a presence type an unfiltered replay would drop. */
+    xprsidx_query_t q2 = { .type = -1,
+                           .types = xprsidx_type_mask("observation"),
+                           .talk_only = true, .limit = 10, .trusted = true };
+    collect_t c2 = { 0 };
+    CHECK(xprsindex_query(st, &q2, collect, &c2) == 1,
+          "a listed presence type was suppressed by talk_only");
+    xprsindex_close(st);
+}
+
 static void test_retention_priorities(const char *dir)
 {
     rm_rf(dir);
@@ -646,6 +706,7 @@ int main(void)
     test_retention_priorities(dir);
     test_regulars_earn_class3(dir);
     test_only_is_a_callsign(dir);
+    test_kind_takes_a_list(dir);
     rm_rf(dir);
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

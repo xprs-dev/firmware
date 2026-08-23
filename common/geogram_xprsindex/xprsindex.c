@@ -247,6 +247,22 @@ int xprsidx_type_code(const char *name)
     return XI_T_OTHER;
 }
 
+uint32_t xprsidx_type_mask(const char *csv)
+{
+    if (!csv || !*csv) return 0;
+    uint32_t mask = 0;
+    const char *p = csv;
+    while (*p) {
+        char name[16];
+        int n = 0;
+        while (*p && *p != ',' && n < (int)sizeof name - 1) name[n++] = *p++;
+        name[n] = '\0';
+        while (*p == ',') p++;
+        if (n) mask |= 1u << xprsidx_type_code(name);
+    }
+    return mask;
+}
+
 /* ── Small helpers ──────────────────────────────────────────────────────── */
 
 static void xi_copy(char *dst, size_t cap, const char *src, int len)
@@ -657,8 +673,14 @@ static bool xi_is_presence(int code)
 
 static bool xi_matches(const xi_rec_t *r, const xprsidx_query_t *q)
 {
-    if (q->type >= 0 && r->type != (uint8_t)q->type) return false;
-    if (q->type < 0 && q->talk_only && !xi_is_talk(r->type)) return false;
+    if (q->types) {
+        /* The list form of kind:. It replaces the single type and the
+         * talk-only default: the asker said exactly what it wants. */
+        if (r->type >= 32 || !(q->types & (1u << r->type))) return false;
+    } else {
+        if (q->type >= 0 && r->type != (uint8_t)q->type) return false;
+        if (q->type < 0 && q->talk_only && !xi_is_talk(r->type)) return false;
+    }
     if (q->since_ts && (r->ts == 0 || r->ts < q->since_ts)) return false;
     if (q->until_ts && (r->ts == 0 || r->ts > q->until_ts)) return false;
     if (q->from && *q->from && !xi_ieq(q->from, r->from)) return false;
@@ -1465,6 +1487,11 @@ static size_t xi_query_range(xprsidx_t *st, const xprsidx_query_t *q,
             if (q->since_ts && z.max_ts && z.max_ts < q->since_ts) continue;
             if (q->type >= 0 && q->type < 32 && z.type_mask &&
                 !(z.type_mask & (1u << q->type))) {
+                continue;
+            }
+            /* Same pruning for the list form: a segment holding none of the
+             * asked-for types has nothing to scan. */
+            if (q->types && z.type_mask && !(z.type_mask & q->types)) {
                 continue;
             }
         }

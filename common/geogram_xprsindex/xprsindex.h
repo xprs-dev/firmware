@@ -92,6 +92,14 @@ typedef enum {
 const char *xprsidx_type_name(int code);
 /** Code for a name; XI_T_OTHER when unknown. */
 int xprsidx_type_code(const char *name);
+/**
+ * Bitmask (1 << code) for a comma-separated list of type names -- the form
+ * `kind:` takes on the wire (XPRS.md 25.2 allows a list). A name this build
+ * does not know maps to XI_T_OTHER's bit, exactly as storage maps the packet:
+ * asking for an unknown kind finds the packets stored as unknown. 0 for
+ * NULL/empty, which a caller treats as "no kind: given".
+ */
+uint32_t xprsidx_type_mask(const char *csv);
 
 /** Bearer codes: which lane a record was heard on. One byte on disk, in
  *  what used to be an explicit pad -- old records read XI_B_UNKNOWN. */
@@ -164,6 +172,13 @@ typedef struct {
     uint32_t since_ts;      /* 0 = any; else ts >= since_ts */
     uint32_t until_ts;      /* 0 = any; else ts <= until_ts */
     int      type;          /* -1 = any; else an xprsidx_type_t */
+    /**
+     * 0 = ignored; else a bit per accepted code (1 << xprsidx_type_t), from
+     * @ref xprsidx_type_mask. This is `kind:info,warning,event` on the wire:
+     * one ask, several types. When set it REPLACES @ref type and
+     * @ref talk_only -- the caller said exactly what it wants.
+     */
+    uint32_t types;
     const char *from;       /* NULL/"" = any author */
     /**
      * XPRS.md 36.6 `only:` -- a CALLSIGN, matched as author or addressee.
