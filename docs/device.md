@@ -211,6 +211,58 @@ the new image boots and wrongly reports itself rolled back), signs both,
 pushes, and watches the station come back. The signing tools live in the
 flutter checkout (`XPRS_FLUTTER`), because they share its crypto.
 
+### Diagnosing over the air
+
+A roof board is usually reachable on ESP-NOW or LoRa and nothing else, so
+the questions a person would climb up to answer are askable on the radio
+that carries the traffic -- signed, owner-gated, metered, and never
+relayed. One implementation, `common/xprs_diag`, registered by the app and
+by the dongle with a handful of callbacks.
+
+| ask | answer |
+|---|---|
+| `cmd:zdiag` | one frame: `fw: uptime: peers: zr:<reset> zm:<free/largest/min KB> zh:<up/required> zn:<rx/tx/cancel/drop> zs:<done/issued/fail> zp:<slot/state> [zc:<task>]` |
+| `cmd:zcore` | the coredump summary: `zc:<reason>,<task>,<pc>` and the backtrace PCs in `m:` over one or two frames -- `tools/xprs_bt.sh <board> <ver> <pcs>` resolves them against the ELF the push kept |
+| `cmd:zlog` | the log, paged like `cmd:history` (25.2.1): `202`, then one line per frame as `code:206 m:`, newest first, then `200` (dry) or `206` (more: ask again with `until:` at the oldest stamp). `since:`/`until:` bound the window, `zq:<word>` filters, `zl:last` reads the words that survived the last crash |
+
+Every ask goes through `xauth_check` exactly like `cmd:update`: direct
+(no `via:`), signed by a listed owner, inside its 300 s window, and a
+repeat re-airs the previous code rather than doing the work twice. Pages
+share the history budget (31.2: six an hour for a known asker, twelve
+overall) and refuse out loud with `429`. Pacing is per bearer: 12 frames
+1.5 s apart on ESP-NOW and the LAN, 6 on BLE, and **4 frames 30 s apart on
+LoRa**, where one 250-byte frame is ~400 ms of a 1 % band.
+
+`zh:` is two hex words, bit *i* = the *i*-th `xh_expect()` in the board's
+registration order -- the `health: station up:` line in its boot log is
+the decoder. On the app boards today: http api, lan bearer, esp-now, wifi
+address, archive, scripts.
+
+Nothing new is aired periodically. The 600 s `t:service` beacon gains
+` uptime:6h zh:3f/3f` (about 20 bytes) and, only on a boot that followed
+a panic or watchdog, ` zc:intwdt,btController,4200a1f2` -- so the node
+that answers nothing still reports the one fact that explains why, to
+anyone already listening (25.8's argument for `fw:`).
+
+**Last words.** The tail of the log (ten lines) is mirrored into RTC slow
+memory, which a panic, a watchdog or `esp_restart` does not clear. On the
+next boot, if the reset was one of those, the lines are frozen, logged
+once, and served by `cmd:zlog zl:last` -- the ten seconds the flash log
+loses on a hard freeze are exactly the ten seconds that matter.
+
+From the bench: `tools/xprs_cmd.sh --gateway <a station on the LAN> --to
+X3R8XX --cmd zdiag --from <owner call> --owner-nsec ~/.xprs/owner.nsec`
+signs the ask, hands it to the gateway's `/api/xprs/send` (now on the
+dongle too), and polls the gateway's archive for results carrying the
+ask's id. The z words are private (XPRS.md 8, 34) until the packets have
+been shown and agreed; the proposal for the standard namespace is in
+`TODO.md`.
+
+A build with `-DXDIAG_TEST_HOOKS` answers `cfg zpanic` (abort) and
+`cfg zhang` (interrupts off, spin: the interrupt-watchdog shape the decks
+died in) on the console, so the whole chain -- crash, last words, beacon,
+zcore -- can be rehearsed on the desk. Never ship one.
+
 ## 6.1 What was actually proved, and on what
 
 Every line below was run against a T-Dongle-S3 on the bench, over the

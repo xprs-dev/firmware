@@ -4,7 +4,7 @@ idf_component_register(
     REQUIRES bt tinynimble nvs_flash log esp_timer mbedtls esp_hw_support xprs_health
              esp_wifi esp_event esp_netif lwip driver
              geogram_model_tdongle_s3 geogram_st7735 xprs_station xprs_ui_mini
-             xprs_config xprs_auth xprs_ota app_update esp_app_format espcoredump
+             xprs_config xprs_auth xprs_ota xprs_diag xprs_api app_update esp_app_format espcoredump
              geogram_wifi geogram_aprsis geogram_blemesh geogram_sdcard
              geogram_lanwatch geogram_xprs geogram_xprsindex geogram_xprslan geogram_xprsbearer geogram_xprsnow geogram_xprsid geogram_xprschan geogram_rns geogram_xprssig geogram_nostr
              esp_http_server

@@ -43,6 +43,8 @@
 #include "xprs_auth.h"
 #include "xprs_config.h"
 #include "xprs_health.h"
+#include "xprs_diag.h"
+#include "xprs_api.h"
 
 /* What this board is supposed to have running. Names are literals and are
  * borrowed, not copied (xprs_health.h), and they are what an ESP_LOGE will
@@ -1025,6 +1027,40 @@ static void xprs_seen_remember(uint32_t idh)
 
 /* ── Updating without a ladder (XPRS.md 25.8) ─────────────────────────── */
 
+/* The diagnostics' answers: already signed, on the bearer named. */
+static void xdiag_air(const char *bearer, const char *wire, int len)
+{
+    if (!bearer || strcmp(bearer, "ble") == 0) xprs_air(wire, len, SUBTYPE_XPRS);
+    else if (strcmp(bearer, "espnow") == 0)    xprsnow_send(wire, len);
+    else                                       xprslan_send(wire, len);
+}
+
+static void xdiag_stats(uint32_t out[8])
+{
+    uint32_t rx = 0, tx = 0, cancel = 0, drop = 0, issued = 0, done = 0, fail = 0;
+    xprsnow_stats(&rx, &tx, &cancel, &drop);
+    xprsnow_tx_stats(&issued, &done, &fail);
+    out[0] = rx; out[1] = tx; out[2] = cancel; out[3] = drop;
+    out[4] = issued; out[5] = done; out[6] = fail;
+    out[7] = (uint32_t)xprsnow_peer_count(600);
+}
+
+/* The bench gateway: a validated wire from /api/xprs/send goes on every
+ * bearer this station has, which is how a signed command reaches a roof. */
+static bool xdiag_gateway_send(const char *wire, int len)
+{
+    bool any = false;
+    if (xprslan_send(wire, len)) any = true;
+    if (xprsnow_send(wire, len)) any = true;
+    xprs_air(wire, len, SUBTYPE_XPRS);
+    return any || true;
+}
+
+static esp_err_t api_xprs_send(httpd_req_t *req)
+{
+    return xprs_api_send_handler(req, xdiag_gateway_send);
+}
+
 /* Air one wire on the bearer named, for the updater's answers. */
 static void ota_air(const char *bearer, const char *wire, int len)
 {
@@ -1376,7 +1412,10 @@ static bool xq_emit(const xprsidx_rec_t *r, void *vctx)
 static esp_err_t api_xprs_get(httpd_req_t *req)
 {
     char query[224] = {0}, param[48];
-    xprsidx_query_t q = { .type = -1 };
+    /* Trusted: this is the operator's own API, and without it every record
+     * carrying d: -- every t:result -- is hidden from the bench (the same
+     * reasoning as common/xprs_api). */
+    xprsidx_query_t q = { .type = -1, .trusted = true };
     char from[XPRSIDX_CALL_LEN] = {0}, asker[XPRSIDX_CALL_LEN] = {0};
     uint32_t days = 0;
 
@@ -1542,7 +1581,7 @@ static void api_start(void)
      * client, and long enough that the transfer survives the flash. */
     cfg.recv_wait_timeout = 30;
     cfg.send_wait_timeout = 30;
-    cfg.max_uri_handlers = 8;
+    cfg.max_uri_handlers = 12;
     cfg.max_open_sockets = 4;
     cfg.lru_purge_enable = true;
     httpd_handle_t srv = NULL;
@@ -1567,6 +1606,12 @@ static void api_start(void)
     static const httpd_uri_t udg = { .uri = "/api/diag", .method = HTTP_GET,
                                      .handler = api_diag_get, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &udg);
+    static const httpd_uri_t usp = { .uri = "/api/xprs/send", .method = HTTP_POST,
+                                     .handler = api_xprs_send, .user_ctx = NULL };
+    httpd_register_uri_handler(srv, &usp);
+    static const httpd_uri_t usg = { .uri = "/api/xprs/send", .method = HTTP_GET,
+                                     .handler = api_xprs_send, .user_ctx = NULL };
+    httpd_register_uri_handler(srv, &usg);
     xota_http_register(srv, s_aprs_call);
     s_api = srv;
     xh_set(XH_HTTP, true);
@@ -1690,6 +1735,8 @@ static void xprs_from_bearer(const char *wire, int len, int rssi,
             }
             xprs_update_maybe(&hp, bearer == XPRS_BEARER_LAN ? "lan"
                                                              : "espnow");
+            xdiag_park_parsed(&hp, wire, len,
+                              bearer == XPRS_BEARER_LAN ? "lan" : "espnow");
             xprs_catchup_maybe(&hp, bearer);
             /* The screen's stores (xprs_station): every hearing counts,
              * relayed copies included, exactly as the m5stack banks them. */
@@ -1919,6 +1966,8 @@ static void xprs_service_air(void)
     int len = snprintf(wire, sizeof wire,
                        "t:service f:%s serve:archive count:%lu %s",
                        s_aprs_call, (unsigned long)st.count, ts);
+    if (len > 0 && len < (int)sizeof wire)
+        len += xdiag_beacon_fields(wire + len, (int)sizeof wire - len);
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
     len = xprs_sign_wire(wire, len, (int)sizeof wire);
 
@@ -2560,6 +2609,7 @@ static void handle_xprs(const uint8_t *payload, int len, int rssi,
     xprs_get_str(&p, "d", to, sizeof to);
     if (!from[0]) return;                                  /* unattributable */
     if (strcasecmp(from, s_aprs_call) == 0) return;        /* our own echo */
+    xdiag_park_parsed(&p, buf, len, "ble");
 
     xprs_update_maybe(&p, "ble");
     xprs_catchup_maybe(&p, 0);
@@ -2875,6 +2925,7 @@ static void relay_task(void *arg)
         /* An install, if one was asked for: minutes of flash work on the
          * one task here with a big stack, on core 1, off the radios. */
         xprs_update_answer();   /* the verify and the answer, on core 1 */
+        xdiag_pump((uint32_t)(esp_timer_get_time() / 1000));
         xota_poll();
         /* Rollback self-test (25.8): two minutes of the API listening, a
          * bearer up and no panic behind us, then this image is trusted. */
@@ -3644,6 +3695,7 @@ static void console_recv_begin(const char *path);
 
 static void console_handle(char *line)
 {
+    if (xdiag_console(line)) return;  /* test hooks, only when built in */
     if (xcfg_console(line)) return;   /* cfg get/set/del: the shared cable */
     if (strncmp(line, "chan ", 5) == 0) {
         /* chan <peer> <channel> [seconds] [lr] — §23.7 step 1. */
@@ -4070,6 +4122,22 @@ void app_main(void)
         oc.air = ota_air;
         oc.quiesce = ota_quiesce;
         xota_start(&oc);
+    }
+    {
+        /* Diagnostics over the air (xprs_diag), the shared implementation.
+         * No log on flash here, so it keeps its own tail and hooks esp_log. */
+        static xdiag_cfg_t dc;
+        dc.callsign = s_aprs_call;
+        dc.sign = xprs_sign_wire;
+        dc.air = xdiag_air;
+        dc.stats = xdiag_stats;
+        dc.log_cur = NULL;
+        dc.log_prev = NULL;
+        dc.epoch_now = xst_epoch_now;
+        dc.budget = xprs_hist_budget_allows;
+        dc.budget_record = xprs_hist_record_ask;
+        dc.hook_log = true;
+        xdiag_init(&dc);
     }
     /* Did the bootloader put us back? Then say so: a failed update
      * reporting its own failure, with nobody on the roof. */

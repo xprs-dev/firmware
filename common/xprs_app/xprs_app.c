@@ -63,6 +63,7 @@ static char s_pass[64];
 #include "xprs_config.h"
 #include "xprs_api.h"
 #include "xprs_health.h"
+#include "xprs_diag.h"
 
 /* What this station is supposed to have running (xprs_health.h). One
  * roster, consumed by the boot log, the heartbeat and the OTA rollback
@@ -254,6 +255,7 @@ static int log_hook(const char *fmt, va_list ap)
         s_logring_w = nw;
     }
     portEXIT_CRITICAL(&s_logring_mux);
+    xdiag_log_line(line, n);           /* the RTC tail that outlives a crash */
     return out;
 }
 
@@ -723,6 +725,10 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_upd.pending = true;
         ESP_LOGW(TAG, "cmd:update parked from %s", bearer);
     } while (0);
+
+    /* The diagnostics asks (cmd:zdiag/zcore/zlog, xprs_diag): parked the
+     * same way, verified and answered on idx_task. */
+    xdiag_park_parsed(&sp, wire, len, bearer);
 
     /* A serve:archive announcement from a station that was away: ask it
      * for the window we missed (XPRS.md 36.10), before ingesting makes it
@@ -2061,6 +2067,17 @@ static void idx_air(const char *bearer, const char *wire, int len)
     else                                  xprslan_send(wire, len);
 }
 
+/* The ESP-NOW counters the alive line prints, for cmd:zdiag. */
+static void app_stats(uint32_t out[8])
+{
+    uint32_t rx = 0, tx = 0, cancel = 0, drop = 0, issued = 0, done = 0, fail = 0;
+    xprsnow_stats(&rx, &tx, &cancel, &drop);
+    xprsnow_tx_stats(&issued, &done, &fail);
+    out[0] = rx; out[1] = tx; out[2] = cancel; out[3] = drop;
+    out[4] = issued; out[5] = done; out[6] = fail;
+    out[7] = (uint32_t)xprsnow_peer_count(600);
+}
+
 static void idx_result(const char *bearer, const char *to, const char *cmdid,
                        int code)
 {
@@ -2336,6 +2353,10 @@ static void idx_task(void *arg)
             int n = snprintf(w, sizeof w,
                              "t:service f:%s serve:archive count:%lu fw:%s",
                              s_call, (unsigned long)st.count, xota_version());
+            /* uptime, health word, last crash: a few bytes on a packet that
+             * goes out anyway, so a sick node is visible without an ask. */
+            if (n > 0 && n < (int)sizeof w)
+                n += xdiag_beacon_fields(w + n, (int)sizeof w - n);
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
             xprslan_send(w, n);
@@ -2391,6 +2412,10 @@ static void idx_task(void *arg)
                 /* XAUTH_SILENT: nothing at all, deliberately. */
             }
         }
+
+        /* The diagnostics asks: verdict and, when a page is open, its next
+         * frame. Same task, same reason -- it can afford the curve work. */
+        xdiag_pump((uint32_t)(esp_timer_get_time() / 1000));
 
         /* An install, if one was asked for: minutes of flash work on the
          * task that already owns the card. */
@@ -2785,7 +2810,8 @@ static void ui_task(void *arg)
             while (cfgn >= 0 && ch > 0) {
                 if (ch == '\n' || ch == '\r') {
                     cfgline[cfgn] = 0;
-                    if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0) xcfg_console(cfgline);
+                    if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0 &&
+                        !xdiag_console(cfgline)) xcfg_console(cfgline);
                     cfgn = -1;
                     ch = 0;
                 } else if (cfgn < (int)sizeof cfgline - 1) {
@@ -3021,6 +3047,20 @@ void xapp_run(const xapp_board_t *board)
         oc.air = idx_air;
         oc.quiesce = ota_quiesce;
         xota_start(&oc);
+    }
+    {
+        /* Diagnostics over the air, behind the same gate as the updater. */
+        static xdiag_cfg_t dc;
+        dc.callsign = s_call;
+        dc.sign = sign_wire;
+        dc.air = idx_air;
+        dc.stats = app_stats;
+        dc.log_cur = "/idx/log/cur.txt";
+        dc.log_prev = "/idx/log/prev.txt";
+        dc.epoch_now = xst_epoch_now;
+        dc.budget = hist_budget;
+        dc.budget_record = hist_record;
+        xdiag_init(&dc);
     }
     /* Did the bootloader put us back? Then the update that asked for this
      * failed, and the station says so itself. */

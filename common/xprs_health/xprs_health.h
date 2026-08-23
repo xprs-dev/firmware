@@ -65,6 +65,11 @@ void xh_expect(const char *name, bool required);
  *  noticed. Unknown names are ignored rather than fatal. */
 void xh_set(const char *name, bool up);
 
+/** The roster as two words: bit i is the i-th xh_expect() in registration
+ *  order, so a board's boot log is the decoder. For the air, where a
+ *  sixty-byte health line does not fit. */
+void xh_masks(uint16_t *up, uint16_t *required);
+
 /**
  * Log what is missing. One ESP_LOGE per absent required subsystem, naming
  * it, then a single summary line either way.

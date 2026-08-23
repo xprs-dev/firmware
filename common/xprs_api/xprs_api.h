@@ -58,6 +58,13 @@ typedef struct {
 /** Start the server. The cfg (and everything it points at) must outlive it. */
 esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg);
 
+/** POST/GET /api/xprs/send, for a board that runs its own httpd: validate
+ *  the wire (section 4) and hand it to @p send. Returns the id it will
+ *  have on the air. The only door through which a signed command can be
+ *  put on the radio from the bench. */
+esp_err_t xprs_api_send_handler(httpd_req_t *req,
+                                bool (*send)(const char *wire, int len));
+
 /** The shared server handle, for modules adding their own URIs.
  *  NULL before xprs_api_start(). */
 httpd_handle_t xprs_api_httpd(void);

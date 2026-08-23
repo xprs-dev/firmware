@@ -101,3 +101,18 @@ has not occurred since the Bluetooth fix.
 
 The table above is filled in, at two distances, with the PHY bitmap logged for
 both rows, and `docs/espnow.md` carries the numbers.
+
+## Spec proposal: diagnostics commands (from common/xprs_diag)
+
+The firmware answers `cmd:zdiag`, `cmd:zcore`, `cmd:zlog` under the
+private z prefix. Worth proposing for XPRS.md 25.2 once agreed:
+
+- `cmd:diag` -- one frame of station state; `fw: uptime: peers:` are
+  assigned keys already, the health word and heap figures need names.
+- `cmd:log since: until:` -- lines in `m:`, paged exactly as 25.2.1.
+- `cmd:trace` -- the crash summary: task, PC, backtrace.
+- `uptime:` on `t:service` (it is a 10.5 observation key; 25.8 put `fw:`
+  there with the same argument).
+
+Example packets and byte counts are in docs/device.md, "Diagnosing over
+the air".

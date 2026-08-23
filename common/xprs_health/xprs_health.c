@@ -44,6 +44,17 @@ void xh_set(const char *name, bool up)
     }
 }
 
+void xh_masks(uint16_t *up, uint16_t *required)
+{
+    uint16_t u = 0, r = 0;
+    for (int i = 0; i < s_n && i < 16; i++) {
+        if (s_parts[i].up)       u |= (uint16_t)(1u << i);
+        if (s_parts[i].required) r |= (uint16_t)(1u << i);
+    }
+    if (up) *up = u;
+    if (required) *required = r;
+}
+
 bool xh_all_ok(void)
 {
     for (int i = 0; i < s_n; i++)

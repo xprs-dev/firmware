@@ -238,9 +238,13 @@ static esp_err_t h_mail(httpd_req_t *req)
 
 /* ---- /api/xprs/send ------------------------------------------------------ */
 
-static esp_err_t h_send(httpd_req_t *req)
+/* The door itself, with the transmitter passed in: a board that runs its
+ * own httpd (the dongle) registers this on its server and lends it its
+ * bearers, rather than growing a second copy of the validation. */
+esp_err_t xprs_api_send_handler(httpd_req_t *req,
+                                bool (*send)(const char *wire, int len))
 {
-    if (!s_cfg->send_wire)
+    if (!send)
         return resp_error(req, "404 Not Found", "no transmitter");
 
     /* Static: httpd has ONE worker task, so one request at a time, and its
@@ -309,7 +313,7 @@ static esp_err_t h_send(httpd_req_t *req)
     if (!xprs_get_str(&pk, "f", from, sizeof from))
         return resp_error(req, "400 Bad Request", "no f:");
 
-    if (!s_cfg->send_wire(w, wlen))
+    if (!send(w, wlen))
         return resp_error(req, "503 Service Unavailable", "no bearer took it");
 
     char id[XPRS_ID_LEN];
@@ -321,6 +325,11 @@ static esp_err_t h_send(httpd_req_t *req)
                      "{\"ok\":true,\"id\":\"%s\",\"wire\":\"%s\"}", id, esc);
     resp_json(req);
     return httpd_resp_send(req, out, n);
+}
+
+static esp_err_t h_send(httpd_req_t *req)
+{
+    return xprs_api_send_handler(req, s_cfg->send_wire);
 }
 
 /* ---- /api/log ------------------------------------------------------------ */

@@ -1035,6 +1035,17 @@ Consequences that have already bitten:
   responses straight into the response buffer
 - SQLite does not fit, which is why `geogram_xprsindex` is what it is
 
+### xprs_diag, on every board
+
+`common/xprs_diag` costs about 1.4 KB of internal `.bss` (one parked ask,
+one wire, one 712-byte file block, the frozen last words) plus 1,036 bytes
+of `.rtc_noinit` -- RTC slow memory, 8 KB on the S3 and on the classic
+ESP32, otherwise unused here. The dongle, which keeps no log on flash,
+adds a 1.8 KB RAM tail so `cmd:zlog` has something to serve. No malloc on
+the hot path; the coredump summary (~220 B) is read on the init stack
+once. The pump runs on idx_task / relay_task, the tasks that already pay
+for `xauth_check`'s secp256k1.
+
 ## What the T-Dongle stores and speaks
 
 - `geogram_msgstore` -- the APRS archives (`/sdcard/aprs/msg`, `.../beacon`),
@@ -1258,6 +1269,17 @@ read or written. **`xprs_config` has two tables; a new key needs both.**
   firmware, 0/70 with the STA failing to associate (reasons 202/205). Whether
   that is the access point or a late regression is unresolved -- re-measure
   before trusting a single run.
+
+### Diagnostics over the air, rehearsed
+
+With the dongle as gateway and a deck on ESP-NOW, consoles unread:
+`tools/xprs_cmd.sh ... --cmd zdiag` answers in one frame; `--cmd zlog
+zq=health` pages newest-first and closes with `200`; the seventh page in
+an hour is `429`; the same signed wire twice re-airs the first code. A
+`-DXDIAG_TEST_HOOKS` build's `cfg zpanic` reboots into a beacon carrying
+`zc:`, and `--cmd zcore` plus `tools/xprs_bt.sh` names the line. `cfg
+zhang` is the interrupt-watchdog shape: if a board does not come back from
+it, the panic path itself is the bug, and that is what to chase.
 
 ## Known gaps / next steps
 

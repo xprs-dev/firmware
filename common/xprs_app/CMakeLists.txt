@@ -9,4 +9,4 @@ idf_component_register(
              geogram_xprslan geogram_xprslora geogram_xprsble geogram_nostr geogram_xprssig geogram_xprsid
              geogram_xprschan xprs_ui xprs_config esp_http_server
              geogram_xprsindex fatfs xprs_api xprs_hotspot espcoredump
-             xprs_auth xprs_ota xprs_health geogram_common)
+             xprs_auth xprs_ota xprs_health xprs_diag geogram_common)
