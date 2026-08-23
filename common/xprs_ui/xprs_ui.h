@@ -228,9 +228,11 @@ void xui_splash_status(const char *what);
  */
 bool xui_splash_dismiss(void);
 
-/* Long enough that a fast boot still reads as a greeting rather than a
- * flicker; short enough that nobody waits for it. */
-#define XUI_SPLASH_MIN_MS 600
+/* A floor, not a delay: boot carries on underneath and the dashboard is
+ * built and rendered behind it, so this only decides how long the mark
+ * stays on the glass. At 600 ms these boards were so quick to start that
+ * the greeting read as a flicker. */
+#define XUI_SPLASH_MIN_MS 5000
 
 /* ── Touch ───────────────────────────────────────────────────────────────── */
 
