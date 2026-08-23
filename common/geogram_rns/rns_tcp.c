@@ -235,7 +235,11 @@ esp_err_t rns_tcp_start(const char *host, uint16_t port)
     s_running = true;
     /* Core 1: core 0 carries the BLE controller, the NimBLE host, WiFi and
      * app_main, and this task blocks in recv() with a socket buffer behind it. */
-    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 4096, NULL, 4, NULL, 1)
+    /* 8 KB, measured: with 4 KB the first Ed25519 on the rx callback --
+     * xprsrns verifying an inbound announce, or signing its hello -- blew
+     * the stack the moment a connection came up, and the station
+     * crash-looped on every connect. */
+    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 8192, NULL, 4, NULL, 1)
         != pdPASS) {
         s_running = false;
         return ESP_FAIL;

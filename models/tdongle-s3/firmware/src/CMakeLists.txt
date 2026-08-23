@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "main.c" "tweetnacl.c"
+    SRCS "main.c"
     INCLUDE_DIRS "."
     REQUIRES bt tinynimble nvs_flash log esp_timer mbedtls esp_hw_support xprs_health
              esp_wifi esp_event esp_netif lwip driver

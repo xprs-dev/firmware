@@ -473,3 +473,8 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 # watchdog, so a new image that hung simply sat there. Now it is true.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# The Reticulum bearer (geogram_xprsrns): this archiver, reachable over RNS.
+# On because the T-Deck has the memory (8 MB PSRAM); boards without it leave
+# the symbol unset and the component compiles to nothing.
+CONFIG_GEOGRAM_XPRSRNS=y

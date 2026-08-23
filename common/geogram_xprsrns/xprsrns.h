@@ -1,0 +1,79 @@
+/**
+ * @file xprsrns.h
+ * @brief The Reticulum bearer: this archiver, reachable over RNS.
+ *
+ * The station's XPRS wires ride Reticulum as signed wapp-datagram announces
+ * -- app_data `[len]"xprs"[wire]` on the station's own `xprs.wapp`
+ * destination -- which is byte-for-byte the lane the Aurora app already
+ * speaks (`wappBroadcast` / `XprsIngest.reticulum`). Nothing on the phone or
+ * desktop side changes: an ESP32 archiver simply starts appearing on the
+ * same funnel, its `t:service` archived under the mailbox-declaration rule,
+ * its `cmd:history` replies verified against the XPRS signatures they
+ * already carry.
+ *
+ * The uplink is `geogram_rns`'s TCP interface, pointed wherever the operator
+ * says: a public hub, or -- the configuration that actually makes a station
+ * reachable, given that community hubs do not cross-forward announces
+ * between their own clients -- a nearby Aurora node's TCP server on 4242,
+ * which ingests directly and relays onward.
+ *
+ * config.ini:
+ *   rns_hub      host[:port]  -- empty (the default) leaves the bearer idle
+ *   rns_pace_ms  minimum gap between announces (default 1100; raise toward
+ *                a public hub, which polices announce rates per destination)
+ *
+ * Compiled out entirely when CONFIG_GEOGRAM_XPRSRNS is off: every call
+ * below becomes a no-op and a board without the memory pays nothing.
+ */
+#ifndef GEOGRAM_XPRSRNS_H
+#define GEOGRAM_XPRSRNS_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#ifdef CONFIG_GEOGRAM_XPRSRNS
+
+/** One XPRS wire heard over Reticulum. Called on the uplink's own task;
+ *  copy and return, exactly as the other bearer callbacks do. */
+typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
+
+/**
+ * Bring the bearer up: load (or mint and persist) the RNS identity, dial
+ * the configured uplink, deliver inbound wires to @p cb. Idles quietly when
+ * no `rns_hub` is configured. Safe to call once from app start.
+ */
+void xprsrns_init(xprsrns_wire_cb_t cb);
+
+/** Air one wire as a signed wapp announce. False when the uplink is down,
+ *  the wire does not fit, or the bearer is idle. Paced internally. */
+bool xprsrns_send(const char *wire, int len);
+
+/** Up = socket connected. */
+bool xprsrns_is_up(void);
+
+/** Counters for a status line: wires in, wires out, announces refused by
+ *  pacing, frames that were not for us. */
+void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
+                   uint32_t *other);
+
+#else /* the bearer is configured out: every call is a visible no-op */
+
+typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
+static inline void xprsrns_init(xprsrns_wire_cb_t cb) { (void)cb; }
+static inline bool xprsrns_send(const char *wire, int len)
+{ (void)wire; (void)len; return false; }
+static inline bool xprsrns_is_up(void) { return false; }
+static inline void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
+                                 uint32_t *other)
+{ if (rx) *rx = 0; if (tx) *tx = 0; if (paced) *paced = 0; if (other) *other = 0; }
+
+#endif /* CONFIG_GEOGRAM_XPRSRNS */
+
+#ifdef __cplusplus
+}
+#endif
+#endif /* GEOGRAM_XPRSRNS_H */

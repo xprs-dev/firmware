@@ -37,6 +37,7 @@
 #include "xprslan.h"
 #include "xprsble.h"
 #include "xprslora.h"
+#include "xprsrns.h"
 #include "xprsid.h"
 #include "xprschan.h"
 #include "nostr_keys.h"
@@ -346,6 +347,7 @@ static uint8_t bearer_code(const char *name)
     if (strcmp(name, "lan") == 0)    return XI_B_LAN;
     if (strcmp(name, "lora") == 0)   return XI_B_LORA;
     if (strcmp(name, "ble") == 0)    return XI_B_BLE;
+    if (strcmp(name, "rns") == 0)    return XI_B_RNS;
     return XI_B_UNKNOWN;
 }
 
@@ -863,6 +865,14 @@ static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
         if (strcmp(type, "identity") == 0) identity_heard(&p);
     }
     ESP_LOGI(TAG, "ble    %19d dBm %3dB  %s", rssi, len, wire);
+}
+
+/* A wire off the Reticulum uplink (xprsrns.h). Same funnel as every radio;
+ * an internet byte has no signal strength to report. */
+static void on_rns(const char *wire, int len)
+{
+    s_heard_count++;
+    seen_note(wire, len, "rns", 0);
 }
 
 static void on_lora(const char *wire, int len, int rssi)
@@ -2064,6 +2074,7 @@ static void idx_air(const char *bearer, const char *wire, int len)
     if (strcmp(bearer, "espnow") == 0)    xprsnow_send(wire, len);
     else if (strcmp(bearer, "lora") == 0) xprslora_send(wire, len);
     else if (strcmp(bearer, "ble") == 0)  xprsble_send(wire, len);
+    else if (strcmp(bearer, "rns") == 0)  xprsrns_send(wire, len);
     else                                  xprslan_send(wire, len);
 }
 
@@ -2639,7 +2650,8 @@ static bool api_send_wire(const char *wire, int len)
     bool lan = xprslan_send(wire, len);
     bool now = xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
     bool lra = xprslora_is_active() && xprslora_send(wire, len);
-    (void)lra;
+    bool rns = xprsrns_is_up() && xprsrns_send(wire, len);
+    (void)lra; (void)rns;
     if ((lan || now || lra) && s_index && xcfg_get_bool("index_on", true))
         xprsindex_add2(s_index, wire, len, 0, true, (uint32_t)time(NULL),
                        lan ? XI_B_LAN : XI_B_ESPNOW);
@@ -3246,6 +3258,11 @@ void xapp_run(const xapp_board_t *board)
         else
             ESP_LOGE(TAG, "LoRa radio failed to start -- carrying on without");
     }
+
+    /* The Reticulum uplink (compiled out on boards without the memory;
+     * idle unless config.ini names an rns_hub). Wires it carries land in
+     * seen_note like every radio's, and idx_air answers on it. */
+    xprsrns_init(on_rns);
 
 
     /* 6 KB, not 3: once a minute this task calls air_identity(), and signing

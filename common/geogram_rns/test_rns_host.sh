@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")"
 
-NACL=../../models/tdongle-s3/firmware/src/tweetnacl.c
+NACL=./tweetnacl.c
 
 gcc -O1 -c "$NACL" -o /tmp/tweetnacl_host.o
 gcc -Wall -Wextra -Werror -O1 -DRNS_HOST_TEST \

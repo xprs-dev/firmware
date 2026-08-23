@@ -248,11 +248,9 @@ static uint32_t s_boot_epoch;           /* NVS boot counter (XPRS.md §10.7) */
 static uint32_t s_life_base;
 #define LIFE_SAVE_SEC 900
 
-/* TweetNaCl entropy hook. */
-void randombytes(unsigned char *p, unsigned long long n)
-{
-    esp_fill_random(p, (size_t)n);
-}
+/* TweetNaCl entropy hook: provided by geogram_rns (rns_entropy.c), which is
+ * also where tweetnacl itself now lives -- one copy, every consumer. */
+extern void randombytes(unsigned char *p, unsigned long long n);
 
 static void sha256(const uint8_t *in, size_t n, uint8_t *out32)
 {

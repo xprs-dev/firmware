@@ -328,6 +328,64 @@ static void test_packet_header(void)
     CHECK(!rns_packet_parse(h2, 3 + RNS_HASH_LEN, &q), "short HEADER_2 accepted");
 }
 
+/* Announce: build -> parse -> verify, and the refusals that matter. */
+static void test_announce(void)
+{
+    /* A full identity: random X25519 half + a real Ed25519 keypair. */
+    extern int crypto_sign_ed25519_tweet_keypair(unsigned char *, unsigned char *);
+    uint8_t ed_pk[32], ed_sk[64];
+    crypto_sign_ed25519_tweet_keypair(ed_pk, ed_sk);
+    uint8_t prv[RNS_PRV_LEN], pub[RNS_PUB_LEN];
+    randombytes(prv, 32);                    /* x25519 scalar */
+    memcpy(prv + 32, ed_sk, 32);             /* ed25519 seed */
+    rns_x25519_base(prv, pub);
+    memcpy(pub + 32, ed_pk, 32);
+    rns_identity_t id;
+    rns_identity_init(prv, pub, &id);
+
+    uint8_t nh[RNS_NAME_HASH_LEN];
+    const char *aspects[] = { "wapp" };
+    rns_name_hash("xprs", aspects, 1, nh);
+
+    const char *app = "\x04xprst:service f:X3TEST serve:archive";
+    uint8_t pkt[RNS_MTU + 64];
+    int n = rns_announce_build(&id, nh, (const uint8_t *)app, strlen(app),
+                               1787400000ULL, pkt, sizeof pkt);
+    CHECK(n > 0, "announce did not build");
+
+    rns_packet_t p;
+    CHECK(rns_packet_parse(pkt, (size_t)n, &p), "own announce did not parse");
+    CHECK(p.packet_type == RNS_PACKET_ANNOUNCE, "wrong packet type");
+
+    rns_announce_t a;
+    CHECK(rns_announce_parse(&p, &a), "own announce did not verify");
+    CHECK(a.app_len == strlen(app) &&
+              memcmp(a.app_data, app, a.app_len) == 0,
+          "app_data did not survive the trip");
+    CHECK(memcmp(a.pub, pub, RNS_PUB_LEN) == 0, "public key mangled");
+    /* random_hash tail carries the epoch we stamped. */
+    uint64_t t = 0;
+    for (int i = 0; i < 5; i++) t = (t << 8) | a.random_hash[5 + i];
+    CHECK(t == 1787400000ULL, "freshness stamp mangled");
+
+    /* One flipped app byte must kill the signature. */
+    uint8_t bad[RNS_MTU + 64];
+    memcpy(bad, pkt, (size_t)n);
+    bad[n - 1] ^= 0x01;
+    rns_packet_t pb;
+    CHECK(rns_packet_parse(bad, (size_t)n, &pb), "tampered parse");
+    rns_announce_t ab;
+    CHECK(!rns_announce_parse(&pb, &ab), "a tampered announce verified");
+
+    /* A stated destination the keys cannot produce is a forgery. */
+    memcpy(bad, pkt, (size_t)n);
+    bad[2] ^= 0x01;                          /* first dest byte (after flags+hops) */
+    rns_packet_t pd;
+    CHECK(rns_packet_parse(bad, (size_t)n, &pd), "dest-tamper parse");
+    rns_announce_t ad2;
+    CHECK(!rns_announce_parse(&pd, &ad2), "an announce for a foreign dest verified");
+}
+
 int main(void)
 {
     printf("rns host tests (vectors from reticulum-dart)\n");
@@ -340,6 +398,7 @@ int main(void)
     test_addressing();
     test_hdlc();
     test_packet_header();
+    test_announce();
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

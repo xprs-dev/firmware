@@ -412,3 +412,151 @@ bool rns_packet_parse(const uint8_t *in, size_t len, rns_packet_t *out)
     out->data_len = len - off;
     return true;
 }
+
+/* ── Announces ──────────────────────────────────────────────────────────── */
+
+/* TweetNaCl's Ed25519, by its unmacro'd names (same reasoning as the
+ * scalarmult externs at the top of this file). */
+extern int crypto_sign_ed25519_tweet(unsigned char *, unsigned long long *,
+                                     const unsigned char *, unsigned long long,
+                                     const unsigned char *);
+extern int crypto_sign_ed25519_tweet_open(unsigned char *, unsigned long long *,
+                                          const unsigned char *,
+                                          unsigned long long,
+                                          const unsigned char *);
+
+/* The signed region and the announce layout share one builder, so the two
+ * cannot drift: dest + pub + name_hash + random_hash [+ ratchet] + app. */
+
+int rns_announce_build(const rns_identity_t *id,
+                       const uint8_t name_hash[RNS_NAME_HASH_LEN],
+                       const uint8_t *app, size_t app_len,
+                       uint64_t epoch_s,
+                       uint8_t *out, size_t out_cap)
+{
+    if (!id || !id->have_private || !name_hash || !out) return -1;
+    if (app_len > RNS_MTU) return -1;
+
+    uint8_t dest[RNS_HASH_LEN];
+    rns_destination_hash(name_hash, id->hash, dest);
+
+    /* 5 random bytes + 5 big-endian epoch seconds (see rns.h -- hubs read
+     * the tail as the announce's age). */
+    uint8_t random_hash[RNS_RANDOM_HASH_LEN];
+    extern void randombytes(unsigned char *, unsigned long long);
+    randombytes(random_hash, 5);
+    for (int i = 0; i < 5; i++)
+        random_hash[5 + i] = (uint8_t)((epoch_s >> ((4 - i) * 8)) & 0xFF);
+
+    /* signed_data = dest + pub + name_hash + random_hash + app.
+     *
+     * STATIC, as are the two below: build once overflowed the 4 KB rns_tcp
+     * task from exactly here -- ~2 KB of locals under TweetNaCl's own
+     * appetite. Callers must serialise (xprsrns holds its tx lock around
+     * every build, the hello included). */
+    static uint8_t signed_data[RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
+                               RNS_RANDOM_HASH_LEN + RNS_MTU];
+    size_t sp = 0;
+    memcpy(signed_data + sp, dest, RNS_HASH_LEN); sp += RNS_HASH_LEN;
+    memcpy(signed_data + sp, id->pub, RNS_PUB_LEN); sp += RNS_PUB_LEN;
+    memcpy(signed_data + sp, name_hash, RNS_NAME_HASH_LEN);
+    sp += RNS_NAME_HASH_LEN;
+    memcpy(signed_data + sp, random_hash, RNS_RANDOM_HASH_LEN);
+    sp += RNS_RANDOM_HASH_LEN;
+    memcpy(signed_data + sp, app, app_len); sp += app_len;
+
+    /* TweetNaCl signs into sig||message; the detached signature is the first
+     * 64 bytes. The buffer must hold both. */
+    static uint8_t sm[64 + sizeof signed_data];
+    unsigned long long smlen = 0;
+    /* crypto_sign wants the 64-byte ed25519 secret key: seed || public. */
+    uint8_t sk[64];
+    memcpy(sk, id->prv + RNS_KEY_HALF, RNS_KEY_HALF);
+    memcpy(sk + RNS_KEY_HALF, id->pub + RNS_KEY_HALF, RNS_KEY_HALF);
+    crypto_sign_ed25519_tweet(sm, &smlen, signed_data, sp, sk);
+
+    /* announce_data = pub + name_hash + random_hash + sig + app */
+    rns_packet_t p = {
+        .header_type   = RNS_HEADER_1,
+        .transport_type = RNS_TRANSPORT_BROADCAST,
+        .dest_type     = RNS_DEST_SINGLE,
+        .packet_type   = RNS_PACKET_ANNOUNCE,
+        .hops          = 0,
+        .context       = 0,
+    };
+    memcpy(p.dest, dest, RNS_HASH_LEN);
+    static uint8_t data[RNS_PUB_LEN + RNS_NAME_HASH_LEN + RNS_RANDOM_HASH_LEN +
+                        RNS_SIG_LEN + RNS_MTU];
+    size_t dp = 0;
+    memcpy(data + dp, id->pub, RNS_PUB_LEN); dp += RNS_PUB_LEN;
+    memcpy(data + dp, name_hash, RNS_NAME_HASH_LEN); dp += RNS_NAME_HASH_LEN;
+    memcpy(data + dp, random_hash, RNS_RANDOM_HASH_LEN);
+    dp += RNS_RANDOM_HASH_LEN;
+    memcpy(data + dp, sm, RNS_SIG_LEN); dp += RNS_SIG_LEN;
+    memcpy(data + dp, app, app_len); dp += app_len;
+    p.data = data;
+    p.data_len = dp;
+
+    return rns_packet_build(&p, out, out_cap);
+}
+
+bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out)
+{
+    if (!p || !out || p->packet_type != RNS_PACKET_ANNOUNCE) return false;
+    size_t fixed = RNS_PUB_LEN + RNS_NAME_HASH_LEN + RNS_RANDOM_HASH_LEN +
+                   (p->context_flag ? 32 : 0) + RNS_SIG_LEN;
+    if (p->data_len < fixed) return false;
+
+    const uint8_t *d = p->data;
+    memcpy(out->dest, p->dest, RNS_HASH_LEN);
+    memcpy(out->pub, d, RNS_PUB_LEN);
+    size_t off = RNS_PUB_LEN;
+    memcpy(out->name_hash, d + off, RNS_NAME_HASH_LEN);
+    off += RNS_NAME_HASH_LEN;
+    memcpy(out->random_hash, d + off, RNS_RANDOM_HASH_LEN);
+    off += RNS_RANDOM_HASH_LEN;
+    /* A context-flagged announce carries a 32-byte ratchet between the
+     * random hash and the signature. This codec keeps no ratchet state,
+     * but the ratchet IS part of the signed region, so remember where it
+     * was rather than pretending it was not there. */
+    const uint8_t *ratchet = p->context_flag ? d + off : NULL;
+    if (p->context_flag) off += 32;
+    const uint8_t *sig = d + off;
+    off += RNS_SIG_LEN;
+    out->app_data = d + off;
+    out->app_len  = p->data_len - off;
+
+    /* The destination the keys actually produce. An announce whose stated
+     * dest disagrees is a forgery whatever its signature says. */
+    rns_identity_t who;
+    rns_identity_from_public(out->pub, &who);
+    uint8_t expect[RNS_HASH_LEN];
+    rns_destination_hash(out->name_hash, who.hash, expect);
+    if (memcmp(expect, p->dest, RNS_HASH_LEN) != 0) return false;
+
+    /* signed = dest + pub + name_hash + random_hash [+ ratchet] + app.
+     * Static like build's: one caller (the uplink's rx task), and the
+     * Ed25519 verify below wants the stack for itself. */
+    static uint8_t signed_data[RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
+                               RNS_RANDOM_HASH_LEN + 32 + RNS_MTU];
+    size_t sp = 0;
+    if (out->app_len > RNS_MTU) return false;
+    memcpy(signed_data + sp, p->dest, RNS_HASH_LEN); sp += RNS_HASH_LEN;
+    memcpy(signed_data + sp, out->pub, RNS_PUB_LEN); sp += RNS_PUB_LEN;
+    memcpy(signed_data + sp, out->name_hash, RNS_NAME_HASH_LEN);
+    sp += RNS_NAME_HASH_LEN;
+    memcpy(signed_data + sp, out->random_hash, RNS_RANDOM_HASH_LEN);
+    sp += RNS_RANDOM_HASH_LEN;
+    if (ratchet) { memcpy(signed_data + sp, ratchet, 32); sp += 32; }
+    memcpy(signed_data + sp, out->app_data, out->app_len); sp += out->app_len;
+
+    /* TweetNaCl verifies sig||message as one buffer. */
+    static uint8_t sm[64 + sizeof signed_data];
+    static uint8_t m[64 + sizeof signed_data];
+    if (64 + sp > sizeof sm) return false;
+    memcpy(sm, sig, 64);
+    memcpy(sm + 64, signed_data, sp);
+    unsigned long long mlen = 0;
+    return crypto_sign_ed25519_tweet_open(m, &mlen, sm, 64 + sp,
+                                          out->pub + RNS_KEY_HALF) == 0;
+}

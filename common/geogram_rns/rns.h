@@ -203,6 +203,68 @@ typedef struct {
     size_t   data_len;
 } rns_packet_t;
 
+/* ── Announces ──────────────────────────────────────────────────────────── */
+
+#define RNS_RANDOM_HASH_LEN 10
+#define RNS_SIG_LEN         64
+
+/**
+ * @brief One parsed (and verified) announce.
+ *
+ * [app_data] points into the caller's packet buffer. [pub] is the announcing
+ * identity's full public key -- what a receiver needs to talk back.
+ */
+typedef struct {
+    uint8_t  dest[RNS_HASH_LEN];
+    uint8_t  pub[RNS_PUB_LEN];
+    uint8_t  name_hash[RNS_NAME_HASH_LEN];
+    uint8_t  random_hash[RNS_RANDOM_HASH_LEN];
+    const uint8_t *app_data;
+    size_t   app_len;
+} rns_announce_t;
+
+/**
+ * @brief Build a signed HEADER_1 announce for [id]'s destination under
+ *        [name_hash], carrying [app] as app_data.
+ *
+ * The parts that were learned the expensive way, kept here so nobody learns
+ * them twice (they cost the T-Dongle hours against real hubs):
+ *   - random_hash is 5 random bytes + 5 big-endian epoch seconds. Hubs judge
+ *     freshness by that timestamp; ten random bytes reads as a replay and the
+ *     announce is taken and silently never propagated.
+ *   - the signature covers dest+pub+name_hash+random_hash+app, in that order.
+ *   - announcing one destination faster than about once an hour to a PUBLIC
+ *     hub burns its reputation there. Pacing is the caller's duty; toward a
+ *     directly-connected peer (an Aurora node's own TCP server) there is no
+ *     such police and the caller may pace by channel sense instead.
+ *
+ * @param id       must hold the private half.
+ * @param epoch_s  seconds since the epoch, for the freshness stamp.
+ * @return packet length, or -1 if it would not fit.
+ */
+int rns_announce_build(const rns_identity_t *id,
+                       const uint8_t name_hash[RNS_NAME_HASH_LEN],
+                       const uint8_t *app, size_t app_len,
+                       uint64_t epoch_s,
+                       uint8_t *out, size_t out_cap);
+
+/**
+ * @brief Parse a packet already identified as an announce, and VERIFY the
+ *        Ed25519 signature against the key the announce itself carries.
+ *
+ * Verifying against the carried key proves internal consistency, not
+ * authorship of anything beyond this announce -- which is exactly Reticulum's
+ * own contract: an announce introduces an identity, it does not vouch for it.
+ * A context-flagged announce (ratchet present) is handled; the ratchet is
+ * skipped, as this codec keeps no ratchet state.
+ *
+ * @return true only on a well-formed announce whose signature verifies AND
+ *         whose destination equals hash(name_hash, identity) -- an announce
+ *         claiming a destination its own keys cannot produce is a forgery
+ *         however valid its signature.
+ */
+bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out);
+
 /**
  * @brief Build a HEADER_1 packet: flags(1) hops(1) dest(16) context(1) data.
  *
