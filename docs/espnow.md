@@ -79,6 +79,10 @@ That logic is not written twice: `geogram_xprsbearer` holds it once and both
 bearers use it. The identifier compared is the section 5 one, which ignores
 `via:` and `sig:`, so a relayed copy is recognisably the same packet.
 
+The delay is uniform, so the station that wins is the random one rather than the
+one whose re-air would reach furthest. [wifi8.md](wifi8.md) sets that against
+Wi-Fi 8's multi-AP coordination and works out what a rank would cost.
+
 ## `scope:local` crosses to it
 
 Section 13.11.1 lists Bluetooth LE, WiFi Direct, WiFi Aware and a local network,
@@ -103,6 +107,70 @@ t:observation f:X3WWAJ link:espnow peers:1 hears:X1RD89 sig:<60 characters>
 that a reading belongs to the bearer it names -- who this station hears over
 ESP-NOW is not who it hears on the wire, and one figure covering both would be a
 quantity nobody can act on.
+
+### How well, not only who
+
+`hears:` says who is in reach and nothing about how well, so a reader choosing a
+carrier cannot tell the neighbour across the room from the one that barely
+decoded. `zhq:` says it -- one digit per callsign, same order, same count, nine
+loud and zero barely there:
+
+```
+t:observation f:X3WWAJ link:espnow peers:5 hears:X3LTSH,X3R8XX,X1GUD9,X1RD89,X5A3F2 zhq:97542 sig:<60 characters>
+```
+
+158 bytes. About **7 dB a step** from -30 dBm down to -100. It is private
+vocabulary under the `z` prefix (section 4.9) until the packets have been shown
+and agreed; the proposal is in [`TODO.md`](../TODO.md). Section 10.6.3 refused
+per-callsign signal once -- "it would need a compound value this format does not
+have" -- and a positional digit string is the answer to that objection rather
+than an argument with it.
+
+**Coarse on purpose, and that is the interesting part.** The archive drops a
+repeated observation by hashing the wire, skipping only `ts:` and `epoch:`
+(`xi_presence_hash`). Raw dBm moves every minute, so a beacon carrying it would
+be a NEW record every minute in every archive that heard it -- which is the exact
+flood that function was written to stop. A bucket moves only when the signal
+changes tier, and it is sticky by half a step so a neighbour parked on a boundary
+does not retype the beacon either.
+
+`zhq:` is omitted entirely when any listed station has no signal to report, so a
+`link:lan` observation never carries it. A hole in a digit-per-callsign string
+would be worse than no string.
+
+### When it does not all fit
+
+250 bytes is 250 bytes, and a busy street has more neighbours than that. What
+gives way, in order:
+
+| | |
+|---|---|
+| everything fits | the full list, each callsign with its digit |
+| the digits do not fit | **the digits go first** -- the whole list, no `zhq:` |
+| the list does not fit | the top-ranked that fit; `peers:` still says how many there were |
+
+Signal is dropped before names because a name is what a reader can act on --
+`hears:` is how a message finds a carrier (36.12), and a station left out of the
+list cannot be routed through at all.
+
+**Most useful first** is left to the sender by 10.6.3, and this station reads it
+as: `X3` before `X4` before `X1`, then loudest, then freshest. Section 2 says
+`X3` is a station, relay or unattended equipment and `X1` is a person, so when a
+list is cut it is the relays that survive it -- a phone in somebody's pocket is
+a worse carrier than the board on the roof however loud it is right now.
+
+The signed observations also **slow down as the room fills**: sixty seconds a
+turn, one turn sat out per four neighbours, never slower than eight minutes. The
+payload was never the airtime problem -- each turn airs one observation per
+bearer over every lane, so nine signed packets can leave before any of them
+grows a byte. A station alone on a hill keeps the full minute, which is where
+the news is; a station among a dozen others that all hear each other is the one
+saying the least surprising thing.
+
+On the numbers above -- a signed observation from a six-character callsign has
+141 bytes for the whole suffix -- **19 neighbours fit bare and 16 fit with their
+digits**. The store holds 16 (`XST_SEEN_MAX`), so on this hardware the first rung
+always wins and the other two are for the stations that are not an ESP32.
 
 ## What crosses to the other bearers
 

@@ -39,6 +39,7 @@
 #include "xprslora.h"
 #include "xprsrns.h"
 #include "xprsid.h"
+#include "xprssig.h"
 #include "xprschan.h"
 #include "nostr_keys.h"
 #include "bech32.h"
@@ -190,6 +191,11 @@ static void identity_heard(const xprs_t *p)
     ESP_LOGI(TAG, "learned %s signs with %02x%02x%02x%02x...", call,
              data[0], data[1], data[2], data[3]);
 }
+
+/* What a signature costs on the wire: " sig:" and 60 base85 characters
+ * (9.1). Anything composing a packet it means to sign has to leave this
+ * much, because xprsid_sign declines silently rather than truncating. */
+#define SIG_ROOM (5 + XPRSSIG_B85_LEN)
 
 static int sign_wire(char *wire, int len, int cap)
 {
@@ -673,6 +679,12 @@ static struct {
     volatile bool pending;
 } s_upd;
 
+/* A `q:identity` ask (18.1) waiting for idx_task, which owns the signing
+ * stack. Answering costs one advert and saves the asker half an hour of
+ * being unable to verify anything this station says -- including the very
+ * hears: observations its gossip runs on. */
+static volatile bool s_qid_pending;
+
 /* A recipient just heard directly, whose held mail idx_task should try to
  * deliver (XPRS.md 36.8.1). Parked like every other job that costs storage
  * or curve time: the radio task decides WHETHER, idx_task does the work. */
@@ -834,6 +846,18 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     /* The diagnostics asks (cmd:zdiag/zcore/zlog, xprs_diag): parked the
      * same way, verified and answered on idx_task. */
     xdiag_park_parsed(&sp, wire, len, bearer);
+
+    /* q:identity (18.1): publish the key binding on request. */
+    do {
+        char type[16], q[12], dst[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "q", q, sizeof q) ||
+            strcmp(q, "identity") != 0) break;
+        if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
+            strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        s_qid_pending = true;
+    } while (0);
 
     /* ── 36.8.1: deliver held mail the moment its recipient is heard ────
      * The trigger is the packet itself, never a poll. Cheap here (a ring
@@ -1061,30 +1085,60 @@ static void on_lora(const char *wire, int len, int rssi)
  * CALLSIGNS on that bearer (the corrected quantity -- the address count the
  * bearers keep is a different number wearing the same name), and hears:
  * lists as many of them as fit (10.6.3, truncation per 10.6.4). hears: is
- * what makes this station's gossip (36.9.4) worth listening to. */
-static int observation_beacon(const char *bearer, char *out, int cap)
+ * what makes this station's gossip (36.9.4) worth listening to.
+ *
+ * `zhq:` rides beside it when there is room: one digit a neighbour, same
+ * order, same count, 9 loud to 0 barely there. It is private vocabulary under
+ * the z prefix (4.9) until the packets have been shown and agreed, and it is
+ * the first thing dropped when the packet gets tight -- a cut list of names is
+ * worth more than a full list of signal nobody can name.
+ *
+ * [sign_room] is the bytes a signature will want afterwards, and it is not
+ * optional arithmetic: `xprsid_sign` returns the wire UNSIGNED when it will
+ * not fit, silently, and 36.9.4 says an unsigned claim feeds no gossip. A
+ * beacon that grew past the room for its own signature used to become a
+ * statement nobody was allowed to believe. */
+static int observation_beacon(const char *bearer, char *out, int cap,
+                              int sign_room)
 {
     if (!s_call[0]) return 0;
-    char hears[96];
+    int room = (cap - 1 < XPRS_MAX_WIRE) ? cap - 1 : XPRS_MAX_WIRE;
+
+    /* What the header costs, before it is written. peers: is charged three
+     * digits because the count is not known until the list has been built,
+     * and one spare byte is cheaper than rendering twice. */
+    int fixed = (int)(sizeof "t:observation f:" - 1) + (int)strlen(s_call)
+              + (int)(sizeof " link:" - 1) + (int)strlen(bearer)
+              + (int)(sizeof " peers:" - 1) + 3;
+    int budget = room - fixed - sign_room;
+
+    char hears[208];
+    char q[XST_SEEN_MAX + 1];
     int total = 0;
-    int hn = xst_hears_render(bearer, 600, hears, sizeof hears, &total);
+    int hn = xst_hears_render(bearer, 600, budget, hears, sizeof hears,
+                              &total, q, sizeof q);
+
     int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d",
                      s_call, bearer, total);
     if (hn > 0 && n > 0 && n < cap)
         n += snprintf(out + n, (size_t)(cap - n), " hears:%s", hears);
-    ESP_LOGI(TAG, "obs %s: total=%d hn=%d hears=\"%s\"", bearer, total, hn,
-             hears);
+    if (hn > 0 && q[0] && n > 0 && n < cap)
+        n += snprintf(out + n, (size_t)(cap - n), " zhq:%s", q);
+    ESP_LOGI(TAG, "obs %s: peers=%d hn=%d zhq=%s bytes=%d budget=%d", bearer,
+             total, hn, q[0] ? q : "-", n, budget);
     return n;
 }
 
+/* The bearers' own beacons are not signed (xb_beacon_tick airs what it is
+ * handed), so all of the packet is theirs to fill. */
 static int espnow_beacon(char *out, int cap)
 {
-    return observation_beacon("espnow", out, cap);
+    return observation_beacon("espnow", out, cap, 0);
 }
 
 static int lan_beacon(char *out, int cap)
 {
-    return observation_beacon("lan", out, cap);
+    return observation_beacon("lan", out, cap, 0);
 }
 
 /*
@@ -1102,7 +1156,9 @@ static void air_ble_beacon(void)
 {
     if (!s_call[0] || !xprsble_is_active()) return;
     char wire[XPRS_MAX_WIRE + 1];
-    int n = observation_beacon("ble", wire, (int)sizeof wire);
+    /* An advert holds less than a packet does, so the beacon is composed to
+     * the radio's limit rather than the format's. */
+    int n = observation_beacon("ble", wire, XPRSBLE_WIRE_MAX + 1, SIG_ROOM);
     if (n <= 0 || n > XPRS_MAX_WIRE) return;
     n = sign_wire(wire, n, (int)sizeof wire);
     if (!xprsble_send(wire, n))
@@ -1118,6 +1174,25 @@ static void air_ble_beacon(void)
 static void air_signed_observations(void)
 {
     if (!s_call[0]) return;
+
+    /*
+     * Cadence by density, because the payload was never the problem: this
+     * function airs one observation PER BEARER over EVERY lane, so nine
+     * signed packets can leave per turn before any of them grows a byte.
+     * Multiply that by everybody in a busy street and the reachability
+     * claims cost more airtime than they inform.
+     *
+     * So a station in a crowd speaks less often -- and it is the one whose
+     * claim is least surprising, since a dozen neighbours all hear each
+     * other. A station alone on a hill keeps the full minute, which is where
+     * the news actually is. Sixty seconds a turn, one turn per four
+     * neighbours, never slower than eight minutes.
+     */
+    static int s_wait;                     /* turns still to sit out */
+    if (s_wait > 0) { s_wait--; return; }
+    int mult = 1 + xst_devices_in_range(600) / 4;
+    if (mult > 8) mult = 8;
+    s_wait = mult - 1;
     /* One observation PER BEARER (link: names the radio the claim is
      * about, 10.6.1) -- and each is fanned over EVERY transmit lane,
      * because a reachability claim is gossip (36.9.4) and gossip travels:
@@ -1127,7 +1202,8 @@ static void air_signed_observations(void)
     static const char *k_bearers[] = { "ble", "lan", "espnow" };
     for (int i = 0; i < 3; i++) {
         char wire[XPRS_MAX_WIRE + 1];
-        int n = observation_beacon(k_bearers[i], wire, (int)sizeof wire);
+        int n = observation_beacon(k_bearers[i], wire, (int)sizeof wire,
+                                   SIG_ROOM);
         if (n <= 0 || n > XPRS_MAX_WIRE) continue;
         if (!strstr(wire, " hears:")) continue;
         n = sign_wire(wire, n, (int)sizeof wire);
@@ -2601,6 +2677,11 @@ static void idx_task(void *arg)
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
             xprslan_send(w, n);
+        }
+
+        if (s_qid_pending) {
+            s_qid_pending = false;
+            air_identity();
         }
 
         /* 36.8.1: a recipient was heard; re-air what the index holds FOR

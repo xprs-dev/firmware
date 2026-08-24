@@ -500,7 +500,7 @@ int rns_announce_build(const rns_identity_t *id,
     return rns_packet_build(&p, out, out_cap);
 }
 
-bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out)
+bool rns_announce_open(const rns_packet_t *p, rns_announce_t *out)
 {
     if (!p || !out || p->packet_type != RNS_PACKET_ANNOUNCE) return false;
     size_t fixed = RNS_PUB_LEN + RNS_NAME_HASH_LEN + RNS_RANDOM_HASH_LEN +
@@ -519,20 +519,28 @@ bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out)
      * random hash and the signature. This codec keeps no ratchet state,
      * but the ratchet IS part of the signed region, so remember where it
      * was rather than pretending it was not there. */
-    const uint8_t *ratchet = p->context_flag ? d + off : NULL;
+    out->ratchet = p->context_flag ? d + off : NULL;
     if (p->context_flag) off += 32;
-    const uint8_t *sig = d + off;
+    out->sig = d + off;
     off += RNS_SIG_LEN;
     out->app_data = d + off;
     out->app_len  = p->data_len - off;
+    if (out->app_len > RNS_MTU) return false;
 
     /* The destination the keys actually produce. An announce whose stated
-     * dest disagrees is a forgery whatever its signature says. */
+     * dest disagrees is a forgery whatever its signature says -- and this
+     * costs two hashes, not a curve multiplication, so it stays here on
+     * the cheap side of the fence. */
     rns_identity_t who;
     rns_identity_from_public(out->pub, &who);
     uint8_t expect[RNS_HASH_LEN];
     rns_destination_hash(out->name_hash, who.hash, expect);
-    if (memcmp(expect, p->dest, RNS_HASH_LEN) != 0) return false;
+    return memcmp(expect, p->dest, RNS_HASH_LEN) == 0;
+}
+
+bool rns_announce_verify(const rns_packet_t *p, const rns_announce_t *a)
+{
+    if (!p || !a || !a->sig) return false;
 
     /* signed = dest + pub + name_hash + random_hash [+ ratchet] + app.
      * Static like build's: one caller (the uplink's rx task), and the
@@ -540,23 +548,31 @@ bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out)
     static uint8_t signed_data[RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
                                RNS_RANDOM_HASH_LEN + 32 + RNS_MTU];
     size_t sp = 0;
-    if (out->app_len > RNS_MTU) return false;
+    if (a->app_len > RNS_MTU) return false;
     memcpy(signed_data + sp, p->dest, RNS_HASH_LEN); sp += RNS_HASH_LEN;
-    memcpy(signed_data + sp, out->pub, RNS_PUB_LEN); sp += RNS_PUB_LEN;
-    memcpy(signed_data + sp, out->name_hash, RNS_NAME_HASH_LEN);
+    memcpy(signed_data + sp, a->pub, RNS_PUB_LEN); sp += RNS_PUB_LEN;
+    memcpy(signed_data + sp, a->name_hash, RNS_NAME_HASH_LEN);
     sp += RNS_NAME_HASH_LEN;
-    memcpy(signed_data + sp, out->random_hash, RNS_RANDOM_HASH_LEN);
+    memcpy(signed_data + sp, a->random_hash, RNS_RANDOM_HASH_LEN);
     sp += RNS_RANDOM_HASH_LEN;
-    if (ratchet) { memcpy(signed_data + sp, ratchet, 32); sp += 32; }
-    memcpy(signed_data + sp, out->app_data, out->app_len); sp += out->app_len;
+    if (a->ratchet) { memcpy(signed_data + sp, a->ratchet, 32); sp += 32; }
+    memcpy(signed_data + sp, a->app_data, a->app_len); sp += a->app_len;
 
     /* TweetNaCl verifies sig||message as one buffer. */
     static uint8_t sm[64 + sizeof signed_data];
     static uint8_t m[64 + sizeof signed_data];
     if (64 + sp > sizeof sm) return false;
-    memcpy(sm, sig, 64);
+    memcpy(sm, a->sig, 64);
     memcpy(sm + 64, signed_data, sp);
     unsigned long long mlen = 0;
     return crypto_sign_ed25519_tweet_open(m, &mlen, sm, 64 + sp,
-                                          out->pub + RNS_KEY_HALF) == 0;
+                                          a->pub + RNS_KEY_HALF) == 0;
+}
+
+/* Read it and believe it, in one call. Kept because most callers want
+ * exactly that; the uplink's receive path is the one that cannot afford
+ * to verify first and ask questions afterwards. */
+bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out)
+{
+    return rns_announce_open(p, out) && rns_announce_verify(p, out);
 }

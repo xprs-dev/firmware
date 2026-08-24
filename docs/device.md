@@ -248,11 +248,27 @@ registration order -- the `health: station up:` line in its boot log is
 the decoder. On the app boards today: http api, lan bearer, esp-now, wifi
 address, archive, scripts.
 
-Nothing new is aired periodically. The 600 s `t:service` beacon gains
-` uptime:6h zh:3f/3f` (about 20 bytes) and, only on a boot that followed
-a panic or watchdog, ` zc:intwdt,btController,4200a1f2` -- so the node
-that answers nothing still reports the one fact that explains why, to
-anyone already listening (25.8's argument for `fw:`).
+Nothing new is aired periodically by the diagnostics. The 600 s
+`t:service` beacon gains ` uptime:6h zh:3f/3f` (about 20 bytes) and, only
+on a boot that followed a panic or watchdog,
+` zc:intwdt,btController,4200a1f2` -- so the node that answers nothing
+still reports the one fact that explains why, to anyone already listening
+(25.8's argument for `fw:`).
+
+**`zhq:` on `t:observation`** is the one private key that is not a
+diagnostic. It rides beside `hears:`, one digit a callsign, same order and
+same count, nine loud to zero barely there -- what 10.6.3 calls "signal per
+callsign" and declines to carry:
+
+```
+t:observation f:X3WWAJ link:espnow peers:5 hears:X3LTSH,X3R8XX,X1GUD9,X1RD89,X5A3F2 zhq:97542 sig:<60 characters>
+```
+
+158 bytes; the digits cost 5 plus one a neighbour. It is the first thing
+dropped when the packet gets tight, and it is omitted whole when any
+listed station has no signal to report, so a `link:lan` observation never
+carries it. [`espnow.md`](espnow.md) has the ladder, the ranking and why
+the buckets are coarse.
 
 **Last words.** The tail of the log (ten lines) is mirrored into RTC slow
 memory, which a panic, a watchdog or `esp_restart` does not clear. On the

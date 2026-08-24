@@ -102,6 +102,38 @@ has not occurred since the Bluetooth fix.
 The table above is filled in, at two distances, with the PHY bitmap logged for
 both rows, and `docs/espnow.md` carries the numbers.
 
+## Spec proposal: signal per callsign (from xst_hears_render)
+
+The firmware airs `zhq:` beside `hears:` under the private z prefix -- one
+digit a callsign, same order, same count, 9 loud to 0 barely there, about
+7 dB a step from -30 dBm to -100. Worth proposing for XPRS.md 10.6.3 once
+agreed, as `hq:`:
+
+- **`hq:` on `t:observation`** -- 10.6.3 declined this once: "Signal per
+  callsign is deliberately not carried: it would need a compound value
+  this format does not have." A positional digit string is not a compound
+  value. It is one token, one type (digits), read against `hears:` by
+  position, and 4.3 already carries two-part values in `coord`, `ratio`
+  and `epoch` without anybody calling those compound.
+- **Ordering guidance for 10.6.3** -- the section leaves "most relevant
+  first" to the sender and lists signal, uptime and whether the station is
+  powered among the criteria. Worth naming the one that is not a
+  judgement: section 2 already says `X3` is a station, relay or unattended
+  equipment and `X1` is a person, so a cut list that keeps the `X3`s keeps
+  the carriers. This firmware ranks `X3`, `X4`, `X1`, then loudest, then
+  freshest.
+- **`q:hears`** for section 8 -- 10.6.3 says the full list reaches an
+  archiver "over section 6.6 parts", but section 8 assigns no word to ask
+  for it. Not implemented here: there is no 6.6 part support in this
+  firmware, and with a 16-row store against 19 callsigns a packet the
+  truncation it would relieve cannot happen on an ESP32.
+
+What the ladder does when the packet is full -- digits go before names,
+names go last, `peers:` stays true throughout -- is 10.6.4 as written and
+needs nothing new. Example packets, byte counts and the reason the buckets
+are coarse (raw dBm defeats an archive's repeat detection) are in
+docs/espnow.md, "Its own beacon".
+
 ## Spec proposal: diagnostics commands (from common/xprs_diag)
 
 The firmware answers `cmd:zdiag`, `cmd:zcore`, `cmd:zlog` under the

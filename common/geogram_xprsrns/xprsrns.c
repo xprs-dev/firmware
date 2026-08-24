@@ -96,8 +96,24 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     if (!rns_packet_parse(frame, len, &p)) return;
     if (p.packet_type != RNS_PACKET_ANNOUNCE) { s_other++; return; }
 
+    /* Read it, but do not believe it yet.
+     *
+     * An Ed25519 verify is tweetnacl in portable C on a chip with no
+     * acceleration for it -- the most expensive thing this station does per
+     * packet by a wide margin. Bridged to the public Reticulum network
+     * nearly every announce belongs to some other application, and verifying
+     * the whole flood before asking whether any of it was ours is what took
+     * two T-Decks into a reboot loop: this task outranked the one the
+     * watchdog watches, so ninety seconds of announces became a panic in
+     * tweetnacl with a healthy heap and no other symptom.
+     *
+     * So the cheap questions come first -- is it for our app, is it our own
+     * echo, is it even carrying an XPRS packet -- and only what survives all
+     * three is worth a curve multiplication. Everything below the verify is
+     * still UNTRUSTED: nothing is acted on, counted as heard, or handed to
+     * the station until the signature has been checked. */
     rns_announce_t a;
-    if (!rns_announce_parse(&p, &a)) { s_other++; return; }
+    if (!rns_announce_open(&p, &a)) { s_other++; return; }
     if (memcmp(a.name_hash, s_wapp_name, RNS_NAME_HASH_LEN) != 0) {
         s_other++;                       /* someone else's app -- not ours */
         return;
@@ -112,6 +128,9 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     const uint8_t *wire = a.app_data + 1 + tl;
     int wl = (int)(a.app_len - 1 - tl);
     if (wl <= 0) return;
+
+    /* Now it is worth the maths. */
+    if (!rns_announce_verify(&p, &a)) { s_other++; return; }
 
     s_rx++;
     if (s_cb) s_cb((const char *)wire, wl);

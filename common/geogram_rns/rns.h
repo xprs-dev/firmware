@@ -221,6 +221,11 @@ typedef struct {
     uint8_t  random_hash[RNS_RANDOM_HASH_LEN];
     const uint8_t *app_data;
     size_t   app_len;
+    /* Into the caller's packet buffer, like app_data: what the signature
+     * covers and what it is. Filled by rns_announce_open() so the verify
+     * does not have to walk the packet again. */
+    const uint8_t *sig;
+    const uint8_t *ratchet;      /* NULL unless the announce carried one */
 } rns_announce_t;
 
 /**
@@ -264,6 +269,26 @@ int rns_announce_build(const rns_identity_t *id,
  *         however valid its signature.
  */
 bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out);
+
+/**
+ * @brief Read an announce WITHOUT checking its signature.
+ *
+ * Everything rns_announce_parse() does except the Ed25519, which is the
+ * expensive part by three orders of magnitude. Structure, lengths and the
+ * destination-hash consistency check are all still enforced.
+ *
+ * This exists so a station can decide whether an announce is any of its
+ * business before paying to verify it. On a bridge to the public Reticulum
+ * network the overwhelming majority are not: they are for other
+ * applications entirely, and verifying them all is what took two T-Decks
+ * into a reboot loop (see docs/esp32.md). Anything that survives the
+ * caller's filter must still go through rns_announce_verify() before it is
+ * believed -- the fields here are UNTRUSTED until it does.
+ */
+bool rns_announce_open(const rns_packet_t *p, rns_announce_t *out);
+
+/** @brief The Ed25519 check for an announce read by rns_announce_open(). */
+bool rns_announce_verify(const rns_packet_t *p, const rns_announce_t *a);
 
 /**
  * @brief Build a HEADER_1 packet: flags(1) hops(1) dest(16) context(1) data.

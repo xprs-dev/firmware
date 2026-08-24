@@ -34,6 +34,11 @@ typedef struct {
     uint8_t  hops;               /* via: entries when last heard; 0 = direct.
                                   * What separates a neighbour from a station
                                   * somebody's relay carried to us. */
+    uint8_t  q;                  /* the signal bucket last SAID about this row
+                                  * (see xst_signal_bucket). Kept because the
+                                  * bucket is hysteretic: without the previous
+                                  * answer there is nothing to be sticky
+                                  * against. 0xff before the first reading. */
     uint32_t last_ms;            /* esp_timer ms when last heard */
 } xst_dev_t;
 
@@ -87,9 +92,26 @@ void xst_tx_total(uint32_t tx_total_now);
 int  xst_devices(xst_dev_t *out, int max, int in_range_sec);
 
 /**
+ * @brief One neighbour's signal as a single digit, 9 loud to 0 barely there.
+ *
+ * About 7 dB a step over -30 dBm to -100 dBm. Coarse on purpose. The archive
+ * drops a repeated observation by hashing the wire (`xi_presence_hash`), so a
+ * figure that moves every minute would make every beacon a new record -- which
+ * is the flood that function was written to stop. A bucket moves only when the
+ * signal genuinely changes tier.
+ *
+ * [was] is the digit last said about this neighbour, or 0xff if none, and buys
+ * the hysteresis: a reading sitting on a boundary keeps the old answer until it
+ * is half a step clear of it. Returns 0..9; the caller must not call it for a
+ * bearer with no signal (rssi 0) -- see xst_hears_render, which omits the whole
+ * digit string in that case rather than inventing a number.
+ */
+int xst_signal_bucket(int rssi, uint8_t was);
+
+/**
  * @brief `hears:` for a beacon (XPRS.md 10.6.3, 36.9.4) -- the callsigns this
  *        station heard DIRECTLY (hops == 0) on [bearer] within [ttl_sec],
- *        most recent first, comma-joined into [out].
+ *        comma-joined into [calls], most useful first.
  *
  * Per-bearer truth: a `link:lan` beacon lists only stations heard on the LAN,
  * because a claim about one radio proven on another is the lie 10.6.3 warns
@@ -97,10 +119,31 @@ int  xst_devices(xst_dev_t *out, int max, int in_range_sec);
  * to fit, so `peers:` stays honest (10.6.4) -- and note that this counts
  * CALLSIGNS, not transport addresses, which is the corrected quantity the
  * T-Dongle already reports.
- * @return characters written (0 = nobody fresh on that bearer).
+ *
+ * -- Most useful first, which 10.6.3 leaves to the sender --------------------
+ *
+ * Ranked by callsign class before signal: section 2 says `X3` is a station,
+ * relay or unattended equipment and `X1` is a person, so when the list is cut
+ * it is the relays that survive it. Then the loudest, then the freshest.
+ *
+ * -- The ladder --------------------------------------------------------------
+ *
+ * [budget] is how many bytes the whole suffix may take -- ` hears:<list>` and,
+ * when it fits, ` zhq:<digits>`. Three outcomes, in the order they are tried:
+ *
+ *   1. every neighbour listed, each with its digit in [q]
+ *   2. every neighbour listed, [q] empty -- signal is what gives way first
+ *   3. the top-ranked that fit, [q] empty; `peers:` says how many were left
+ *
+ * [q] is one digit per callsign written, same order, same count, and is left
+ * empty whenever any listed neighbour has no RSSI to report (the LAN has
+ * none). Pass q_cap 0 or q NULL to never ask for digits.
+ *
+ * @return characters written to [calls] (0 = nobody fresh on that bearer).
  */
-int xst_hears_render(const char *bearer, int ttl_sec,
-                     char *out, int cap, int *total);
+int xst_hears_render(const char *bearer, int ttl_sec, int budget,
+                     char *calls, int calls_cap, int *total,
+                     char *q, int q_cap);
 int  xst_devices_in_range(int in_range_sec);
 int  xst_chat(xst_chat_t *out, int max);
 /* Find a chat row by its section-5 id (reply-parent lookup). 1 = found. */

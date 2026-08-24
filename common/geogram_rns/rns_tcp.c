@@ -194,6 +194,12 @@ static void rns_tcp_task(void *arg)
             int n = recv(sock, buf, sizeof buf, 0);
             if (n > 0) {
                 rns_hdlc_rx_feed(&s_rx, buf, (size_t)n, on_frame, NULL);
+                /* One tick back to the scheduler per read. The frames are
+                 * handled inline on this task and a hub with a backlog will
+                 * hand over as fast as it can be drained, so without this a
+                 * busy uplink is an unbroken run on core 1. Half a kilobyte
+                 * per tick is still far more than Reticulum ever sends. */
+                vTaskDelay(1);
                 continue;
             }
             if (n == 0) { ESP_LOGW(TAG, "hub closed the connection"); break; }
@@ -239,7 +245,16 @@ esp_err_t rns_tcp_start(const char *host, uint16_t port)
      * xprsrns verifying an inbound announce, or signing its hello -- blew
      * the stack the moment a connection came up, and the station
      * crash-looped on every connect. */
-    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 8192, NULL, 4, NULL, 1)
+    /* Priority 2, BELOW the indexer's 3.
+     *
+     * docs/esp32.md pins the blocking work to core 1; what it does not say,
+     * and what cost two T-Decks a reboot every few minutes, is that the task
+     * the watchdog watches must not be the lowest-priority thing on that
+     * core. idx runs at 3 and feeds the watchdog; this task ran at 4, so a
+     * burst of announces starved idx for ninety seconds and the watchdog
+     * did exactly what it is for. Below it, an uplink flood can never be
+     * mistaken for a wedged station. */
+    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 8192, NULL, 2, NULL, 1)
         != pdPASS) {
         s_running = false;
         return ESP_FAIL;

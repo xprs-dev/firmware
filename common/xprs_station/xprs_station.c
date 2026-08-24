@@ -9,6 +9,22 @@
 #include <strings.h>
 #include <time.h>
 
+#ifdef XST_HOST_TEST
+/* The ranking and the ladder are arithmetic over a small array, which is
+ * exactly the kind of thing that should not need two boards and a serial
+ * cable to check. On the host there is no timer, no log and no other task,
+ * so the clock becomes a variable the test advances and the lock goes away.
+ * Everything below this point is the firmware's own code, unaltered. */
+uint32_t xst_test_now_ms;
+#define esp_timer_get_time() ((int64_t)xst_test_now_ms * 1000)
+#define ESP_LOGI(...)        ((void)0)
+#define ESP_LOGW(...)        ((void)0)
+#define ESP_LOGE(...)        ((void)0)
+#define XPRS_PSRAM_BSS
+#define LOCK()               ((void)0)
+#define UNLOCK()             ((void)0)
+static const char *TAG __attribute__((unused)) = "xst";
+#else
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -19,6 +35,7 @@ static const char *TAG = "xst";
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 #define LOCK()   portENTER_CRITICAL(&s_mux)
 #define UNLOCK() portEXIT_CRITICAL(&s_mux)
+#endif
 
 static char s_call[10];
 static int  s_tz_off;
@@ -99,15 +116,21 @@ static void dev_upsert(const char *call, const char *bearer, int rssi,
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     LOCK();
     int slot = -1, oldest = 0;
+    bool same = false;
     for (int i = 0; i < XST_SEEN_MAX; i++) {
         if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0) {
             slot = i;
+            same = true;
             break;
         }
         if (!s_seen[i].call[0]) { if (slot < 0) slot = i; }
         else if (s_seen[i].last_ms < s_seen[oldest].last_ms) oldest = i;
     }
     if (slot < 0) slot = oldest;
+    /* A new occupant inherits nothing: the bucket is hysteretic against what
+     * was last said about THIS station, and the previous tenant's answer is
+     * not that. */
+    if (!same) s_seen[slot].q = 0xff;
     snprintf(s_seen[slot].call, sizeof s_seen[slot].call, "%s", call);
     snprintf(s_seen[slot].bearer, sizeof s_seen[slot].bearer, "%s", bearer);
     s_seen[slot].rssi = rssi;
@@ -292,29 +315,138 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
     return n;
 }
 
-int xst_hears_render(const char *bearer, int ttl_sec,
-                     char *out, int cap, int *total)
+int xst_signal_bucket(int rssi, uint8_t was)
+{
+    int b = (rssi + 100) * 10 / 70;      /* 7 dB a step, from -100 dBm */
+    if (b < 0) b = 0;
+    if (b > 9) b = 9;
+    if (was > 9) return b;               /* nothing to be sticky against */
+    if (b == (int)was) return b;
+    /* Half a step of stickiness. A neighbour parked on a boundary would
+     * otherwise retype the beacon every minute, and a beacon that differs
+     * every minute is a new archive record every minute (xi_presence_hash),
+     * which is the flood the whole bucket exists to avoid. */
+    int edge = -100 + 7 * (b > (int)was ? (int)was + 1 : (int)was);
+    if (b > (int)was && rssi < edge + 3) return (int)was;
+    if (b < (int)was && rssi > edge - 3) return (int)was;
+    return b;
+}
+
+/* Remember what we just said about a neighbour, so the next answer can be
+ * sticky against it. Silent when the row has since been evicted. */
+static void dev_set_q(const char *call, uint8_t q)
+{
+    LOCK();
+    for (int i = 0; i < XST_SEEN_MAX; i++) {
+        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0) {
+            s_seen[i].q = q;
+            break;
+        }
+    }
+    UNLOCK();
+}
+
+/* Section 2: `X3` is a station, relay or unattended equipment, `X4` a device
+ * under a controller, `X1` a person, `X5` a group. When the list is cut, the
+ * relays are what a reader planning a route actually needed. */
+static int class_rank(const char *call)
+{
+    if (call[0] != 'X' && call[0] != 'x') return 4;
+    switch (call[1]) {
+    case '3': return 0;
+    case '4': return 1;
+    case '1': return 2;
+    default:  return 3;
+    }
+}
+
+int xst_hears_render(const char *bearer, int ttl_sec, int budget,
+                     char *calls, int calls_cap, int *total,
+                     char *q, int q_cap)
 {
     if (total) *total = 0;
-    if (!out || cap <= 0) return 0;
-    out[0] = 0;
+    if (q && q_cap > 0) q[0] = 0;
+    if (!calls || calls_cap <= 0) return 0;
+    calls[0] = 0;
+
     xst_dev_t rows[XST_SEEN_MAX];
-    int n = xst_devices(rows, XST_SEEN_MAX, ttl_sec);   /* freshest first */
-    ESP_LOGI("xst", "hears(%s): %d fresh rows%s%s%s", bearer ? bearer : "*",
-             n, n > 0 ? " [0]=" : "", n > 0 ? rows[0].call : "",
-             n > 0 ? rows[0].bearer : "");
-    int w = 0, count = 0;
+    int n = xst_devices(rows, XST_SEEN_MAX, ttl_sec);
+
+    /* Direct, and on this bearer: a claim about one radio proven on another
+     * is the lie 10.6.1 discards a packet for. */
+    xst_dev_t cand[XST_SEEN_MAX];
+    uint8_t   dig[XST_SEEN_MAX];
+    int  m = 0;
+    bool all_signal = true;
     for (int i = 0; i < n; i++) {
-        if (rows[i].hops != 0) continue;                 /* direct only */
+        if (rows[i].hops != 0) continue;
         if (bearer && bearer[0] && strcmp(rows[i].bearer, bearer) != 0)
-            continue;                                    /* per-bearer truth */
-        count++;
-        int need = (int)strlen(rows[i].call) + (w ? 1 : 0);
-        if (w + need >= cap) continue;   /* truncated; total keeps counting */
-        if (w) out[w++] = ',';
-        w += snprintf(out + w, (size_t)(cap - w), "%s", rows[i].call);
+            continue;
+        cand[m++] = rows[i];
+        if (!rows[i].rssi) all_signal = false;   /* the LAN has none */
     }
-    if (total) *total = count;
+    if (total) *total = m;      /* 10.6.4: the true count, cut list or not */
+    ESP_LOGI(TAG, "hears(%s): %d of %d fresh, signal=%s",
+             bearer ? bearer : "*", m, n, all_signal ? "yes" : "no");
+    if (m == 0) return 0;
+
+    /* The bucket is computed for every candidate even when it will not be
+     * said, so the hysteresis keeps settling while the list is too long to
+     * carry digits -- otherwise tier 2 would leave it frozen. */
+    for (int i = 0; i < m; i++) {
+        int b = cand[i].rssi ? xst_signal_bucket(cand[i].rssi, cand[i].q) : 0;
+        dig[i] = (uint8_t)b;
+        if (cand[i].rssi) dev_set_q(cand[i].call, (uint8_t)b);
+    }
+
+    /* Most useful first (10.6.3 leaves the criterion to the sender): class,
+     * then loudest, then freshest. Insertion sort; m <= 16. */
+    for (int i = 1; i < m; i++) {
+        xst_dev_t v = cand[i];
+        uint8_t   d = dig[i];
+        int vr = class_rank(v.call);
+        int j = i - 1;
+        while (j >= 0) {
+            int jr = class_rank(cand[j].call);
+            bool after = (jr > vr) ||
+                         (jr == vr && dig[j] < d) ||
+                         (jr == vr && dig[j] == d && cand[j].last_ms < v.last_ms);
+            if (!after) break;
+            cand[j + 1] = cand[j];
+            dig[j + 1]  = dig[j];
+            j--;
+        }
+        cand[j + 1] = v;
+        dig[j + 1]  = d;
+    }
+
+    /* Comma-joined length of the first k callsigns. */
+    int len[XST_SEEN_MAX + 1];
+    len[0] = 0;
+    for (int k = 1; k <= m; k++)
+        len[k] = len[k - 1] + (int)strlen(cand[k - 1].call) + (k > 1 ? 1 : 0);
+
+    /* The ladder. ` hears:` costs 7 and ` zhq:` costs 5; a digit costs 1. */
+    bool want_q = all_signal && q && q_cap > m;
+    int  k = m;
+    bool with_q = want_q &&
+                  7 + len[m] + 5 + m <= budget &&
+                  len[m] < calls_cap;
+    if (!with_q) {
+        /* Signal is what gives way first, and only then callsigns. */
+        while (k > 0 && (7 + len[k] > budget || len[k] >= calls_cap)) k--;
+    }
+    if (k == 0) return 0;
+
+    int w = 0;
+    for (int i = 0; i < k; i++) {
+        if (w) calls[w++] = ',';
+        w += snprintf(calls + w, (size_t)(calls_cap - w), "%s", cand[i].call);
+    }
+    if (with_q) {
+        for (int i = 0; i < k; i++) q[i] = (char)('0' + dig[i]);
+        q[k] = 0;
+    }
     return w;
 }
 
@@ -623,3 +755,13 @@ void xst_stats_save(const char *path)
     fwrite(&bl, sizeof bl, 1, f);
     fclose(f);
 }
+
+#ifdef XST_HOST_TEST
+/* Boot is once on a station and the rings start zeroed with it; a test runs
+ * a dozen stations in one process and needs that zero back between them. */
+void xst_test_reset(void)
+{
+    memset(s_seen, 0, sizeof s_seen);
+    memset(s_chat, 0, sizeof s_chat);
+}
+#endif
