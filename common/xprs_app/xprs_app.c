@@ -1072,6 +1072,8 @@ static int observation_beacon(const char *bearer, char *out, int cap)
                      s_call, bearer, total);
     if (hn > 0 && n > 0 && n < cap)
         n += snprintf(out + n, (size_t)(cap - n), " hears:%s", hears);
+    ESP_LOGI(TAG, "obs %s: total=%d hn=%d hears=\"%s\"", bearer, total, hn,
+             hears);
     return n;
 }
 
@@ -1105,6 +1107,34 @@ static void air_ble_beacon(void)
     n = sign_wire(wire, n, (int)sizeof wire);
     if (!xprsble_send(wire, n))
         ESP_LOGW(TAG, "BLE5 beacon refused by the radio");
+}
+
+/* A SIGNED observation per wired bearer, from the status task -- the one
+ * task sized for the signature (see its 6 KB note). The bearers' own
+ * unsigned beacons keep their job (they pump the re-air queues); these are
+ * the copies whose hears: a stranger's gossip may believe (36.9.4: an
+ * unsigned claim feeds nothing). Every minute, and only when there is
+ * something to claim -- an empty hears: signed is airtime for nobody. */
+static void air_signed_observations(void)
+{
+    if (!s_call[0]) return;
+    /* One observation PER BEARER (link: names the radio the claim is
+     * about, 10.6.1) -- and each is fanned over EVERY transmit lane,
+     * because a reachability claim is gossip (36.9.4) and gossip travels:
+     * the worked example of 36.6 is exactly a ble observation fetched over
+     * the internet. Without the fan-out, "X3R8XX hears X1A67X on ble" was
+     * a fact only other BLE listeners could ever learn. */
+    static const char *k_bearers[] = { "ble", "lan", "espnow" };
+    for (int i = 0; i < 3; i++) {
+        char wire[XPRS_MAX_WIRE + 1];
+        int n = observation_beacon(k_bearers[i], wire, (int)sizeof wire);
+        if (n <= 0 || n > XPRS_MAX_WIRE) continue;
+        if (!strstr(wire, " hears:")) continue;
+        n = sign_wire(wire, n, (int)sizeof wire);
+        xprslan_send(wire, n);
+        xprsnow_send(wire, n);
+        if (xprsrns_is_up()) xprsrns_send(wire, n);
+    }
 }
 
 /* ── Meeting on a working channel (§23.7) ───────────────────────────────── */
@@ -1208,6 +1238,8 @@ static void status_task(void *arg)
          * has not heard is a station it cannot ask, so this is the one cadence
          * that decides whether an off-grid device catches up at all. */
         if (n % 60 == 0) air_ble_beacon();
+        /* The signed hears: observations, same cadence, same task. */
+        if (n % 120 == 60) air_signed_observations();
 
         /* Rollback self-test (25.8). A new image is on probation until it
          * has held together for two minutes: the API listening, a bearer

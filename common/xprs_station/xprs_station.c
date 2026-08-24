@@ -300,6 +300,9 @@ int xst_hears_render(const char *bearer, int ttl_sec,
     out[0] = 0;
     xst_dev_t rows[XST_SEEN_MAX];
     int n = xst_devices(rows, XST_SEEN_MAX, ttl_sec);   /* freshest first */
+    ESP_LOGI("xst", "hears(%s): %d fresh rows%s%s%s", bearer ? bearer : "*",
+             n, n > 0 ? " [0]=" : "", n > 0 ? rows[0].call : "",
+             n > 0 ? rows[0].bearer : "");
     int w = 0, count = 0;
     for (int i = 0; i < n; i++) {
         if (rows[i].hops != 0) continue;                 /* direct only */
