@@ -176,3 +176,9 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 # card and the deepest store, and it was the one building without it.
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
+
+# XPRS over Reticulum. This board dials a hub in its router role ([ble]
+# enabled = no), and until this was set it decoded ANNOUNCES off that hub for
+# its dashboard and dropped every XPRS packet -- so the deepest archive in the
+# fleet was announcing itself to the room it stood in and nowhere else.
+CONFIG_XPRS_BEARER_RNS=y

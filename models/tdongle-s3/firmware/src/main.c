@@ -96,6 +96,8 @@
 #include "xprschan.h"
 #include "rns_tcp.h"
 #include "xgossip.h"
+#include "xprsrns.h"
+#include "xcadence.h"
 #include "xprssig.h"
 #include "bech32.h"
 #include <ctype.h>
@@ -214,6 +216,7 @@ static void handle_aprs(const uint8_t *payload, int len, int rssi);
 #define XPRS_BEARER_BLE 1
 #define XPRS_BEARER_LAN 2
 #define XPRS_BEARER_NOW 3
+#define XPRS_BEARER_RNS 4
 static void igate_heard_add(const char *call, uint8_t bearer);
 static int  xprs_hears_render(uint8_t bearer, char *out, int cap, int *total);
 static bool xprs_verify_sig(const xprs_t *p, const uint8_t pub[32]);
@@ -1187,9 +1190,88 @@ static void xprs_update_answer(void)
 static struct {
     char call[16];
     uint32_t since;
+    uint32_t until;
     int bearer;
     volatile bool pending;
 } s_cu;
+
+/*
+ * One row per archiver, its own cadence and its own continuation mark -- the
+ * same client the shared app got, because this board had the same two holes.
+ * It could not page: the ask carried only `since:` and a `code:206` was never
+ * acted on, so it took one page from a peer and stopped. And it asked every
+ * archiver on the same ten-minute clock however busy or dead the room was.
+ *
+ * On a station that now holds a hub connection this is not a nicety: the
+ * peers it can reach are no longer just the ones in the room, and the ones
+ * across the hub are exactly the ones with a day of history it has not got.
+ */
+#define CU_PEERS 6
+typedef struct {
+    char     call[16];
+    int      bearer;
+    uint32_t interval_s;
+    uint32_t next_ask_s;
+    uint32_t last_news_s;
+    uint32_t ask_at_s;
+    uint32_t since;
+    uint32_t resume;
+    uint32_t oldest_seen;
+    uint16_t rows;
+    bool     super;
+    bool     await;
+    bool     used;
+} cu_peer_t;
+static cu_peer_t s_cu_peers[CU_PEERS];
+
+static cu_peer_t *cu_find(const char *call, bool create)
+{
+    cu_peer_t *freerow = NULL, *oldest = &s_cu_peers[0];
+    for (int i = 0; i < CU_PEERS; i++) {
+        cu_peer_t *r = &s_cu_peers[i];
+        if (r->used && strcasecmp(r->call, call) == 0) return r;
+        if (!r->used && !freerow) freerow = r;
+        if (r->used && r->next_ask_s < oldest->next_ask_s) oldest = r;
+    }
+    if (!create) return NULL;
+    cu_peer_t *r = freerow ? freerow : oldest;
+    memset(r, 0, sizeof *r);
+    snprintf(r->call, sizeof r->call, "%s", call);
+    r->interval_s = xcadence_initial();
+    r->used = true;
+    return r;
+}
+
+/* An always-on station archives whether or not anybody is looking, so the
+ * phone's hidden floor does not map: what bounds this one is the PEER's
+ * budget. */
+static void cu_answered(cu_peer_t *r, xc_answer_t a, uint32_t now_s)
+{
+    const uint32_t silent = r->last_news_s ? now_s - r->last_news_s : 0;
+    r->interval_s = xcadence_next(r->interval_s, a,
+                                  r->super ? XC_FAST : XC_ORDINARY,
+                                  true, silent);
+    r->next_ask_s = now_s + xcadence_jitter(r->interval_s, now_s);
+    r->await = false;
+    r->rows = 0;
+    r->oldest_seen = 0;
+    if (a == XC_NEWS) r->last_news_s = now_s;
+}
+
+/* The window a chain starts from: where the archive stopped, or -- when
+ * there is no archive yet -- a bounded day back, because a station with an
+ * empty store has missed everything rather than nothing. */
+#define CU_BOOTSTRAP_SEC (24u * 3600u)
+static uint32_t cu_since_floor(void)
+{
+    const uint32_t newest = s_xprs_index
+        ? xprsindex_boot_newest_ts(s_xprs_index) : 0;
+    if (newest) return newest;
+    const time_t nowt = time(NULL);
+    if (nowt < 1700000000) return 0;
+    return (uint32_t)nowt > CU_BOOTSTRAP_SEC
+        ? (uint32_t)nowt - CU_BOOTSTRAP_SEC : 0;
+}
 
 static void xprs_catchup_maybe(const xprs_t *p, int bearer)
 {
@@ -1206,16 +1288,144 @@ static void xprs_catchup_maybe(const xprs_t *p, int bearer)
     if (!s_xprs_index || !s_aprs_call[0]) return;
     time_t nowt = time(NULL);
     if (nowt < 1700000000) return;                /* no clock, no since: */
-    uint32_t newest = xprsindex_boot_newest_ts(s_xprs_index);
-    if (!newest) return;                          /* empty store */
-    if (!xst_catchup_due(from, 600)) return;
+    const uint32_t newest = cu_since_floor();
+    if (!newest) return;
+
+    cu_peer_t *r = cu_find(from, true);
+    if (!r) return;
+    /* Only `super` earns the fast floor: asking an ordinary peer faster
+     * steals its whole cross-caller allowance (31.2, 36.9.4). */
+    r->super = strstr(sv, "super") != NULL;
+    r->bearer = bearer;
+
+    const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    if (r->await) return;
+    if (r->next_ask_s && now_s < r->next_ask_s) return;
+    if (!r->next_ask_s && !xst_catchup_due(from, 600)) return;
+
     /* Park it. Signing is several KB of secp256k1 stack, and this runs on
      * a 5 KB bearer task -- relay_task (8 KB) builds and airs the ask. */
     if (s_cu.pending) return;
+    if (!r->resume) r->since = newest;
     snprintf(s_cu.call, sizeof s_cu.call, "%s", from);
-    s_cu.since = newest;
+    s_cu.since = r->since;
+    s_cu.until = r->resume;
     s_cu.bearer = bearer;
     s_cu.pending = true;
+    r->await = true;
+    r->ask_at_s = now_s;
+    r->rows = 0;
+    r->oldest_seen = 0;
+}
+
+/*
+ * The other half of 36.10: what came back.
+ *
+ * A replay arrives as ordinary heard traffic -- the authors' wires, not the
+ * peer's -- so what marks it as OUR page is that the peer we asked is still
+ * awaiting an answer. Count the rows and keep the oldest ts, because that ts
+ * is the `until:` a 206 continues from.
+ */
+static void xprs_catchup_heard(const xprs_t *p)
+{
+    char from[16];
+    if (!xprs_get_str(p, "f", from, sizeof from) || !from[0]) return;
+    cu_peer_t *r = cu_find(from, false);
+    if (!r || !r->await) return;
+    const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+
+    char type[16];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "result") != 0) {
+        char tsbuf[24];
+        if (!xprs_get_str(p, "ts", tsbuf, sizeof tsbuf)) return;
+        const uint32_t ts = xprsindex_ts_to_epoch(tsbuf, (int)strlen(tsbuf));
+        if (!ts) return;
+        if (r->rows < 0xFFFF) r->rows++;
+        if (!r->oldest_seen || ts < r->oldest_seen) r->oldest_seen = ts;
+        return;
+    }
+
+    char rto[16], code[8];
+    if (!xprs_get_str(p, "d", rto, sizeof rto)) return;
+    if (strcasecmp(rto, s_aprs_call) != 0) return;
+    if (!xprs_get_str(p, "code", code, sizeof code)) return;
+    const int c = atoi(code);
+    if (c == 202) return;                       /* "starting": not an answer */
+
+    if (c == 429) {
+        ESP_LOGI(TAG, "catch-up: %s refused us (429)", from);
+        r->resume = 0;
+        cu_answered(r, XC_REFUSED, now_s);
+        return;
+    }
+    if (c == 206 && r->oldest_seen) {
+        /* A continuation must MAKE PROGRESS (25.2.1). A peer that answers
+         * the same window with the same page is stalled, not busy, and
+         * reading that as activity would have us ask it faster and faster
+         * forever -- the load 36.10.2 exists to prevent. */
+        if (r->resume && r->oldest_seen >= r->resume) {
+            ESP_LOGW(TAG, "catch-up: %s made no progress at %lu - "
+                     "ending the chain", from, (unsigned long)r->resume);
+            r->resume = 0;
+            cu_answered(r, XC_QUIET, now_s);
+            return;
+        }
+        r->resume = r->oldest_seen;
+        r->last_news_s = now_s;
+        r->await = false;
+        r->rows = 0;
+        r->oldest_seen = 0;
+        r->next_ask_s = now_s;              /* the cadence paces CHAINS */
+        ESP_LOGI(TAG, "catch-up: %s has more, continuing until %lu",
+                 from, (unsigned long)r->resume);
+        return;
+    }
+    const bool news = r->rows > 0;
+    r->resume = 0;
+    cu_answered(r, news ? XC_NEWS : XC_QUIET, now_s);
+    ESP_LOGI(TAG, "catch-up: %s answered %d with %u row(s); next in %lus",
+             from, c, (unsigned)(news ? r->rows : 0),
+             (unsigned long)r->interval_s);
+}
+
+/* Whose turn is it, and has anybody gone silent on us? relay_task only.
+ * The beacon that introduces an archiver cannot pace the asking -- a peer
+ * beacons every ten minutes, so a beacon-driven cadence could never be
+ * faster than that however busy the room got. */
+static void xprs_catchup_tick(void)
+{
+    const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    for (int i = 0; i < CU_PEERS; i++) {
+        cu_peer_t *r = &s_cu_peers[i];
+        if (!r->used || !r->await) continue;
+        if (now_s - r->ask_at_s < 120) continue;
+        /* `await` left set forever is how a station stops catching up with
+         * no error anywhere. */
+        ESP_LOGW(TAG, "catch-up: %s never answered - backing off", r->call);
+        r->resume = 0;
+        cu_answered(r, XC_QUIET, now_s);
+    }
+    if (s_cu.pending || !s_xprs_index) return;
+    for (int i = 0; i < CU_PEERS; i++) {
+        cu_peer_t *r = &s_cu_peers[i];
+        if (!r->used || r->await || !r->next_ask_s) continue;
+        if (now_s < r->next_ask_s) continue;
+        if (!r->since) {
+            r->since = cu_since_floor();
+            if (!r->since) continue;
+        }
+        snprintf(s_cu.call, sizeof s_cu.call, "%s", r->call);
+        s_cu.since = r->since;
+        s_cu.until = r->resume;
+        s_cu.bearer = r->bearer;
+        s_cu.pending = true;
+        r->await = true;
+        r->ask_at_s = now_s;
+        r->rows = 0;
+        r->oldest_seen = 0;
+        break;                              /* one ask in flight at a time */
+    }
 }
 
 /* Build, sign and air the parked catch-up ask. relay_task only. */
@@ -1230,10 +1440,19 @@ static void xprs_catchup_air(void)
     time_t nowt = time(NULL);
     gmtime_r(&nowt, &tmv);
     strftime(nowts, sizeof nowts, "%Y-%m-%d_%H:%M:%S", &tmv);
+    char until[32] = "";
+    if (s_cu.until) {
+        /* Continuing a 206: serve what is OLDER than this. */
+        char u[24];
+        time_t tu = (time_t)s_cu.until;
+        gmtime_r(&tu, &tmv);
+        strftime(u, sizeof u, "%Y-%m-%d_%H:%M:%S", &tmv);
+        snprintf(until, sizeof until, " until:%s", u);
+    }
     char ask[XPRS_MAX_WIRE + 1];
     int an = snprintf(ask, sizeof ask,
-                      "t:command f:%s d:%s ts:%s cmd:history since:%s",
-                      s_aprs_call, s_cu.call, nowts, since);
+                      "t:command f:%s d:%s ts:%s cmd:history since:%s%s",
+                      s_aprs_call, s_cu.call, nowts, since, until);
     if (an > 0 && an < (int)sizeof ask) {
         an = xprs_sign_wire(ask, an, (int)sizeof ask);
         if (s_cu.bearer == 0)                    xprs_air(ask, an, SUBTYPE_XPRS);
@@ -1754,6 +1973,7 @@ static void xprs_from_bearer(const char *wire, int len, int rssi,
             xdiag_park_parsed(&hp, wire, len,
                               bearer == XPRS_BEARER_LAN ? "lan" : "espnow");
             xprs_catchup_maybe(&hp, bearer);
+            xprs_catchup_heard(&hp);
             /* The screen's stores (xprs_station): every hearing counts,
              * relayed copies included, exactly as the m5stack banks them. */
             xst_ingest_parsed(&hp, bearer == XPRS_BEARER_LAN ? "lan"
@@ -1824,6 +2044,13 @@ static void xprs_from_now(const char *wire, int len, const uint8_t mac[6],
 /* Set from the socket task, acted on by relay_task — see rns_from_hub(). */
 static volatile bool s_hub_announce_pending;
 
+/* An XPRS wire off Reticulum. Same door as the LAN and ESP-NOW bearers:
+ * whatever this station does with a heard packet, it does with this one. */
+static void rns_wire_in(const char *wire, int len)
+{
+    if (wire && len > 0) xprs_from_bearer(wire, len, 0, XPRS_BEARER_RNS, "rns");
+}
+
 static void rns_from_hub(const uint8_t *frame, size_t len, void *ctx)
 {
     (void)ctx;
@@ -1838,6 +2065,11 @@ static void rns_from_hub(const uint8_t *frame, size_t len, void *ctx)
         return;
     }
     handle_rns_packet(frame, (int)len, 0);
+    /* The same frame, to the XPRS bearer. handle_rns_packet above reads
+     * ANNOUNCES only -- it is the "who is in range" dashboard -- and drops
+     * everything else on the floor, which is why no XPRS packet has ever
+     * crossed this board's hub in either direction. */
+    xprsrns_feed(frame, len);
 }
 
 /* Somebody on the LAN aired a packet — including a repeat the rx path drops.
@@ -2044,6 +2276,11 @@ static void xprs_service_air(void)
     xprs_air(wire, len, SUBTYPE_XPRS);
     xprslan_send(wire, len);
     xprsnow_send(wire, len);
+    /* And where the internet can hear it. Until this line the deep archive
+     * on this board announced itself to the room it was standing in and
+     * nowhere else, which for the station 36.12.2 leans on is the whole
+     * point missed. */
+    if (xprsrns_is_up()) xprsrns_send(wire, len);
     if (s_xprs_index) {
         xprsindex_add(s_xprs_index, wire, len, 0, true, (uint32_t)time(NULL));
     }
@@ -2882,6 +3119,7 @@ static void handle_xprs(const uint8_t *payload, int len, int rssi,
 
     xprs_update_maybe(&p, "ble");
     xprs_catchup_maybe(&p, 0);
+    xprs_catchup_heard(&p);
     /* The screen's stores: devices, chat, rx/device stats (xprs_station,
      * shared with the m5stack). Cheap ring writes, so from this task too. */
     xst_ingest_parsed(&p, "ble", rssi);
@@ -3216,6 +3454,7 @@ static void relay_task(void *arg)
 #endif
         }
         uint32_t t = now_sec();
+        xprs_catchup_tick();  /* whose turn, and who has gone quiet on us */
         xprs_catchup_air(); /* parked 36.10 ask: signed on THIS stack */
 
         /* A hub learns nothing about a station that has not spoken since it
@@ -4592,6 +4831,9 @@ void app_main(void)
         } else {
             ESP_LOGI(TAG, "router role: dialling %s",
                      hub[0] ? hub : "the default hub");
+            /* Speak XPRS over it. Attach rather than init: rns_from_hub
+             * owns the one receive-callback slot and feeds the bearer. */
+            xprsrns_attach(rns_wire_in);
         }
     } else {
         ESP_LOGI(TAG, "BLE on, so no hub link: local RF and the card "

@@ -346,6 +346,52 @@ void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced, uint32_t *other)
 
 /* ── Bring-up ───────────────────────────────────────────────────────────── */
 
+/* Everything that is about THIS station rather than about the transport:
+ * the identity, the destination it listens on, the pacing. Shared by both
+ * entry points below. */
+static bool xprsrns_setup(xprsrns_wire_cb_t cb)
+{
+    s_pace_ms = atoi(xcfg_get("rns_pace_ms", "1100"));
+    if (s_pace_ms < 100) s_pace_ms = 100;
+
+    if (!identity_load()) {
+        ESP_LOGE(TAG, "no identity -- bearer stays down");
+        return false;
+    }
+    const char *aspects[] = { "wapp" };
+    rns_name_hash("xprs", aspects, 1, s_wapp_name);
+    rns_destination_hash(s_wapp_name, s_id.hash, s_wapp_dest);
+
+    s_cb = cb;
+    if (!s_tx_lock) s_tx_lock = xSemaphoreCreateMutex();
+    return true;
+}
+
+void xprsrns_attach(xprsrns_wire_cb_t cb)
+{
+    /*
+     * For a board whose Reticulum transport is already running and whose own
+     * code owns the hub's receive callback -- there is exactly one of those
+     * slots, so a bearer that grabbed it would silently unhook whatever was
+     * there. That board feeds frames in with xprsrns_feed() instead.
+     *
+     * The identity is this component's own, under its own NVS namespace, and
+     * the destination is `xprs.wapp` -- the one the rest of the fleet
+     * listens on. A station that speaks XPRS on a destination nobody else
+     * subscribes to is not on the network, however connected it looks.
+     */
+    if (s_ready) return;
+    if (!xprsrns_setup(cb)) return;
+    s_ready = true;
+    ESP_LOGI(TAG, "attached to a running uplink, dest %02x%02x%02x%02x..",
+             s_wapp_dest[0], s_wapp_dest[1], s_wapp_dest[2], s_wapp_dest[3]);
+}
+
+void xprsrns_feed(const uint8_t *frame, size_t len)
+{
+    if (s_ready && frame && len) on_frame(frame, len, NULL);
+}
+
 void xprsrns_init(xprsrns_wire_cb_t cb)
 {
     const char *hub = xcfg_get("rns_hub", "");
@@ -353,19 +399,7 @@ void xprsrns_init(xprsrns_wire_cb_t cb)
         ESP_LOGI(TAG, "idle: no rns_hub configured");
         return;
     }
-    s_pace_ms = atoi(xcfg_get("rns_pace_ms", "1100"));
-    if (s_pace_ms < 100) s_pace_ms = 100;
-
-    if (!identity_load()) {
-        ESP_LOGE(TAG, "no identity -- bearer stays down");
-        return;
-    }
-    const char *aspects[] = { "wapp" };
-    rns_name_hash("xprs", aspects, 1, s_wapp_name);
-    rns_destination_hash(s_wapp_name, s_id.hash, s_wapp_dest);
-
-    s_cb = cb;
-    s_tx_lock = xSemaphoreCreateMutex();
+    if (!xprsrns_setup(cb)) return;
 
     /* "host" or "host:port". */
     char host[96];

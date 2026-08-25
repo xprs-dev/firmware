@@ -48,6 +48,18 @@ typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
  */
 void xprsrns_init(xprsrns_wire_cb_t cb);
 
+/**
+ * @brief Come up on a Reticulum transport somebody else already started.
+ *
+ * There is one receive-callback slot on the uplink, so a board whose own
+ * code owns it cannot use xprsrns_init() -- that would unhook it silently.
+ * Such a board calls this and then hands every hub frame to xprsrns_feed().
+ */
+void xprsrns_attach(xprsrns_wire_cb_t cb);
+
+/** One frame off the uplink, for a board that owns the receive callback. */
+void xprsrns_feed(const uint8_t *frame, size_t len);
+
 /** Air one wire as a signed wapp announce. False when the uplink is down,
  *  the wire does not fit, or the bearer is idle. Paced internally.
  *
@@ -98,6 +110,8 @@ void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
 
 typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
 static inline void xprsrns_init(xprsrns_wire_cb_t cb) { (void)cb; }
+static inline void xprsrns_attach(xprsrns_wire_cb_t cb) { (void)cb; }
+static inline void xprsrns_feed(const uint8_t *f, size_t n) { (void)f; (void)n; }
 static inline bool xprsrns_send(const char *wire, int len)
 { (void)wire; (void)len; return false; }
 static inline bool xprsrns_send_to(const char *c, const char *wire, int len)
