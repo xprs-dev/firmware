@@ -1,6 +1,6 @@
 # ESP32-S3 with a 1.54" e-paper display
 
-An e-paper station. The display driver is `geogram_epaper_1in54` in `common/`.
+An e-paper station. The display driver is `xprs_epaper_1in54` in `common/`.
 
 ## What is in here
 
@@ -21,6 +21,6 @@ cd ../../multiboard
 ```
 
 One `src/main.cpp` serves all eight targets in that project; what makes this
-board itself is `sdkconfig.esp32s3_epaper_1in54` here and the `geogram_model_*` component it
+board itself is `sdkconfig.esp32s3_epaper_1in54` here and the `xprs_model_*` component it
 selects from `common/`.
 

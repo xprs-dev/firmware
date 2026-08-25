@@ -56,18 +56,18 @@ Each board's own README says which of the two applies and why.
 
 ## Shared code
 
-`common/` holds the component library, `geogram_*` by prefix. The XPRS pieces
-are `geogram_xprs` (the codec), `geogram_xprsbearer` (the queue, the duplicate
-rings, the relay decision, shared by every bearer), `geogram_xprslan`,
-`geogram_xprsnow`, `geogram_xprschan` (meeting on a working channel, spec
-section 23.7), `geogram_xprsid`, `geogram_xprssig` and `geogram_xprsindex`.
+`common/` holds the component library, `xprs_*` by prefix. The XPRS pieces
+are `xprs_codec` (the codec), `xprs_bearer` (the queue, the duplicate
+rings, the relay decision, shared by every bearer), `xprs_bearer_lan`,
+`xprs_bearer_now`, `xprs_chan` (meeting on a working channel, spec
+section 23.7), `xprs_id`, `xprs_sig` and `xprs_index`.
 
 Projects take them by symlink rather than by copy, so a fix reaches every board
 that uses it. Several components carry **host test suites** that build with gcc
 and need no hardware:
 
 ```sh
-cd common/geogram_xprssig && ./test_xprssig_host.sh
+cd common/xprs_sig && ./test_xprssig_host.sh
 ```
 
 Run those before flashing anything. A state machine is the wrong thing to debug
@@ -90,4 +90,4 @@ frame; see [`docs/espnow.md`](docs/espnow.md).
 
 This tree was developed inside the Aurora application repository as `aurora/esp32`
 and moved here when the project took the XPRS name. Its earlier history is in
-`geograms/geogram-esp32`.
+`xprss/xprs-esp32`.

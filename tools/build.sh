@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Geogram ESP32 Firmware Builder
+# XPRS ESP32 Firmware Builder
 # Interactive menu to select which firmware target to build
 # =============================================================================
 
@@ -37,7 +37,7 @@ ACTION="build"
 print_header() {
     echo ""
     echo "================================================"
-    echo "  Geogram ESP32 Firmware Builder"
+    echo "  XPRS ESP32 Firmware Builder"
     echo "================================================"
     echo ""
 }

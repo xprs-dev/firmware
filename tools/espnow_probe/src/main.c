@@ -177,7 +177,7 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     (void)arg; (void)base; (void)data;
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
         /* The whole point of `leave` is that nothing puts us back. On the real
-         * firmware this is geogram_wifi_hold_reconnect(). */
+         * firmware this is xprs_wifi_hold_reconnect(). */
         if (s_want_reconnect) esp_wifi_connect();
         else ESP_LOGW(TAG, "disconnected, and staying that way");
     }

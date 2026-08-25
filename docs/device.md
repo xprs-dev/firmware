@@ -9,7 +9,7 @@ specification (docs/XPRS.md).
 ## 1. Bearers
 
 At least one short-range bearer, per the chip's ability (radio table in
-esp32.md): ESP-NOW (`geogram_xprsnow`), WiFi/LAN UDP (`geogram_xprslan`),
+esp32.md): ESP-NOW (`xprs_bearer_now`), WiFi/LAN UDP (`xprs_bearer_lan`),
 BLE5 extended advertising on -S3 chips (subtype 0x58). Everything heard on
 one bearer is offered to the others; the bearer components own the via:
 discipline, the random re-air delay and the 13.2.1 stand-down.
@@ -29,12 +29,12 @@ A periodic `t:observation` beacon reports what this station directly hears
 - Answer `cmd:history` within the serving budget (25.2, 31), on the
   bearer the ask arrived on.
 - When storage exists (SD card or a flash FAT partition): index every
-  heard packet (36, `geogram_xprsindex`), verify signatures against heard
+  heard packet (36, `xprs_index`), verify signatures against heard
   identities, announce `t:service serve:archive` with the archived
   count (36.9), and serve the XDIR1 directory.
 - Where a mesh custody plane exists (BLE5 boards): park store-and-forward
-  mail for absent stations and release it on sight (`geogram_blemesh`).
-- Sign what the station says when it holds a key (`geogram_xprssig`);
+  mail for absent stations and release it on sight (`xprs_blemesh`).
+- Sign what the station says when it holds a key (`xprs_sig`);
   a keyless station transmits unsigned and says so (37).
 
 ## 3. HTTP API

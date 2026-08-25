@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 AFSK demodulator test suite — exact Python replica of the ESP32 C demodulator
-in esp32/components/geogram_sa818/sa818_radio.c.
+in esp32/components/xprs_sa818/sa818_radio.c.
 
 Tests:
   1. Synthetically generated AFSK signal at 9600 Hz (clean, centered)

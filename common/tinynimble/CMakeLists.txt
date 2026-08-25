@@ -11,7 +11,7 @@
 # component registers with an EMPTY include_dirs -- so on a board with no
 # Bluetooth it cannot compile. Drop it there and keep tn_hci.c, which is
 # IDF-free by design and costs nothing: the component still resolves for
-# anything that REQUIRES it, and geogram_xprsble stubs itself out under the
+# anything that REQUIRES it, and xprs_bearer_ble stubs itself out under the
 # same condition.
 set(tn_srcs "tn_hci.c")
 if(CONFIG_BT_ENABLED)

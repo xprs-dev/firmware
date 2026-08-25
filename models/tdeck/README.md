@@ -2,7 +2,7 @@
 
 An XPRS station on a T-Deck: ESP32-S3, a 320x240 ST7789, a trackball, an I2C
 QWERTY keyboard, and an SX1262 on 868 MHz -- the station's third bearer,
-behind the same relay rules as ESP-NOW and the LAN (`common/geogram_xprslora`).
+behind the same relay rules as ESP-NOW and the LAN (`common/xprs_bearer_lora`).
 Validated deck-to-deck on the bench: the same signed packet arriving once by
 WiFi and once by RF, the RF copy wearing an RSSI and an SNR.
 
@@ -136,8 +136,8 @@ station kept its identity.
 
 ## The boot splash
 
-The Geogram triad, drawn as strokes rather than stored as a picture: the ten
-shapes in `spec/artwork/splash/geogram-triad-dark.svg` are a coordinate table
+The XPRS triad, drawn as strokes rather than stored as a picture: the ten
+shapes in `spec/artwork/splash/xprs-triad-dark.svg` are a coordinate table
 in `common/xprs_art/` (212 bytes of `.rodata`) and ten `lv_line` objects, the
 same idiom the radar's rings use. A 320x240 RGB565 bitmap would have been
 153,600 bytes and useless on the T-Dongle's 160x80 panel.

@@ -13,7 +13,7 @@ WHY THIS EXISTS
     the 11 MB FAT archive.
 
 BYTE ORDER -- READ THIS BEFORE BLAMING THE COLOURS
-    geogram_st7789's st7789_flush() does NO byte swapping: it hands the
+    xprs_st7789's st7789_flush() does NO byte swapping: it hands the
     buffer straight to spi_device_polling_transmit(), so what is in memory
     is what goes on the wire. LVGL is built here with CONFIG_LV_COLOR_16_SWAP
     unset, which means it produces native little-endian uint16 pixels, and

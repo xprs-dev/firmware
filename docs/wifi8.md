@@ -77,9 +77,9 @@ The mapping is unflattering to the premise. Set each UHR idea against this tree:
 
 | Wi-Fi 8 idea | What XPRS already does |
 |---|---|
-| multi-hop | `xb_offer()` (`common/geogram_xprsbearer/xprsbearer.c:117`) into `xprs_append_via()` (`common/geogram_xprs/xprs.c:282`). Hop budget by type -- 9 for `sos` and `warning`, 3 for everything else (`xprs.c:218`). Loop prevention by `via:` membership (`xprs.c:244`). |
+| multi-hop | `xb_offer()` (`common/xprs_bearer/xprsbearer.c:117`) into `xprs_append_via()` (`common/xprs_codec/xprs.c:282`). Hop budget by type -- 9 for `sos` and `warning`, 3 for everything else (`xprs.c:218`). Loop prevention by `via:` membership (`xprs.c:244`). |
 | multi-link (MLO) | Every packet is offered to every other bearer. `on_espnow` (`common/xprs_app/xprs_app.c:961`) fans to LAN and LoRa; `on_lan`, `on_lora`, `on_rns` fan back. One packet, three radios, §13.1 deciding each time. |
-| non-primary channel | §23.7's `t:channel` rendezvous -- the whole of `common/geogram_xprschan/`, 888 lines and a 670-line host test. A pair leaves the calling channel for one of their own and comes home on a deadline. |
+| non-primary channel | §23.7's `t:channel` rendezvous -- the whole of `common/xprs_chan/`, 888 lines and a 670-line host test. A pair leaves the calling channel for one of their own and comes home on a deadline. |
 | link-state advertisement | Signed `t:observation f:X link:espnow peers:N hears:A,B`, fanned over every transmit lane -- `air_signed_observations()` (`xprs_app.c:1136`). Intake into a 32-slot gossip ring: `goss_note` (`:702`), `goss_try` (`:718`). |
 | store and forward | Release-on-hearing, §36.8.1 (`xprs_app.c:856`): hear a station directly and its parked mail goes out on the bearer it was heard on. |
 | duplicate suppression | Two 32-entry rings per bearer, 60 s TTL, keyed on the §5 identifier -- which ignores `sig:` and `via:`, so a relayed copy is the same packet (`xprsbearer.h:59-61`, `xprsbearer.c:164`). |
@@ -91,14 +91,14 @@ bridges *between* bearers but does not re-air ESP-NOW back onto ESP-NOW. And the
 long-range PHY, below, is written and unproven.
 
 Ignore [mesh-networking.md](mesh-networking.md) when reading this page. It documents
-`common/geogram_mesh/`, an ESP-WIFI-MESH tree mesh that no other component's
+`common/xprs_mesh/`, an ESP-WIFI-MESH tree mesh that no other component's
 CMakeLists references and whose file paths still describe the layout from before this
 tree moved. It is not the ESP-NOW path and it is not what the gossip above runs on.
 
 ## What the ESP32 actually has for range
 
 One lever, and it is the long-range PHY. `xc_set_lr()`
-(`common/geogram_xprschan/xprschan.c:152-180`) adds `WIFI_PROTOCOL_LR` to the
+(`common/xprs_chan/xprschan.c:152-180`) adds `WIFI_PROTOCOL_LR` to the
 protocol bitmap and sets the broadcast peer to `WIFI_PHY_MODE_LR` with
 `WIFI_PHY_RATE_LORA_250K`. Espressif claims about a kilometre line of sight,
 ESP32 to ESP32 only, at a quarter of a megabit.
@@ -115,7 +115,7 @@ built on top of it.
 
 Transmit power is not a second lever. The XPRS station path never calls
 `esp_wifi_set_max_tx_power` at all -- the only call in the tree is in the SoftAP path
-(`common/geogram_wifi/wifi_bsp.c:377`, 80 = 20 dBm). The station inherits the driver
+(`common/xprs_wifi/wifi_bsp.c:377`, 80 = 20 dBm). The station inherits the driver
 default, and moving it is a regulatory question rather than a free win.
 
 ## The idea that does port: coordinated relay election
@@ -159,7 +159,7 @@ happens to rank badly for structural reasons is not muted forever.
 **Why this shape and not another.** No new XPRS key, no new packet type, no change to
 the wire at all: the entire mechanism is a change to how one local number is chosen.
 That is not modesty, it is the constraint doing its work. `sig:` covers the packet
-with only `sig:` and `via:` stripped (`common/geogram_xprssig/xprssig.h:21-26`,
+with only `sig:` and `via:` stripped (`common/xprs_sig/xprssig.h:21-26`,
 `xprs_signed_text` at `xprs.c:192`), and that skip list is mirrored in the Dart
 reference implementation. **Any new hop-count, TTL, relay-flag or sequence field
 either invalidates every signature at every hop, or forces a matching change to
@@ -177,7 +177,7 @@ with no signal to report).
 **What it is not.** Not a routing protocol. Nothing propagates, no metric is
 advertised, no state is shared. One station, one packet, one local decision -- the
 same shape as the jitter it replaces, which is why it can be tested on a host in
-`geogram_xprsbearer` before any of it reaches a radio.
+`xprs_bearer` before any of it reaches a radio.
 
 ### Considered and deferred
 
@@ -203,12 +203,12 @@ Collected so the next attempt does not rediscover them.
 - **`XB_TICKED_MAX 4`** (`xprsbearer.c:260`) -- four bearer slots total, and lan,
   espnow, lora and ble already contend for them.
 - **One driver task.** `xprslan`'s 7168-byte task pumps every registered bearer every
-  100 ms (`common/geogram_xprslan/xprslan.c:165`, `:230`). No LAN bearer means ESP-NOW
+  100 ms (`common/xprs_bearer_lan/xprslan.c:165`, `:230`). No LAN bearer means ESP-NOW
   never re-airs and never beacons; `xprsnow_start()` logs an error rather than let that
   be discovered in the field.
 - **Heap is the binding constraint everywhere.** The ESP-NOW receive queue is 8 slots
   because 16 starved `esp_now_send` into `ESP_ERR_ESPNOW_NO_MEM`
-  (`common/geogram_xprsnow/xprsnow.h:63-79`).
+  (`common/xprs_bearer_now/xprsnow.h:63-79`).
 - **`XB_SEEN_MS` is 60 s** (`xprsbearer.h:61`), which bounds how long a multi-hop path
   may take before a packet may legitimately circulate again.
 - **BLE deafness.** With the BLE controller running, a station that is not associated

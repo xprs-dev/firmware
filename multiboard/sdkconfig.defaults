@@ -1,4 +1,4 @@
-# Common ESP-IDF configuration for all Geogram boards
+# Common ESP-IDF configuration for all XPRS boards
 # Board-specific overrides are in boards/sdkconfig.<env>
 
 # Compiler options

@@ -12,7 +12,7 @@
 
 // Station API
 #include "station.h"
-#include "geogram_ble.h"
+#include "xprs_ble.h"
 
 // NOSTR keys (for callsign)
 #include "nostr_keys.h"
@@ -24,7 +24,7 @@
 #include "telnet_server.h"
 
 // SSH server
-#include "geogram_ssh.h"
+#include "xprs_ssh.h"
 
 // DNS server for captive portal
 #include "dns_server.h"
@@ -33,12 +33,12 @@
 #include "geoloc.h"
 
 // Plain log helper (no ANSI)
-#include "geogram_log_plain.h"
+#include "xprs_log_plain.h"
 
 #include "nvs.h"
 
-// Mesh networking (optional, enabled via CONFIG_GEOGRAM_MESH_ENABLED)
-#ifdef CONFIG_GEOGRAM_MESH_ENABLED
+// Mesh networking (optional, enabled via CONFIG_XPRS_MESH_ENABLED)
+#ifdef CONFIG_XPRS_MESH_ENABLED
 #include "mesh_bsp.h"
 #include "esp_netif.h"
 #include "lwip/ip4_addr.h"
@@ -54,7 +54,7 @@
     #include "shtc3.h"
     #include "pcf85063.h"
     #include "lvgl_port.h"
-    #include "geogram_ui.h"
+    #include "xprs_ui_epaper.h"
     #include "wifi_bsp.h"
     #include "http_server.h"
     #include "sdcard.h"
@@ -127,13 +127,13 @@
     #error "Invalid BOARD_MODEL defined!"
 #endif
 
-static const char *TAG = "geogram";
+static const char *TAG = "xprs";
 
 // ============================================================================
 // Mesh Networking Support (optional)
 // ============================================================================
 
-#ifdef CONFIG_GEOGRAM_MESH_ENABLED
+#ifdef CONFIG_XPRS_MESH_ENABLED
 static bool s_mesh_mode = false;
 static bool s_mesh_connected = false;
 static bool s_mesh_services_started = false;
@@ -170,8 +170,8 @@ static void start_mesh_services(void)
     }
 
     const char *ap_ssid = "xprs";
-    esp_err_t ap_ret = geogram_mesh_start_external_ap(
-        ap_ssid, "", CONFIG_GEOGRAM_MESH_EXTERNAL_AP_MAX_CONN);
+    esp_err_t ap_ret = xprs_mesh_start_external_ap(
+        ap_ssid, "", CONFIG_XPRS_MESH_EXTERNAL_AP_MAX_CONN);
     if (ap_ret != ESP_OK) {
         ESP_LOGW(TAG, "Deferring mesh services, external AP not ready: %s", esp_err_to_name(ap_ret));
         return;
@@ -211,14 +211,14 @@ static void start_mesh_services(void)
 /**
  * @brief Mesh event callback
  */
-static void mesh_event_cb(geogram_mesh_event_t event, void *event_data)
+static void mesh_event_cb(xprs_mesh_event_t event, void *event_data)
 {
     switch (event) {
-        case GEOGRAM_MESH_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "Mesh connected, layer: %d", geogram_mesh_get_layer());
+        case XPRS_MESH_EVENT_CONNECTED:
+            ESP_LOGI(TAG, "Mesh connected, layer: %d", xprs_mesh_get_layer());
             ESP_LOGI(TAG, "Mesh nodes: %zu, role: %s",
-                     geogram_mesh_get_node_count(),
-                     geogram_mesh_is_root() ? "root" : "child");
+                     xprs_mesh_get_node_count(),
+                     xprs_mesh_is_root() ? "root" : "child");
             s_mesh_connected = true;
 
 #if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
@@ -229,13 +229,13 @@ static void mesh_event_cb(geogram_mesh_event_t event, void *event_data)
             start_mesh_services();
 
             // Enable IP bridging
-            geogram_mesh_enable_bridge();
+            xprs_mesh_enable_bridge();
 
             break;
 
-        case GEOGRAM_MESH_EVENT_DISCONNECTED:
+        case XPRS_MESH_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "Mesh disconnected");
-            ESP_LOGI(TAG, "Mesh nodes now: %zu", geogram_mesh_get_node_count());
+            ESP_LOGI(TAG, "Mesh nodes now: %zu", xprs_mesh_get_node_count());
             s_mesh_connected = false;
 
 #if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
@@ -247,24 +247,24 @@ static void mesh_event_cb(geogram_mesh_event_t event, void *event_data)
             telnet_server_stop();
             http_server_stop();
             s_http_server_started = false;
-            geogram_mesh_disable_bridge();
-            geogram_mesh_stop_external_ap();
+            xprs_mesh_disable_bridge();
+            xprs_mesh_stop_external_ap();
             s_mesh_services_started = false;
             break;
 
-        case GEOGRAM_MESH_EVENT_ROOT_CHANGED:
+        case XPRS_MESH_EVENT_ROOT_CHANGED:
             ESP_LOGI(TAG, "Root status changed: %s",
-                     geogram_mesh_is_root() ? "I am ROOT" : "I am CHILD");
+                     xprs_mesh_is_root() ? "I am ROOT" : "I am CHILD");
             break;
 
-        case GEOGRAM_MESH_EVENT_EXTERNAL_STA_CONNECTED:
+        case XPRS_MESH_EVENT_EXTERNAL_STA_CONNECTED:
             ESP_LOGI(TAG, "Phone connected to mesh AP (%d total)",
-                     geogram_mesh_get_external_ap_client_count());
+                     xprs_mesh_get_external_ap_client_count());
             break;
 
-        case GEOGRAM_MESH_EVENT_EXTERNAL_STA_DISCONNECTED:
+        case XPRS_MESH_EVENT_EXTERNAL_STA_DISCONNECTED:
             ESP_LOGI(TAG, "Phone disconnected from mesh AP (%d remaining)",
-                     geogram_mesh_get_external_ap_client_count());
+                     xprs_mesh_get_external_ap_client_count());
             break;
 
         default:
@@ -280,7 +280,7 @@ static void start_mesh_mode(void)
     ESP_LOGI(TAG, "Starting mesh networking mode");
 
     // Initialize mesh subsystem
-    esp_err_t ret = geogram_mesh_init();
+    esp_err_t ret = xprs_mesh_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Mesh init failed: %s", esp_err_to_name(ret));
 #if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
@@ -290,16 +290,16 @@ static void start_mesh_mode(void)
     }
 
     // Configure mesh network
-    geogram_mesh_config_t mesh_cfg = {
+    xprs_mesh_config_t mesh_cfg = {
         .mesh_id = {'g', 'e', 'o', 'm', 's', 'h'},  // "geomsh"
         .password = "",
-        .channel = CONFIG_GEOGRAM_MESH_CHANNEL,
-        .max_layer = CONFIG_GEOGRAM_MESH_MAX_LAYER,
+        .channel = CONFIG_XPRS_MESH_CHANNEL,
+        .max_layer = CONFIG_XPRS_MESH_MAX_LAYER,
         .allow_root = true,
         .callback = mesh_event_cb
     };
 
-    ret = geogram_mesh_start(&mesh_cfg);
+    ret = xprs_mesh_start(&mesh_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Mesh start failed: %s", esp_err_to_name(ret));
 #if (BOARD_MODEL == MODEL_ESP32C3_MINI || BOARD_MODEL == MODEL_KV4P) && HAS_LED
@@ -311,7 +311,7 @@ static void start_mesh_mode(void)
     s_mesh_mode = true;
     ESP_LOGI(TAG, "Mesh mode started, scanning for network...");
 
-    // Mesh CONNECTED event can arrive before geogram_mesh_start() finishes.
+    // Mesh CONNECTED event can arrive before xprs_mesh_start() finishes.
     // If services were deferred, start them now that mesh startup returned.
     if (s_mesh_connected && !s_mesh_services_started) {
         start_mesh_services();
@@ -349,7 +349,7 @@ static void start_mesh_mode(void)
     }
 
 }
-#endif  // CONFIG_GEOGRAM_MESH_ENABLED
+#endif  // CONFIG_XPRS_MESH_ENABLED
 
 // ============================================================================
 // T-Dongle-S3 WiFi Support
@@ -431,23 +431,23 @@ static void tdongle_save_igate_position(double lat, double lon, int radius_km)
 /**
  * @brief WiFi event callback for T-Dongle-S3
  */
-static void tdongle_wifi_event_cb(geogram_wifi_status_t status, void *event_data)
+static void tdongle_wifi_event_cb(xprs_wifi_status_t status, void *event_data)
 {
     char ip_str[16];
 
     switch (status) {
-        case GEOGRAM_WIFI_STATUS_GOT_IP:
-            geogram_wifi_get_ip(ip_str);
+        case XPRS_WIFI_STATUS_GOT_IP:
+            xprs_wifi_get_ip(ip_str);
             ESP_LOGI(TAG, "T-Dongle STA connected, IP: %s", ip_str);
             tdongle_ui_set_ip(ip_str);
             break;
 
-        case GEOGRAM_WIFI_STATUS_DISCONNECTED:
+        case XPRS_WIFI_STATUS_DISCONNECTED:
             ESP_LOGW(TAG, "T-Dongle STA disconnected, showing AP IP");
             tdongle_ui_set_ip("192.168.4.1");
             break;
 
-        case GEOGRAM_WIFI_STATUS_AP_STARTED:
+        case XPRS_WIFI_STATUS_AP_STARTED:
             ESP_LOGI(TAG, "T-Dongle AP started");
             tdongle_ui_set_ip("192.168.4.1");
             break;
@@ -463,7 +463,7 @@ static void tdongle_wifi_event_cb(geogram_wifi_status_t status, void *event_data
 static void tdongle_wifi_config_received(const char *ssid, const char *password)
 {
     ESP_LOGI(TAG, "WiFi credentials received for SSID: %s", ssid);
-    geogram_wifi_connect_sta(ssid, password);
+    xprs_wifi_connect_sta(ssid, password);
 }
 
 #endif  // BOARD_MODEL == MODEL_TDONGLE_S3
@@ -502,8 +502,8 @@ static void device_shutdown(void)
     board_power_backlight_on();
 
     // Show shutdown message
-    geogram_ui_show_status("Powering off...");
-    geogram_ui_refresh(false);
+    xprs_ui_epaper_show_status("Powering off...");
+    xprs_ui_epaper_refresh(false);
 
     // Give time for partial refresh to show the message
     vTaskDelay(pdMS_TO_TICKS(1000));
@@ -558,7 +558,7 @@ static void power_button_callback(gpio_num_t gpio, button_event_t event, void *u
 
         case BUTTON_EVENT_DOUBLE_CLICK:
             ESP_LOGI(TAG, "Power button double click - force display refresh");
-            geogram_ui_refresh(true);  // Full refresh
+            xprs_ui_epaper_refresh(true);  // Full refresh
             break;
 
         default:
@@ -632,8 +632,8 @@ static void network_services_task(void *pvParameter)
 
     // Step 1: Fetch geolocation (sets timezone)
     ESP_LOGI(TAG, "[Background] Fetching geolocation...");
-    geogram_ui_show_status("Getting location...");
-    geogram_ui_refresh(false);
+    xprs_ui_epaper_show_status("Getting location...");
+    xprs_ui_epaper_refresh(false);
 
     geoloc_data_t geoloc;
     if (geoloc_fetch(&geoloc) == ESP_OK) {
@@ -651,8 +651,8 @@ static void network_services_task(void *pvParameter)
 
     // Step 2: Initialize NTP (now that timezone is set)
     ESP_LOGI(TAG, "[Background] Initializing NTP...");
-    geogram_ui_show_status("Syncing time...");
-    geogram_ui_refresh(false);
+    xprs_ui_epaper_show_status("Syncing time...");
+    xprs_ui_epaper_refresh(false);
 
     init_sntp();
 
@@ -668,8 +668,8 @@ static void network_services_task(void *pvParameter)
     }
 
     // Done - show connected status
-    geogram_ui_show_status("Connected");
-    geogram_ui_refresh(false);
+    xprs_ui_epaper_show_status("Connected");
+    xprs_ui_epaper_refresh(false);
 
     ESP_LOGI(TAG, "Network services initialization complete");
 
@@ -684,17 +684,17 @@ static void start_ap_mode(void);
 /**
  * @brief WiFi event callback
  */
-static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
+static void wifi_event_cb(xprs_wifi_status_t status, void *event_data)
 {
     switch (status) {
-        case GEOGRAM_WIFI_STATUS_GOT_IP:
+        case XPRS_WIFI_STATUS_GOT_IP:
             ESP_LOGI(TAG, "WiFi connected with IP");
             s_wifi_connected = true;
             s_ap_mode_active = false;
-            geogram_wifi_get_ip(s_current_ip);
-            geogram_ui_update_wifi(UI_WIFI_STATUS_CONNECTED, s_current_ip, NULL);
-            geogram_ui_show_status("WiFi Connected");
-            geogram_ui_refresh(false);
+            xprs_wifi_get_ip(s_current_ip);
+            xprs_ui_epaper_update_wifi(UI_WIFI_STATUS_CONNECTED, s_current_ip, NULL);
+            xprs_ui_epaper_show_status("WiFi Connected");
+            xprs_ui_epaper_refresh(false);
 
             // Stop DNS server (used in AP mode)
             dns_server_stop();
@@ -714,8 +714,8 @@ static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
 
             // SSH server disabled for now (libssh init issues)
             // TODO: Re-enable once libssh threading is properly configured
-            // if (geogram_ssh_start(GEOGRAM_SSH_DEFAULT_PORT) == ESP_OK) {
-            //     ESP_LOGI(TAG, "SSH server started on port %d", GEOGRAM_SSH_DEFAULT_PORT);
+            // if (xprs_ssh_start(XPRS_SSH_DEFAULT_PORT) == ESP_OK) {
+            //     ESP_LOGI(TAG, "SSH server started on port %d", XPRS_SSH_DEFAULT_PORT);
             // }
 
             // Start update mirror polling (check GitHub every hour, first check after 1 minute)
@@ -738,18 +738,18 @@ static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
             }
             break;
 
-        case GEOGRAM_WIFI_STATUS_DISCONNECTED:
+        case XPRS_WIFI_STATUS_DISCONNECTED:
             // Note: WiFi layer now auto-reconnects up to 10 times before calling this
             ESP_LOGW(TAG, "WiFi disconnected (after retries exhausted)");
             s_wifi_connected = false;
             s_current_ip[0] = '\0';
-            geogram_ui_update_wifi(UI_WIFI_STATUS_DISCONNECTED, NULL, NULL);
-            geogram_ui_show_status("WiFi Failed");
-            geogram_ui_refresh(false);
+            xprs_ui_epaper_update_wifi(UI_WIFI_STATUS_DISCONNECTED, NULL, NULL);
+            xprs_ui_epaper_show_status("WiFi Failed");
+            xprs_ui_epaper_refresh(false);
 
             // Stop Telnet server (SSH disabled)
             telnet_server_stop();
-            // geogram_ssh_stop();
+            // xprs_ssh_stop();
 
             // Stop FTP server
             ftp_server_stop();
@@ -764,10 +764,10 @@ static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
             }
             break;
 
-        case GEOGRAM_WIFI_STATUS_AP_STARTED: {
+        case XPRS_WIFI_STATUS_AP_STARTED: {
             ESP_LOGI(TAG, "AP mode started");
             s_ap_mode_active = true;
-            geogram_wifi_get_ap_ip(s_current_ip);
+            xprs_wifi_get_ap_ip(s_current_ip);
 
             // Build AP SSID for display
             char ap_ssid[32];
@@ -778,13 +778,13 @@ static void wifi_event_cb(geogram_wifi_status_t status, void *event_data)
                 snprintf(ap_ssid, sizeof(ap_ssid), "xprs-setup");
             }
 
-            geogram_ui_update_wifi(UI_WIFI_STATUS_AP_MODE, s_current_ip, ap_ssid);
-            geogram_ui_show_status("Setup Mode");
-            geogram_ui_refresh(false);
+            xprs_ui_epaper_update_wifi(UI_WIFI_STATUS_AP_MODE, s_current_ip, ap_ssid);
+            xprs_ui_epaper_show_status("Setup Mode");
+            xprs_ui_epaper_refresh(false);
 
             // Start DNS server for captive portal (resolves callsign to AP IP)
             uint32_t ap_ip = 0;
-            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+            if (xprs_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
                 dns_server_start(ap_ip);
             }
             break;
@@ -802,19 +802,19 @@ static void wifi_config_received(const char *ssid, const char *password)
 {
     ESP_LOGI(TAG, "WiFi credentials received for SSID: %s", ssid);
 
-    geogram_ui_show_status("Connecting...");
-    geogram_ui_refresh(false);
+    xprs_ui_epaper_show_status("Connecting...");
+    xprs_ui_epaper_refresh(false);
 
     // Stop AP mode
-    geogram_wifi_stop_ap();
+    xprs_wifi_stop_ap();
 
     // Connect to the configured network
-    geogram_wifi_config_t config = {};
+    xprs_wifi_config_t config = {};
     strncpy(config.ssid, ssid, sizeof(config.ssid) - 1);
     strncpy(config.password, password, sizeof(config.password) - 1);
     config.callback = wifi_event_cb;
 
-    geogram_wifi_connect(&config);
+    xprs_wifi_connect(&config);
 }
 
 /**
@@ -836,14 +836,14 @@ static void start_ap_mode(void)
         snprintf(ap_ssid, sizeof(ap_ssid), "xprs-setup");
     }
 
-    geogram_wifi_ap_config_t ap_config = {};
+    xprs_wifi_ap_config_t ap_config = {};
     strncpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid) - 1);
     strncpy(ap_config.password, WIFI_AP_PASSWORD, sizeof(ap_config.password) - 1);
     ap_config.channel = WIFI_AP_CHANNEL;
     ap_config.max_connections = WIFI_AP_MAX_CONN;
     ap_config.callback = wifi_event_cb;
 
-    geogram_wifi_start_ap(&ap_config);
+    xprs_wifi_start_ap(&ap_config);
 
     // Start HTTP server with chat/API endpoints
     http_server_start_ex(wifi_config_received, true);
@@ -857,19 +857,19 @@ static bool try_saved_credentials(void)
     char ssid[33] = {0};
     char password[65] = {0};
 
-    if (geogram_wifi_load_credentials(ssid, password) == ESP_OK && strlen(ssid) > 0) {
+    if (xprs_wifi_load_credentials(ssid, password) == ESP_OK && strlen(ssid) > 0) {
         ESP_LOGI(TAG, "Found saved credentials for SSID: %s", ssid);
 
-        geogram_ui_show_status("Connecting...");
-        geogram_ui_update_wifi(UI_WIFI_STATUS_CONNECTING, NULL, ssid);
-        geogram_ui_refresh(false);
+        xprs_ui_epaper_show_status("Connecting...");
+        xprs_ui_epaper_update_wifi(UI_WIFI_STATUS_CONNECTING, NULL, ssid);
+        xprs_ui_epaper_refresh(false);
 
-        geogram_wifi_config_t config = {};
+        xprs_wifi_config_t config = {};
         strncpy(config.ssid, ssid, sizeof(config.ssid) - 1);
         strncpy(config.password, password, sizeof(config.password) - 1);
         config.callback = wifi_event_cb;
 
-        geogram_wifi_connect(&config);
+        xprs_wifi_connect(&config);
         return true;
     }
 
@@ -890,12 +890,12 @@ static void sensor_task(void *pvParameter)
         if (shtc3_read(sensor, &data) == ESP_OK) {
             ESP_LOGI(TAG, "Temp: %.1f C, Humidity: %.1f %%",
                      data.temperature, data.humidity);
-            geogram_ui_update_sensor(data.temperature, data.humidity);
+            xprs_ui_epaper_update_sensor(data.temperature, data.humidity);
 
             // Trigger immediate display update on first reading
             if (first_reading) {
                 first_reading = false;
-                geogram_ui_refresh(false);
+                xprs_ui_epaper_refresh(false);
             }
         } else {
             ESP_LOGW(TAG, "Failed to read sensor");
@@ -904,7 +904,7 @@ static void sensor_task(void *pvParameter)
         // Refresh display periodically
         refresh_counter += SENSOR_UPDATE_INTERVAL;
         if (refresh_counter >= DISPLAY_REFRESH_INTERVAL) {
-            geogram_ui_refresh(false);
+            xprs_ui_epaper_refresh(false);
             refresh_counter = 0;
         }
 
@@ -928,13 +928,13 @@ static void rtc_task(void *pvParameter)
         if (pcf85063_get_datetime(rtc, &datetime) == ESP_OK) {
             // Update time display on first read or when minute changes
             if (first_reading || datetime.minute != last_minute) {
-                geogram_ui_update_time(datetime.hour, datetime.minute);
-                geogram_ui_update_date(datetime.year, datetime.month, datetime.day);
+                xprs_ui_epaper_update_time(datetime.hour, datetime.minute);
+                xprs_ui_epaper_update_date(datetime.year, datetime.month, datetime.day);
                 last_minute = datetime.minute;
 
                 if (first_reading) {
                     first_reading = false;
-                    geogram_ui_refresh(false);
+                    xprs_ui_epaper_refresh(false);
                 }
             }
         }
@@ -943,7 +943,7 @@ static void rtc_task(void *pvParameter)
         uptime_seconds++;
         uint32_t current_minute = uptime_seconds / 60;
         if (current_minute != last_uptime_minute) {
-            geogram_ui_update_uptime(uptime_seconds);
+            xprs_ui_epaper_update_uptime(uptime_seconds);
             last_uptime_minute = current_minute;
         }
 
@@ -1027,8 +1027,8 @@ static void tdongle_heartbeat_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(15000));
 
         char ip[16] = "-";
-        if (geogram_wifi_get_status() == GEOGRAM_WIFI_STATUS_GOT_IP) {
-            geogram_wifi_get_ip(ip);
+        if (xprs_wifi_get_status() == XPRS_WIFI_STATUS_GOT_IP) {
+            xprs_wifi_get_ip(ip);
         }
         uint32_t qwait = 0, qdrop = 0;
         xprsindex_queue_stats(s_xprs_index, &qwait, &qdrop);
@@ -1038,7 +1038,7 @@ static void tdongle_heartbeat_task(void *arg)
         ESP_LOGW(TAG, "alive %us ip=%s wifi=%d heap=%u min=%u big=%u "
                       "recs=%u q=%u/%u lan=%d",
                  (unsigned)(esp_timer_get_time() / 1000000ULL), ip,
-                 (int)geogram_wifi_get_status(),
+                 (int)xprs_wifi_get_status(),
                  (unsigned)esp_get_free_heap_size(),
                  (unsigned)esp_get_minimum_free_heap_size(),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
@@ -1076,7 +1076,7 @@ static bool tdongle_card_may_run(void)
 {
     // Associating is the worst moment of all: the handshake is several
     // round-trips that all have to land.
-    if (geogram_wifi_get_status() == GEOGRAM_WIFI_STATUS_CONNECTING) return false;
+    if (xprs_wifi_get_status() == XPRS_WIFI_STATUS_CONNECTING) return false;
     int64_t quiet_us = esp_timer_get_time() - s_last_tx_us;
     return quiet_us > (int64_t)TDONGLE_RADIO_QUIET_MS * 1000;
 }
@@ -1484,10 +1484,10 @@ static void tdongle_register_igate_status(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(TAG, "=====================================");
-    geogram_log_plain(TAG, "  Offline-First Communication");
-    geogram_log_plain(TAG, "   · · · ·   ───   · ── ·   ·");
-    geogram_log_plain(TAG, "    Wi-Fi  ·  BLE  ·  NOSTR");
-    ESP_LOGI(TAG, "  XPRS Firmware v%s", GEOGRAM_VERSION);
+    xprs_log_plain(TAG, "  Offline-First Communication");
+    xprs_log_plain(TAG, "   · · · ·   ───   · ── ·   ·");
+    xprs_log_plain(TAG, "    Wi-Fi  ·  BLE  ·  NOSTR");
+    ESP_LOGI(TAG, "  XPRS Firmware v%s", XPRS_VERSION);
     ESP_LOGI(TAG, "  Board: %s", BOARD_NAME);
     ESP_LOGI(TAG, "  Model: %s", MODEL_NAME);
     ESP_LOGI(TAG, "=====================================");
@@ -1535,9 +1535,9 @@ extern "C" void app_main(void)
     // Ensure station identity is available for BLE handshakes.
     station_init();
 
-    ret = geogram_ble_init();
+    ret = xprs_ble_init();
     if (ret == ESP_OK) {
-        geogram_ble_start();
+        xprs_ble_start();
         ESP_LOGI(TAG, "BLE service initialized");
     } else if (ret == ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG, "BLE is disabled in this firmware configuration");
@@ -1569,18 +1569,18 @@ extern "C" void app_main(void)
         TDONGLE_LOG_HEAP("after nostr init");
 
         // Start WiFi AP (same pattern as KV4P standalone mode)
-        ret = geogram_wifi_init();
+        ret = xprs_wifi_init();
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "T-Dongle WiFi init failed: %s", esp_err_to_name(ret));
         } else {
-            geogram_wifi_ap_config_t ap_config = {};
+            xprs_wifi_ap_config_t ap_config = {};
             strncpy(ap_config.ssid, "xprs", sizeof(ap_config.ssid) - 1);
             ap_config.password[0] = '\0';  // Open network
             ap_config.channel = 1;
             ap_config.max_connections = 4;
             ap_config.callback = tdongle_wifi_event_cb;
 
-            ret = geogram_wifi_start_ap(&ap_config);
+            ret = xprs_wifi_start_ap(&ap_config);
             if (ret == ESP_OK) {
                 ESP_LOGI(TAG, "WiFi AP started: xprs (open)");
                 tdongle_ui_set_ip("192.168.4.1");
@@ -1597,7 +1597,7 @@ extern "C" void app_main(void)
                     char saved_ssid[33] = {0};
                     char saved_pass[65] = {0};
                     bool have_saved =
-                        geogram_wifi_load_credentials(saved_ssid, saved_pass) == ESP_OK
+                        xprs_wifi_load_credentials(saved_ssid, saved_pass) == ESP_OK
                         && strlen(saved_ssid) > 0;
                     const char *sta_ssid = have_saved ? saved_ssid : TDONGLE_DEFAULT_WIFI_SSID;
                     const char *sta_pass = have_saved ? saved_pass : TDONGLE_DEFAULT_WIFI_PASS;
@@ -1606,13 +1606,13 @@ extern "C" void app_main(void)
                                  sta_ssid, have_saved ? "saved" : "default");
                         vTaskDelay(pdMS_TO_TICKS(5000));
                         ESP_LOGI(TAG, "Connecting to WiFi: %s", sta_ssid);
-                        geogram_wifi_connect_sta(sta_ssid, sta_pass);
+                        xprs_wifi_connect_sta(sta_ssid, sta_pass);
                     }
                 }
 
                 // DNS server for captive portal
                 uint32_t ap_ip = 0;
-                if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+                if (xprs_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
                     dns_server_start(ap_ip);
                 }
 
@@ -1636,17 +1636,17 @@ extern "C" void app_main(void)
                     // Long cap so a slow connect still lands inside this window;
                     // if WiFi truly can't connect, start BLE anyway (keep AP).
                     int waited = 0;
-                    while (geogram_wifi_get_status() != GEOGRAM_WIFI_STATUS_GOT_IP
+                    while (xprs_wifi_get_status() != XPRS_WIFI_STATUS_GOT_IP
                            && waited < 180000) {
                         vTaskDelay(pdMS_TO_TICKS(500));
                         waited += 500;
                     }
-                    if (geogram_wifi_get_status() == GEOGRAM_WIFI_STATUS_GOT_IP) {
+                    if (xprs_wifi_get_status() == XPRS_WIFI_STATUS_GOT_IP) {
                         ESP_LOGI(TAG, "WiFi connected — dropping SoftAP, mounting SD");
                         // On the LAN now: drop the SoftAP (keep STA) so only STA +
                         // BLE share the radio — far more stable than AP+STA+BLE.
                         // The captive portal is only needed before connecting.
-                        geogram_wifi_disable_ap_keep_sta();
+                        xprs_wifi_disable_ap_keep_sta();
 #if HAS_SDCARD
                         // Mount the SD store ONLY NOW — the SDMMC bus desensitises
                         // the 2.4 GHz radio, so keeping it idle until the WiFi
@@ -1780,27 +1780,27 @@ extern "C" void app_main(void)
     }
 #endif
 
-#ifdef CONFIG_GEOGRAM_MESH_ENABLED
-    geogram_log_plain(TAG, "Mesh support: ENABLED");
+#ifdef CONFIG_XPRS_MESH_ENABLED
+    xprs_log_plain(TAG, "Mesh support: ENABLED");
 #else
-    geogram_log_plain(TAG, "Mesh support: DISABLED in this build");
+    xprs_log_plain(TAG, "Mesh support: DISABLED in this build");
 #endif
 
-#if defined(CONFIG_GEOGRAM_MESH_ENABLED) && (BOARD_MODEL == MODEL_ESP32C3_MINI)
-    geogram_log_plain(TAG, "Starting mesh mode by default");
+#if defined(CONFIG_XPRS_MESH_ENABLED) && (BOARD_MODEL == MODEL_ESP32C3_MINI)
+    xprs_log_plain(TAG, "Starting mesh mode by default");
     start_mesh_mode();
 #endif
 
-#if defined(CONFIG_GEOGRAM_MESH_ENABLED) && (BOARD_MODEL == MODEL_KV4P)
-    geogram_log_plain(TAG, "KV4P: mesh auto-start disabled (using standalone AP mode)");
+#if defined(CONFIG_XPRS_MESH_ENABLED) && (BOARD_MODEL == MODEL_KV4P)
+    xprs_log_plain(TAG, "KV4P: mesh auto-start disabled (using standalone AP mode)");
 #endif
 
-#if defined(CONFIG_GEOGRAM_MESH_ENABLED) && (BOARD_MODEL == MODEL_TDONGLE_S3)
+#if defined(CONFIG_XPRS_MESH_ENABLED) && (BOARD_MODEL == MODEL_TDONGLE_S3)
 #if FEATURE_MESH
-    geogram_log_plain(TAG, "Starting mesh mode on T-Dongle-S3");
+    xprs_log_plain(TAG, "Starting mesh mode on T-Dongle-S3");
     start_mesh_mode();
 #else
-    geogram_log_plain(TAG, "[FEATURE_MESH=0] mesh mode disabled for diagnostics");
+    xprs_log_plain(TAG, "[FEATURE_MESH=0] mesh mode disabled for diagnostics");
 #endif
 #endif
 
@@ -1845,15 +1845,15 @@ extern "C" void app_main(void)
     }
 
     // Initialize UI
-    ret = geogram_ui_init();
+    ret = xprs_ui_epaper_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize UI: %s", esp_err_to_name(ret));
         return;
     }
 
     // Initial display refresh
-    geogram_ui_show_status("Starting...");
-    geogram_ui_refresh(true);  // Full refresh on startup
+    xprs_ui_epaper_show_status("Starting...");
+    xprs_ui_epaper_refresh(true);  // Full refresh on startup
 
     // Initialize NOSTR keys early (needed for AP SSID with callsign)
     ret = nostr_keys_init();
@@ -1864,11 +1864,11 @@ extern "C" void app_main(void)
     }
 
     // Initialize WiFi
-    ret = geogram_wifi_init();
+    ret = xprs_wifi_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
-        geogram_ui_show_status("WiFi Init Failed");
-        geogram_ui_refresh(false);
+        xprs_ui_epaper_show_status("WiFi Init Failed");
+        xprs_ui_epaper_refresh(false);
     } else {
         // Try to connect with saved credentials, otherwise start AP mode
         if (!try_saved_credentials()) {
@@ -1888,7 +1888,7 @@ extern "C" void app_main(void)
 
 #endif  // BOARD_MODEL == MODEL_ESP32S3_EPAPER_1IN54
 
-#if ((BOARD_MODEL == MODEL_ESP32C3_MINI) && !defined(CONFIG_GEOGRAM_MESH_ENABLED)) || (BOARD_MODEL == MODEL_KV4P)
+#if ((BOARD_MODEL == MODEL_ESP32C3_MINI) && !defined(CONFIG_XPRS_MESH_ENABLED)) || (BOARD_MODEL == MODEL_KV4P)
     // Standalone WiFi AP mode for KV4P and for minimal ESP32 boards when mesh
     // is disabled. KV4P mesh disconnect event kills the HTTP server, making
     // the device unreachable — keep KV4P in standalone AP+STA mode.
@@ -1902,7 +1902,7 @@ extern "C" void app_main(void)
     }
 
     // Initialize WiFi
-    ret = geogram_wifi_init();
+    ret = xprs_wifi_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
 #if HAS_LED
@@ -1910,14 +1910,14 @@ extern "C" void app_main(void)
 #endif
     } else {
         // Start WiFi AP mode
-        geogram_wifi_ap_config_t ap_config = {};
+        xprs_wifi_ap_config_t ap_config = {};
         strncpy(ap_config.ssid, "xprs", sizeof(ap_config.ssid) - 1);
         ap_config.password[0] = '\0';  // Open network
         ap_config.channel = 1;
         ap_config.max_connections = 4;
         ap_config.callback = NULL;
 
-        ret = geogram_wifi_start_ap(&ap_config);
+        ret = xprs_wifi_start_ap(&ap_config);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "WiFi AP started: xprs");
 
@@ -1927,18 +1927,18 @@ extern "C" void app_main(void)
             {
                 char saved_ssid[33] = {0};
                 char saved_pass[65] = {0};
-                if (geogram_wifi_load_credentials(saved_ssid, saved_pass) == ESP_OK
+                if (xprs_wifi_load_credentials(saved_ssid, saved_pass) == ESP_OK
                     && strlen(saved_ssid) > 0) {
                     ESP_LOGI(TAG, "Will auto-connect to saved WiFi in 5 s: %s", saved_ssid);
                     vTaskDelay(pdMS_TO_TICKS(5000));
                     ESP_LOGI(TAG, "Auto-connecting to saved WiFi: %s", saved_ssid);
-                    geogram_wifi_connect_sta(saved_ssid, saved_pass);
+                    xprs_wifi_connect_sta(saved_ssid, saved_pass);
                 }
             }
 
             // Start DNS server for captive portal
             uint32_t ap_ip = 0;
-            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+            if (xprs_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
                 dns_server_start(ap_ip);
             }
 
@@ -1975,7 +1975,7 @@ extern "C" void app_main(void)
 #endif
         }
     }
-#endif  // Minimal ESP32 boards and !CONFIG_GEOGRAM_MESH_ENABLED
+#endif  // Minimal ESP32 boards and !CONFIG_XPRS_MESH_ENABLED
 
 #if BOARD_MODEL == MODEL_HELTEC_V3
     // Heltec V3: OLED display + SX1262 LoRa + WiFi AP
@@ -1988,7 +1988,7 @@ extern "C" void app_main(void)
     if (display) {
         ssd1306_clear(display);
         ssd1306_draw_string(display, 16, 0, "==   XPRS   ==", true);
-        ssd1306_draw_string(display, 22, 12, "v" GEOGRAM_VERSION, true);
+        ssd1306_draw_string(display, 22, 12, "v" XPRS_VERSION, true);
         ssd1306_draw_string(display, 0, 28, BOARD_NAME, true);
         if (lora) {
             ssd1306_draw_string(display, 0, 40, "LoRa: OK", true);
@@ -2013,7 +2013,7 @@ extern "C" void app_main(void)
     }
 
     // Initialize WiFi
-    ret = geogram_wifi_init();
+    ret = xprs_wifi_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
         if (display) {
@@ -2032,20 +2032,20 @@ extern "C" void app_main(void)
         }
 
         // Start WiFi AP mode
-        geogram_wifi_ap_config_t ap_config = {};
+        xprs_wifi_ap_config_t ap_config = {};
         strncpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid) - 1);
         ap_config.password[0] = '\0';
         ap_config.channel = 1;
         ap_config.max_connections = 4;
         ap_config.callback = NULL;
 
-        ret = geogram_wifi_start_ap(&ap_config);
+        ret = xprs_wifi_start_ap(&ap_config);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "WiFi AP started: %s", ap_ssid);
 
             // Start DNS server for captive portal
             uint32_t ap_ip = 0;
-            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+            if (xprs_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
                 dns_server_start(ap_ip);
             }
 
@@ -2062,7 +2062,7 @@ extern "C" void app_main(void)
             // Update OLED with connection info
             if (display) {
                 char ip_str[16];
-                geogram_wifi_get_ap_ip(ip_str);
+                xprs_wifi_get_ap_ip(ip_str);
 
                 ssd1306_clear(display);
                 ssd1306_draw_string(display, 0, 0, "==   XPRS   ==", true);
@@ -2071,7 +2071,7 @@ extern "C" void app_main(void)
                 if (lora) {
                     ssd1306_draw_string(display, 0, 40, "LoRa: Ready", true);
                 }
-                ssd1306_draw_string(display, 0, 52, "v" GEOGRAM_VERSION, true);
+                ssd1306_draw_string(display, 0, 52, "v" XPRS_VERSION, true);
                 ssd1306_display(display);
             }
 
@@ -2093,7 +2093,7 @@ extern "C" void app_main(void)
     if (display) {
         ssd1306_clear(display);
         ssd1306_draw_string(display, 16, 0, "==   XPRS   ==", true);
-        ssd1306_draw_string(display, 22, 12, "v" GEOGRAM_VERSION, true);
+        ssd1306_draw_string(display, 22, 12, "v" XPRS_VERSION, true);
         ssd1306_draw_string(display, 0, 28, BOARD_NAME, true);
         if (lora) {
             ssd1306_draw_string(display, 0, 40, "LoRa: OK", true);
@@ -2118,7 +2118,7 @@ extern "C" void app_main(void)
     }
 
     // Initialize WiFi
-    ret = geogram_wifi_init();
+    ret = xprs_wifi_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize WiFi: %s", esp_err_to_name(ret));
         if (display) {
@@ -2137,20 +2137,20 @@ extern "C" void app_main(void)
         }
 
         // Start WiFi AP mode
-        geogram_wifi_ap_config_t ap_config = {};
+        xprs_wifi_ap_config_t ap_config = {};
         strncpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid) - 1);
         ap_config.password[0] = '\0';
         ap_config.channel = 1;
         ap_config.max_connections = 4;
         ap_config.callback = NULL;
 
-        ret = geogram_wifi_start_ap(&ap_config);
+        ret = xprs_wifi_start_ap(&ap_config);
         if (ret == ESP_OK) {
             ESP_LOGI(TAG, "WiFi AP started: %s", ap_ssid);
 
             // Start DNS server for captive portal
             uint32_t ap_ip = 0;
-            if (geogram_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
+            if (xprs_wifi_get_ap_ip_addr(&ap_ip) == ESP_OK) {
                 dns_server_start(ap_ip);
             }
 
@@ -2167,7 +2167,7 @@ extern "C" void app_main(void)
             // Update OLED with connection info
             if (display) {
                 char ip_str[16];
-                geogram_wifi_get_ap_ip(ip_str);
+                xprs_wifi_get_ap_ip(ip_str);
 
                 ssd1306_clear(display);
                 ssd1306_draw_string(display, 0, 0, "==   XPRS   ==", true);
@@ -2176,7 +2176,7 @@ extern "C" void app_main(void)
                 if (lora) {
                     ssd1306_draw_string(display, 0, 40, "LoRa: Ready", true);
                 }
-                ssd1306_draw_string(display, 0, 52, "v" GEOGRAM_VERSION, true);
+                ssd1306_draw_string(display, 0, 52, "v" XPRS_VERSION, true);
                 ssd1306_display(display);
             }
 

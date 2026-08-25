@@ -202,7 +202,7 @@ typedef struct {
 /* ── Boot splash ─────────────────────────────────────────────────────────── */
 
 /**
- * The Geogram mark over a flat ground, with a line naming what is starting.
+ * The XPRS mark over a flat ground, with a line naming what is starting.
  *
  * Built by xui_init() and pumped by whichever task owns LVGL -- which,
  * before ui_task exists, is the boot task itself. That is safe precisely

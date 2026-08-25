@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-struct xprsidx_s;   /* geogram_xprsindex; NULL when the board has no store */
+struct xprsidx_s;   /* xprs_index; NULL when the board has no store */
 
 typedef struct {
     const char *app;              /* "xprs-esp32" */

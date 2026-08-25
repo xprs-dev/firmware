@@ -10,8 +10,8 @@
  * It takes the private scalar as hex on the command line, which is exactly the
  * handling a real key must never get. Use a throwaway key for the bench.
  *
- * Build: gcc -DXPRSSIG_HOST_TEST -I../common/geogram_xprssig \
- *            -o xsign xsign.c ../common/geogram_xprssig/xprssig.c -lcrypto
+ * Build: gcc -DXPRSSIG_HOST_TEST -I../common/xprs_sig \
+ *            -o xsign xsign.c ../common/xprs_sig/xprssig.c -lcrypto
  * Usage: xsign <32-byte-priv-hex> "<line to sign>"
  *        xsign --pub <32-byte-priv-hex>
  */

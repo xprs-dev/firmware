@@ -1,5 +1,5 @@
 /* The NimBLE backend, for the A/B. Same air parameters as radio_tiny.c, lifted
- * from common/geogram_xprsble/xprsble.c so the only variable is the stack. */
+ * from common/xprs_bearer_ble/xprsble.c so the only variable is the stack. */
 #include "radio.h"
 
 #include <string.h>

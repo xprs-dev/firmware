@@ -7,5 +7,5 @@ set -e
 
 ENV="esp32c3_mini"
 
-echo "=== Geogram ESP32-C3 Flash ==="
+echo "=== XPRS ESP32-C3 Flash ==="
 ~/.platformio/penv/bin/pio run -e "$ENV" -t upload

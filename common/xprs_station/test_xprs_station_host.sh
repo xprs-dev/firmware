@@ -8,8 +8,8 @@
 set -e
 cd "$(dirname "$0")"
 
-XPRS=../geogram_xprs
-SHA=../geogram_xprsindex/test_sha256_host.c   # the codec's sha256 on the host
+XPRS=../xprs_codec
+SHA=../xprs_index/test_sha256_host.c   # the codec's sha256 on the host
 
 gcc -Wall -Wextra -Werror -O1 -DXST_HOST_TEST \
     -I. -I"$XPRS" \

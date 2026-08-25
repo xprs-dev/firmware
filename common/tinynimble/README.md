@@ -129,7 +129,7 @@ tn_start() -> up, ESP_OK, scanning resumes
 
 ## Not done yet
 
-- Not wired into the firmware. `common/geogram_xprsble/xprsble.c` is the
+- Not wired into the firmware. `common/xprs_bearer_ble/xprsble.c` is the
   intended first consumer — it already wraps advertise+scan behind one callback.
 - Reachability under WiFi load not measured — the probe runs no WiFi, so the
   coexistence question `docs/espnow.md` documents is still open for this stack.

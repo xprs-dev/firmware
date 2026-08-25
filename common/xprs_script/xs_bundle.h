@@ -102,7 +102,7 @@ int xsb_signed_line(char *out, size_t cap, const char *board,
 
 /* Provided by xs_sha256_idf.c on the target (mbedTLS); the host test harness
  * links its own, so xs_bundle.c itself stays free of ESP-IDF. Same arrangement
- * as geogram_xprs. */
+ * as xprs_codec. */
 void xsb_sha256(const uint8_t *in, size_t len, uint8_t out[32]);
 
 /**

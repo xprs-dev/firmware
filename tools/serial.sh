@@ -3,7 +3,7 @@ set -euo pipefail
 
 PORT="${1:-/dev/ttyUSB0}"
 BAUD="${2:-115200}"
-RESET_BEFORE_MONITOR="${GEOGRAM_SERIAL_RESET_BEFORE_MONITOR:-1}"
+RESET_BEFORE_MONITOR="${XPRS_SERIAL_RESET_BEFORE_MONITOR:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PIO_BIN="${HOME}/.platformio/penv/bin/pio"
@@ -17,7 +17,7 @@ fi
 cd "${SCRIPT_DIR}"
 
 # Run the same reset sequence used for stable interactive console startup.
-# Disable with: GEOGRAM_SERIAL_RESET_BEFORE_MONITOR=0 ./serial.sh
+# Disable with: XPRS_SERIAL_RESET_BEFORE_MONITOR=0 ./serial.sh
 if [[ "${RESET_BEFORE_MONITOR}" == "1" && -f "${ESPTOOL_PY}" ]] && command -v python3 >/dev/null 2>&1; then
   python3 "${ESPTOOL_PY}" \
     --chip esp32 \

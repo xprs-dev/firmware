@@ -8,7 +8,7 @@
 idf_component_register(
     SRCS "xprs_script.cpp" "xs_bundle.c" "xs_sha256_idf.c"
     INCLUDE_DIRS "."
-    REQUIRES geogram_wrench geogram_xprssig xprs_config xprs_health
+    REQUIRES xprs_wrench xprs_sig xprs_config xprs_health
              esp_partition mbedtls log esp_timer esp_common freertos)
 
 target_compile_options(${COMPONENT_LIB} PRIVATE

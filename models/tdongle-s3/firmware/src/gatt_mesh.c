@@ -3,7 +3,7 @@
  * NimBLE specifics (EXT_ADV build):
  *  - The broadcast plane keeps ext-adv instance 0 (relay_task); the GATT
  *    plane adds instance 1 as a LEGACY connectable advert carrying the
- *    geogram presence format `FF FF 3E <devId> <callsign>` — exactly what
+ *    xprs presence format `FF FF 3E <devId> <callsign>` — exactly what
  *    the phones' discovery scan dials.
  *  - Chunk notifies are paced by BLE_GAP_EVENT_NOTIFY_TX with a small
  *    in-flight credit; blemesh_session's pump pauses on BLEMESH_SEND_BUSY

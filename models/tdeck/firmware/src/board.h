@@ -32,7 +32,7 @@
 
 /* One SPI bus, three chip selects. SPI2: on the S3 both buses route through
  * the GPIO matrix, so there is no IOMUX argument for preferring SPI3 the way
- * there is on the original ESP32, and SPI2 is what geogram_sx1262 assumes. */
+ * there is on the original ESP32, and SPI2 is what xprs_sx1262 assumes. */
 #define TDECK_SPI_SCLK     40
 #define TDECK_SPI_MOSI     41
 #define TDECK_SPI_MISO     38

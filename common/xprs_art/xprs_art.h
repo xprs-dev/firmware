@@ -1,8 +1,8 @@
 /**
  * @file xprs_art.h
- * @brief The Geogram mark, as strokes a panel can draw.
+ * @brief The XPRS mark, as strokes a panel can draw.
  *
- * spec/artwork/splash/geogram-triad-dark.svg is nothing but ten stroked
+ * spec/artwork/splash/xprs-triad-dark.svg is nothing but ten stroked
  * shapes -- four lines for the star, three chevrons, three waves -- so it
  * needs no SVG renderer and no bitmap. It needs a coordinate table and
  * lv_line, which xprs_ui already uses for the radar's rings and sweep.

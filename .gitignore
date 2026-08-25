@@ -32,7 +32,7 @@ fw_secrets.h
 # Built by tools/build_wrenchc.sh from the vendored Wrench source.
 tools/wrenchc
 
-# Development-only signer, built from common/geogram_xprssig.
+# Development-only signer, built from common/xprs_sig.
 tools/xsign
 
 # idf.py (as opposed to PlatformIO) writes a BARE sdkconfig next to the project.

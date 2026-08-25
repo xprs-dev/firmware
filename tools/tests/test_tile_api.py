@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for Geogram ESP32 Tile API
+Test script for XPRS ESP32 Tile API
 
 This script tests the tile caching functionality of the ESP32 station.
 It can auto-detect the device IP via serial connection or use a provided IP.
@@ -210,7 +210,7 @@ def test_invalid_requests(base_url: str) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test Geogram ESP32 Tile API")
+    parser = argparse.ArgumentParser(description="Test XPRS ESP32 Tile API")
     parser.add_argument("--port", "-p", help="Serial port for IP auto-detection (e.g., /dev/ttyACM0)")
     parser.add_argument("--ip", "-i", help="Device IP address (e.g., 192.168.1.100)")
     parser.add_argument("--layer", "-l", default="standard", choices=["standard", "satellite"],
@@ -232,7 +232,7 @@ def main():
         sys.exit(1)
 
     base_url = f"http://{device_ip}"
-    print(f"\nTesting Geogram Tile API at {base_url}")
+    print(f"\nTesting XPRS Tile API at {base_url}")
     print("=" * 50)
 
     # Run tests

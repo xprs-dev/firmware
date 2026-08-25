@@ -45,10 +45,10 @@ The mesh uses ESP-MESH's self-organized tree topology:
 #include "mesh_bsp.h"
 
 // Initialize mesh subsystem (call once at startup)
-esp_err_t geogram_mesh_init(void);
+esp_err_t xprs_mesh_init(void);
 
 // Clean up mesh resources
-esp_err_t geogram_mesh_deinit(void);
+esp_err_t xprs_mesh_deinit(void);
 ```
 
 ### Starting/Stopping Mesh
@@ -61,14 +61,14 @@ typedef struct {
     uint8_t channel;           // WiFi channel (1-13)
     uint8_t max_layer;         // Maximum tree depth
     bool allow_root;           // Can this node become root?
-    geogram_mesh_event_cb_t callback;  // Event callback
-} geogram_mesh_config_t;
+    xprs_mesh_event_cb_t callback;  // Event callback
+} xprs_mesh_config_t;
 
 // Start mesh network
-esp_err_t geogram_mesh_start(const geogram_mesh_config_t *config);
+esp_err_t xprs_mesh_start(const xprs_mesh_config_t *config);
 
 // Stop mesh network
-esp_err_t geogram_mesh_stop(void);
+esp_err_t xprs_mesh_stop(void);
 ```
 
 ### Status Queries
@@ -82,48 +82,48 @@ typedef enum {
     XPRS_MESH_STATUS_DISCONNECTED,
     XPRS_MESH_STATUS_ROOT,
     XPRS_MESH_STATUS_ERROR
-} geogram_mesh_status_t;
+} xprs_mesh_status_t;
 
-geogram_mesh_status_t geogram_mesh_get_status(void);
+xprs_mesh_status_t xprs_mesh_get_status(void);
 
 // Check if this node is the root
-bool geogram_mesh_is_root(void);
+bool xprs_mesh_is_root(void);
 
 // Get current layer in mesh tree (1 = root, 2 = child of root, etc.)
-uint8_t geogram_mesh_get_layer(void);
+uint8_t xprs_mesh_get_layer(void);
 
 // Check if mesh is connected
-bool geogram_mesh_is_connected(void);
+bool xprs_mesh_is_connected(void);
 ```
 
 ### External SoftAP (for phones)
 
 ```c
 // Start SoftAP for phone connections
-esp_err_t geogram_mesh_start_external_ap(
+esp_err_t xprs_mesh_start_external_ap(
     const char *ssid,
     const char *password,
     uint8_t max_connections
 );
 
 // Stop external SoftAP
-esp_err_t geogram_mesh_stop_external_ap(void);
+esp_err_t xprs_mesh_stop_external_ap(void);
 
 // Get external AP IP address
-esp_err_t geogram_mesh_get_external_ap_ip(char *ip_str, size_t len);
+esp_err_t xprs_mesh_get_external_ap_ip(char *ip_str, size_t len);
 ```
 
 ### IP Bridging
 
 ```c
 // Enable IP packet forwarding between mesh nodes
-esp_err_t geogram_mesh_enable_bridge(void);
+esp_err_t xprs_mesh_enable_bridge(void);
 
 // Disable IP bridging
-esp_err_t geogram_mesh_disable_bridge(void);
+esp_err_t xprs_mesh_disable_bridge(void);
 
 // Check if bridging is active
-bool geogram_mesh_bridge_is_enabled(void);
+bool xprs_mesh_bridge_is_enabled(void);
 ```
 
 ### Node Discovery
@@ -136,27 +136,27 @@ typedef struct {
     uint8_t subnet_id;         // Assigned subnet (10 + subnet_id)
     int8_t rssi;               // Signal strength
     bool is_root;              // True if this is the root node
-} geogram_mesh_node_t;
+} xprs_mesh_node_t;
 
 // Get list of known mesh nodes
-esp_err_t geogram_mesh_get_nodes(
-    geogram_mesh_node_t *nodes,
+esp_err_t xprs_mesh_get_nodes(
+    xprs_mesh_node_t *nodes,
     size_t max_nodes,
     size_t *node_count
 );
 
 // Get this node's subnet ID
-uint8_t geogram_mesh_get_subnet_id(void);
+uint8_t xprs_mesh_get_subnet_id(void);
 ```
 
 ### Configuration Persistence
 
 ```c
 // Save mesh config to NVS
-esp_err_t geogram_mesh_save_config(void);
+esp_err_t xprs_mesh_save_config(void);
 
 // Load mesh config from NVS
-esp_err_t geogram_mesh_load_config(geogram_mesh_config_t *config);
+esp_err_t xprs_mesh_load_config(xprs_mesh_config_t *config);
 ```
 
 ### Event Callback
@@ -174,11 +174,11 @@ typedef enum {
     XPRS_MESH_EVENT_ROUTE_TABLE_CHANGE,
     XPRS_MESH_EVENT_EXTERNAL_STA_CONNECTED,
     XPRS_MESH_EVENT_EXTERNAL_STA_DISCONNECTED
-} geogram_mesh_event_t;
+} xprs_mesh_event_t;
 
 // Event callback signature
-typedef void (*geogram_mesh_event_cb_t)(
-    geogram_mesh_event_t event,
+typedef void (*xprs_mesh_event_cb_t)(
+    xprs_mesh_event_t event,
     void *event_data
 );
 ```
@@ -188,21 +188,21 @@ typedef void (*geogram_mesh_event_cb_t)(
 ```c
 #include "mesh_bsp.h"
 
-static void mesh_event_handler(geogram_mesh_event_t event, void *data)
+static void mesh_event_handler(xprs_mesh_event_t event, void *data)
 {
     switch (event) {
         case XPRS_MESH_EVENT_CONNECTED:
-            ESP_LOGI(TAG, "Mesh connected, layer: %d", geogram_mesh_get_layer());
+            ESP_LOGI(TAG, "Mesh connected, layer: %d", xprs_mesh_get_layer());
 
             // Start external AP for phone connections
-            geogram_mesh_start_external_ap("xprs-X3ABCD", "", 4);
+            xprs_mesh_start_external_ap("xprs-X3ABCD", "", 4);
 
             // Enable IP bridging
-            geogram_mesh_enable_bridge();
+            xprs_mesh_enable_bridge();
             break;
 
         case XPRS_MESH_EVENT_ROOT_CHANGED:
-            ESP_LOGI(TAG, "I am now %s", geogram_mesh_is_root() ? "ROOT" : "CHILD");
+            ESP_LOGI(TAG, "I am now %s", xprs_mesh_is_root() ? "ROOT" : "CHILD");
             break;
 
         case XPRS_MESH_EVENT_EXTERNAL_STA_CONNECTED:
@@ -217,10 +217,10 @@ static void mesh_event_handler(geogram_mesh_event_t event, void *data)
 void app_main(void)
 {
     // Initialize mesh subsystem
-    geogram_mesh_init();
+    xprs_mesh_init();
 
     // Configure mesh network
-    geogram_mesh_config_t config = {
+    xprs_mesh_config_t config = {
         .mesh_id = "geomsh",         // 6-byte mesh ID
         .password = "XPRS-mesh",  // Mesh network password
         .channel = 1,
@@ -230,7 +230,7 @@ void app_main(void)
     };
 
     // Start mesh
-    geogram_mesh_start(&config);
+    xprs_mesh_start(&config);
 }
 ```
 
@@ -654,7 +654,7 @@ cd code && ~/.platformio/penv/bin/pio run -e esp32c3_mini
 
 ### IP Bridging Not Working
 
-- Confirm `geogram_mesh_enable_bridge()` was called
+- Confirm `xprs_mesh_enable_bridge()` was called
 - Check route table: `GET /api/mesh/nodes`
 - Verify subnet IDs don't conflict
 
@@ -668,13 +668,13 @@ cd code && ~/.platformio/penv/bin/pio run -e esp32c3_mini
 
 | File | Description |
 |------|-------------|
-| `components/geogram_mesh/mesh_bsp.h` | Public API header |
-| `components/geogram_mesh/mesh_bsp.c` | Core mesh implementation |
-| `components/geogram_mesh/mesh_bridge.c` | IP bridging implementation |
-| `components/geogram_mesh/mesh_chat.h` | Chat API header |
-| `components/geogram_mesh/mesh_chat.c` | Chat protocol and message store |
-| `components/geogram_mesh/Kconfig.projbuild` | Configuration options |
-| `components/geogram_console/cmd_mesh.c` | Serial console commands |
+| `components/xprs_mesh/mesh_bsp.h` | Public API header |
+| `components/xprs_mesh/mesh_bsp.c` | Core mesh implementation |
+| `components/xprs_mesh/mesh_bridge.c` | IP bridging implementation |
+| `components/xprs_mesh/mesh_chat.h` | Chat API header |
+| `components/xprs_mesh/mesh_chat.c` | Chat protocol and message store |
+| `components/xprs_mesh/Kconfig.projbuild` | Configuration options |
+| `components/xprs_console/cmd_mesh.c` | Serial console commands |
 | `code/src/main.cpp` | Mesh initialization code |
-| `components/geogram_http/http_server.c` | Mesh and Chat API endpoints |
-| `components/geogram_station/station.c` | Mesh status in station API |
+| `components/xprs_http/http_server.c` | Mesh and Chat API endpoints |
+| `components/xprs_node/station.c` | Mesh status in station API |

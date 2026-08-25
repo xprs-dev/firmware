@@ -15,7 +15,7 @@ def patch_legacy_driver(filepath, driver_name):
         content = f.read()
 
     # Check if already patched
-    if "GEOGRAM_PATCHED" in content:
+    if "XPRS_PATCHED" in content:
         return True
 
     # Pattern to match ESP_EARLY_LOGE with any tag name, capturing the tag
@@ -25,14 +25,14 @@ def patch_legacy_driver(filepath, driver_name):
     def replacement(m):
         indent = m.group(1)
         tag = m.group(2)
-        return f'{indent}// GEOGRAM_PATCHED: Conflict check disabled for ESP-Mesh-Lite compatibility\n{indent}ESP_EARLY_LOGW({tag}, "GEOGRAM_PATCHED: {driver_name} driver coexistence allowed");'
+        return f'{indent}// XPRS_PATCHED: Conflict check disabled for ESP-Mesh-Lite compatibility\n{indent}ESP_EARLY_LOGW({tag}, "XPRS_PATCHED: {driver_name} driver coexistence allowed");'
 
     new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
 
     if new_content != content:
         with open(filepath, 'w') as f:
             f.write(new_content)
-        print(f"[Geogram] Patched ESP-IDF legacy {driver_name} driver")
+        print(f"[XPRS] Patched ESP-IDF legacy {driver_name} driver")
         return True
 
     return False
@@ -75,7 +75,7 @@ def sync_version_from_pubspec():
     pubspec_path = os.path.join(project_dir, "..", "pubspec.yaml")
 
     if not os.path.exists(pubspec_path):
-        print("[Geogram] pubspec.yaml not found, using default version from app_config.h")
+        print("[XPRS] pubspec.yaml not found, using default version from app_config.h")
         return
 
     with open(pubspec_path, 'r') as f:
@@ -83,12 +83,12 @@ def sync_version_from_pubspec():
             match = re.match(r'^version:\s*(\d+\.\d+\.\d+)', line)
             if match:
                 version = match.group(1)
-                flag = f'-DGEOGRAM_VERSION=\\"{version}\\"'
+                flag = f'-DXPRS_VERSION=\\"{version}\\"'
                 env.Append(BUILD_FLAGS=[flag])
-                print(f"[Geogram] Version synced from pubspec.yaml: {version}")
+                print(f"[XPRS] Version synced from pubspec.yaml: {version}")
                 return
 
-    print("[Geogram] Could not parse version from pubspec.yaml, using default")
+    print("[XPRS] Could not parse version from pubspec.yaml, using default")
 
 def pre_build_action(source, target, env):
     """
@@ -101,7 +101,7 @@ def pre_build_action(source, target, env):
             break
 
     if board_model:
-        print(f"[Geogram] Building for board model: {board_model}")
+        print(f"[XPRS] Building for board model: {board_model}")
 
     # Ensure firmware output directory exists
     firmware_dir = os.path.join(env.subst("$PROJECT_DIR"), "firmware")

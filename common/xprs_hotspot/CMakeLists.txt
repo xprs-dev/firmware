@@ -4,5 +4,5 @@
 idf_component_register(
     SRCS "xprs_hotspot.c" "chat_page.c"
     INCLUDE_DIRS "."
-    REQUIRES esp_http_server esp_wifi esp_netif geogram_dns log
+    REQUIRES esp_http_server esp_wifi esp_netif xprs_dns log
 )

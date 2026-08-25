@@ -40,7 +40,10 @@ This document describes the Wi-Fi AP chat page, the HTTP API, and how messages a
   - It calls `window.nostr.getPublicKey()`.
   - It derives `npub` and `callsign` from the returned hex pubkey.
 - If no extension is available, the page generates local keys.
-  - The keys are stored in `localStorage` under `geogram_nostr_keys`.
+  - The keys are stored in `localStorage` under `geogram_nostr_keys` -- a name
+    kept deliberately through the xprs rename, because it lives in the
+    visitor's browser and renaming it would orphan their keys rather than
+    move them.
 - Callsign format: `X1` + first 4 chars of `npub` (uppercased).
 
 ## Nostr Signed Notes

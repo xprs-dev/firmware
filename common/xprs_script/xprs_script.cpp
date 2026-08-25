@@ -27,7 +27,7 @@
 static const char *TAG = "xs";
 
 /* Bound into the signed line, so a bundle built for one board cannot install
- * on another. CONFIG_GEOGRAM_BOARD_* would work too; this keeps the string in
+ * on another. CONFIG_XPRS_BOARD_* would work too; this keeps the string in
  * one place next to the code that uses it. */
 #ifndef XS_BOARD
 #define XS_BOARD "tdeck"

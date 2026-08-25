@@ -7,4 +7,4 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES esp_http_server xprs_auth esp_https_ota esp_http_client app_update esp_app_format
              mbedtls nvs_flash esp_timer log
-             geogram_xprssig xprs_config)
+             xprs_sig xprs_config)

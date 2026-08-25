@@ -28,10 +28,10 @@ Two test devices typically connected:
 code/
 ├── src/                    # Main application (main.cpp)
 ├── components/
-│   ├── geogram_mesh/       # Mesh networking (mesh_bsp.c)
-│   ├── geogram_console/    # Serial console commands
-│   ├── geogram_http/       # HTTP server and WebSocket
-│   ├── geogram_nostr/      # Nostr keys and signing
+│   ├── xprs_mesh/       # Mesh networking (mesh_bsp.c)
+│   ├── xprs_console/    # Serial console commands
+│   ├── xprs_http/       # HTTP server and WebSocket
+│   ├── xprs_nostr/      # Nostr keys and signing
 │   └── ...
 ├── boards/                 # Board-specific sdkconfig files
 ├── managed_components/     # ESP-IDF components (esp-mesh-lite, iot-bridge)
@@ -125,7 +125,7 @@ This ensures exactly one root node in any mesh topology.
 |------|---------|
 | `sdkconfig.defaults` | Base mesh configuration |
 | `boards/sdkconfig.esp32c3_mini` | Board-specific overrides |
-| `components/geogram_mesh/mesh_bsp.c` | Mesh initialization and event handling |
+| `components/xprs_mesh/mesh_bsp.c` | Mesh initialization and event handling |
 
 ### Important Config Options
 

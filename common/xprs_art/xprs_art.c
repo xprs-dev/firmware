@@ -6,7 +6,7 @@
 #include "xprs_art.h"
 
 /*
- * Transcribed from spec/artwork/splash/geogram-triad-dark.svg.
+ * Transcribed from spec/artwork/splash/xprs-triad-dark.svg.
  *
  * That file's viewBox is "0 12 276 258", so twelve is subtracted from every
  * y HERE, once, and the table below is a plain 276x258 box starting at the

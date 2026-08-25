@@ -2,7 +2,7 @@
  * can run the SAME test on the SAME board and the comparison means something.
  *
  * Both implementations use identical air parameters, lifted from
- * common/geogram_xprsble/xprsble.c: non-connectable, non-scannable, non-legacy
+ * common/xprs_bearer_ble/xprsble.c: non-connectable, non-scannable, non-legacy
  * extended advertising, 1M PHY both, sid 0, tx_power 127, 160 ms; extended
  * passive scan 0x0060/0x0050 uncoded with no duplicate filtering. */
 #pragma once

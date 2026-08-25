@@ -6,7 +6,7 @@ CONFIG_IDF_TARGET_ESP32S3=y
 CONFIG_IDF_TARGET="esp32s3"
 
 # Geogram board selection
-CONFIG_GEOGRAM_BOARD_TDONGLE_S3=y
+CONFIG_XPRS_BOARD_TDONGLE_S3=y
 
 # Flash - 16MB (T-Dongle-S3 has 16MB flash)
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
@@ -31,7 +31,7 @@ CONFIG_FREERTOS_HZ=1000
 # make it primary — logs AND panic backtraces then land there (with UART0 primary
 # they go to the unexposed pin and are invisible). No secondary console.
 # The headless "STA never gets an IP" bug was NOT console-FIFO blocking (that was a
-# wrong earlier theory): it was the interactive serial REPL (geogram_console
+# wrong earlier theory): it was the interactive serial REPL (xprs_console
 # linenoise) blocking on a floating console at boot while holding the stdio lock,
 # which deadlocked the main task's next ESP_LOG and hung init right after BLE. The
 # real fix is FEATURE_CONSOLE=0 (platformio.ini) — no local REPL on this headless
@@ -108,14 +108,14 @@ CONFIG_LWIP_IPV4_NAPT=y
 CONFIG_BRIDGE_ENABLE=y
 CONFIG_BRIDGE_DATA_FORWARDING_NETIF_SOFTAP=y
 CONFIG_BRIDGE_EXTERNAL_NETIF_STATION=y
-CONFIG_BRIDGE_SOFTAP_SSID="geogram"
-CONFIG_BRIDGE_SOFTAP_PASSWORD="geogram1"
+CONFIG_BRIDGE_SOFTAP_SSID="xprs"
+CONFIG_BRIDGE_SOFTAP_PASSWORD="xprs1"
 CONFIG_BRIDGE_SOFTAP_MAX_CONNECT_NUMBER=4
 CONFIG_BRIDGE_ETHERNET_NETIF_ENABLE=n
 CONFIG_BRIDGE_STATIC_DNS_SERVER_MAIN="192.168.5.1"
 CONFIG_BRIDGE_STATIC_DNS_SERVER_BACKUP="192.168.5.1"
 
-CONFIG_GEOGRAM_MESH_ENABLED=y
+CONFIG_XPRS_MESH_ENABLED=y
 CONFIG_MESH_LITE_ENABLE=y
 CONFIG_MESH_LITE_VENDOR_ID_0=71
 CONFIG_MESH_LITE_VENDOR_ID_1=87

@@ -17,7 +17,7 @@ reaches the machines in the building and stops there.
 
 XPRS's Reticulum LAN discovery uses UDP 42671 and is a different protocol on a
 different socket. The ESP32 firmware listens to it separately
-(`geogram_lanwatch`) and nothing here changes that.
+(`xprs_lanwatch`) and nothing here changes that.
 
 Three sockets travel this wire, and it is worth being able to name them:
 
@@ -104,8 +104,8 @@ there.
 
 ## On the T-Dongle
 
-`geogram_xprslan` is the implementation, and everything heard on the LAN goes
-into the same index as everything heard on the radio (`geogram_xprsindex`), so
+`xprs_bearer_lan` is the implementation, and everything heard on the LAN goes
+into the same index as everything heard on the radio (`xprs_index`), so
 `GET /api/xprs` answers about both. The bearer starts by default once WiFi is
 initialised, including when the dongle is serving only its own SoftAP -- the
 stations joined to it are a local network too.

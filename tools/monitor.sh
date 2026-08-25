@@ -26,7 +26,7 @@ if [ -z "$PORT" ]; then
     fi
 fi
 
-echo "=== Geogram Serial Monitor ==="
+echo "=== XPRS Serial Monitor ==="
 echo "Port: $PORT"
 echo "Baud: $BAUD"
 echo "Press Ctrl+C to exit"

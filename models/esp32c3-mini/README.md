@@ -27,9 +27,9 @@ Things worth knowing even if you never do the work:
   `nimble/nimble_port.h`), and has not for a while — see the build-status table
   in `multiboard/README.md`.
 - **It worked before**, and that firmware is still on disk at
-  `/home/brito/code/geogram/geogram/esp32/` (and `geogram-esp32/`, the tree where
+  `/home/brito/code/xprs/xprs/esp32/` (and `xprs-esp32/`, the tree where
   this was the primary board), including a shipped
-  `firmware/geogram-ESP32C3-mini.elf` — **1,332,452 B** of flash image,
+  `firmware/xprs-ESP32C3-mini.elf` — **1,332,452 B** of flash image,
   **176,900 B** of static RAM, **~150 KB** free heap after boot.
 - **What worked was WiFi SoftAP + web chat over ESP-Mesh-Lite, with BLE OFF.**
   `CONFIG_BT_ENABLED` is unset in every historical C3 config; the firmware logged
@@ -51,6 +51,6 @@ cd ../../multiboard
 ```
 
 One `src/main.cpp` serves all eight targets in that project; what makes this
-board itself is `sdkconfig.esp32c3_mini` here and the `geogram_model_*` component it
+board itself is `sdkconfig.esp32c3_mini` here and the `xprs_model_*` component it
 selects from `common/`.
 

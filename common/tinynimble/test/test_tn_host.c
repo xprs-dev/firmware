@@ -5,7 +5,7 @@
  * advertises something no peer parses, and the only symptom is silence on the
  * air. So every command is asserted byte-for-byte against the Bluetooth Core
  * 5.x layout (Vol 4 Part E, 7.8), with the exact parameters the firmware uses
- * in common/geogram_xprsble/xprsble.c.
+ * in common/xprs_bearer_ble/xprsble.c.
  *
  * The decoder is fed malformed packets on purpose: a controller that truncates
  * a report must not become an out-of-range read. */

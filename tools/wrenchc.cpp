@@ -1,7 +1,7 @@
 /* wrenchc -- compile a Wrench script to bytecode, on a desk.
  *
  * The firmware builds the VM with WRENCH_WITHOUT_COMPILER (see
- * common/geogram_wrench/CMakeLists.txt): upstream's own header says the
+ * common/xprs_wrench/CMakeLists.txt): upstream's own header says the
  * compiler "is not particularly memory or space efficient, for small embedded
  * systems it is strongly reccommeded (nay, required) that only bytecode be
  * executed". So the station never compiles anything; it verifies a signature
@@ -11,7 +11,7 @@
  * templates (WRarray et al) that the amalgamated public header does not
  * export. wr_compile() is public and is all that is needed, so this is forty
  * lines instead of three thousand and has no dependency beyond the two files
- * already vendored in common/geogram_wrench/.
+ * already vendored in common/xprs_wrench/.
  *
  * Build:  tools/build_wrenchc.sh
  * Usage:  wrenchc <in.w> <out.wrb>

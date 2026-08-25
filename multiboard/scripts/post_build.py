@@ -26,26 +26,26 @@ def post_build_action(source, target, env):
     # Copy and rename
     if os.path.exists(bin_src):
         shutil.copy2(bin_src, bin_dst)
-        print(f"[Geogram] Firmware copied to: {bin_dst}")
+        print(f"[XPRS] Firmware copied to: {bin_dst}")
 
     if os.path.exists(elf_src):
         shutil.copy2(elf_src, elf_dst)
-        print(f"[Geogram] ELF copied to: {elf_dst}")
+        print(f"[XPRS] ELF copied to: {elf_dst}")
 
     # Sync to flasher downloads if this board has a flasher entry
     flasher_model = env.GetProjectOption("custom_flasher_model", "")
     if flasher_model and os.path.exists(bin_dst):
         flasher_dir = os.path.join(
             env.subst("$PROJECT_DIR"), "..",
-            "downloads", "flasher", "geogram", "esp32", flasher_model
+            "downloads", "flasher", "xprs", "esp32", flasher_model
         )
         flasher_bin = os.path.join(flasher_dir, "firmware.bin")
         if os.path.isdir(flasher_dir):
             if os.path.exists(flasher_bin) and filecmp.cmp(bin_dst, flasher_bin, shallow=False):
-                print(f"[Geogram] Flasher firmware unchanged, skipping: {flasher_bin}")
+                print(f"[XPRS] Flasher firmware unchanged, skipping: {flasher_bin}")
             else:
                 shutil.copy2(bin_dst, flasher_bin)
-                print(f"[Geogram] Flasher firmware synced to: {flasher_bin}")
+                print(f"[XPRS] Flasher firmware synced to: {flasher_bin}")
                 # Update modified_at in device.json so the app detects the new firmware
                 device_json_path = os.path.join(flasher_dir, "device.json")
                 if os.path.exists(device_json_path):
@@ -56,9 +56,9 @@ def post_build_action(source, target, env):
                     with open(device_json_path, 'w') as f:
                         json.dump(device_data, f, indent=2)
                         f.write("\n")
-                    print(f"[Geogram] Updated device.json modified_at to {now}")
+                    print(f"[XPRS] Updated device.json modified_at to {now}")
         else:
-            print(f"[Geogram] Warning: flasher dir not found: {flasher_dir}")
+            print(f"[XPRS] Warning: flasher dir not found: {flasher_dir}")
 
 # Hook into the build process
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", post_build_action)

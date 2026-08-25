@@ -1,0 +1,14 @@
+menu "XPRS over Reticulum"
+
+config XPRS_BEARER_RNS
+    bool "Reticulum bearer for the XPRS archiver"
+    default n
+    help
+        Puts this station's archiver on Reticulum: a TCP uplink to a hub or
+        to a nearby Aurora node, XPRS wires carried as signed wapp-datagram
+        announces (tag "xprs"), and inbound ones fed to the same funnel every
+        radio feeds. Costs roughly one task stack, one TCP connection's
+        windows and the Ed25519 arithmetic -- leave it off on boards without
+        the memory; everything compiles to no-ops when disabled.
+
+endmenu

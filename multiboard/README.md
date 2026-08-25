@@ -2,7 +2,7 @@
 
 One PlatformIO project, eight boards. They share `src/main.cpp` and the whole of
 `common/`; what makes each of them itself is an sdkconfig fragment and a
-`geogram_model_*` component. That is why they are one project rather than eight:
+`xprs_model_*` component. That is why they are one project rather than eight:
 splitting them would mean eight copies of a `main.cpp` that is currently one.
 
 ```sh

@@ -13,10 +13,10 @@ megabit?
 ### What exists
 
 Section 23.7 of the specification moves a pair of stations to a working channel
-of their own, and `common/geogram_xprschan/` implements it. The invitation can
+of their own, and `common/xprs_chan/` implements it. The invitation can
 ask for the long-range PHY -- `chan <peer> <channel> [seconds] lr` on the
 T-Dongle console (`models/tdongle-s3/firmware/src/main.c`, the `chan` command)
-sets `lr`, which reaches `xc_set_lr()` in `common/geogram_xprschan/xprschan.c`:
+sets `lr`, which reaches `xc_set_lr()` in `common/xprs_chan/xprschan.c`:
 
 ```c
 uint8_t bitmap = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
@@ -75,7 +75,7 @@ work fine on a bench.
 
 - **Stopping Bluetooth is not optional.** With the BLE controller running, a
   WiFi station that is not associated receives NOTHING while transmitting
-  perfectly. `geogram_xprschan` takes it down for the exchange and brings it
+  perfectly. `xprs_chan` takes it down for the exchange and brings it
   back; see `docs/espnow.md` for the truth table from `tools/espnow_probe`.
 - **The return path is fragile.** An illegal phymode/rate pairing on the way
   home (`WIFI_PHY_MODE_11G` with `WIFI_PHY_RATE_1M_L`) once left the broadcast

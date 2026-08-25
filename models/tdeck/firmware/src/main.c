@@ -7,7 +7,7 @@
  * keyboard that is really another ESP32 answering on I2C.
  *
  * The SX1262 on 868 MHz is the board's third bearer, behind the same relay
- * discipline as ESP-NOW and the LAN (geogram_xprslora). It shares the SPI
+ * discipline as ESP-NOW and the LAN (xprs_bearer_lora). It shares the SPI
  * bus with the panel, which is why its chip select is parked HIGH before
  * anything drives the bus, and why the sx1262 driver holds the bus for
  * exactly its chip-select windows.
@@ -147,7 +147,7 @@ static void display_flush(int x1, int y1, int x2, int y2,
  * carries the movement is the COUNT OF CHANGES, which is how LilyGO's own
  * code reads it. Levels are polled at 100 Hz alongside everything else in the
  * UI task, so no interrupt service is installed -- which also keeps this out
- * of the way of geogram_sx1262, which installs one of its own.
+ * of the way of xprs_sx1262, which installs one of its own.
  *
  * The click is an ordinary button and is debounced like one. */
 static const int k_dir_pin[4] = {

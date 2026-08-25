@@ -186,7 +186,7 @@ led_notify_chat();
 
 | File | Description |
 |------|-------------|
-| `components/geogram_led/include/led_bsp.h` | Public API header |
-| `components/geogram_led/led_bsp.c` | WS2812 driver implementation |
-| `components/geogram_led/CMakeLists.txt` | Build configuration |
-| `components/geogram_model_esp32c3_mini/model_config.h` | LED pin configuration |
+| `components/xprs_led/include/led_bsp.h` | Public API header |
+| `components/xprs_led/led_bsp.c` | WS2812 driver implementation |
+| `components/xprs_led/CMakeLists.txt` | Build configuration |
+| `components/xprs_model_esp32c3_mini/model_config.h` | LED pin configuration |

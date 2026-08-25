@@ -32,7 +32,7 @@
  * tn_hci.c is pure encode/decode over caller-owned buffers -- no ESP-IDF, no
  * heap, no tasks -- so the bytes that go on the wire are checked on a desk
  * against captures from the working NimBLE build. Same arrangement as
- * geogram_xprs and xs_bundle, and for the same reason: the one thing that must
+ * xprs_codec and xs_bundle, and for the same reason: the one thing that must
  * not drift is what the controller is told.
  *
  * tn_port_esp.c is the only file that knows about esp_bt_controller and

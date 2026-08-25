@@ -2,8 +2,8 @@
 #define APP_CONFIG_H
 
 // Application version
-#ifndef GEOGRAM_VERSION
-#define GEOGRAM_VERSION "1.0.0"
+#ifndef XPRS_VERSION
+#define XPRS_VERSION "1.0.0"
 #endif
 
 // Board model definitions

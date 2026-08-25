@@ -22,11 +22,11 @@ class". BLE is off today only because `CONFIG_BT_ENABLED` is unset.
 The old tree was mined before designing anything, and it **overturned a premise**.
 
 **BLE was OFF.** `CONFIG_BT_ENABLED` is unset in all three historical C3 configs
-(`geogram/aurora/esp32/sdkconfig.esp32c3_mini:489`,
-`geogram/geogram/esp32/…:489`, `geogram-esp32/code/…:483`), and no
+(`xprs/aurora/esp32/sdkconfig.esp32c3_mini:489`,
+`xprs/xprs/esp32/…:489`, `xprs-esp32/code/…:483`), and no
 `CONFIG_BT_NIMBLE_*` or `CONFIG_BT_CTRL_*` line exists in any of them. The C3 code
-path *calls* `geogram_ble_init()` (`src/main.cpp:1534-1546`) but
-`geogram_ble.c:2641` returns `ESP_ERR_NOT_SUPPORTED` when BT is off, so the
+path *calls* `xprs_ble_init()` (`src/main.cpp:1534-1546`) but
+`xprs_ble.c:2641` returns `ESP_ERR_NOT_SUPPORTED` when BT is off, so the
 working firmware logged **"BLE is disabled in this firmware configuration"** on
 every boot.
 
@@ -54,7 +54,7 @@ Anyone "restoring" the fragment's numbers would be flashing a configuration that
 never ran. This is the same trap `docs/esp32.md` records for the T-Dongle.
 
 **Measured on the working board:** free heap **~150 KB** after boot
-(`geogram-esp32 docs/context.md`), max 4 SoftAP clients, ~2-3 KB per WebSocket.
+(`xprs-esp32 docs/context.md`), max 4 SoftAP clients, ~2-3 KB per WebSocket.
 
 **The chat page is large and lives in `.rodata`** — no filesystem, no partition.
 `chat_page.c` is 202 KB of source serving **≈181 KB** per `GET /`, of which
@@ -62,7 +62,7 @@ never ran. This is the same trap `docs/esp32.md` records for the T-Dongle.
 copied to heap. On a 4 MB part that is a real slice of the app slot.
 
 **The C3 that ran the chat had a single 4,128,768 B `factory` partition**
-(`geogram-esp32/code/partitions.csv`), not the dual-OTA table. It had **2.1× the
+(`xprs-esp32/code/partitions.csv`), not the dual-OTA table. It had **2.1× the
 app space** the current shared table gives it. Sizing below has to respect that.
 
 ### Hard-won fixes to carry across, not rediscover
@@ -93,10 +93,10 @@ tree alone:
 **1. It does not compile.** `multiboard/README.md` records it and scopes the
 cause honestly: *"components pulling in NimBLE and the message store on boards
 whose configuration does not enable them"*. `multiboard/src/CMakeLists.txt:6`
-requires `geogram_ble geogram_ble_aprs geogram_ble_hello` unconditionally;
-`common/geogram_ble_hello/CMakeLists.txt` requires `bt geogram_msgstore
-geogram_xprsindex geogram_xprs`; and `ble_hello.c` / `ble_aprs.c` contain **zero**
-`CONFIG_BT_ENABLED` guards, unlike `common/geogram_ble/geogram_ble.c` which
+requires `xprs_ble xprs_ble_aprs xprs_ble_hello` unconditionally;
+`common/xprs_ble_hello/CMakeLists.txt` requires `bt xprs_msgstore
+xprs_index xprs_codec`; and `ble_hello.c` / `ble_aprs.c` contain **zero**
+`CONFIG_BT_ENABLED` guards, unlike `common/xprs_ble/xprs_ble.c` which
 guards every entry point. Errors: `msgstore.h`, `nimble/nimble_port.h`.
 
 **2. It worked before, and that firmware still exists.** This is the single most
@@ -131,15 +131,15 @@ Concretely, `taskVALID_CORE_ID(x)` is `x >= 0 && x < configNUMBER_OF_CORES`;
 unicore makes that 1, and `CONFIG_COMPILER_OPTIMIZATION_ASSERTION_LEVEL=2` is set
 for this board, so **`xTaskCreatePinnedToCore(..., 1)` asserts and aborts at task
 creation**. Eight first-party tasks do exactly that today — in `xprs_script`,
-`xprs_app` (`idx`), `geogram_xprsindex` (writer), `geogram_rns` (`rns_tcp`),
-`geogram_radio_tx`, `geogram_sa818`, and two in the T-Dongle's `main.c` — and
+`xprs_app` (`idx`), `xprs_index` (writer), `xprs_rns` (`rns_tcp`),
+`xprs_radio_tx`, `xprs_sa818`, and two in the T-Dongle's `main.c` — and
 **no component in the tree checks core count**: zero hits for
 `CONFIG_FREERTOS_UNICORE` or `SOC_CPU_CORES_NUM` across `common/`.
 
 ### The RAM picture is the encouraging part
 
 Measured from the **shipped** C3 binary
-(`/home/brito/code/geogram/geogram/esp32/firmware/geogram-ESP32C3-mini.elf`):
+(`/home/brito/code/xprs/xprs/esp32/firmware/xprs-ESP32C3-mini.elf`):
 
 | | bytes |
 |---|---|
@@ -154,7 +154,7 @@ For contrast, the T-Dongle-S3 has 345,856 B of DIRAM with 231,551 static —
 114,305 left, and a steady-state free heap around **14,304**.
 
 The ~216 KB above is a static-linkage figure. The **observed** number on the
-working board is **~150 KB free heap after boot** (`geogram-esp32
+working board is **~150 KB free heap after boot** (`xprs-esp32
 docs/context.md`), with mesh-lite running and BLE off. Treat 150 KB as the real
 starting point: BLE, the index and the bearers all come out of it, and mesh-lite
 going away gives some back. Either way the C3 has roughly ten times the
@@ -169,13 +169,13 @@ conceivable here at all despite there being no PSRAM.
 
 `multiboard/components` is a **symlink to `../common`**, and ESP-IDF compiles
 every component found there regardless of `REQUIRES` (proof:
-`geogram_epaper_1in54` and `geogram_sx1276` appear in a T-Dongle build
-directory). Recent work added `geogram_wrench` (665 KB of C++), `xprs_script` and
+`xprs_epaper_1in54` and `xprs_sx1276` appear in a T-Dongle build
+directory). Recent work added `xprs_wrench` (665 KB of C++), `xprs_script` and
 `xprs_assets` to `common/`, and multiboard demonstrably **whole-archives** its
 component libraries.
 
 `multiboard`'s `tdongle_s3` is the one env that still builds, at **94.5 % of its
-1,966,080 B slot, 108 KB free**. If `libgeogram_wrench.a` links there it is a
+1,966,080 B slot, 108 KB free**. If `libxprs_wrench.a` links there it is a
 third of the remaining headroom.
 
 - Build `multiboard -e tdongle_s3`; compare `idf_size.py` and `--archives`
@@ -201,13 +201,13 @@ down nowhere else.
 
 Sources, both on this machine:
 
-- `/home/brito/code/geogram/geogram/esp32/sdkconfig.esp32c3_mini` — a
+- `/home/brito/code/xprs/xprs/esp32/sdkconfig.esp32c3_mini` — a
   **generated** config at project root. Per `docs/esp32.md`'s own rule, the
   generated file at the root is what the build used; the `boards/` fragment is
   only a seed. **This file is the working configuration.**
-- `/home/brito/code/geogram/aurora/esp32/` — the tree this repo was imported from
+- `/home/brito/code/xprs/aurora/esp32/` — the tree this repo was imported from
   ("Import the ESP32 firmware from aurora, arranged by board").
-- `firmware/geogram-ESP32C3-mini.elf` — the shipped binary measured above.
+- `firmware/xprs-ESP32C3-mini.elf` — the shipped binary measured above.
 - `flash-c3.sh` in both trees: the C3 had its own flashing script, i.e. it was in
   routine use.
 
@@ -232,9 +232,9 @@ Stage 2 rather than re-deriving anything from the current tree.
 ### Stage 1 — make the C3 compile again (self-contained)
 
 - Guard `ble_hello.c` / `ble_aprs.c` with `#if CONFIG_BT_ENABLED`, matching what
-  `geogram_ble.c` already does, so they become stubs where BT is off.
-- Make those `APP_REQUIRES` entries conditional, in the `if(CONFIG_GEOGRAM_BOARD_*)`
-  style already used for `geogram_ftp` and the T-Dongle's stores.
+  `xprs_ble.c` already does, so they become stubs where BT is off.
+- Make those `APP_REQUIRES` entries conditional, in the `if(CONFIG_XPRS_BOARD_*)`
+  style already used for `xprs_ftp` and the T-Dongle's stores.
 - Verify `esp32c3_mini` builds; re-test `heltec_v3` and `esp32_generic`, which
   `multiboard/README.md` says fail the same way.
 - **Do not touch `multiboard/partitions.csv`** — it is shared by all eight envs.
@@ -250,11 +250,11 @@ directory of symlinks into `common/`, and a `src/main.c` that fills one
 `xapp_board_t` and calls `xapp_run()`.
 
 **Symlink:** `xprs_app`, `xprs_api`, `xprs_config`, `xprs_health`, `xprs_ota`,
-`xprs_auth`, `xprs_hotspot`, `xprs_station`, `geogram_wifi`, `geogram_xprs`,
-`geogram_xprsbearer`, `geogram_xprsnow`, `geogram_xprslan`, `geogram_xprsindex`,
-`geogram_xprsid`, `geogram_xprssig`, `geogram_nostr`, `geogram_ble`,
-`geogram_blemesh`, `geogram_common`.
-**Deliberately not: `geogram_rns`**, and no display, LoRa or SD components.
+`xprs_auth`, `xprs_hotspot`, `xprs_station`, `xprs_wifi`, `xprs_codec`,
+`xprs_bearer`, `xprs_bearer_now`, `xprs_bearer_lan`, `xprs_index`,
+`xprs_id`, `xprs_sig`, `xprs_nostr`, `xprs_ble`,
+`xprs_blemesh`, `xprs_common`.
+**Deliberately not: `xprs_rns`**, and no display, LoRa or SD components.
 
 **BLE on — and understand that this is the riskiest thing in the plan.**
 
@@ -401,7 +401,7 @@ perfectly acceptable outcome.
 
 ### Stage 4 — only if Stage 3 passes: port the script host
 
-The Wrench host (`common/xprs_script/`, `common/geogram_wrench/`) works on the
+The Wrench host (`common/xprs_script/`, `common/xprs_wrench/`) works on the
 T-Deck: +20,956 B flash, 12 KB internal RAM, signed bundles verified from flash,
 90/90 pings under an infinite script. **That last number depended on a second
 core and does not transfer to this board.** See `docs/esp32.md`, "Scripts
@@ -427,7 +427,7 @@ Changes confined to `common/xprs_script/`, all keeping T-Deck behaviour identica
 ## Verification
 
 1. **Stage 0:** `idf_size.py --archives` on `multiboard/tdongle_s3` vs the
-   1,858,352 B baseline; report the `libgeogram_wrench.a` / `libxprs_script.a` rows.
+   1,858,352 B baseline; report the `libxprs_wrench.a` / `libxprs_script.a` rows.
 2. **Stage 1:** `pio run -e esp32c3_mini` succeeds; `heltec_v3` and
    `esp32_generic` re-tested; `tdongle_s3` still builds and has not grown.
 3. **Stage 2:** image fits `ota_0` with headroom; `/api/status` and `/api/diag`
@@ -442,7 +442,7 @@ Changes confined to `common/xprs_script/`, all keeping T-Deck behaviour identica
    station packets on a single-core part, the VM does not belong on it.
 6. Host suites stay green throughout — they are target-independent:
    `common/xprs_script/test/test_bundle_host.sh`,
-   `common/geogram_wrench/test/test_wrench_host.sh`,
+   `common/xprs_wrench/test/test_wrench_host.sh`,
    `common/xprs_assets/test/test_xasset_host.sh`.
 
 ## Risks
@@ -460,8 +460,8 @@ Changes confined to `common/xprs_script/`, all keeping T-Deck behaviour identica
 ## Sequencing
 
 The shared firmware tree is being changed by other work in progress —
-`common/geogram_xprsindex/`, `common/xprs_app/` and `common/xprs_api/` among
-others. **Stages 1, 2 and 4 all touch shared code** (`geogram_ble_hello`,
+`common/xprs_index/`, `common/xprs_app/` and `common/xprs_api/` among
+others. **Stages 1, 2 and 4 all touch shared code** (`xprs_ble_hello`,
 `xprs_app.c`'s display guard, `xprs_script`), so they must wait for that work to
 land rather than race it.
 

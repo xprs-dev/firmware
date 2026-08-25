@@ -62,7 +62,7 @@ reflash. See `tools/mkassets.py`.
 
 Plus `ecp.c.o` 8,465, `rsa.c.o` 5,826, `bignum.c.o` 5,236 — **~56 KB**.
 
-The firmware's own crypto does not need this: `geogram_xprssig` implements
+The firmware's own crypto does not need this: `xprs_sig` implements
 secp256k1 itself, and the mbedTLS calls in our code are only AES-CBC, SHA-256,
 base64 and CTR-DRBG. The curve tables come in through **WPA3/SAE**, which is
 enabled four ways (`ESP_WIFI_ENABLE_WPA3_SAE`, `SAE_PK`, `SOFTAP_SAE_SUPPORT`,
@@ -245,7 +245,7 @@ With LVGL gone from the `.bss` ranking, our own components were at the top:
 `libxprs_app.a` 38,221, `libxprs_station.a` 15,652, `libxprs_ui.a` 8,017 —
 chat rings, device tables, statistics buckets, table-row scratch. All
 task-context and CPU-only, so `EXT_RAM_BSS_ATTR` relocates them with no change
-to how they are used. See `common/geogram_common/include/xprs_psram.h` for
+to how they are used. See `common/xprs_common/include/xprs_psram.h` for
 what may and may not carry the attribute.
 
 The log ring (`s_logring`, 6,144 B) was deliberately **left internal**: it is

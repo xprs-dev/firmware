@@ -25,12 +25,12 @@ SHA=$(sed -n 's/.*xprsscr1 tdeck spike 0.1.0 [0-9]* \([0-9a-f]*\).*/\1/p' "$OUT/
 [ -n "$SHA" ] || { echo "FAIL: could not read the sha out of the packer output"; exit 1; }
 
 gcc -std=gnu99 -Wall -Wextra -Werror -O1 -DXPRSSIG_HOST_TEST \
-    -I.. -I../../geogram_xprssig -o "$OUT/t" \
-    test_bundle_host.c ../xs_bundle.c ../../geogram_xprssig/xprssig.c -lcrypto
+    -I.. -I../../xprs_sig -o "$OUT/t" \
+    test_bundle_host.c ../xs_bundle.c ../../xprs_sig/xprssig.c -lcrypto
 "$OUT/t" "$OUT/spike.xscb" "$SHA"
 
 # --- and now the half that decides whether foreign code runs -------------
 gcc -std=gnu99 -Wall -Wextra -Werror -O1 -DXPRSSIG_HOST_TEST \
-    -I.. -I../../geogram_xprssig -o "$OUT/v" \
-    test_verify_host.c ../xs_bundle.c ../../geogram_xprssig/xprssig.c -lcrypto
+    -I.. -I../../xprs_sig -o "$OUT/v" \
+    test_verify_host.c ../xs_bundle.c ../../xprs_sig/xprssig.c -lcrypto
 "$OUT/v" "$OUT/spike.xscb"

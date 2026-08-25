@@ -27,7 +27,7 @@ html = html.replace('/*CRYPTO*/', js)
 
 # The logo font comes verbatim from the old chat page -- one theme, one font.
 import re
-old = open('/home/brito/code/xprs/xprs-esp32/common/geogram_http/'
+old = open('/home/brito/code/xprs/xprs-esp32/common/xprs_http/'
            'chat_page.c').read()
 m = re.search(r'"(@font-face\{[^\n]*?format\(\'woff2\'\);'
               r'font-display:swap\})', old)

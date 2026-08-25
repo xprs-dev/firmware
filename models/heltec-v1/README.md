@@ -22,6 +22,6 @@ cd ../../multiboard
 ```
 
 One `src/main.cpp` serves all eight targets in that project; what makes this
-board itself is `sdkconfig.heltec_v1` here and the `geogram_model_*` component it
+board itself is `sdkconfig.heltec_v1` here and the `xprs_model_*` component it
 selects from `common/`.
 

@@ -48,7 +48,7 @@ Increment appropriately (e.g., v1.2.0 → v1.3.0).
 
 ```bash
 gh release create vX.Y.Z \
-  --repo geograms/geogram-esp32 \
+  --repo xprss/xprs-esp32 \
   --title "vX.Y.Z" \
   --notes "Release notes here"
 ```
@@ -59,29 +59,29 @@ Due to shell compatibility issues with `gh release upload`, use curl:
 
 ```bash
 TOKEN=$(gh auth token)
-RELEASE_ID=$(gh api repos/geograms/geogram-esp32/releases/tags/vX.Y.Z --jq '.id')
+RELEASE_ID=$(gh api repos/xprss/xprs-esp32/releases/tags/vX.Y.Z --jq '.id')
 
 curl -X POST \
   -H "Authorization: token $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @.pio/build/esp32c3_mini/firmware.bin \
-  "https://uploads.github.com/repos/geograms/geogram-esp32/releases/${RELEASE_ID}/assets?name=geogram-esp32c3-mini-firmware.bin"
+  "https://uploads.github.com/repos/xprss/xprs-esp32/releases/${RELEASE_ID}/assets?name=xprs-esp32c3-mini-firmware.bin"
 ```
 
 ### 7. Update release notes (optional)
 
 ```bash
-gh release edit vX.Y.Z --repo geograms/geogram-esp32 --notes "$(cat <<'EOF'
+gh release edit vX.Y.Z --repo xprss/xprs-esp32 --notes "$(cat <<'EOF'
 ## Changes
 - Change 1
 - Change 2
 
 ## ESP32-C3 Mini Binary
-- `geogram-esp32c3-mini-firmware.bin` - Main firmware
+- `xprs-esp32c3-mini-firmware.bin` - Main firmware
 
 ### Flash with esptool:
 ```bash
-esptool.py --chip esp32c3 --port /dev/ttyUSB0 write_flash 0x10000 geogram-esp32c3-mini-firmware.bin
+esptool.py --chip esp32c3 --port /dev/ttyUSB0 write_flash 0x10000 xprs-esp32c3-mini-firmware.bin
 ```
 EOF
 )"
@@ -90,7 +90,7 @@ EOF
 ### 8. Verify release
 
 ```bash
-gh release view vX.Y.Z --repo geograms/geogram-esp32
+gh release view vX.Y.Z --repo xprss/xprs-esp32
 ```
 
 ## Notes

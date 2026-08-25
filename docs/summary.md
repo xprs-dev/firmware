@@ -5,16 +5,16 @@ This repository contains ESP32 firmware for XPRS network stations, with a primar
 ## High-level architecture
 
 - Entry point is `code/src/main.cpp`, which selects board models at compile time and wires together board init, UI, networking, and services.
-- Board-specific initialization lives in `code/components/geogram_model_*`, e.g. `code/components/geogram_model_epaper_1in54/model_init.c` for power, NVS, I2C, display, RTC, sensors, buttons, and SD card.
+- Board-specific initialization lives in `code/components/xprs_model_*`, e.g. `code/components/xprs_model_epaper_1in54/model_init.c` for power, NVS, I2C, display, RTC, sensors, buttons, and SD card.
 - Shared subsystems are split into components:
-  - Networking: `code/components/geogram_wifi`, `code/components/geogram_http`, `code/components/geogram_ws`
-  - Station state/API: `code/components/geogram_station`
-  - Console/remote access: `code/components/geogram_console`, `code/components/geogram_telnet`, `code/components/geogram_ssh`
-  - UI/display: `code/components/geogram_lvgl`, `code/components/geogram_ui`, `code/components/geogram_epaper_1in54`
-  - Sensors/RTC: `code/components/geogram_shtc3`, `code/components/geogram_pcf85063`
-  - Storage/maps/updates: `code/components/geogram_sdcard`, `code/components/geogram_tiles`, `code/components/geogram_updates`
-  - Geolocation: `code/components/geogram_geoloc`
-  - NOSTR keys/callsign: `code/components/geogram_nostr`
+  - Networking: `code/components/xprs_wifi`, `code/components/xprs_http`, `code/components/xprs_ws`
+  - Station state/API: `code/components/xprs_node`
+  - Console/remote access: `code/components/xprs_console`, `code/components/xprs_telnet`, `code/components/xprs_ssh`
+  - UI/display: `code/components/xprs_lvgl`, `code/components/xprs_ui_epaper`, `code/components/xprs_epaper_1in54`
+  - Sensors/RTC: `code/components/xprs_shtc3`, `code/components/xprs_pcf85063`
+  - Storage/maps/updates: `code/components/xprs_sdcard`, `code/components/xprs_tiles`, `code/components/xprs_updates`
+  - Geolocation: `code/components/xprs_geoloc`
+  - NOSTR keys/callsign: `code/components/xprs_nostr`
 
 ## Boot flow (ESP32-S3 ePaper 1.54")
 
@@ -27,9 +27,9 @@ This repository contains ESP32 firmware for XPRS network stations, with a primar
 
 ## Networking and services
 
-- WiFi abstraction is defined in `code/components/geogram_wifi/include/wifi_bsp.h` with STA/AP support and NVS-stored credentials.
-- HTTP server (`code/components/geogram_http`) serves a WiFi configuration portal and the Station API endpoints (plus WebSocket support).
-- Station state (`code/components/geogram_station/station.c`) tracks clients, uptime, callsign, and geolocation, and builds JSON responses for API usage.
+- WiFi abstraction is defined in `code/components/xprs_wifi/include/wifi_bsp.h` with STA/AP support and NVS-stored credentials.
+- HTTP server (`code/components/xprs_http`) serves a WiFi configuration portal and the Station API endpoints (plus WebSocket support).
+- Station state (`code/components/xprs_node/station.c`) tracks clients, uptime, callsign, and geolocation, and builds JSON responses for API usage.
 - Telnet/SSH/Serial console provide CLI access for device management.
 
 ## Mesh mode (optional)
@@ -39,8 +39,8 @@ This repository contains ESP32 firmware for XPRS network stations, with a primar
 ## Key files to start with
 
 - `code/src/main.cpp` - firmware entry point and overall wiring
-- `code/components/geogram_model_epaper_1in54/model_init.c` - primary board init
-- `code/components/geogram_station/station.c` - station state and JSON
-- `code/components/geogram_http/http_server.c` - WiFi config + API server
-- `code/components/geogram_wifi/wifi_bsp.c` - WiFi abstraction
+- `code/components/xprs_model_epaper_1in54/model_init.c` - primary board init
+- `code/components/xprs_node/station.c` - station state and JSON
+- `code/components/xprs_http/http_server.c` - WiFi config + API server
+- `code/components/xprs_wifi/wifi_bsp.c` - WiFi abstraction
 

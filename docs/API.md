@@ -64,7 +64,7 @@ Basic status check endpoint.
 ```json
 {
   "status": "ok",
-  "device": "geogram"
+  "device": "xprs"
 }
 ```
 
@@ -435,7 +435,7 @@ Device reboots ~500ms after sending the response.
 # Upload via curl
 curl -X POST http://192.168.1.94/api/ota \
   -H "Content-Type: application/octet-stream" \
-  --data-binary @esp32/firmware/geogram-KV4P-HT.bin
+  --data-binary @esp32/firmware/xprs-KV4P-HT.bin
 
 # Upload via web browser
 # Navigate to http://192.168.1.94/ota

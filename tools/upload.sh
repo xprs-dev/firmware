@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Geogram ESP32 Firmware Upload
+# XPRS ESP32 Firmware Upload
 # Builds firmware via build.sh, then flashes the selected target
 # Usage: ./upload.sh [-e ENV]   (non-interactive, specific target)
 #        ./upload.sh            (interactive menu — asks once, builds + flashes)
@@ -54,7 +54,7 @@ if [ -z "$ENV" ]; then
 
     echo ""
     echo "================================================"
-    echo "  Geogram ESP32 Build + Flash"
+    echo "  XPRS ESP32 Build + Flash"
     echo "================================================"
     echo ""
     echo "Available targets:"

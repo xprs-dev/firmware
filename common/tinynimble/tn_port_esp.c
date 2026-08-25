@@ -232,7 +232,7 @@ esp_err_t tn_adv_set_data(const uint8_t *ad, size_t len)
 
     /* stop -> set -> start, and NOT a reconfigure. Recreating the advertising
      * set makes the controller rotate its random address, which fragments
-     * every peer's address book (see common/geogram_xprsble/xprsble.c). */
+     * every peer's address book (see common/xprs_bearer_ble/xprsble.c). */
     static uint8_t buf[4 + 4 + TN_ADV_DATA_MAX];
     int n;
 

@@ -75,7 +75,7 @@ hears the same frame at the same instant:
 | The same packet heard meanwhile | the waiting copy is **dropped** |
 | A packet this station composed | goes out **immediately**, with no `via:` |
 
-That logic is not written twice: `geogram_xprsbearer` holds it once and both
+That logic is not written twice: `xprs_bearer` holds it once and both
 bearers use it. The identifier compared is the section 5 one, which ignores
 `via:` and `sig:`, so a relayed copy is recognisably the same packet.
 
@@ -189,7 +189,7 @@ packet, one relay.
 
 | | |
 |---|---|
-| Component | `geogram_xprsnow`, on `geogram_xprsbearer` |
+| Component | `xprs_bearer_now`, on `xprs_bearer` |
 | T-Dongle-S3 | ESP-NOW + BLE5 + LAN, all three |
 | M5Stack Core | ESP-NOW + LAN. An original ESP32 has **no** BLE5 extended advertising, so it can never join the Bluetooth plane |
 | Cost on the dongle | ~9.7 KB of heap: free 26.8 KB -> 17.1 KB, low-water 20.0 KB -> 10.3 KB |
@@ -239,7 +239,7 @@ and the frames that never reached the queue print as a change:
     heard 107 bytes at -55 dBm: t:receipt f:X3LTSH d:X3WWAJ r:012c52 s:ack
     radio delivered 8 frame(s) (+1), 0 not XPRS (+0), 0 dropped by a full queue (+0)
 
-`geogram_xprschan` switches it on for the length of an exchange and off again;
+`xprs_chan` switches it on for the length of an exchange and off again;
 it is a line per packet and is not meant to be left on.
 
 ## SOLVED: the BLE controller takes the radio from an unassociated station

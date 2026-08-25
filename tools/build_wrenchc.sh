@@ -3,7 +3,7 @@
 # firmware runs, so the compiler and the VM can never be different versions.
 set -e
 cd "$(dirname "$0")"
-SRC=../common/geogram_wrench
+SRC=../common/xprs_wrench
 g++ -O2 -std=gnu++11 -fno-exceptions -fno-rtti \
     -Wno-unused-parameter -Wno-sign-compare -Wno-unused-but-set-variable \
     -I"$SRC" -o wrenchc wrenchc.cpp "$SRC/wrench.cpp"

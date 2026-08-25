@@ -171,7 +171,7 @@ static xprsidx_dir_entry_t s_dir[XPRS_DIR_MAX];
 #define RNS_IDENTITY_VERSION 1
 
 /* The Reticulum destination namespace. This was "aurora" while the phone and
- * desktop app announced "geogram", which meant the dongle was in a namespace of
+ * desktop app announced "xprs", which meant the dongle was in a namespace of
  * its own: its announces were structurally fine, routed by the hubs, and then
  * discarded by the app because they matched none of its service tuples. A
  * dongle has therefore never appeared as one of our devices in the mesh graph.
@@ -191,7 +191,7 @@ static uint8_t s_pubkey[KEYSIZE];     /* x25519_pub(32) || ed25519_pub(32) */
 static uint8_t s_id_hash[16];
 static uint8_t s_name_hash[NAME_HASH_LEN];
 
-/* The XPRS signing key is the station's NOSTR key, held by geogram_nostr:
+/* The XPRS signing key is the station's NOSTR key, held by xprs_nostr:
  * secp256k1, x-only public half, bech32 npub, persisted in NVS, and the
  * callsign already derived from it the way §3 says. This firmware had none of
  * that only because it never linked the component — the key, the npub and the
@@ -248,7 +248,7 @@ static uint32_t s_boot_epoch;           /* NVS boot counter (XPRS.md §10.7) */
 static uint32_t s_life_base;
 #define LIFE_SAVE_SEC 900
 
-/* TweetNaCl entropy hook: provided by geogram_rns (rns_entropy.c), which is
+/* TweetNaCl entropy hook: provided by xprs_rns (rns_entropy.c), which is
  * also where tweetnacl itself now lives -- one copy, every consumer. */
 extern void randombytes(unsigned char *p, unsigned long long n);
 
@@ -527,7 +527,7 @@ static void air_raw_ad(const uint8_t *ad, int n)
     if (!s_adv_configured) {
         /* Configure ONCE and keep the set: re-creating it makes the controller
          * rotate its random address, which fragments every peer's address
-         * book. Same rule geogram_xprsble follows. */
+         * book. Same rule xprs_bearer_ble follows. */
         tn_adv_cfg_t cfg = {
             .handle        = 0,
             .props         = 0,      /* non-connectable, non-scannable */
@@ -1376,7 +1376,7 @@ static esp_err_t api_xprs_send(httpd_req_t *req)
 /*
  * GET /api/xprs?type=&recent=&since=&until=&days=&from=&asker=&limit=
  *
- * Deliberately NOT the geogram_http component: that one pulls in the station
+ * Deliberately NOT the xprs_http component: that one pulls in the station
  * API, websockets, mesh and nostr, and this firmware wants a socket and one
  * handler. Everything a reader can ask is a field the packet already carries.
  */
@@ -2091,7 +2091,7 @@ static const xc_ops_t k_chan_ops = {
     .now_ms = xc_now_ms,
     .time_field = xprs_time_field,
     .epoch = xc_epoch,
-    .hold_reconnect = geogram_wifi_hold_reconnect,
+    .hold_reconnect = xprs_wifi_hold_reconnect,
     .announce_identity = xprs_identity_air,
     .may_move = xc_may_move,
     .settle = xprsnow_settle,
@@ -3094,7 +3094,7 @@ typedef struct {
 static QueueHandle_t s_ui_q;
 
 /* T-Dongle-S3 pushbutton = the BOOT strap pin (GPIO0, active low; no BTN_* in
- * geogram_model_tdongle_s3 -- the board has no other button). */
+ * xprs_model_tdongle_s3 -- the board has no other button). */
 #define UI_BTN_GPIO    GPIO_NUM_0
 #define UI_INRANGE_SEC 300          /* "in reach" = heard in the last 5 min */
 #define UI_DWELL_MS    10000        /* per-view stop on the rotating tour */
@@ -3535,7 +3535,7 @@ static void derive_x3_from_ed(char *out, int cap)
 
 /* §3: an X3 callsign is derived from the NPUB — the key that signs — which is
  * what lets a receiver re-derive it and see that callsign and signature belong
- * together. geogram_nostr already does this (nostr_keys_derive_callsign); the
+ * together. xprs_nostr already does this (nostr_keys_derive_callsign); the
  * Reticulum-key form below is only a fallback for a station with no NOSTR key. */
 static void derive_x3_callsign(char *out, int cap)
 {
@@ -3551,7 +3551,7 @@ static void derive_x3_callsign(char *out, int cap)
 static void igate_provision(void)
 {
     nvs_handle_t h;
-    /* WiFi creds in the namespace geogram_wifi reads ("wifi_config"). */
+    /* WiFi creds in the namespace xprs_wifi reads ("wifi_config"). */
     if (nvs_open("wifi_config", NVS_READWRITE, &h) == ESP_OK) {
         size_t len = 0;
         bool have = (nvs_get_str(h, "ssid", NULL, &len) == ESP_OK && len > 1);
@@ -3646,8 +3646,8 @@ static void igate_start(void)
 
     char ssid[33] = {0}, pass[65] = {0};
     bool have_creds = false;
-    if (geogram_wifi_init() == ESP_OK &&
-        geogram_wifi_load_credentials(ssid, pass) == ESP_OK && ssid[0]) {
+    if (xprs_wifi_init() == ESP_OK &&
+        xprs_wifi_load_credentials(ssid, pass) == ESP_OK && ssid[0]) {
         have_creds = true;
     }
     if (!have_creds) {
@@ -3662,11 +3662,11 @@ static void igate_start(void)
     ESP_LOGI(TAG, "iGate: APRS-IS started as %s; connecting WiFi STA to %s",
              s_aprs_call, ssid);
 
-    geogram_wifi_config_t cfg = {0};
+    xprs_wifi_config_t cfg = {0};
     strncpy(cfg.ssid, ssid, sizeof cfg.ssid - 1);
     strncpy(cfg.password, pass, sizeof cfg.password - 1);
     cfg.callback = NULL;
-    geogram_wifi_connect(&cfg);
+    xprs_wifi_connect(&cfg);
 
     /* A clock, at last. Reticulum stamps every announce with the time and hubs
      * drop the ones that look stale, so a station with no clock is a station
@@ -3681,7 +3681,7 @@ static void igate_start(void)
     }
 
     /* LAN reach: listen for the XPRS app UDP discovery broadcast (announces) so
-     * the dashboard can count geogram devices on the same network. Passive
+     * the dashboard can count xprs devices on the same network. Passive
      * (receive-only); datagrams start flowing once the STA has an IP. */
     lanwatch_start(LANWATCH_DEFAULT_PORT);
 }

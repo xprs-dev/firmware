@@ -1,9 +1,9 @@
-# Say which board this is. The choice in common/geogram_common/Kconfig.projbuild
-# defaults to the Waveshare e-paper board on ANY ESP32-S3, and geogram_lvgl
+# Say which board this is. The choice in common/xprs_common/Kconfig.projbuild
+# defaults to the Waveshare e-paper board on ANY ESP32-S3, and xprs_lvgl
 # compiles an e-paper LVGL port when it sees that — so an S3 project that does
 # not name itself fails to build against a driver it never asked for. The
 # M5Stack never met this because the e-paper option is S3-only.
-CONFIG_GEOGRAM_BOARD_TDECK=y
+CONFIG_XPRS_BOARD_TDECK=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
 # The T-Deck exposes no UART pins — the console is the S3's own USB. Without
 # this there is no log and no console keys, which is most of the debugging.
@@ -234,7 +234,7 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # and can never have this -- docs/esp32.md, "Radio capability per chip".
 #
 # THIS BOARD BROADCASTS AND LISTENS. It never connects, never pairs, never
-# serves a characteristic: geogram_xprsble advertises and scans and that is the
+# serves a characteristic: xprs_bearer_ble advertises and scans and that is the
 # whole of it. The T-Dongle is the one that needs connections -- GATT, MSP
 # custody sessions, a connectable presence advert -- and its config is sized for
 # them. Copying that config here bought a stack three times the one in use, and
@@ -363,7 +363,7 @@ CONFIG_SDCARD_MAX_FILES=6
 # heard each other, 164 and 167 frames. See common/tinynimble/README.md.
 #
 # To go back, set BACKEND_TINYNIMBLE=n and NIMBLE_ENABLED=y -- the NimBLE path
-# in geogram_xprsble is kept, not deleted, precisely so that is one line.
+# in xprs_bearer_ble is kept, not deleted, precisely so that is one line.
 CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
 # CONFIG_BT_NIMBLE_ENABLED is not set
 
@@ -461,7 +461,7 @@ CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
 # cheap next to what the group above costs.
 
 # Large, CPU-only static buffers carry XPRS_PSRAM_BSS (see
-# common/geogram_common/include/xprs_psram.h) and land in the external RAM
+# common/xprs_common/include/xprs_psram.h) and land in the external RAM
 # BSS segment instead of internal DRAM. Without this option that attribute
 # expands to nothing and they stay where they were, so it is what actually
 # turns the annotation on.
@@ -474,7 +474,7 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
 CONFIG_ESP_TASK_WDT_PANIC=y
 
-# The Reticulum bearer (geogram_xprsrns): this archiver, reachable over RNS.
+# The Reticulum bearer (xprs_bearer_rns): this archiver, reachable over RNS.
 # On because the T-Deck has the memory (8 MB PSRAM); boards without it leave
 # the symbol unset and the component compiles to nothing.
-CONFIG_GEOGRAM_XPRSRNS=y
+CONFIG_XPRS_BEARER_RNS=y

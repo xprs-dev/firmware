@@ -3,9 +3,9 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES bt tinynimble nvs_flash log esp_timer mbedtls esp_hw_support xprs_health
              esp_wifi esp_event esp_netif lwip driver
-             geogram_model_tdongle_s3 geogram_st7735 xprs_station xprs_ui_mini
+             xprs_model_tdongle_s3 xprs_st7735 xprs_station xprs_ui_mini
              xprs_config xprs_auth xprs_ota xprs_diag xprs_api app_update esp_app_format espcoredump
-             geogram_wifi geogram_aprsis geogram_blemesh geogram_sdcard
-             geogram_lanwatch geogram_xprs geogram_xprsindex geogram_xprslan geogram_xprsbearer geogram_xprsnow geogram_xprsid geogram_xprschan geogram_rns geogram_xprssig geogram_nostr
+             xprs_wifi xprs_aprsis xprs_blemesh xprs_sdcard
+             xprs_lanwatch xprs_codec xprs_index xprs_bearer_lan xprs_bearer xprs_bearer_now xprs_id xprs_chan xprs_rns xprs_sig xprs_nostr
              esp_http_server
 )

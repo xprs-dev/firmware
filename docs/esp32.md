@@ -18,13 +18,13 @@ memory is left**.
 | Build | PlatformIO, `platformio.ini` with 8 envs (`pio run -e <env>`) | Own PlatformIO project, single env (`pio run` inside the dir) | same, `pio run` inside `esp32/m5stack/` |
 | Framework | ESP-IDF **5.2.1** (espressif32@6.7.0) -- pinned, see memory note about needing a real framework dir | same | same |
 | App | `src/main.cpp` (one binary, `HAS_*`/`FEATURE_*` gates per board) | `src/main.c` + `tweetnacl.c` | `src/main.c`, ~200 lines |
-| BLE | **Legacy advertising only** (31 B) -- `geogram_ble_hello` | **BLE5 extended advertising** (`CONFIG_BT_NIMBLE_EXT_ADV=y`) | **none** -- this chip has no ext-adv |
+| BLE | **Legacy advertising only** (31 B) -- `xprs_ble_hello` | **BLE5 extended advertising** (`CONFIG_BT_NIMBLE_EXT_ADV=y`) | **none** -- this chip has no ext-adv |
 | Boards | epaper-S3 (default env!), generic, C3, KV4P, Heltec v1/v2/v3, tdongle_s3 | T-Dongle-S3 (board id `esp32s3-devkitc-1`) | M5Stack Core, original ESP32-D0WDQ6, CP2104 at `/dev/ttyUSB0` |
 
 `esp32/m5stack/` exists to be a **second voice on the air**: testing a bearer
 with one device only proves that its loopback works. It shares the
-communication components by symlink (`geogram_xprs`, `geogram_xprsbearer`,
-`geogram_xprsnow`, `geogram_xprslan`) and runs XPRS over ESP-NOW and the LAN.
+communication components by symlink (`xprs_codec`, `xprs_bearer`,
+`xprs_bearer_now`, `xprs_bearer_lan`) and runs XPRS over ESP-NOW and the LAN.
 Its WiFi credentials live in a gitignored `src/wifi_secrets.h`, and they matter
 for one reason: **ESP-NOW rides the channel the station is on**, so associating
 to the same access point as the dongle is what puts both on the same channel
@@ -35,11 +35,11 @@ T-Dongle env is the older legacy-BLE APRS firmware. They cannot be merged
 casually: NimBLE's legacy GAP API changes/goes away when `EXT_ADV` is enabled,
 which is exactly why they are separate binaries.
 
-Components live in `esp32/components/` (50+, prefix `geogram_*`); `rns_ble5`
+Components live in `esp32/components/` (50+, prefix `xprs_*`); `rns_ble5`
 reuses them via **symlinks in `rns_ble5/components/`** (PlatformIO fails on
 `EXTRA_COMPONENT_DIRS` outside the project dir -- always symlink instead).
 Component CMake gates by **IDF_TARGET, not CONFIG_** (early-expansion gotcha,
-see `geogram_msgstore/CMakeLists.txt`).
+see `xprs_msgstore/CMakeLists.txt`).
 
 ## Radio capability per chip (mesh implications)
 
@@ -59,7 +59,7 @@ see `geogram_msgstore/CMakeLists.txt`).
 |---|---|---|
 | `0x55` | Reticulum packet (announces relayed blind, HEADER_2 hops+1) | rns_ble5 |
 | `0x41` | APRS broadcast parcel, compact `from\x1F to\x1F text` | both projects + phones |
-| `0x4D` | **street-mesh route beacon** (docs/mesh.md section 3) | rns_ble5 (`geogram_blemesh`) + phones |
+| `0x4D` | **street-mesh route beacon** (docs/mesh.md section 3) | rns_ble5 (`xprs_blemesh`) + phones |
 | `0x47` | phone GATT presence beacon | phones only (not implemented on ESP32) |
 | `0x50/0x51/0x52` | legacy broadcast-parcel chunks + NACK (13-17 B payloads) | legacy firmware + legacy-phone path |
 | `0x42` | legacy SCAN_RSP continuation | legacy firmware |
@@ -68,9 +68,9 @@ Legacy firmware advert caps are compile-time (`ADV_MFG_CAP=20`,
 `APRS_MFG_MAX=44` with SCAN_RSP); the phones' extended frames are simply
 invisible to it.
 
-## geogram_blemesh (the reusable mesh core)
+## xprs_blemesh (the reusable mesh core)
 
-`components/geogram_blemesh/` -- pure C, deps mbedtls+log only, **no radio/
+`components/xprs_blemesh/` -- pure C, deps mbedtls+log only, **no radio/
 storage/UI** (firmware wires those), so it ports to any ESP32 target:
 
 - `blemesh_beacon.c` -- 0x4D codec, wire-compatible with
@@ -105,10 +105,10 @@ mesh identity is the iGate callsign from NVS, fallback `TDONGLE`).
 
 - T-Dongle-S3 flashes over native USB-JTAG (`/dev/ttyACM0`); after flashing it
   needs `--after hard_reset` (default) -- the port re-enumerates.
-- LCD is ST7735 160x80 via LVGL 8.3.11 (`geogram_tdongle_ui`); LVGL is
+- LCD is ST7735 160x80 via LVGL 8.3.11 (`xprs_tdongle_ui`); LVGL is
   single-task -- UI updates only via the queue -> `ui_task`.
 - SD is the T-Dongle's hidden microSD slot (under the USB-A cap); mounted at
-  `/sdcard` via `geogram_sdcard` (SDMMC). Absent card must degrade gracefully.
+  `/sdcard` via `xprs_sdcard` (SDMMC). Absent card must degrade gracefully.
 - WiFi + BLE coexist: the ext scan runs at 60% duty (0x60 itvl / 0x50 window)
   deliberately, so WiFi (iGate) still gets airtime. That duty is about the
   handshake, not about throughput -- when WiFi collapses later, the cause is
@@ -233,7 +233,7 @@ that task waits for takes down every endpoint rather than just its own.
 
 Two consequences worth building around:
 
-- a handler must never queue behind a batch of SD writes. `geogram_xprsindex`
+- a handler must never queue behind a batch of SD writes. `xprs_index`
   therefore takes its lock **per record**, and offers `xprsindex_pause_writes()`
   so a reader can hold the writer off the card for the length of a request and
   give it straight back. Records keep arriving into RAM meanwhile.
@@ -789,7 +789,7 @@ boot from 3,492 bytes (largest block 1,600) to 70,940 (largest 31,744):
    `_REALLOC` at the LVGL component; they are `#ifndef`-guarded in
    `lv_conf_internal.h`, so the managed component is never patched.
 2. **Our own big statics.** `CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y`
-   plus `XPRS_PSRAM_BSS` (`common/geogram_common/include/xprs_psram.h`) on
+   plus `XPRS_PSRAM_BSS` (`common/xprs_common/include/xprs_psram.h`) on
    chat rings, device tables, statistics buckets and table-row scratch.
 
 **What may NOT carry the attribute**, because PSRAM is reached through the
@@ -912,12 +912,12 @@ selecting the tinynimble backend does not rescue it.
 
 XPRS treats BLE as optional at runtime via the board descriptor's `bool ble`
 (`xprs_app.h`), but a runtime flag cannot save a build. The guard belongs in
-`geogram_xprsble/xprsble.c`, which is now `#if CONFIG_BT_ENABLED` with a stub
+`xprs_bearer_ble/xprsble.c`, which is now `#if CONFIG_BT_ENABLED` with a stub
 arm returning `ESP_ERR_NOT_SUPPORTED` / `false` / `0` / `-1`. `xprsble.h`
 includes only `<stdint.h>`, `<stdbool.h>` and `"esp_err.h"`, so callers need no
 `#ifdef` at all — `xprsble_is_active()` answering false is already the path they
 take. `tinynimble` drops `tn_port_esp.c` under the same condition and keeps the
-IDF-free `tn_hci.c`. Cost on the M5Stack: `libgeogram_xprsble.a` links as
+IDF-free `tn_hci.c`. Cost on the M5Stack: `libxprs_bearer_ble.a` links as
 **27 bytes**.
 
 The M5Stack is not merely unconfigured, it is incapable — the original ESP32
@@ -1033,7 +1033,7 @@ Consequences that have already bitten:
 - the httpd task stack is trimmed to **5120 B** on this board, so a handler that
   puts a couple of 600-byte buffers on the stack can take the server down; build
   responses straight into the response buffer
-- SQLite does not fit, which is why `geogram_xprsindex` is what it is
+- SQLite does not fit, which is why `xprs_index` is what it is
 
 ### One response buffer, and the day this page was ignored
 
@@ -1134,15 +1134,15 @@ retries three times on that and on a dead socket.
 
 ## What the T-Dongle stores and speaks
 
-- `geogram_msgstore` -- the APRS archives (`/sdcard/aprs/msg`, `.../beacon`),
+- `xprs_msgstore` -- the APRS archives (`/sdcard/aprs/msg`, `.../beacon`),
   192-byte records, served by `/api/aprs` and `/api/beacons`.
-- `geogram_xprsindex` -- every XPRS packet heard, verbatim, 320-byte records in
+- `xprs_index` -- every XPRS packet heard, verbatim, 320-byte records in
   segments, with a zone map for time ranges and a tail index per type. Serves
   `/api/xprs` and the GATT `xprs_query`. Section 36 of `XPRS.md` is enforced in
   the store: a packet with `d:` is held and never handed to a third party.
-- `geogram_xprslan` -- XPRS as UDP broadcast on the LAN, port 4242, the same
+- `xprs_bearer_lan` -- XPRS as UDP broadcast on the LAN, port 4242, the same
   number XPRS answers on over TCP (`XPRS.md` section 24.4). See [lan.md](lan.md). Not
-  Reticulum (that is UDP 42671, `geogram_lanwatch`, listen only) and not the
+  Reticulum (that is UDP 42671, `xprs_lanwatch`, listen only) and not the
   internet.
 
 ## Scoped rooms (XPRS 13.11) on a station
@@ -1153,7 +1153,7 @@ Global is the unmarked default, and a `d:`-addressed message is a 1:1 room.
 Sending in Local appends `scope:local` to the wire; the station's bearers
 (ESP-NOW, LAN) are all local-class, so nothing else changes on this board.
 
-Where the bearer DOES matter it is now recorded: `geogram_xprsindex` keeps a
+Where the bearer DOES matter it is now recorded: `xprs_index` keeps a
 one-byte bearer code per record (`xprsidx_bearer_t`, written into what was an
 explicit pad byte -- the record stays 320 bytes and stores written before the
 field read on untouched, reporting "unknown"). `xprsindex_add2()` takes the
@@ -1183,7 +1183,7 @@ relay/room logic reads it rather than hard-coding either answer.
 
 ## Scripts (Wrench) -- what to put in them, and what never to
 
-`common/geogram_wrench/` is the vendored Wrench VM (7.2.2, MIT, two files, do
+`common/xprs_wrench/` is the vendored Wrench VM (7.2.2, MIT, two files, do
 not edit them -- every choice is a `-D` in its CMakeLists). `common/xprs_script/`
 is the station-facing host: the task, its PSRAM pool, its natives, and the
 signed-bundle loader. `common/xprs_script/xs_bundle.h` documents the container.
@@ -1194,7 +1194,7 @@ Measured on the T-Deck, linked into the real image:
 
 | | |
 |---|---|
-| flash added | **+20,956 B** (`libgeogram_wrench.a` 18,148, `libxprs_script.a` 1,955) |
+| flash added | **+20,956 B** (`libxprs_wrench.a` 18,148, `libxprs_script.a` 1,955) |
 | internal `.bss`+`.data` added | +456 B |
 | internal RAM added | **-12 KB**, permanently, for the script task's stack |
 | external RAM | -256 KB of 8 MB (the capped pool) |
@@ -1224,7 +1224,7 @@ a new XPRS packet type.
 ### What must never be a script
 
 Bearers, the XPRS wire codec, crypto, OTA, and **anything on a receive path or
-with a deadline**. Reticulum in particular: `libgeogram_rns.a` links at 951
+with a deadline**. Reticulum in particular: `libxprs_rns.a` links at 951
 bytes and its real cost is ~12.7 KB of *heap* (a socket and two lwIP windows)
 that a script version would pay identically. There is nothing to win there.
 
@@ -1369,7 +1369,7 @@ it, the panic path itself is the bug, and that is what to chase.
 
 ## Known gaps / next steps
 
-- Legacy T-Dongle firmware (`geogram_ble_hello`) knows nothing of `am:`/`?ACK`/
+- Legacy T-Dongle firmware (`xprs_ble_hello`) knows nothing of `am:`/`?ACK`/
   `ENC1:`/0x4D -- fine as long as it's used for legacy-only deployments.
 - GATT multi-parcel RX is unimplemented in the legacy firmware (single parcel
   only). rns_ble5 HAS a full MSP GATT server since M2 (`src/gatt_mesh.c`):
@@ -1390,5 +1390,5 @@ it, the panic path itself is the bug, and that is what to chase.
 - Duplicate-delivery edge: SCF re-air more than ~60 min after the receiver
   already got the message can re-show it (phone content-dedup window) -- the
   `?ACK` purge covers the normal case.
-- The old `geogram_mesh` component is the DISABLED ESP-WIFI-MESH bridge
+- The old `xprs_mesh` component is the DISABLED ESP-WIFI-MESH bridge
   (`FEATURE_MESH=0`), unrelated to the BLE street mesh -- don't confuse the two.

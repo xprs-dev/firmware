@@ -57,7 +57,7 @@ device presence only and is a different protocol.
 
 | Capability | Detail |
 |---|---|
-| Parse and validate packets | `geogram_xprs`: `key:value`, `t:` first, `m:` greedy last, ≤250 B |
+| Parse and validate packets | `xprs_codec`: `key:value`, `t:` first, `m:` greedy last, ≤250 B |
 | §5 identifiers | first 6 hex of sha256 with `sig:` and `via:` removed, so a relayed copy is recognisably the same packet |
 | Store everything heard | 320-byte records, packet kept **verbatim** — what was composed and signed is what comes back |
 | §36.1 publication vs mail | decided by `d:`, not by type |
@@ -78,7 +78,7 @@ device presence only and is a different protocol.
 | callsign→key | learned from the `t:identity` packets it hears (§9.3), first speaker wins, up to 16 stations. Reloaded at boot from the identities already on the card, so a station known for weeks is not unverifiable for the first ten minutes after a restart |
 | §9.3 `t:identity` | announced every 10 minutes: `t:identity f:<call> ts:… k:npub1… sig:…`, self-signed. A receiver stores the callsign→key binding and can then verify everything else this station says |
 | §3 callsign binding | the callsign IS derived from the npub, so a receiver re-derives it and sees that name and key belong together. A station carrying an older auto-derived callsign migrates once |
-| Identity | the station's **NOSTR key** (`geogram_nostr`): secp256k1, npub, NVS, and the callsign derivation — one key for the callsign, the signature and the identity packet |
+| Identity | the station's **NOSTR key** (`xprs_nostr`): secp256k1, npub, NVS, and the callsign derivation — one key for the callsign, the signature and the identity packet |
 
 **Types it knows** (30, plus `other` for anything it does not): `message`,
 `observation`, `receipt`, `reaction`, `request`, `identity`, `track`, `sos`,

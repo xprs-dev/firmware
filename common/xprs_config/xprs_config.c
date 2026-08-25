@@ -54,7 +54,7 @@ static cfg_entry_t s_cfg[] = {
      * set nothing verifies and no script runs. */
     { "scripts_on", {0}, false },
     { "scriptkey",  {0}, false },
-    /* The Reticulum uplink (geogram_xprsrns): where this archiver dials to
+    /* The Reticulum uplink (xprs_bearer_rns): where this archiver dials to
      * be reachable over RNS, and how hard it may lean on that link. */
     { "rns_hub",     {0}, false },
     { "rns_pace_ms", {0}, false },
