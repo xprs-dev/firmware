@@ -111,6 +111,19 @@ static esp_err_t h_status(httpd_req_t *req)
 
 /* ---- /api/services ------------------------------------------------------- */
 
+/* What the archiver is doing right now, for a laptop rather than a console. */
+static esp_err_t h_peers(httpd_req_t *req)
+{
+    char *buf = s_api_buf;
+    const size_t cap = API_BUF_SIZE;
+    int n = snprintf(buf, cap, "{\"ok\":true");
+    if (s_cfg->peers_json && n < (int)cap)
+        n += s_cfg->peers_json(buf + n, cap - n);
+    if (n < (int)cap) n += snprintf(buf + n, cap - n, "}");
+    resp_json(req);
+    return httpd_resp_send(req, buf, n);
+}
+
 static esp_err_t h_services(httpd_req_t *req)
 {
     /* The board writes its two fragments straight into the answer where
@@ -497,6 +510,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/status", .method = HTTP_GET, .handler = h_status },
         { .uri = "/api/services", .method = HTTP_GET, .handler = h_services },
         { .uri = "/api/xprs/history", .method = HTTP_GET, .handler = h_history },
+        { .uri = "/api/xprs/peers", .method = HTTP_GET, .handler = h_peers },
         { .uri = "/api/xprs/mail", .method = HTTP_GET, .handler = h_mail },
         { .uri = "/api/xprs/send", .method = HTTP_POST, .handler = h_send },
         { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },

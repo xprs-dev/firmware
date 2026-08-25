@@ -91,6 +91,7 @@ static char s_pass[64];
 #include "xprsindex.h"
 #include "xgossip.h"
 #include "xcadence.h"
+#include "rns_tcp.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
 #include "esp_sntp.h"
@@ -724,6 +725,29 @@ static uint32_t cu_since_floor(void)
     return now > CU_BOOTSTRAP_SEC ? now - CU_BOOTSTRAP_SEC : 0;
 }
 
+/*
+ * The peer whose page is arriving, if any.
+ *
+ * A replay carries the ORIGINAL AUTHOR's `f:`, not the replaying station's --
+ * that is the whole point of 36.2, the author's bytes and the author's
+ * signature. So rows cannot be attributed by looking at who signed them, and
+ * attributing them that way is what made a chain die after one page here: the
+ * dongle replayed twenty thousand records written by other stations, none of
+ * them counted, `oldest_seen` stayed 0, and the 206 fell through to "nothing
+ * new" and ended the chain as quiet. Only one ask is in flight at a time, so
+ * there is exactly one peer a page can belong to.
+ */
+static cu_peer_t *cu_awaiting(void)
+{
+    for (int i = 0; i < CU_PEERS; i++)
+        if (s_cu_peers[i].used && s_cu_peers[i].await) return &s_cu_peers[i];
+    return NULL;
+}
+
+/* How old a record must be to count as REPLAYED rather than as live traffic
+ * that happened to arrive mid-page. The phone uses the same minute. */
+#define CU_REPLAY_AGE_SEC 60
+
 /* A board archives whether or not anybody is looking at it, so the phone's
  * hidden floor does not map: what bounds this station is the PEER's budget,
  * never a screen. */
@@ -1156,12 +1180,15 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
             break;
         }
 
-        cu_peer_t *r = cu_find(rfrom, false);
-        if (!r || !r->await) break;
+        cu_peer_t *r = cu_awaiting();
+        if (!r) break;
         char tsbuf[24];
         if (!xprs_get_str(&sp, "ts", tsbuf, sizeof tsbuf)) break;
         const uint32_t ts = xprsindex_ts_to_epoch(tsbuf, (int)strlen(tsbuf));
         if (!ts) break;
+        /* Live traffic arriving mid-page is not part of the page. */
+        const uint32_t ep = xst_epoch_now();
+        if (ep && ep - ts < CU_REPLAY_AGE_SEC) break;
         if (r->rows < 0xFFFF) r->rows++;
         if (!r->oldest_seen || ts < r->oldest_seen) r->oldest_seen = ts;
     } while (0);
@@ -3342,12 +3369,29 @@ supers_done:
                               s_call, s_cu.call, nowts, since, until);
             if (an > 0 && an < (int)sizeof ask) {
                 an = sign_wire(ask, an, sizeof ask);
-                if (strcmp(s_cu.bearer, "espnow") == 0)
+                /*
+                 * Addressed Reticulum FIRST when the peer can be reached that
+                 * way (36.12.1). The lane used to be chosen from where the
+                 * peer was last heard, and the choice was between ESP-NOW and
+                 * the LAN -- so an archiver reachable only through a hub could
+                 * not be asked at all, which is precisely the peer worth
+                 * asking. `d:` is on the wire, so this goes out as one
+                 * DATA/SINGLE packet to that station rather than as a
+                 * broadcast everybody pays for.
+                 */
+                const char *lane;
+                if (xprsrns_can_address(s_cu.call) &&
+                    xprsrns_send_to(s_cu.call, ask, an)) {
+                    lane = "rns";
+                } else if (strcmp(s_cu.bearer, "espnow") == 0) {
                     xprsnow_send(ask, an);
-                else
+                    lane = "espnow";
+                } else {
                     xprslan_send(ask, an);
-                ESP_LOGI(TAG, "catch-up: asked %s for history since %s",
-                         s_cu.call, since);
+                    lane = "lan";
+                }
+                ESP_LOGI(TAG, "catch-up: asked %s for history since %s on %s",
+                         s_cu.call, since, lane);
             }
             s_cu.pending = false;
         }
@@ -3586,6 +3630,86 @@ static int api_features_json(char *buf, size_t cap)
         xcfg_get_bool("ap_on", true) ? "true" : "false");
 }
 
+/*
+ * /api/xprs/peers -- the archiver's own working state, over the network.
+ *
+ * The phone has published this for a while (XprsCatchup.statusJson: the
+ * interval each archiver has earned, how long since it was asked, which ones
+ * are mid-continuation) and the boards published nothing, so every question
+ * about a board was answered by opening a serial cable -- which reboots it.
+ * A cadence that settles over hours and a paging chain that walks a resume
+ * mark backwards over minutes are both unwatchable that way.
+ *
+ * Runs on the HTTP task and must not block: everything here is a RAM read.
+ */
+static int api_peers_json(char *buf, size_t cap)
+{
+    const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    int n = snprintf(buf, cap, ",\"catchup\":[");
+    bool first = true;
+    for (int i = 0; i < CU_PEERS && n < (int)cap; i++) {
+        const cu_peer_t *r = &s_cu_peers[i];
+        if (!r->used) continue;
+        n += snprintf(buf + n, cap - n,
+            "%s{\"call\":\"%s\",\"super\":%s,\"bearer\":\"%s\","
+            "\"interval_s\":%u,\"due_in_s\":%d,\"asked_ago_s\":%d,"
+            "\"await\":%s,\"rows\":%u,\"resume\":%u}",
+            first ? "" : ",", r->call, r->super ? "true" : "false", r->bearer,
+            (unsigned)r->interval_s,
+            r->next_ask_s ? (int)((int32_t)r->next_ask_s - (int32_t)now_s) : -1,
+            r->ask_at_s ? (int)(now_s - r->ask_at_s) : -1,
+            r->await ? "true" : "false", (unsigned)r->rows,
+            (unsigned)r->resume);
+        first = false;
+    }
+    if (n < (int)cap) n += snprintf(buf + n, cap - n, "]");
+
+    xgossip_stats_t g = { 0 };
+    xgossip_stats(s_goss, &g);
+    if (n < (int)cap)
+        n += snprintf(buf + n, cap - n,
+            ",\"gossip\":{\"rows\":%u,\"accepted\":%u,"
+            "\"refused_unsigned\":%u,\"refused_quota\":%u,"
+            "\"refused_need\":%u,\"dropped\":%u}",
+            (unsigned)g.rows, (unsigned)g.accepted,
+            (unsigned)g.refused_unsigned, (unsigned)g.refused_quota,
+            (unsigned)g.refused_need, (unsigned)g.dropped);
+
+    /* The counters that say an exchange was ADDRESSED (a DATA/SINGLE packet
+     * to one station) rather than an announce everybody paid for. */
+    uint32_t atx = 0, arx = 0, anp = 0;
+    int apeers = 0;
+    xprsrns_addressed_stats(&atx, &arx, &anp, &apeers);
+    uint32_t hrx = 0, htx = 0, hconn = 0, hdrop = 0;
+    rns_tcp_stats(&hrx, &htx, &hconn, &hdrop);
+    if (n < (int)cap)
+        n += snprintf(buf + n, cap - n,
+            /* `up` is the BEARER; `hub` is the socket underneath it. They
+             * are not the same answer, and confusing them cost a bench hour:
+             * a station reporting up:true with peers:0 looks like a network
+             * with nothing on it, when what it has is a bearer initialised
+             * over a connection that never came up. */
+            ",\"rns\":{\"up\":%s,\"hub\":%s,\"peers\":%d,\"addressed\":"
+            "{\"tx\":%u,\"rx\":%u,\"no_peer\":%u},"
+            /* The socket's own traffic. `hub:true` with hub_rx:0 is a
+             * connection that was accepted and then said nothing, which is a
+             * different fault from a connection that never opened. */
+            "\"hub_rx\":%u,\"hub_tx\":%u,\"hub_conns\":%u}",
+            xprsrns_is_up() ? "true" : "false",
+            rns_tcp_is_up() ? "true" : "false", apeers,
+            (unsigned)atx, (unsigned)arx, (unsigned)anp,
+            (unsigned)hrx, (unsigned)htx, (unsigned)hconn);
+
+    if (s_index && n < (int)cap) {
+        xprsidx_stats_t xs;
+        xprsindex_stats(s_index, &xs);
+        n += snprintf(buf + n, cap - n,
+            ",\"index\":{\"count\":%u,\"segments\":%u}",
+            (unsigned)xs.count, (unsigned)xs.segments);
+    }
+    return n;
+}
+
 static xprs_api_cfg_t s_api_cfg = {
     .app = "xprs-esp32",
     .board = "?",           /* the board names itself in xapp_run() */
@@ -3593,6 +3717,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,
+    .peers_json = api_peers_json,
     .log_cur = "/idx/log/cur.txt",
     .log_prev = "/idx/log/prev.txt",
     .tz = "+00:00",

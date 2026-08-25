@@ -47,6 +47,17 @@ typedef struct {
      *  nothing extra. Must not block: it runs on the HTTP task. */
     int (*status_json)(char *buf, size_t cap);
 
+    /** The whole body of /api/xprs/peers -- catch-up cadence, gossip
+     *  counters, the Reticulum bearer's addressed traffic. Written WITHOUT
+     *  the enclosing braces, exactly like status_json.
+     *
+     *  It exists because the alternative was a serial cable, and opening one
+     *  reboots the board: a cadence that is supposed to settle over hours,
+     *  and a paging chain that is supposed to walk backwards over minutes,
+     *  cannot be watched through something that restarts the thing being
+     *  watched. NULL on a board that keeps none of this. */
+    int (*peers_json)(char *buf, size_t cap);
+
     /** The rotating log files (newest lines at the END of cur). NULL when
      *  the board keeps no log. */
     const char *log_cur, *log_prev;

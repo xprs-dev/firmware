@@ -224,6 +224,7 @@ static const uint8_t *xprs_peer_key(const char *call);
 /* Gossip, defined with the serving path below but fed from the receive one. */
 static xgossip_t *s_goss;
 static void xprs_gossip_heard(const xprs_t *p, uint8_t bearer);
+static bool xprs_is_super(void);           /* the claim of 36.9.4, below */
 static int  xprs_peer_key_count(void);
 static void xprs_identity_heard(const xprs_t *p);
 static void xprs_hist_accept(const char *wire, int len, const xprs_t *p,
@@ -1242,6 +1243,26 @@ static cu_peer_t *cu_find(const char *call, bool create)
     return r;
 }
 
+/*
+ * The peer whose page is arriving, if any. A replay carries the ORIGINAL
+ * AUTHOR's `f:` (36.2 -- the author's bytes and the author's signature), so
+ * rows cannot be attributed by who signed them. Attributing them that way is
+ * what made a chain die after one page: this board replayed twenty thousand
+ * records written by other stations, none counted, and the 206 fell through
+ * to "nothing new". One ask is in flight at a time, so there is exactly one
+ * peer a page can belong to.
+ */
+static cu_peer_t *cu_awaiting(void)
+{
+    for (int i = 0; i < CU_PEERS; i++)
+        if (s_cu_peers[i].used && s_cu_peers[i].await) return &s_cu_peers[i];
+    return NULL;
+}
+
+/* How old a record must be to count as REPLAYED rather than as live traffic
+ * that happened to arrive mid-page. */
+#define CU_REPLAY_AGE_SEC 60
+
 /* An always-on station archives whether or not anybody is looking, so the
  * phone's hidden floor does not map: what bounds this one is the PEER's
  * budget. */
@@ -1330,21 +1351,30 @@ static void xprs_catchup_heard(const xprs_t *p)
 {
     char from[16];
     if (!xprs_get_str(p, "f", from, sizeof from) || !from[0]) return;
-    cu_peer_t *r = cu_find(from, false);
-    if (!r || !r->await) return;
     const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
 
     char type[16];
     xprs_type(p, type, sizeof type);
     if (strcmp(type, "result") != 0) {
+        /* A page row: attributed to the peer we are awaiting, not to whoever
+         * wrote the record. */
+        cu_peer_t *pr = cu_awaiting();
+        if (!pr) return;
         char tsbuf[24];
         if (!xprs_get_str(p, "ts", tsbuf, sizeof tsbuf)) return;
         const uint32_t ts = xprsindex_ts_to_epoch(tsbuf, (int)strlen(tsbuf));
         if (!ts) return;
-        if (r->rows < 0xFFFF) r->rows++;
-        if (!r->oldest_seen || ts < r->oldest_seen) r->oldest_seen = ts;
+        const time_t nowt = time(NULL);
+        if (nowt > 1700000000 && (uint32_t)nowt - ts < CU_REPLAY_AGE_SEC)
+            return;                      /* live traffic, not this page */
+        if (pr->rows < 0xFFFF) pr->rows++;
+        if (!pr->oldest_seen || ts < pr->oldest_seen) pr->oldest_seen = ts;
         return;
     }
+
+    /* A result IS from the peer, so this one is keyed on who sent it. */
+    cu_peer_t *r = cu_find(from, false);
+    if (!r || !r->await) return;
 
     char rto[16], code[8];
     if (!xprs_get_str(p, "d", rto, sizeof rto)) return;
@@ -1455,11 +1485,26 @@ static void xprs_catchup_air(void)
                       s_aprs_call, s_cu.call, nowts, since, until);
     if (an > 0 && an < (int)sizeof ask) {
         an = xprs_sign_wire(ask, an, (int)sizeof ask);
-        if (s_cu.bearer == 0)                    xprs_air(ask, an, SUBTYPE_XPRS);
-        else if (s_cu.bearer == XPRS_BEARER_LAN) xprslan_send(ask, an);
-        else                                     xprsnow_send(ask, an);
-        ESP_LOGI(TAG, "catch-up: asked %s for history since %s",
-                 s_cu.call, since);
+        /* Addressed Reticulum first (36.12.1): an archiver reachable only
+         * through a hub is exactly the one worth asking, and until this it
+         * could not be asked at all -- the lane was chosen from where the
+         * peer was heard, and the choices were all local radios. */
+        const char *lane;
+        if (xprsrns_can_address(s_cu.call) &&
+            xprsrns_send_to(s_cu.call, ask, an)) {
+            lane = "rns";
+        } else if (s_cu.bearer == 0) {
+            xprs_air(ask, an, SUBTYPE_XPRS);
+            lane = "ble";
+        } else if (s_cu.bearer == XPRS_BEARER_LAN) {
+            xprslan_send(ask, an);
+            lane = "lan";
+        } else {
+            xprsnow_send(ask, an);
+            lane = "espnow";
+        }
+        ESP_LOGI(TAG, "catch-up: asked %s for history since %s on %s",
+                 s_cu.call, since, lane);
     }
     s_cu.pending = false;
 }
@@ -1790,6 +1835,82 @@ static esp_err_t api_diag_get(httpd_req_t *req)
  * lived here had already drifted from xprs_api's. */
 
 
+/*
+ * /api/xprs/peers -- what this archiver is doing, over the network.
+ *
+ * The alternative was a serial cable, and opening one reboots the board: a
+ * cadence meant to settle over hours and a paging chain meant to walk a
+ * resume mark backwards over minutes are both unwatchable through something
+ * that restarts the thing being watched.
+ *
+ * Straight into the one response buffer, no request-time allocation: this
+ * board's httpd task is trimmed to 5,120 bytes and 2-3 KB is the realistic
+ * ceiling for a malloc here (docs/esp32.md).
+ */
+static esp_err_t api_peers_get(httpd_req_t *req)
+{
+    char *buf = s_api_buf;
+    const size_t cap = API_BUF_SIZE;
+    const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+
+    int n = snprintf(buf, cap, "{\"ok\":true,\"callsign\":\"%s\","
+                     "\"super\":%s,\"catchup\":[",
+                     s_aprs_call, xprs_is_super() ? "true" : "false");
+    bool first = true;
+    for (int i = 0; i < CU_PEERS && n < (int)cap; i++) {
+        const cu_peer_t *r = &s_cu_peers[i];
+        if (!r->used) continue;
+        n += snprintf(buf + n, cap - n,
+            "%s{\"call\":\"%s\",\"super\":%s,\"interval_s\":%u,"
+            "\"due_in_s\":%d,\"asked_ago_s\":%d,\"await\":%s,"
+            "\"rows\":%u,\"resume\":%u}",
+            first ? "" : ",", r->call, r->super ? "true" : "false",
+            (unsigned)r->interval_s,
+            r->next_ask_s ? (int)((int32_t)r->next_ask_s - (int32_t)now_s) : -1,
+            r->ask_at_s ? (int)(now_s - r->ask_at_s) : -1,
+            r->await ? "true" : "false", (unsigned)r->rows,
+            (unsigned)r->resume);
+        first = false;
+    }
+    if (n < (int)cap) n += snprintf(buf + n, cap - n, "]");
+
+    xgossip_stats_t g = { 0 };
+    xgossip_stats(s_goss, &g);
+    if (n < (int)cap)
+        n += snprintf(buf + n, cap - n,
+            ",\"gossip\":{\"rows\":%u,\"accepted\":%u,"
+            "\"refused_unsigned\":%u,\"refused_quota\":%u,"
+            "\"refused_need\":%u,\"dropped\":%u}",
+            (unsigned)g.rows, (unsigned)g.accepted,
+            (unsigned)g.refused_unsigned, (unsigned)g.refused_quota,
+            (unsigned)g.refused_need, (unsigned)g.dropped);
+
+    /* Addressed counters: a DATA/SINGLE packet to one station, as opposed to
+     * an announce every listener pays for. */
+    uint32_t atx = 0, arx = 0, anp = 0;
+    int apeers = 0;
+    xprsrns_addressed_stats(&atx, &arx, &anp, &apeers);
+    if (n < (int)cap)
+        n += snprintf(buf + n, cap - n,
+            ",\"rns\":{\"up\":%s,\"hub\":%s,\"peers\":%d,"
+            "\"addressed\":{\"tx\":%u,\"rx\":%u,\"no_peer\":%u}}",
+            xprsrns_is_up() ? "true" : "false",
+            rns_tcp_is_up() ? "true" : "false", apeers,
+            (unsigned)atx, (unsigned)arx, (unsigned)anp);
+
+    if (s_xprs_index && n < (int)cap) {
+        xprsidx_stats_t xs;
+        xprsindex_stats(s_xprs_index, &xs);
+        n += snprintf(buf + n, cap - n,
+            ",\"index\":{\"count\":%u,\"segments\":%u}",
+            (unsigned)xs.count, (unsigned)xs.segments);
+    }
+    if (n < (int)cap) n += snprintf(buf + n, cap - n, "}");
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, buf, n);
+}
+
 static void api_start(void)
 {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -1824,6 +1945,10 @@ static void api_start(void)
     static const httpd_uri_t u = { .uri = "/api/xprs", .method = HTTP_GET,
                                    .handler = api_xprs_get, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &u);
+    static const httpd_uri_t up = { .uri = "/api/xprs/peers",
+                                    .method = HTTP_GET,
+                                    .handler = api_peers_get, .user_ctx = NULL };
+    httpd_register_uri_handler(srv, &up);
     static const httpd_uri_t ud = { .uri = "/api/xprs/dir", .method = HTTP_GET,
                                     .handler = api_xprs_dir_get, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &ud);
@@ -2644,6 +2769,21 @@ static void xprs_air_on(const char *wire, int len, uint8_t bearer)
 {
     if (bearer == XPRS_BEARER_LAN)      xprslan_send(wire, len);
     else if (bearer == XPRS_BEARER_NOW) xprsnow_send(wire, len);
+    else if (bearer == XPRS_BEARER_RNS) {
+        /*
+         * An ask that arrived over Reticulum is answered over Reticulum.
+         * Without this case it fell through to BLE5 below -- and in the
+         * router role ([ble] enabled = no) that radio is not running, so
+         * every reply to a peer across the hub went nowhere and the asker
+         * saw silence. Addressed when the destination is known, so the
+         * answer costs the one station that asked for it.
+         */
+        char to[16] = "";
+        xprs_t rp;
+        if (xprs_parse(wire, len, &rp)) xprs_get_str(&rp, "d", to, sizeof to);
+        if (!to[0] || !xprsrns_send_to(to, wire, len))
+            xprsrns_send(wire, len);
+    }
     else                                xprs_air(wire, len, SUBTYPE_XPRS);
 }
 

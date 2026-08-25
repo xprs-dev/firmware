@@ -135,8 +135,21 @@ mesh identity is the iGate callsign from NVS, fallback `TDONGLE`).
   holding DTR low.
 - `version.txt` is read at CMake configure time. Editing it and running
   `pio run -t upload` flashes a NEW binary carrying the OLD version string,
-  which then looks exactly like an upload that did not take. Check the build
-  timestamp in `/api/diag`, not the version, to tell whether a flash landed.
+  which then looks exactly like an upload that did not take.
+- **And the build timestamp does not settle it either.** This file used to say
+  "check the build timestamp in `/api/diag`, not the version". That advice is
+  wrong and cost a session: `built` comes from `esp_app_desc`, which an
+  INCREMENTAL build does not recompile, so a board flashed minutes ago happily
+  reports a stamp from hours earlier. 2026-08-25 a T-Deck reported
+  `built "Aug 25 2026 09:39:39"` right after an upload, and the `firmware.bin`
+  on disk -- written at 14:54, containing every change since -- carried the
+  same 09:39:39 inside it. Nothing was wrong; the field simply does not mean
+  what it looks like.
+
+  What actually tells you a flash landed: `uptime_s` in `/api/diag`, which
+  resets, and a BEHAVIOUR only the new binary has (an endpoint it adds, a log
+  line it prints). To make the stamp mean something, force the relink --
+  `rm -rf .pio/build/<env>` -- and expect a full rebuild's worth of time.
 
 ## The two processors -- the rule that matters most
 
