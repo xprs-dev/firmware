@@ -2349,7 +2349,21 @@ static void idx_air(const char *bearer, const char *wire, int len)
     if (strcmp(bearer, "espnow") == 0)    xprsnow_send(wire, len);
     else if (strcmp(bearer, "lora") == 0) xprslora_send(wire, len);
     else if (strcmp(bearer, "ble") == 0)  xprsble_send(wire, len);
-    else if (strcmp(bearer, "rns") == 0)  xprsrns_send(wire, len);
+    else if (strcmp(bearer, "rns") == 0) {
+        /* Answer the way we were asked, and prefer the lane that crosses.
+         *
+         * A reply carries `d:` -- it is for the one station that asked -- and
+         * on Reticulum the broadcast lane is an ANNOUNCE, which the public
+         * hubs do not cross-forward between their own clients. So a reply
+         * aired that way reached whoever shared our uplink and nobody else,
+         * which is the same as not answering. Addressed first; the broadcast
+         * remains the fallback for a peer we have never heard announce, where
+         * it is still better than silence. */
+        xprs_t rp;
+        char to[16] = "";
+        if (xprs_parse(wire, len, &rp)) xprs_get_str(&rp, "d", to, sizeof to);
+        if (!to[0] || !xprsrns_send_to(to, wire, len)) xprsrns_send(wire, len);
+    }
     else                                  xprslan_send(wire, len);
 }
 

@@ -49,8 +49,42 @@ typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
 void xprsrns_init(xprsrns_wire_cb_t cb);
 
 /** Air one wire as a signed wapp announce. False when the uplink is down,
- *  the wire does not fit, or the bearer is idle. Paced internally. */
+ *  the wire does not fit, or the bearer is idle. Paced internally.
+ *
+ *  This is the BROADCAST lane, and its reach is smaller than it looks: the
+ *  public community hubs do not cross-forward announces between their own
+ *  clients, so a wire aired this way reaches whatever shares our uplink and
+ *  nothing beyond it. Use it for what is addressed to everybody. */
 bool xprsrns_send(const char *wire, int len);
+
+/**
+ * Send one wire ADDRESSED to a callsign we have heard announce.
+ *
+ * An encrypted single packet to that station's own destination: the lane a
+ * hub actually forwards, and therefore the only way one station reaches
+ * another across the internet. No link is opened and no session is kept --
+ * this codec has neither -- so there is no delivery receipt either. That is
+ * the right trade for anything that will be asked again on its own schedule
+ * (a poll, a replay request, a gossip query) and the wrong one for mail,
+ * which travels under custody instead.
+ *
+ * False when the uplink is down, the wire does not fit, or -- the ordinary
+ * case -- we have never heard that callsign announce and so cannot address
+ * it. A caller that gets false may fall back to the broadcast lane.
+ */
+bool xprsrns_send_to(const char *callsign, const char *wire, int len);
+
+/** True when [callsign] can be addressed right now (we hold its destination
+ *  and public key from an announce we verified). */
+bool xprsrns_can_address(const char *callsign);
+
+/** How many peers we can currently address. */
+int xprsrns_peer_count(void);
+
+/** Counters for the addressed lane: packets out, packets in, sends refused
+ *  for want of a known destination, and peers currently addressable. */
+void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx, uint32_t *no_peer,
+                             int *peers);
 
 /** Up = socket connected. */
 bool xprsrns_is_up(void);
@@ -66,6 +100,13 @@ typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
 static inline void xprsrns_init(xprsrns_wire_cb_t cb) { (void)cb; }
 static inline bool xprsrns_send(const char *wire, int len)
 { (void)wire; (void)len; return false; }
+static inline bool xprsrns_send_to(const char *c, const char *wire, int len)
+{ (void)c; (void)wire; (void)len; return false; }
+static inline bool xprsrns_can_address(const char *c) { (void)c; return false; }
+static inline int xprsrns_peer_count(void) { return 0; }
+static inline void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx,
+                                           uint32_t *np, int *peers)
+{ if (tx) *tx = 0; if (rx) *rx = 0; if (np) *np = 0; if (peers) *peers = 0; }
 static inline bool xprsrns_is_up(void) { return false; }
 static inline void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
                                  uint32_t *other)

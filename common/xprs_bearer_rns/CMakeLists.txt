@@ -10,4 +10,4 @@ endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "."
-    REQUIRES xprs_rns nvs_flash log esp_timer xprs_config)
+    REQUIRES xprs_rns nvs_flash log esp_timer xprs_config xprs_codec)

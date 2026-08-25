@@ -386,6 +386,80 @@ static void test_announce(void)
     CHECK(!rns_announce_parse(&pd, &ad2), "an announce for a foreign dest verified");
 }
 
+/* ── An addressed packet, which is the lane a hub actually forwards ──────── */
+
+/* This is the shape xprsrns_send_to() puts on the wire: a DATA/SINGLE packet
+ * whose payload is encrypted to the destination it names. The bearer's own
+ * code cannot be linked here (it is ESP-IDF), so the round trip is rebuilt
+ * from the same primitives -- if this passes and the board still cannot be
+ * reached, the fault is the uplink or the peer table, not the packet. */
+static void test_addressed_single_round_trip(void)
+{
+    /* Two stations, each with its own identity and xprs.wapp destination. */
+    uint8_t a_prv[RNS_PRV_LEN], b_prv[RNS_PRV_LEN];
+    for (int i = 0; i < RNS_PRV_LEN; i++) {
+        a_prv[i] = (uint8_t)(0x11 + i);
+        b_prv[i] = (uint8_t)(0x77 + i);
+    }
+    rns_identity_t a, b;
+    uint8_t a_pub[RNS_PUB_LEN], b_pub[RNS_PUB_LEN];
+    rns_x25519_base(a_prv, a_pub);
+    rns_x25519_base(b_prv, b_pub);
+    memcpy(a_pub + RNS_KEY_HALF, a_prv + RNS_KEY_HALF, RNS_KEY_HALF);
+    memcpy(b_pub + RNS_KEY_HALF, b_prv + RNS_KEY_HALF, RNS_KEY_HALF);
+    rns_identity_init(a_prv, a_pub, &a);
+    rns_identity_init(b_prv, b_pub, &b);
+
+    const char *aspects[] = { "wapp" };
+    uint8_t name[RNS_NAME_HASH_LEN], b_dest[RNS_HASH_LEN];
+    rns_name_hash("xprs", aspects, 1, name);
+    rns_destination_hash(name, b.hash, b_dest);
+
+    /* A asks B for history, addressed. */
+    const char *wire =
+        "t:command f:X3DECK d:X3DONG ts:2026-08-25_09:00:00 cmd:history "
+        "kind:message since:2026-08-25_08:00:00";
+    size_t wlen = strlen(wire);
+
+    uint8_t cipher[RNS_MTU];
+    int cn = rns_encrypt_to(b_pub, b_dest, (const uint8_t *)wire, wlen,
+                            NULL, NULL, cipher, sizeof cipher);
+    CHECK(cn > 0, "encrypt to the peer's destination failed (%d)", cn);
+
+    rns_packet_t p;
+    memset(&p, 0, sizeof p);
+    p.header_type    = RNS_HEADER_1;
+    p.transport_type = RNS_TRANSPORT_BROADCAST;
+    p.dest_type      = RNS_DEST_SINGLE;
+    p.packet_type    = RNS_PACKET_DATA;
+    memcpy(p.dest, b_dest, RNS_HASH_LEN);
+    p.data = cipher; p.data_len = (size_t)cn;
+
+    uint8_t pkt[RNS_MTU + 64];
+    int n = rns_packet_build(&p, pkt, sizeof pkt);
+    CHECK(n > 0, "addressed packet did not build (%d)", n);
+
+    /* B receives it. */
+    rns_packet_t got;
+    CHECK(rns_packet_parse(pkt, (size_t)n, &got), "addressed packet did not parse");
+    CHECK(got.packet_type == RNS_PACKET_DATA, "not a DATA packet");
+    CHECK(got.dest_type == RNS_DEST_SINGLE, "not addressed to a single dest");
+    CHECK(memcmp(got.dest, b_dest, RNS_HASH_LEN) == 0, "wrong destination");
+
+    uint8_t plain[RNS_MTU];
+    int pn = rns_decrypt_from(b.prv, b_dest, got.data, got.data_len,
+                              plain, sizeof plain);
+    CHECK(pn == (int)wlen, "decrypted %d bytes, sent %zu", pn, wlen);
+    CHECK(memcmp(plain, wire, wlen) == 0, "the wire came back different");
+    printf("    addressed: %.*s\n", pn > 48 ? 48 : pn, (const char *)plain);
+
+    /* And the station it was NOT for cannot read it, which is the whole
+     * reason the hubs in between cannot either. */
+    int bad = rns_decrypt_from(a.prv, b_dest, got.data, got.data_len,
+                               plain, sizeof plain);
+    CHECK(bad < 0, "a foreign key decrypted an addressed packet");
+}
+
 int main(void)
 {
     printf("rns host tests (vectors from reticulum-dart)\n");
@@ -396,6 +470,7 @@ int main(void)
     test_round_trip_random();
     test_forgery_is_refused();
     test_addressing();
+    test_addressed_single_round_trip();
     test_hdlc();
     test_packet_header();
     test_announce();

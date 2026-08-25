@@ -1,6 +1,7 @@
 /* The Reticulum bearer -- see xprsrns.h for the contract. */
 
 #include <string.h>
+#include <strings.h>   /* strcasecmp */
 #include <stdlib.h>
 #include <time.h>
 
@@ -14,6 +15,7 @@
 #include "rns.h"
 #include "rns_tcp.h"
 #include "xprsrns.h"
+#include "xprs.h"      /* xprs_parse/xprs_get_str: the f: a peer answers to */
 #include "xprs_config.h"
 
 static const char *TAG = "xprsrns";
@@ -68,6 +70,71 @@ static bool identity_load(void)
 
 /* ── Inbound: hub frames -> XPRS wires ──────────────────────────────────── */
 
+/* ── Who we can talk back to ────────────────────────────────────────────── */
+
+/* An announce introduces an identity; that is its whole job (rns.h). What it
+ * leaves behind is exactly what is needed to answer one: the destination to
+ * address, and the public half to encrypt to. Keeping them is what turns this
+ * bearer from a loudspeaker into something a station can hold a conversation
+ * with.
+ *
+ * Keyed by CALLSIGN, because that is what an XPRS wire addresses with `d:`.
+ * The binding comes from the announce's own payload -- a station's wires carry
+ * `f:<callsign>` -- so it is learned from traffic we already verified, never
+ * asserted by anyone.
+ *
+ * Small and in RAM on purpose at this stage: a board that needs to address
+ * hundreds of stations needs the table on its card, and that belongs with the
+ * storage work rather than here. Oldest-heard is evicted first. */
+#define XRNS_PEERS 16
+
+typedef struct {
+    char     call[16];
+    uint8_t  dest[RNS_HASH_LEN];
+    uint8_t  xpub[RNS_KEY_HALF];
+    uint32_t heard_s;
+} xrns_peer_t;
+
+static xrns_peer_t s_peers[XRNS_PEERS];
+static uint32_t s_addressed_tx, s_addressed_rx, s_no_peer;
+
+static void peer_learn(const char *call, const uint8_t dest[RNS_HASH_LEN],
+                       const uint8_t pub[RNS_PUB_LEN])
+{
+    if (!call || !call[0]) return;
+    uint32_t now = (uint32_t)time(NULL);
+    int slot = -1;
+    uint32_t oldest = 0xFFFFFFFFu;
+    for (int i = 0; i < XRNS_PEERS; i++) {
+        if (strcasecmp(s_peers[i].call, call) == 0) { slot = i; break; }
+        if (!s_peers[i].call[0]) { slot = i; oldest = 0; continue; }
+        if (oldest && s_peers[i].heard_s < oldest) { oldest = s_peers[i].heard_s; slot = i; }
+    }
+    if (slot < 0) return;
+    snprintf(s_peers[slot].call, sizeof s_peers[slot].call, "%s", call);
+    memcpy(s_peers[slot].dest, dest, RNS_HASH_LEN);
+    /* pub is x25519_pub || ed25519_pub; only the first half encrypts. */
+    memcpy(s_peers[slot].xpub, pub, RNS_KEY_HALF);
+    s_peers[slot].heard_s = now;
+}
+
+static const xrns_peer_t *peer_find(const char *call)
+{
+    if (!call || !call[0]) return NULL;
+    for (int i = 0; i < XRNS_PEERS; i++)
+        if (strcasecmp(s_peers[i].call, call) == 0) return &s_peers[i];
+    return NULL;
+}
+
+bool xprsrns_can_address(const char *call) { return peer_find(call) != NULL; }
+
+int xprsrns_peer_count(void)
+{
+    int n = 0;
+    for (int i = 0; i < XRNS_PEERS; i++) if (s_peers[i].call[0]) n++;
+    return n;
+}
+
 static void on_frame(const uint8_t *frame, size_t len, void *ctx)
 {
     (void)ctx;
@@ -94,6 +161,31 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
 
     rns_packet_t p;
     if (!rns_packet_parse(frame, len, &p)) return;
+
+    /* Addressed to US: somebody answered rather than announced.
+     *
+     * Cheap first, as everywhere on this path: the destination is a 16-byte
+     * compare, and only a packet that is actually ours is worth a curve
+     * multiplication. There is no signature to check here and none is needed
+     * -- the wire inside carries its own XPRS signature (section 9.1), which
+     * is what the station verifies before believing any of it. What the
+     * decryption proves is narrower and still worth having: it was encrypted
+     * to this destination's key, so it was not readable by the hubs that
+     * carried it. */
+    if (p.packet_type == RNS_PACKET_DATA &&
+        p.dest_type == RNS_DEST_SINGLE &&
+        memcmp(p.dest, s_wapp_dest, RNS_HASH_LEN) == 0) {
+        static uint8_t plain[RNS_MTU];
+        int pn = rns_decrypt_from(s_id.prv, s_wapp_dest, p.data, p.data_len,
+                                  plain, sizeof plain - 1);
+        if (pn <= 0) { s_other++; return; }   /* not for us, or forged */
+        plain[pn] = 0;
+        s_addressed_rx++;
+        s_rx++;
+        if (s_cb) s_cb((const char *)plain, pn);
+        return;
+    }
+
     if (p.packet_type != RNS_PACKET_ANNOUNCE) { s_other++; return; }
 
     /* Read it, but do not believe it yet.
@@ -133,6 +225,18 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     if (!rns_announce_verify(&p, &a)) { s_other++; return; }
 
     s_rx++;
+
+    /* Verified: now the announce is worth remembering. A station's own wires
+     * carry `f:<callsign>`, so this is the callsign-to-destination binding
+     * learned from traffic rather than asserted -- and it is what lets us
+     * answer this station later on the addressed lane instead of shouting. */
+    xprs_t xp;
+    char from[16];
+    if (xprs_parse((const char *)wire, wl, &xp) &&
+        xprs_get_str(&xp, "f", from, sizeof from) && from[0]) {
+        peer_learn(from, a.dest, a.pub);
+    }
+
     if (s_cb) s_cb((const char *)wire, wl);
 }
 
@@ -173,7 +277,64 @@ bool xprsrns_send(const char *wire, int len)
     return ok;
 }
 
+bool xprsrns_send_to(const char *callsign, const char *wire, int len)
+{
+    if (!s_ready || !rns_tcp_is_up() || len <= 0) return false;
+
+    const xrns_peer_t *pr = peer_find(callsign);
+    if (!pr) { s_no_peer++; return false; }
+
+    /* The ciphertext carries an ephemeral public key, an IV and a MAC on top
+     * of the wire, and the packet carries a header on top of that. */
+    if (len > RNS_MTU - RNS_ENC_OVERHEAD - 32) return false;
+
+    if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) {
+        s_paced++;
+        return false;
+    }
+
+    static uint8_t cipher[RNS_MTU];
+    /* The salt is the DESTINATION's hash, not the identity's -- theirs, not
+     * ours, because this is being encrypted to them. */
+    int cn = rns_encrypt_to(pr->xpub, pr->dest, (const uint8_t *)wire,
+                            (size_t)len, NULL, NULL, cipher, sizeof cipher);
+    bool ok = false;
+    if (cn > 0) {
+        rns_packet_t p;
+        memset(&p, 0, sizeof p);
+        p.header_type    = RNS_HEADER_1;
+        p.transport_type = RNS_TRANSPORT_BROADCAST;  /* how it is FORWARDED */
+        p.dest_type      = RNS_DEST_SINGLE;          /* who it is FOR */
+        p.packet_type    = RNS_PACKET_DATA;
+        memcpy(p.dest, pr->dest, RNS_HASH_LEN);
+        p.data     = cipher;
+        p.data_len = (size_t)cn;
+
+        static uint8_t pkt[RNS_MTU + 64];
+        int n = rns_packet_build(&p, pkt, sizeof pkt);
+        ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
+        if (!ok) ESP_LOGW(TAG, "addressed send failed: build=%d up=%d",
+                          n, (int)rns_tcp_is_up());
+    }
+    if (ok) s_addressed_tx++;
+    /* Deliberately NOT paced like an announce. Pacing exists because hubs
+     * police announce RATES per destination; an addressed packet is ordinary
+     * traffic to one station and is bounded by that station's own budget
+     * (XPRS 31.2) instead. */
+    xSemaphoreGive(s_tx_lock);
+    return ok;
+}
+
 bool xprsrns_is_up(void) { return s_ready && rns_tcp_is_up(); }
+
+void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx, uint32_t *no_peer,
+                             int *peers)
+{
+    if (tx) *tx = s_addressed_tx;
+    if (rx) *rx = s_addressed_rx;
+    if (no_peer) *no_peer = s_no_peer;
+    if (peers) *peers = xprsrns_peer_count();
+}
 
 void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced, uint32_t *other)
 {
