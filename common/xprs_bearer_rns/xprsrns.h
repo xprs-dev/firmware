@@ -60,6 +60,21 @@ void xprsrns_attach(xprsrns_wire_cb_t cb);
 /** One frame off the uplink, for a board that owns the receive callback. */
 void xprsrns_feed(const uint8_t *frame, size_t len);
 
+/**
+ * @brief The signed wire this station announces itself with on connect.
+ *
+ * A t:identity (section 9.3): `t:identity f:<call> ts:… k:npub1… sig:…`.
+ * The station builds and signs it -- this component will not, because the
+ * connect callback runs on the socket task and an Ed25519 signature does not
+ * belong there. Without one, the connect announcement carries only the app
+ * tag and teaches listeners nothing, so nobody can address this station
+ * until it happens to air other traffic.
+ */
+void xprsrns_set_hello(const char *wire, int len);
+
+/** The i-th addressable callsign, for reporting. False past the end. */
+bool xprsrns_peer_at(int i, char *call, size_t cap);
+
 /** Air one wire as a signed wapp announce. False when the uplink is down,
  *  the wire does not fit, or the bearer is idle. Paced internally.
  *
@@ -112,6 +127,9 @@ typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
 static inline void xprsrns_init(xprsrns_wire_cb_t cb) { (void)cb; }
 static inline void xprsrns_attach(xprsrns_wire_cb_t cb) { (void)cb; }
 static inline void xprsrns_feed(const uint8_t *f, size_t n) { (void)f; (void)n; }
+static inline void xprsrns_set_hello(const char *w, int n) { (void)w; (void)n; }
+static inline bool xprsrns_peer_at(int i, char *c, size_t n)
+{ (void)i; (void)c; (void)n; return false; }
 static inline bool xprsrns_send(const char *wire, int len)
 { (void)wire; (void)len; return false; }
 static inline bool xprsrns_send_to(const char *c, const char *wire, int len)

@@ -26,6 +26,16 @@ extern void randombytes(unsigned char *, unsigned long long);
 
 static rns_identity_t     s_id;
 static uint8_t            s_wapp_name[RNS_NAME_HASH_LEN];
+
+/*
+ * The wire this station announces itself with on connect (36.12.2).
+ *
+ * Set by the STATION, not built here: it is a signed t:identity, and an
+ * Ed25519 signature is not something to put on the socket task's stack --
+ * the same rule the announce builder below already follows.
+ */
+static char               s_hello[256];
+static int                s_hello_len;
 static uint8_t            s_wapp_dest[RNS_HASH_LEN];
 static xprsrns_wire_cb_t  s_cb;
 static bool               s_ready;
@@ -142,19 +152,40 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
         /* Freshly connected. Say we exist: the peer cannot address a station
          * it has never heard, and XPRS's ingest learns the wapp lane from
          * exactly this announce shape. */
-        char hello[8];
+        /*
+         * This used to announce the tag "xprs" and NOTHING else, and the
+         * receiving side needs a wire after the tag to reach peer_learn()
+         * (`if (wl <= 0) return;` below). So the one announcement a station
+         * made at the moment it joined a hub taught every listener nothing,
+         * and destinations were learned only as a side effect of whatever
+         * traffic happened to be aired later. Measured on the bench: a board
+         * airing observations every thirty seconds was learned at once,
+         * while the board airing a full wire once every ten minutes was
+         * still unknown to its peer a quarter of an hour later -- with 326
+         * frames received and all 326 rejected as somebody else's.
+         *
+         * 36.12.2 names identity announcements as one of only two lanes
+         * guaranteed to cross a shared transport. This is that lane, so it
+         * carries the identity.
+         */
+        char hello[8 + sizeof s_hello];
         int hn = snprintf(hello, sizeof hello, "%cxprs", 4);
-        (void)hn;
+        if (s_hello_len > 0 && hn + s_hello_len < (int)sizeof hello) {
+            memcpy(hello + hn, s_hello, (size_t)s_hello_len);
+            hn += s_hello_len;
+        }
         static uint8_t pkt[RNS_MTU + 64];
         /* The build's buffers are shared statics: every builder holds the
          * tx lock, this connect-time hello included. */
         if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) return;
         int n = rns_announce_build(&s_id, s_wapp_name,
-                                   (const uint8_t *)hello, 5,
+                                   (const uint8_t *)hello, (size_t)hn,
                                    (uint64_t)time(NULL), pkt, sizeof pkt);
         bool ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
         xSemaphoreGive(s_tx_lock);
-        if (n > 0) ESP_LOGI(TAG, "hello announce: %dB, sent=%d", n, (int)ok);
+        if (n > 0) ESP_LOGI(TAG, "hello announce: %dB (%s), sent=%d", n,
+                            s_hello_len > 0 ? "with identity" : "TAG ONLY -- "
+                            "nobody will learn us from this", (int)ok);
         else       ESP_LOGE(TAG, "hello announce did not build (%d)", n);
         return;
     }
@@ -238,6 +269,28 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     }
 
     if (s_cb) s_cb((const char *)wire, wl);
+}
+
+/* Which callsigns this station can address, by index. A COUNT was not
+ * enough: a board reporting one learned peer and still broadcasting its asks
+ * turned out to have learned a third station rather than the one it was
+ * trying to reach, and nothing in the report could say so. */
+bool xprsrns_peer_at(int i, char *call, size_t cap)
+{
+    if (i < 0 || i >= XRNS_PEERS || !call || !cap) return false;
+    if (!s_peers[i].call[0]) return false;   /* a hole, not the end */
+    snprintf(call, cap, "%s", s_peers[i].call);
+    return true;
+}
+
+void xprsrns_set_hello(const char *wire, int len)
+{
+    if (!wire || len <= 0 || len >= (int)sizeof s_hello) return;
+    if (s_tx_lock && xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(500)) != pdTRUE)
+        return;
+    memcpy(s_hello, wire, (size_t)len);
+    s_hello_len = len;
+    if (s_tx_lock) xSemaphoreGive(s_tx_lock);
 }
 
 /* ── Outbound ───────────────────────────────────────────────────────────── */
@@ -389,7 +442,13 @@ void xprsrns_attach(xprsrns_wire_cb_t cb)
 
 void xprsrns_feed(const uint8_t *frame, size_t len)
 {
-    if (s_ready && frame && len) on_frame(frame, len, NULL);
+    /* (NULL, 0) is the CONNECT edge, not an empty frame -- it is what makes
+     * on_frame air the hello. Rejecting it as malformed, which this did,
+     * silently cost the caller the one announcement that makes it
+     * addressable. */
+    if (!s_ready) return;
+    if (!frame || len == 0) { on_frame(NULL, 0, NULL); return; }
+    on_frame(frame, len, NULL);
 }
 
 void xprsrns_init(xprsrns_wire_cb_t cb)

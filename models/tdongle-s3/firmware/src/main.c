@@ -1890,13 +1890,36 @@ static esp_err_t api_peers_get(httpd_req_t *req)
     uint32_t atx = 0, arx = 0, anp = 0;
     int apeers = 0;
     xprsrns_addressed_stats(&atx, &arx, &anp, &apeers);
+    /* Frames the bearer rejected vs XPRS wires it took -- the discriminator
+     * between "the callback is not being called" and "it is refusing
+     * everything". */
+    uint32_t brx = 0, btx = 0, bpaced = 0, bother = 0;
+    xprsrns_stats(&brx, &btx, &bpaced, &bother);
+    char peerlist[96];
+    int pl = 0;
+    peerlist[0] = 0;
+    for (int i = 0, shown = 0; i < 16 && pl < (int)sizeof peerlist - 12; i++) {
+        char pc[16];
+        if (!xprsrns_peer_at(i, pc, sizeof pc)) continue;
+        pl += snprintf(peerlist + pl, sizeof peerlist - pl, "%s\"%s\"",
+                       shown ? "," : "", pc);
+        shown++;
+    }
+    uint32_t hrx = 0, htx = 0, hconn = 0, hdrop = 0;
+    rns_tcp_stats(&hrx, &htx, &hconn, &hdrop);
     if (n < (int)cap)
         n += snprintf(buf + n, cap - n,
             ",\"rns\":{\"up\":%s,\"hub\":%s,\"peers\":%d,"
-            "\"addressed\":{\"tx\":%u,\"rx\":%u,\"no_peer\":%u}}",
+            "\"addressed\":{\"tx\":%u,\"rx\":%u,\"no_peer\":%u},"
+            "\"hub_rx\":%u,\"hub_tx\":%u,\"hub_conns\":%u,"
+            "\"wires_rx\":%u,\"wires_tx\":%u,\"paced\":%u,\"other\":%u,"
+            "\"peer_list\":[%s]}",
             xprsrns_is_up() ? "true" : "false",
             rns_tcp_is_up() ? "true" : "false", apeers,
-            (unsigned)atx, (unsigned)arx, (unsigned)anp);
+            (unsigned)atx, (unsigned)arx, (unsigned)anp,
+            (unsigned)hrx, (unsigned)htx, (unsigned)hconn,
+            (unsigned)brx, (unsigned)btx, (unsigned)bpaced, (unsigned)bother,
+            peerlist);
 
     if (s_xprs_index && n < (int)cap) {
         xprsidx_stats_t xs;
@@ -2187,6 +2210,11 @@ static void rns_from_hub(const uint8_t *frame, size_t len, void *ctx)
         s_hub_announce_pending = true;
         s_hub_announce_force = true;    /* a new hub knows nothing about us */
         ESP_LOGI(TAG, "hub connected — announce queued");
+        /* The XPRS bearer needs this edge too, and used to be returned past:
+         * its connect handler is what announces this station's identity on
+         * the one lane a shared transport is guaranteed to carry, so without
+         * it no peer on the hub could ever learn how to address this board. */
+        xprsrns_feed(NULL, 0);
         return;
     }
     handle_rns_packet(frame, (int)len, 0);
@@ -2283,10 +2311,20 @@ static void xprs_identity_air(void)
     xprslan_send(wire, len);
     xprsnow_send(wire, len);   /* §9.3 on every bearer: a peer that cannot
                                 * learn our key cannot check anything we say */
+    /* Including the bearer where that is not a figure of speech. A peer met
+     * only over Reticulum has no other way at all to learn this key, and
+     * this line was the omission: identity went out on the three local
+     * radios and not on the one lane that crosses (36.12.2). */
+    if (xprsrns_is_up()) xprsrns_send(wire, len);
     if (s_xprs_index) {
         xprsindex_add(s_xprs_index, wire, len, 0, true, (uint32_t)time(NULL));
     }
     ESP_LOGI(TAG, "announced identity %s = %s", s_aprs_call, keys->npub);
+    /* Keep it as the hello the bearer airs on every (re)connect to a hub:
+     * 36.12.2's identity-announcement lane is what lets a peer address this
+     * station at all, and this board airs a full wire only once every ten
+     * minutes otherwise. */
+    xprsrns_set_hello(wire, len);
 }
 
 /* ── announcing that this station is an indexer (XPRS.md §36.9) ─────────── */

@@ -1585,6 +1585,11 @@ static void air_identity(void)
     if (xprsble_is_active()) xprsble_send(wire, n);
     xprslan_send(wire, n);
     if (xprsrns_is_up()) xprsrns_send(wire, n);
+    /* And keep it as the hello the bearer airs the moment it (re)connects to
+     * a hub: 36.12.2's identity-announcement lane is the one thing guaranteed
+     * to cross a shared transport, and a peer that joins after us would
+     * otherwise wait for our next ordinary wire to learn we exist. */
+    xprsrns_set_hello(wire, n);
 }
 
 /* ── Status, every 15 s, the same shape the dongle prints ───────────────── */
@@ -3682,6 +3687,25 @@ static int api_peers_json(char *buf, size_t cap)
     xprsrns_addressed_stats(&atx, &arx, &anp, &apeers);
     uint32_t hrx = 0, htx = 0, hconn = 0, hdrop = 0;
     rns_tcp_stats(&hrx, &htx, &hconn, &hdrop);
+    /* What the BEARER made of those frames, which is a different question
+     * from how many arrived: `other` counts frames that reached the handler
+     * and were rejected -- somebody else's app, not our tag, a signature
+     * that did not verify -- and `rx` counts XPRS wires actually taken. A
+     * socket delivering hundreds of frames while both of these stay zero is
+     * a callback that is not being called, which is a different fault from
+     * a callback that is refusing everything. */
+    uint32_t brx = 0, btx = 0, bpaced = 0, bother = 0;
+    xprsrns_stats(&brx, &btx, &bpaced, &bother);
+    char peerlist[96];
+    int pl = 0;
+    peerlist[0] = 0;
+    for (int i = 0, shown = 0; i < 16 && pl < (int)sizeof peerlist - 12; i++) {
+        char pc[16];
+        if (!xprsrns_peer_at(i, pc, sizeof pc)) continue;
+        pl += snprintf(peerlist + pl, sizeof peerlist - pl, "%s\"%s\"",
+                       shown ? "," : "", pc);
+        shown++;
+    }
     if (n < (int)cap)
         n += snprintf(buf + n, cap - n,
             /* `up` is the BEARER; `hub` is the socket underneath it. They
@@ -3694,11 +3718,15 @@ static int api_peers_json(char *buf, size_t cap)
             /* The socket's own traffic. `hub:true` with hub_rx:0 is a
              * connection that was accepted and then said nothing, which is a
              * different fault from a connection that never opened. */
-            "\"hub_rx\":%u,\"hub_tx\":%u,\"hub_conns\":%u}",
+            "\"hub_rx\":%u,\"hub_tx\":%u,\"hub_conns\":%u,"
+            "\"wires_rx\":%u,\"wires_tx\":%u,\"paced\":%u,\"other\":%u,"
+            "\"peer_list\":[%s]}",
             xprsrns_is_up() ? "true" : "false",
             rns_tcp_is_up() ? "true" : "false", apeers,
             (unsigned)atx, (unsigned)arx, (unsigned)anp,
-            (unsigned)hrx, (unsigned)htx, (unsigned)hconn);
+            (unsigned)hrx, (unsigned)htx, (unsigned)hconn,
+            (unsigned)brx, (unsigned)btx, (unsigned)bpaced, (unsigned)bother,
+            peerlist);
 
     if (s_index && n < (int)cap) {
         xprsidx_stats_t xs;
