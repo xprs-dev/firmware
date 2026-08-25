@@ -152,9 +152,14 @@ static void derive_callsign(void)
 /* ── Signing, and whose word we take ────────────────────────────────────── */
 
 /* One key per station we have heard a t:identity from (§9.3), first speaker
- * wins. Small: this exists so §23.7 has somebody it can believe, not to be a
- * directory. */
-#define PEERKEYS_MAX 4
+ * wins. This existed so §23.7 had somebody it could believe, and four was
+ * enough for that -- but the same table decides who is a KNOWN asker and who
+ * is a stranger when history is metered (31.2: six replays an hour against
+ * two), so on a station that many peers ask, a table this small quietly
+ * demotes the fifth onward to a stranger's budget and keeps them there.
+ * 36.9.4 asks a super to be budgeted for being leaned on; that starts with
+ * being able to remember who is asking. 42 bytes an entry. */
+#define PEERKEYS_MAX 32
 static struct { char call[10]; uint8_t pub[32]; } s_peers[PEERKEYS_MAX];
 static int s_peers_n;
 
@@ -363,14 +368,33 @@ static uint32_t s_idxq_dropped;
 static xprsidx_t *s_index;
 static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it */
 
-/* One pending history ask; a second one arriving while busy is dropped --
- * one replay in flight protects the channel (31.4). */
+/*
+ * History asks waiting for idx_task.
+ *
+ * One replay in flight protects the channel (31.4), and for an ordinary
+ * archiver that is still the rule: depth one. But 36.9.4 lists `concurrent`
+ * among the things claiming `super` commits a station to -- "one replay at a
+ * time, with a page taking tens of seconds to air, means the second asker of
+ * any minute is refused" -- and a page here takes about 19.5 s. So a super
+ * queues a few and works through them.
+ *
+ * The other half matters more than the depth: an ask that does not fit used
+ * to be dropped where it arrived, with no answer at all. Silence is the one
+ * response the asker cannot act on -- it reads as a dead station, not as a
+ * busy one, and 36.10.2's cadence backs off on a 429 and gives up on
+ * nothing. So the overflow is remembered and answered 429 on idx_task, which
+ * is where this station is allowed to transmit from.
+ */
+static bool idx_is_super(void);        /* defined with the budgets below */
+
+#define ASKQ_MAX 4
 static struct {
-    volatile bool pending;
     char wire[XPRSIDX_WIRE_MAX + 1];
     int  len;
     char bearer[7];
-} s_ask;
+} s_askq[ASKQ_MAX], s_ask_over;
+static volatile uint8_t s_askq_w, s_askq_r, s_askq_n;
+static volatile bool s_ask_over_pending;
 static volatile bool s_wipe_req;   /* Settings asked for the archive to go */
 
 static void idx_enqueue(const char *wire, int len, int rssi, uint8_t bearer)
@@ -807,12 +831,25 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
             if (dash) *dash = 0;
             if (strcasecmp(dst, base) != 0) break;
         }
-        if (s_ask.pending) break;
-        memcpy(s_ask.wire, wire, len);
-        s_ask.wire[len] = 0;
-        s_ask.len = len;
-        snprintf(s_ask.bearer, sizeof s_ask.bearer, "%s", bearer);
-        s_ask.pending = true;                 /* published last */
+        const int depth = idx_is_super() ? ASKQ_MAX : 1;
+        if (s_askq_n >= depth) {
+            /* Full. Keep the newest for a 429 rather than saying nothing;
+             * an earlier overflow still waiting is simply overwritten,
+             * because one honest refusal per busy spell is the point. */
+            memcpy(s_ask_over.wire, wire, len);
+            s_ask_over.wire[len] = 0;
+            s_ask_over.len = len;
+            snprintf(s_ask_over.bearer, sizeof s_ask_over.bearer, "%s", bearer);
+            s_ask_over_pending = true;        /* published last */
+            break;
+        }
+        const uint8_t w = s_askq_w;
+        memcpy(s_askq[w].wire, wire, len);
+        s_askq[w].wire[len] = 0;
+        s_askq[w].len = len;
+        snprintf(s_askq[w].bearer, sizeof s_askq[w].bearer, "%s", bearer);
+        s_askq_w = (uint8_t)((w + 1) % ASKQ_MAX);
+        s_askq_n++;                           /* published last */
     } while (0);
 
     /* An update command (25.8). It is an actuation, so it goes through the
@@ -1280,8 +1317,14 @@ static void air_identity(void)
     n = sign_wire(wire, n, (int)sizeof wire);
     xprsnow_send(wire, n);
     /* And on BLE, or a phone can never check a signature of ours and meters us
-     * as a stranger for good -- two history replays an hour instead of six. */
+     * as a stranger for good -- two history replays an hour instead of six.
+     * The same argument is why this goes out on the LAN and on Reticulum: a
+     * peer that only ever meets this station over the internet had no way at
+     * all to learn its key, so every ask it made was metered as a stranger's
+     * and every reply it got was unverifiable. */
     if (xprsble_is_active()) xprsble_send(wire, n);
+    xprslan_send(wire, n);
+    if (xprsrns_is_up()) xprsrns_send(wire, n);
 }
 
 /* ── Status, every 15 s, the same shape the dongle prints ───────────────── */
@@ -2414,6 +2457,56 @@ static void idx_result_m(const char *bearer, const char *to,
     idx_air(bearer, w, n);
 }
 
+/* Does this station get to write `super` (XPRS.md 36.9.4)?
+ *
+ * The word is a claim like any other `serve:` word and compels nothing -- but
+ * 36.9.4 is explicit that a station which cannot back it should not write it,
+ * "because every humble node that believes it will route its asks nowhere".
+ * So the config key is permission to claim it, not the claim itself.
+ *
+ * What is checkable here is DEEP: "a spool measured in RECORDS, not in
+ * whatever the board's flash happened to have spare. A store that holds a
+ * busy neighbourhood's day is a pocket archiver with ambitions." This board's
+ * archive is internal flash -- about 28k records -- so it declines, and says
+ * so once rather than every ten minutes.
+ *
+ * ADDRESSABLE is not checked, because since the RNS bearer learned to send a
+ * directed packet this firmware answers asks on every lane it hears them on;
+ * the commitment names stations that can only announce, which this is no
+ * longer one of. Reach is a different thing from addressability and gets a
+ * warning of its own: a super whose only lanes are ESP-NOW and the LAN is a
+ * super for the room it is standing in, which is worth being, and is not what
+ * 36.12.2 leans on. The remaining commitments -- budgeted, concurrent,
+ * complete, awake -- are properties of the code, and are what the rest of
+ * this file has to earn.
+ */
+#define SUPER_MIN_BYTES  (64u * 1024u * 1024u)   /* ~200k records */
+static uint64_t s_idx_budget;
+
+static bool idx_is_super(void)
+{
+    if (!xcfg_get_bool("index_super", false)) return false;
+    static int said;                 /* 0 unsaid, 1 said yes, 2 said no */
+    if (s_idx_budget < SUPER_MIN_BYTES) {
+        if (said != 2) {
+            said = 2;
+            ESP_LOGW(TAG, "index_super set, but this station declines `super`: "
+                     "%llu MB of archive is not a deep spool (36.9.4)",
+                     (unsigned long long)(s_idx_budget / (1024u * 1024u)));
+        }
+        return false;
+    }
+    if (said != 1) {
+        said = 1;
+        ESP_LOGI(TAG, "announcing serve:archive,super — %llu MB of spool",
+                 (unsigned long long)(s_idx_budget / (1024u * 1024u)));
+        if (!xprsrns_is_up())
+            ESP_LOGW(TAG, "super without Reticulum: reachable by the stations "
+                          "in this room, not by the ones 36.12.2 is about");
+    }
+    return true;
+}
+
 /* Budgets, section 31.2: replays per hour, per asker and global. */
 #define HIST_PAGE         12
 #define HIST_KNOWN_PH      6
@@ -2423,8 +2516,74 @@ static struct { char call[16]; uint32_t when[HIST_KNOWN_PH]; } s_hist_asks[6];
 static uint32_t s_hist_global[HIST_GLOBAL_PH];
 static struct { char id[8]; uint32_t when; } s_hist_answered[8];
 
+/*
+ * A super's budgets (36.9.4: "orders of magnitude above the reference
+ * numbers", and 31.2's six-an-hour is explicitly a pocket device's figure).
+ * The Dart responder uses a thousandfold, so this does too.
+ *
+ * A SEPARATE implementation from the rings below, deliberately. The rings
+ * hold one timestamp per permitted replay, which is what makes them an exact
+ * sliding hour -- and which is also why they cannot be scaled: six thousand
+ * timestamps per asker is not a table this board can hold. At super scale the
+ * exact position of the hour boundary stops meaning anything (the budget is
+ * there to stop a flood, not to ration a neighbour), so this counts within a
+ * window instead and costs twelve bytes per asker. The ordinary path is left
+ * exactly as it was: a pocket archiver's budget is the one that has to be
+ * precise, because it is the one an asker actually runs into.
+ */
+#define HIST_SUPER_MULT   1000
+#define HIST_SUPER_ASKERS   32
+static struct { char call[16]; uint32_t win; uint32_t n; }
+    s_hist_super[HIST_SUPER_ASKERS];
+static struct { uint32_t win; uint32_t n; } s_hist_super_global;
+
+static bool hist_budget_super(const char *from, uint32_t now_s)
+{
+    if (now_s - s_hist_super_global.win < 3600 &&
+        s_hist_super_global.n >= (uint32_t)HIST_GLOBAL_PH * HIST_SUPER_MULT)
+        return false;
+    const uint32_t limit = (uint32_t)(peer_key(from) ? HIST_KNOWN_PH
+                                                     : HIST_STRANGER_PH)
+                           * HIST_SUPER_MULT;
+    for (int i = 0; i < HIST_SUPER_ASKERS; i++) {
+        if (strcasecmp(s_hist_super[i].call, from) != 0) continue;
+        if (now_s - s_hist_super[i].win >= 3600) return true;
+        return s_hist_super[i].n < limit;
+    }
+    return true;
+}
+
+static void hist_record_super(const char *from, uint32_t now_s)
+{
+    if (now_s - s_hist_super_global.win >= 3600) {
+        s_hist_super_global.win = now_s;
+        s_hist_super_global.n = 0;
+    }
+    s_hist_super_global.n++;
+
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < HIST_SUPER_ASKERS; i++) {
+        if (strcasecmp(s_hist_super[i].call, from) == 0) { slot = i; break; }
+        if (!s_hist_super[i].call[0]) { slot = i; break; }
+        if (s_hist_super[i].win < s_hist_super[oldest].win) oldest = i;
+    }
+    /* Full: the least recently active asker goes. Losing a row only forgets
+     * what somebody already spent, and the global counter still holds. */
+    if (slot < 0) slot = oldest;
+    if (strcasecmp(s_hist_super[slot].call, from) != 0) {
+        snprintf(s_hist_super[slot].call, sizeof s_hist_super[0].call, "%s", from);
+        s_hist_super[slot].win = now_s;
+        s_hist_super[slot].n = 0;
+    } else if (now_s - s_hist_super[slot].win >= 3600) {
+        s_hist_super[slot].win = now_s;
+        s_hist_super[slot].n = 0;
+    }
+    s_hist_super[slot].n++;
+}
+
 static bool hist_budget(const char *from, uint32_t now_s)
 {
+    if (idx_is_super()) return hist_budget_super(from, now_s);
     int g = 0;
     for (int i = 0; i < HIST_GLOBAL_PH; i++)
         if (s_hist_global[i] && now_s - s_hist_global[i] < 3600) g++;
@@ -2443,6 +2602,7 @@ static bool hist_budget(const char *from, uint32_t now_s)
 
 static void hist_record(const char *from, uint32_t now_s)
 {
+    if (idx_is_super()) { hist_record_super(from, now_s); return; }
     for (int i = 0; i < HIST_GLOBAL_PH; i++)
         if (!s_hist_global[i] || now_s - s_hist_global[i] >= 3600) {
             s_hist_global[i] = now_s;
@@ -2495,35 +2655,35 @@ static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
  * budget as far as the asker is concerned, and 429 is the code that says
  * "not now" without claiming the window was empty.
  */
-static void idx_refuse_history(void)
+static void idx_refuse_history(const char *ask_wire, int ask_len,
+                               const char *ask_bearer, const char *why)
 {
     char wire[XPRSIDX_WIRE_MAX + 1];
     char bearer[7];
-    int len = s_ask.len;
-    memcpy(wire, s_ask.wire, len + 1);
-    snprintf(bearer, sizeof bearer, "%s", s_ask.bearer);
-    s_ask.pending = false;
+    int len = ask_len;
+    memcpy(wire, ask_wire, len + 1);
+    snprintf(bearer, sizeof bearer, "%s", ask_bearer);
 
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return;
     char from[16], cmdid[8];
     if (!xprs_get_str(&p, "f", from, sizeof from)) return;
     xprs_id(&p, cmdid);
-    ESP_LOGW(TAG, "history ask from %s refused: indexer unavailable", from);
+    ESP_LOGW(TAG, "history ask from %s refused: %s", from, why);
     idx_result(bearer, from, cmdid, 429);
 }
 
 /* One heard `cmd:history`, on idx_task: the check-everything-then-replay
  * shape of the Dart responder (xprs_history_server.dart) and the dongle,
  * paced a packet per 1500 ms so the replay never owns the channel. */
-static void idx_answer_history(void)
+static void idx_answer_history(const char *ask_wire, int ask_len,
+                               const char *ask_bearer)
 {
     char wire[XPRSIDX_WIRE_MAX + 1];
     char bearer[7];
-    int len = s_ask.len;
-    memcpy(wire, s_ask.wire, len + 1);
-    snprintf(bearer, sizeof bearer, "%s", s_ask.bearer);
-    s_ask.pending = false;
+    int len = ask_len;
+    memcpy(wire, ask_wire, len + 1);
+    snprintf(bearer, sizeof bearer, "%s", ask_bearer);
 
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return;
@@ -2637,9 +2797,9 @@ static void idx_task(void *arg)
          * A super sizes to the volume instead -- which on a board whose
          * archive is internal flash is barely more, and that IS the finding:
          * this board can serve a super's role, but not a super's depth. */
-        xprsindex_set_max_bytes(s_index,
-            xprsindex_budget("/idx", 10u * 1024u * 1024u,
-                             xcfg_get_bool("index_super", false)));
+        s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
+                                        xcfg_get_bool("index_super", false));
+        xprsindex_set_max_bytes(s_index, s_idx_budget);
         if (s_index) {
             s_api_cfg.index = s_index;
             xprsindex_set_verifier(s_index, index_verifier);
@@ -2687,8 +2847,9 @@ static void idx_task(void *arg)
             xprsindex_stats(s_index, &st);
             char w[XPRSIDX_WIRE_MAX + 1];
             int n = snprintf(w, sizeof w,
-                             "t:service f:%s serve:archive count:%lu fw:%s",
-                             s_call, (unsigned long)st.count, xota_version());
+                             "t:service f:%s serve:archive%s count:%lu fw:%s",
+                             s_call, idx_is_super() ? ",super" : "",
+                             (unsigned long)st.count, xota_version());
             /* uptime, health word, last crash: a few bytes on a packet that
              * goes out anyway, so a sick node is visible without an ask. */
             if (n > 0 && n < (int)sizeof w)
@@ -2696,6 +2857,12 @@ static void idx_task(void *arg)
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
             xprslan_send(w, n);
+            /* And where the internet can hear it. Without this the service
+             * beacon reaches ESP-NOW and the LAN only -- the two transports
+             * whose listeners are, by definition, already in the room. A
+             * station whose peers are all remote (36.12.2) could not learn
+             * this archive existed, which for a super is the whole point. */
+            if (xprsrns_is_up()) xprsrns_send(w, n);
         }
 
         if (s_qid_pending) {
@@ -2744,22 +2911,34 @@ static void idx_task(void *arg)
             s_rel.pending = false;   /* index down: the slot must not latch */
         }
 
-        if (s_ask.pending) {
-            /*
-             * The slot is cleared on EVERY path out, not only the one that
-             * answers. It used to be set on accept and cleared only inside
-             * idx_answer_history(), which this line would not reach with the
-             * index unmounted or the indexer switched off -- so `pending`
-             * latched, `seen_note` dropped every later ask at its "one at a
-             * time" guard, and the station went silent for good with no 404,
-             * no 429 and nothing in the log. Say so instead: an archiver that
-             * cannot serve is over budget as far as the asker is concerned.
-             */
+        /*
+         * Every ask leaves the queue on EVERY path out, not only the one
+         * that answers. This used to be a single slot set on accept and
+         * cleared only inside idx_answer_history(), which is not reached
+         * with the index unmounted or the indexer switched off -- so it
+         * latched, the "one at a time" guard dropped every later ask, and
+         * the station went silent for good with no 404, no 429 and nothing
+         * in the log. Say so instead: an archiver that cannot serve is over
+         * budget as far as the asker is concerned.
+         */
+        while (s_askq_n) {
+            const uint8_t r = s_askq_r;
             if (s_index && xcfg_get_bool("index_on", true)) {
-                idx_answer_history();
+                idx_answer_history(s_askq[r].wire, s_askq[r].len,
+                                   s_askq[r].bearer);
             } else {
-                idx_refuse_history();
+                idx_refuse_history(s_askq[r].wire, s_askq[r].len,
+                                   s_askq[r].bearer, "indexer unavailable");
             }
+            s_askq_r = (uint8_t)((r + 1) % ASKQ_MAX);
+            s_askq_n--;
+        }
+
+        /* And the one that did not fit while all of that was airing. */
+        if (s_ask_over_pending) {
+            s_ask_over_pending = false;
+            idx_refuse_history(s_ask_over.wire, s_ask_over.len,
+                               s_ask_over.bearer, "already replaying");
         }
 
         /* The verify, the decision and the answer for a parked update --
@@ -2928,9 +3107,9 @@ static void idx_task(void *arg)
          * A super sizes to the volume instead -- which on a board whose
          * archive is internal flash is barely more, and that IS the finding:
          * this board can serve a super's role, but not a super's depth. */
-        xprsindex_set_max_bytes(s_index,
-            xprsindex_budget("/idx", 10u * 1024u * 1024u,
-                             xcfg_get_bool("index_super", false)));
+        s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
+                                        xcfg_get_bool("index_super", false));
+        xprsindex_set_max_bytes(s_index, s_idx_budget);
             if (s_index) {
                 xprsindex_set_verifier(s_index, index_verifier);
                 s_api_cfg.index = s_index;

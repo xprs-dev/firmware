@@ -1942,6 +1942,46 @@ static uint32_t s_last_service;
  * one; it is still what makes the station discoverable to the stations in
  * range, and signing is the next thing this needs.
  */
+/* Does this station get to write `super` (XPRS.md 36.9.4)?
+ *
+ * The checkable commitment is DEEP -- "a spool measured in RECORDS, not in
+ * whatever the board's flash happened to have spare" -- and this is the board
+ * that has it: a gigabyte of card against the T-Deck's 10 MB of flash.
+ *
+ * What it does NOT have is reach. Its hub link is compiled out for heap (see
+ * the budget below rns_tcp_start), so it is a super for the stations that can
+ * hear its radios, which is a real thing to be and is not the always-on
+ * internet archiver 36.12.2 leans on. That is a warning, not a refusal: the
+ * word invites asks, and every ask this board can hear, it can answer.
+ */
+#define XPRS_SUPER_MIN_BYTES  (64ull * 1024 * 1024)   /* ~200k records */
+static uint64_t s_xprs_budget;
+
+static bool xprs_is_super(void)
+{
+    if (!xcfg_get_bool("index_super", false)) return false;
+    static int said;
+    if (s_xprs_budget < XPRS_SUPER_MIN_BYTES) {
+        if (said != 2) {
+            said = 2;
+            ESP_LOGW(TAG, "index_super set, but this station declines `super`: "
+                     "%llu MB of archive is not a deep spool (36.9.4)",
+                     (unsigned long long)(s_xprs_budget / (1024ull * 1024)));
+        }
+        return false;
+    }
+    if (said != 1) {
+        said = 1;
+        ESP_LOGI(TAG, "announcing serve:archive,super — %llu MB of spool",
+                 (unsigned long long)(s_xprs_budget / (1024ull * 1024)));
+#ifndef RNS_HUB_LINK
+        ESP_LOGW(TAG, "super without a hub link: reachable by the stations in "
+                      "range, not by the ones 36.12.2 is about");
+#endif
+    }
+    return true;
+}
+
 static void xprs_service_air(void)
 {
     if (!s_xprs_index || !s_aprs_call[0]) return;
@@ -1966,8 +2006,9 @@ static void xprs_service_air(void)
     char ts[24];
     xprs_time_field(ts, sizeof ts);
     int len = snprintf(wire, sizeof wire,
-                       "t:service f:%s serve:archive count:%lu %s",
-                       s_aprs_call, (unsigned long)st.count, ts);
+                       "t:service f:%s serve:archive%s count:%lu %s",
+                       s_aprs_call, xprs_is_super() ? ",super" : "",
+                       (unsigned long)st.count, ts);
     if (len > 0 && len < (int)sizeof wire)
         len += xdiag_beacon_fields(wire + len, (int)sizeof wire - len);
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
@@ -1979,7 +2020,8 @@ static void xprs_service_air(void)
     if (s_xprs_index) {
         xprsindex_add(s_xprs_index, wire, len, 0, true, (uint32_t)time(NULL));
     }
-    ESP_LOGI(TAG, "announced serve:archive — %lu record(s) held, %d callsign(s)",
+    ESP_LOGI(TAG, "announced serve:archive%s — %lu record(s) held, "
+                  "%d callsign(s)", xprs_is_super() ? ",super" : "",
              (unsigned long)st.count, n);
 }
 
@@ -2304,6 +2346,32 @@ static struct {
 } s_hist_refuse;
 
 static struct { char call[10]; uint32_t t; } s_hist_asks[XPRS_ASK_RING];
+
+/*
+ * Asks that arrived while one was already being served.
+ *
+ * 36.9.4 lists `concurrent` among the things claiming `super` commits a
+ * station to: "one replay at a time, with a page taking tens of seconds to
+ * air, means the second asker of any minute is refused". This board takes
+ * about eighteen seconds over a page, so on a busy minute the refusal was the
+ * normal answer -- an honest 429, but a 429 to a station that had done
+ * nothing wrong and would have been served a moment later.
+ *
+ * One replay still airs at a time: that is 31.4, and the channel needs it.
+ * What changes is that the next asker WAITS instead of being turned away.
+ * Only when this room is also full does the 429 come back, which is what it
+ * is for. Depth applies only when this station claims `super`; an ordinary
+ * archiver keeps its single slot.
+ */
+#define XPRS_ASKQ_MAX 3
+static struct {
+    uint8_t bearer;
+    char    ask[XPRS_MAX_WIRE + 1];
+    char    to[10];                        /* same width as s_hist.to */
+    char    cmdid[XPRS_ID_LEN];
+} s_askq[XPRS_ASKQ_MAX];
+static volatile uint8_t s_askq_w, s_askq_r, s_askq_n;
+
 static struct { uint32_t id; uint32_t t; } s_hist_answered[XPRS_ANSWERED_RING];
 
 /* Air one packet on the bearer the ask arrived on. A reply that goes out
@@ -2390,8 +2458,11 @@ static bool xprs_hist_already_answered(uint32_t id, uint32_t t)
 /* Section 31.3/31.4: a stranger gets less of the channel than a station we have
  * met, and everybody together gets a ceiling. Over it is 429, out loud, because
  * silence is indistinguishable from a dead indexer. */
+static bool xprs_hist_budget_super(const char *call, uint32_t t);  /* below */
+
 static bool xprs_hist_budget_allows(const char *call, uint32_t t)
 {
+    if (xprs_is_super()) return xprs_hist_budget_super(call, t);
     int global = 0, mine = 0;
     for (int i = 0; i < XPRS_ASK_RING; i++) {
         if (!s_hist_asks[i].t || t - s_hist_asks[i].t > 3600) continue;
@@ -2403,8 +2474,68 @@ static bool xprs_hist_budget_allows(const char *call, uint32_t t)
     return mine < cap;
 }
 
+/*
+ * A super's budgets (36.9.4: "orders of magnitude above the reference
+ * numbers"; 31.2's six-an-hour is explicitly a pocket device's figure, and
+ * this board holds a gigabyte). A separate implementation from the ring
+ * above, for the reason the shared app gives: the ring stores one timestamp
+ * per permitted replay, which is what makes it an exact sliding hour and is
+ * also why it cannot be scaled to thousands. At super scale the hour boundary
+ * stops meaning anything -- the budget is there to stop a flood, not to
+ * ration a neighbour -- so this counts within a window at twelve bytes an
+ * asker, and the ordinary path stays exactly as precise as it was.
+ */
+#define XPRS_HIST_SUPER_MULT   1000
+#define XPRS_HIST_SUPER_ASKERS   32
+static struct { char call[16]; uint32_t win, n; }
+    s_hist_super[XPRS_HIST_SUPER_ASKERS];
+static struct { uint32_t win, n; } s_hist_super_global;
+
+static bool xprs_hist_budget_super(const char *call, uint32_t t)
+{
+    if (t - s_hist_super_global.win < 3600 &&
+        s_hist_super_global.n >= (uint32_t)XPRS_HIST_GLOBAL_PH * XPRS_HIST_SUPER_MULT)
+        return false;
+    const uint32_t cap = (uint32_t)(xprs_peer_key(call) ? XPRS_HIST_KNOWN_PH
+                                                        : XPRS_HIST_STRANGER_PH)
+                         * XPRS_HIST_SUPER_MULT;
+    for (int i = 0; i < XPRS_HIST_SUPER_ASKERS; i++) {
+        if (strcasecmp(s_hist_super[i].call, call) != 0) continue;
+        if (t - s_hist_super[i].win >= 3600) return true;
+        return s_hist_super[i].n < cap;
+    }
+    return true;
+}
+
+static void xprs_hist_record_super(const char *call, uint32_t t)
+{
+    if (t - s_hist_super_global.win >= 3600) {
+        s_hist_super_global.win = t;
+        s_hist_super_global.n = 0;
+    }
+    s_hist_super_global.n++;
+
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < XPRS_HIST_SUPER_ASKERS; i++) {
+        if (strcasecmp(s_hist_super[i].call, call) == 0) { slot = i; break; }
+        if (!s_hist_super[i].call[0]) { slot = i; break; }
+        if (s_hist_super[i].win < s_hist_super[oldest].win) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    if (strcasecmp(s_hist_super[slot].call, call) != 0) {
+        snprintf(s_hist_super[slot].call, sizeof s_hist_super[0].call, "%s", call);
+        s_hist_super[slot].win = t;
+        s_hist_super[slot].n = 0;
+    } else if (t - s_hist_super[slot].win >= 3600) {
+        s_hist_super[slot].win = t;
+        s_hist_super[slot].n = 0;
+    }
+    s_hist_super[slot].n++;
+}
+
 static void xprs_hist_record_ask(const char *call, uint32_t t)
 {
+    if (xprs_is_super()) { xprs_hist_record_super(call, t); return; }
     int slot = 0;
     for (int i = 0; i < XPRS_ASK_RING; i++) {
         if (!s_hist_asks[i].t) { slot = i; break; }
@@ -2461,7 +2592,20 @@ static void xprs_hist_accept(const char *wire, int len, const xprs_t *p,
         return;
     }
     if (s_hist.state != HIST_IDLE) {
-        xprs_hist_refuse(from, cmdid, 429, bearer);
+        const int depth = xprs_is_super() ? XPRS_ASKQ_MAX : 0;
+        if (s_askq_n >= depth) {
+            xprs_hist_refuse(from, cmdid, 429, bearer);
+            return;
+        }
+        const uint8_t w = s_askq_w;
+        memcpy(s_askq[w].ask, wire, (size_t)len);
+        s_askq[w].ask[len] = 0;
+        s_askq[w].bearer = bearer;
+        snprintf(s_askq[w].to, sizeof s_askq[w].to, "%s", from);
+        memcpy(s_askq[w].cmdid, cmdid, XPRS_ID_LEN);
+        xprs_hist_record_ask(from, t);
+        s_askq_w = (uint8_t)((w + 1) % XPRS_ASKQ_MAX);
+        s_askq_n++;                        /* published last */
         return;
     }
 
@@ -2538,6 +2682,21 @@ static int xprs_hist_query(void)
     return ctx.n;
 }
 
+/* Move the oldest waiting ask into the slot the pump reads. Core 1, called
+ * only when the machine is idle. */
+static void xprs_hist_take_next(void)
+{
+    if (!s_askq_n || s_hist.state != HIST_IDLE) return;
+    const uint8_t r = s_askq_r;
+    memcpy(s_hist.ask, s_askq[r].ask, sizeof s_hist.ask);
+    s_hist.bearer = s_askq[r].bearer;
+    snprintf(s_hist.to, sizeof s_hist.to, "%s", s_askq[r].to);
+    memcpy(s_hist.cmdid, s_askq[r].cmdid, XPRS_ID_LEN);
+    s_askq_r = (uint8_t)((r + 1) % XPRS_ASKQ_MAX);
+    s_askq_n--;
+    s_hist.state = HIST_PENDING;           /* published last */
+}
+
 /* One step of the replay, called once per relay-task tick (1500 ms) — the same
  * inter-packet pacing the Dart responder uses, and free here because that task
  * already wakes on exactly that period. Runs on core 1. */
@@ -2550,6 +2709,9 @@ static void xprs_hist_pump(void)
         s_hist_refuse.due = false;
         return;
     }
+
+    /* Idle with somebody waiting: start them before doing anything else. */
+    xprs_hist_take_next();
 
     if (s_hist.state == HIST_PENDING) {
         int n = xprs_hist_query();
@@ -4202,9 +4364,9 @@ void app_main(void)
         /* An SD card is roomy; a quarter gigabyte is still weeks of air.
          * The card is the whole point of this board: a super sizes its
          * archive to the volume rather than to this default. */
-        xprsindex_set_max_bytes(s_xprs_index,
-            xprsindex_budget("/sdcard", 256ull * 1024 * 1024,
-                             xcfg_get_bool("index_super", false)));
+        s_xprs_budget = xprsindex_budget("/sdcard", 256ull * 1024 * 1024,
+                                         xcfg_get_bool("index_super", false));
+        xprsindex_set_max_bytes(s_xprs_index, s_xprs_budget);
         xst_stats_load("/sdcard/xprs/stats.bin");
         if (xprsindex_ready(s_xprs_index)) {
             xprsidx_stats_t xs;
