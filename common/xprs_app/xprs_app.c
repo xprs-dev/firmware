@@ -88,6 +88,7 @@ static char s_pass[64];
 #include "xprs_ota.h"
 #include "xprs_hotspot.h"
 #include "xprsindex.h"
+#include "xgossip.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
 #include "esp_sntp.h"
@@ -723,53 +724,22 @@ static struct {
 #define REL_THROTTLE_SEC 600
 static struct { char call[10]; uint32_t at_s; } s_rel_seen[16];
 
-/* Gossip, need-to-know sized (36.9.4): who else heard whom, from the
- * hears: lists of verified-enough observations. Feeds the 404's m:try --
- * a miss is not a dead end when somebody nearby has what was asked for. */
-static struct { char call[10]; char gw[10]; uint32_t at_s; } s_goss[32];
-static int s_goss_w;
+/*
+ * Gossip (36.9.4): who else heard whom. The store is xprs_gossip, on the same
+ * volume as the archive.
+ *
+ * This was 32 rows of volatile RAM with no layers and no walls -- and, worse,
+ * it took an unsigned observation's word for it, so anybody in earshot could
+ * write this station's idea of where a callsign lives by beaconing a hears:
+ * list nobody signed. The component keeps the L2/L3 split, credits the signer,
+ * meters each observer, and survives the reboot that used to empty it.
+ */
+static xgossip_t *s_goss;
+static bool verified(const xprs_t *p);     /* the signature verdict, below */
 
-static void goss_note(const char *call, const char *gw, uint32_t now_s)
-{
-    for (int i = 0; i < 32; i++) {
-        if (strcasecmp(s_goss[i].call, call) == 0 &&
-            strcasecmp(s_goss[i].gw, gw) == 0) {
-            s_goss[i].at_s = now_s;
-            return;
-        }
-    }
-    snprintf(s_goss[s_goss_w].call, sizeof s_goss[s_goss_w].call, "%s", call);
-    snprintf(s_goss[s_goss_w].gw, sizeof s_goss[s_goss_w].gw, "%s", gw);
-    s_goss[s_goss_w].at_s = now_s;
-    s_goss_w = (s_goss_w + 1) % 32;
-}
-
-/* Freshest gateways for [call], for m:try. Never names [self]. */
 static int goss_try(const char *call, const char *self, char *out, int cap)
 {
-    int w = 0;
-    uint32_t best[3] = {0, 0, 0};
-    int idx[3] = {-1, -1, -1};
-    for (int i = 0; i < 32; i++) {
-        if (!s_goss[i].call[0]) continue;
-        if (strcasecmp(s_goss[i].call, call) != 0) continue;
-        if (strcasecmp(s_goss[i].gw, self) == 0) continue;
-        for (int k = 0; k < 3; k++) {
-            if (s_goss[i].at_s > best[k]) {
-                for (int m = 2; m > k; m--) { best[m] = best[m-1]; idx[m] = idx[m-1]; }
-                best[k] = s_goss[i].at_s;
-                idx[k] = i;
-                break;
-            }
-        }
-    }
-    for (int k = 0; k < 3 && idx[k] >= 0; k++) {
-        int need = (int)strlen(s_goss[idx[k]].gw) + (w ? 1 : 0);
-        if (w + need >= cap) break;
-        if (w) out[w++] = ',';
-        w += snprintf(out + w, (size_t)(cap - w), "%s", s_goss[idx[k]].gw);
-    }
-    return w;
+    return xgossip_try_candidates(s_goss, call, self, out, cap);
 }
 
 /* One answer to a command, on the bearer it arrived on -- a reply aired
@@ -907,6 +877,12 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (strcasecmp(from, s_call) == 0) break;
         if (xprs_get_str(&sp, "via", via, sizeof via)) break; /* direct only */
         uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+
+        /* Our own radio is its own witness (36.9.4): no via:, no signature
+         * needed, and it is what makes a callsign this station's business
+         * at all. Debounced inside the component -- every beacon from every
+         * neighbour arrives here. */
+        xgossip_note_direct(s_goss, from, s_call, bearer, now_s);
         int free_slot = 0;
         bool throttled = false;
         for (int i = 0; i < 16; i++) {
@@ -928,24 +904,42 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 
     /* ── Gossip intake (36.9.4): who else heard whom ───────────────────
      * hears: is directly-heard-only by 10.6.3, so each listed callsign
-     * pairs with the OBSERVER as its gateway. Ring-bounded: this station
-     * keeps gossip in proportion to its duties. */
+     * pairs with the OBSERVER as its gateway.
+     *
+     * The quota is checked BEFORE the signature. A verify is a curve
+     * operation on whichever radio task heard the packet, a neighbour
+     * beacons its observation every few seconds, and the quota admits one
+     * per interval anyway -- so verifying the ones it is about to refuse is
+     * heat bought for nothing. Same argument, same order, as the phone's
+     * ingest funnel. */
     do {
-        char type[16], from[10], hears[96];
+        char type[16], from[10], hears[96], link[8];
         xprs_type(&sp, type, sizeof type);
         if (strcmp(type, "observation") != 0) break;
         if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
         if (strcasecmp(from, s_call) == 0) break;
         if (!xprs_get_str(&sp, "hears", hears, sizeof hears)) break;
         uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        if (!xgossip_would_accept(s_goss, from, now_s)) break;
+
+        /* link: names the radio the claim is about (10.6.1). Without one,
+         * the bearer it reached us on is the honest guess -- but only a
+         * short-range bearer writes the durable layer either way. */
+        if (!xprs_get_str(&sp, "link", link, sizeof link))
+            snprintf(link, sizeof link, "%s", bearer);
+
+        const char *list[8];
         char *tok = hears, *next;
-        int fed = 0;
-        while (tok && *tok && fed < 8) {
+        int n = 0;
+        while (tok && *tok && n < 8) {
             next = strchr(tok, ',');
             if (next) *next = 0;
-            if (*tok) { goss_note(tok, from, now_s); fed++; }
+            if (*tok) list[n++] = tok;
             tok = next ? next + 1 : NULL;
         }
+        /* An unsigned or unverifiable claim feeds nothing: the component
+         * counts the refusal so /api can show it being refused. */
+        xgossip_note_hears(s_goss, from, list, n, link, verified(&sp), now_s);
     } while (0);
 
     /* A serve:archive announcement from a station that was away: ask it
@@ -2800,6 +2794,13 @@ static void idx_task(void *arg)
         s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
                                         xcfg_get_bool("index_super", false));
         xprsindex_set_max_bytes(s_index, s_idx_budget);
+        if (!s_goss) {
+            /* Beside the archive, in a directory that already exists:
+             * this volume will not make a new one. The bucket names cannot
+             * collide -- the index reads seg_* and its own index files. */
+            s_goss = xgossip_open("/idx/xprs");
+            xgossip_set_super(s_goss, idx_is_super());
+        }
         if (s_index) {
             s_api_cfg.index = s_index;
             xprsindex_set_verifier(s_index, index_verifier);
@@ -2933,6 +2934,11 @@ static void idx_task(void *arg)
             s_askq_r = (uint8_t)((r + 1) % ASKQ_MAX);
             s_askq_n--;
         }
+
+        /* Gossip's card work, on the task that owns the volume. Queued on
+         * whichever radio task heard the packet; written here (esp32.md:
+         * never write from the task that heard it). */
+        xgossip_pump(s_goss);
 
         /* And the one that did not fit while all of that was airing. */
         if (s_ask_over_pending) {
@@ -3110,6 +3116,13 @@ static void idx_task(void *arg)
         s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
                                         xcfg_get_bool("index_super", false));
         xprsindex_set_max_bytes(s_index, s_idx_budget);
+        if (!s_goss) {
+            /* Beside the archive, in a directory that already exists:
+             * this volume will not make a new one. The bucket names cannot
+             * collide -- the index reads seg_* and its own index files. */
+            s_goss = xgossip_open("/idx/xprs");
+            xgossip_set_super(s_goss, idx_is_super());
+        }
             if (s_index) {
                 xprsindex_set_verifier(s_index, index_verifier);
                 s_api_cfg.index = s_index;

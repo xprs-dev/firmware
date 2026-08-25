@@ -6,6 +6,6 @@ idf_component_register(
              xprs_model_tdongle_s3 xprs_st7735 xprs_station xprs_ui_mini
              xprs_config xprs_auth xprs_ota xprs_diag xprs_api app_update esp_app_format espcoredump
              xprs_wifi xprs_aprsis xprs_blemesh xprs_sdcard
-             xprs_lanwatch xprs_codec xprs_index xprs_bearer_lan xprs_bearer xprs_bearer_now xprs_id xprs_chan xprs_rns xprs_sig xprs_nostr
+             xprs_lanwatch xprs_codec xprs_index xprs_gossip xprs_bearer_lan xprs_bearer xprs_bearer_now xprs_id xprs_chan xprs_rns xprs_sig xprs_nostr
              esp_http_server
 )

@@ -95,6 +95,7 @@
 #include "xprsid.h"
 #include "xprschan.h"
 #include "rns_tcp.h"
+#include "xgossip.h"
 #include "xprssig.h"
 #include "bech32.h"
 #include <ctype.h>
@@ -217,6 +218,9 @@ static void igate_heard_add(const char *call, uint8_t bearer);
 static int  xprs_hears_render(uint8_t bearer, char *out, int cap, int *total);
 static bool xprs_verify_sig(const xprs_t *p, const uint8_t pub[32]);
 static const uint8_t *xprs_peer_key(const char *call);
+/* Gossip, defined with the serving path below but fed from the receive one. */
+static xgossip_t *s_goss;
+static void xprs_gossip_heard(const xprs_t *p, uint8_t bearer);
 static int  xprs_peer_key_count(void);
 static void xprs_identity_heard(const xprs_t *p);
 static void xprs_hist_accept(const char *wire, int len, const xprs_t *p,
@@ -1726,7 +1730,15 @@ static void xprs_from_bearer(const char *wire, int len, int rssi,
             if (direct && xprs_get_str(&hp, "f", from, sizeof from) &&
                 strcasecmp(from, s_aprs_call) != 0) {
                 igate_heard_add(from, bearer);
+                /* Our own radio is its own witness (36.9.4): direct, so no
+                 * signature is owed, and it is what makes a callsign this
+                 * station's business at all. Debounced in the component. */
+                xgossip_note_direct(s_goss, from, s_aprs_call,
+                                    bearer == XPRS_BEARER_LAN ? "lan"
+                                                              : "espnow",
+                                    now_sec());
             }
+            xprs_gossip_heard(&hp, bearer);
             /* An ask arriving on a bearer is answered on it — a reply aired
              * somewhere else is a reply the requester never hears. */
             xprs_type(&hp, type, sizeof type);
@@ -2383,6 +2395,67 @@ static void xprs_air_on(const char *wire, int len, uint8_t bearer)
     else                                xprs_air(wire, len, SUBTYPE_XPRS);
 }
 
+/*
+ * Gossip (36.9.4). This board had NONE: it rendered its own hears: list for
+ * others to use and kept nothing of theirs, so every history miss was a dead
+ * end -- a 404 with no m:try, when a station in the room very likely had what
+ * was asked for. On the deep board that is the wrong way round; a super is
+ * where the humble stations come to ask precisely this.
+ */
+/* An observation's hears: list, through the walls of 36.9.4. The quota is
+ * checked before the signature on purpose: a verify is a curve operation on
+ * the task that heard the packet, and the quota admits one per interval
+ * whatever the verify says. */
+static void xprs_gossip_heard(const xprs_t *p, uint8_t bearer)
+{
+    if (!s_goss) return;
+    char type[16], from[10], hears[96], link[8];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "observation") != 0) return;
+    if (!xprs_get_str(p, "f", from, sizeof from) || !from[0]) return;
+    if (strcasecmp(from, s_aprs_call) == 0) return;
+    if (!xprs_get_str(p, "hears", hears, sizeof hears)) return;
+
+    const uint32_t now_s = now_sec();
+    if (!xgossip_would_accept(s_goss, from, now_s)) return;
+    if (!xprs_get_str(p, "link", link, sizeof link))
+        snprintf(link, sizeof link, "%s",
+                 bearer == XPRS_BEARER_LAN ? "lan" : "espnow");
+
+    const char *list[8];
+    char *tok = hears, *next;
+    int n = 0;
+    while (tok && *tok && n < 8) {
+        next = strchr(tok, ',');
+        if (next) *next = 0;
+        if (*tok) list[n++] = tok;
+        tok = next ? next + 1 : NULL;
+    }
+    xgossip_note_hears(s_goss, from, list, n, link, xc_verified(p), now_s);
+}
+
+/* As xprs_air_result, with the 404's `m:try <peers>` tail (36.9): a miss is
+ * not a dead end when somebody this station has heard of has what was asked
+ * for. Never names us -- the asker just asked us. */
+static void xprs_air_result_try(const char *to, const char *cmdid, int code,
+                                uint8_t bearer, const char *only)
+{
+    char list[64];
+    if (!only || !only[0] ||
+        xgossip_try_candidates(s_goss, only, s_aprs_call, list, sizeof list) <= 0)
+        list[0] = 0;
+
+    char wire[XPRS_MAX_WIRE + 1], ts[24];
+    xprs_time_field(ts, sizeof ts);
+    int n = snprintf(wire, sizeof wire, "t:result f:%s d:%s %s r:%s code:%d",
+                     s_aprs_call, to, ts, cmdid, code);
+    if (n > 0 && n < XPRS_MAX_WIRE && list[0])
+        n += snprintf(wire + n, sizeof wire - (size_t)n, " m:try %s", list);
+    if (n <= 0 || n > XPRS_MAX_WIRE) return;
+    n = xprs_sign_wire(wire, n, (int)sizeof wire);
+    xprs_air_on(wire, n, bearer);
+}
+
 static void xprs_air_result(const char *to, const char *cmdid, int code,
                             uint8_t bearer)
 {
@@ -2702,6 +2775,11 @@ static void xprs_hist_take_next(void)
  * already wakes on exactly that period. Runs on core 1. */
 static void xprs_hist_pump(void)
 {
+    /* Gossip's card work, on core 1 with the rest of it. Queued by whichever
+     * task heard the packet; written here (esp32.md: never write from the
+     * task that heard it). */
+    xgossip_pump(s_goss);
+
     /* Somebody is waiting to be told no. */
     if (s_hist_refuse.due) {
         xprs_air_result(s_hist_refuse.to, s_hist_refuse.cmdid,
@@ -2722,7 +2800,16 @@ static void xprs_hist_pump(void)
         if (n == 0) {
             ESP_LOGI(TAG, "XPRS: history for %s - nothing in that window (404)",
                      s_hist.to);
-            xprs_air_result(s_hist.to, s_hist.cmdid, 404, s_hist.bearer);
+            {
+                /* 36.9: name whoever gossip says has been near the callsign
+                 * that was asked about, so the miss points somewhere. */
+                xprs_t ap;
+                char only[10] = "";
+                if (xprs_parse(s_hist.ask, (int)strlen(s_hist.ask), &ap))
+                    xprs_get_str(&ap, "only", only, sizeof only);
+                xprs_air_result_try(s_hist.to, s_hist.cmdid, 404,
+                                    s_hist.bearer, only);
+            }
             s_hist.state = HIST_IDLE;
             return;
         }
@@ -4367,6 +4454,8 @@ void app_main(void)
         s_xprs_budget = xprsindex_budget("/sdcard", 256ull * 1024 * 1024,
                                          xcfg_get_bool("index_super", false));
         xprsindex_set_max_bytes(s_xprs_index, s_xprs_budget);
+        s_goss = xgossip_open("/sdcard/xprs");
+        xgossip_set_super(s_goss, xprs_is_super());
         xst_stats_load("/sdcard/xprs/stats.bin");
         if (xprsindex_ready(s_xprs_index)) {
             xprsidx_stats_t xs;
