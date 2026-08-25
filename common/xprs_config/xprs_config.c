@@ -40,6 +40,11 @@ static cfg_entry_t s_cfg[] = {
      * to a pocket device's budget. Off by default -- claiming the word
      * commits a station to serving it. */
     { "index_super", {0}, false },
+    /* Super-archivers this station pulls from by name, comma separated.
+     * Discovery from a `serve:archive,super` beacon covers whoever is in
+     * earshot; this covers the one on the far side of a hub, which a board
+     * will never hear a beacon from (36.12.2). */
+    { "supers",    {0}, false },
     { "ntp",       {0}, false },
     { "ap_on",     {0}, false },
     { "ap_ssid",   {0}, false },
@@ -245,6 +250,7 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "igate",   "enabled",  "igate_on" },
     { "indexer", "enabled",  "index_on" },
     { "indexer", "super",    "index_super" },
+    { "indexer", "supers",   "supers" },
     { "hotspot", "enabled",  "ap_on" },
     { "hotspot", "ssid",     "ap_ssid" },
     { "time",    "server",   "ntp" },

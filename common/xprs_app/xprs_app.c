@@ -89,6 +89,7 @@ static char s_pass[64];
 #include "xprs_hotspot.h"
 #include "xprsindex.h"
 #include "xgossip.h"
+#include "xcadence.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
 #include "esp_sntp.h"
@@ -631,13 +632,112 @@ static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */
 static bool s_rotate;
 static uint64_t s_rotate_next_us;      /* total ever, ring position = s_flow_n % FLOW_MAX */
 
-/* A parked 36.10 catch-up ask (built + signed on idx_task's stack). */
+/*
+ * Catching up with other archivers (36.10), one row per peer.
+ *
+ * What was here was a single parked ask on a fixed ten-minute clock, and it
+ * could not page: the ask carried only `since:`, and a `code:206` -- the
+ * responder saying "there is more" -- was never acted on anywhere in this
+ * firmware. It was only ever SENT. So a board that had been away for a day
+ * asked once, was handed twelve records, and stopped; the rest of the hole
+ * stayed a hole until somebody power-cycled it into asking again.
+ *
+ * Now each peer has its own cadence (36.10.2, the ladder in xcadence.c) and
+ * its own continuation mark. A 206 is followed with `until:` set to the
+ * oldest record the page brought, which walks the window backwards until the
+ * peer says 200.
+ *
+ * `resume` is checked for PROGRESS. A responder that answers the same
+ * `until:` with the same page is stalled, not busy, and the difference
+ * matters: read as activity it would be asked faster and faster forever,
+ * which is the load 36.10.2 exists to prevent. Two pages that do not move
+ * the mark end the chain and count as quiet.
+ */
+#define CU_PEERS 6
+typedef struct {
+    char     call[10];
+    char     bearer[7];
+    uint32_t interval_s;      /* what the ladder says, for this peer */
+    uint32_t next_ask_s;      /* uptime seconds; 0 = never asked */
+    uint32_t last_news_s;     /* uptime when it last had something to say */
+    uint32_t since;           /* the window this chain is filling */
+    uint32_t resume;          /* the 206 continuation mark, 0 = fresh ask */
+    uint32_t oldest_seen;     /* oldest ts of the page now arriving */
+    uint32_t ask_at_s;        /* uptime the outstanding ask went out */
+    uint16_t rows;            /* records this peer served since the ask */
+    uint8_t  stalls;          /* continuations that moved nothing */
+    bool     super;           /* it announced serve:archive,super */
+    bool     await;           /* an ask is out and unanswered */
+    bool     used;
+} cu_peer_t;
+static cu_peer_t s_cu_peers[CU_PEERS];
+
+/* The one ask waiting for idx_task, which owns the signing stack. */
 static struct {
     char call[10];
     char bearer[7];
     uint32_t since;
+    uint32_t until;
     volatile bool pending;
 } s_cu;
+
+static cu_peer_t *cu_find(const char *call, bool create)
+{
+    cu_peer_t *free_row = NULL, *oldest = &s_cu_peers[0];
+    for (int i = 0; i < CU_PEERS; i++) {
+        cu_peer_t *r = &s_cu_peers[i];
+        if (r->used && strcasecmp(r->call, call) == 0) return r;
+        if (!r->used && !free_row) free_row = r;
+        if (r->used && r->next_ask_s < oldest->next_ask_s) oldest = r;
+    }
+    if (!create) return NULL;
+    cu_peer_t *r = free_row ? free_row : oldest;
+    memset(r, 0, sizeof *r);
+    snprintf(r->call, sizeof r->call, "%s", call);
+    r->interval_s = xcadence_initial();
+    r->used = true;
+    return r;
+}
+
+/*
+ * The `since:` a chain starts from.
+ *
+ * Normally the newest record already on disk when this station booted -- the
+ * hole begins where the archive stopped (36.10). But an EMPTY store used to
+ * mean "nothing missed", and that is exactly backwards: a station whose
+ * archive has just been wiped, or which has never had one, has missed
+ * everything there is. It sat next to a super-archiver holding eighteen
+ * thousand records and never asked it a single question.
+ *
+ * A bounded bootstrap instead: a day back. The peer's budgets and the 206
+ * chain decide how fast that arrives, and one day is a hole a board can
+ * actually fill rather than a request to replay the world.
+ */
+#define CU_BOOTSTRAP_SEC (24u * 3600u)
+
+static uint32_t cu_since_floor(void)
+{
+    const uint32_t newest = s_index ? xprsindex_boot_newest_ts(s_index) : 0;
+    if (newest) return newest;
+    const uint32_t now = xst_epoch_now();
+    return now > CU_BOOTSTRAP_SEC ? now - CU_BOOTSTRAP_SEC : 0;
+}
+
+/* A board archives whether or not anybody is looking at it, so the phone's
+ * hidden floor does not map: what bounds this station is the PEER's budget,
+ * never a screen. */
+static void cu_answered(cu_peer_t *r, xc_answer_t a, uint32_t now_s)
+{
+    const uint32_t silent = r->last_news_s ? now_s - r->last_news_s : 0;
+    r->interval_s = xcadence_next(r->interval_s, a,
+                                  r->super ? XC_FAST : XC_ORDINARY,
+                                  true, silent);
+    r->next_ask_s = now_s + xcadence_jitter(r->interval_s, now_s);
+    r->await = false;
+    r->rows = 0;
+    r->oldest_seen = 0;
+    if (a == XC_NEWS) r->last_news_s = now_s;
+}
 
 /* Marks the room a heard saying belongs to as having something new in it.
  * Defined with the rest of the chat panel, below. */
@@ -955,17 +1055,114 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!strstr(sv, "archive")) break;
         if (xprs_get(&sp, "via", NULL) != NULL) break;
         if (!xst_epoch_now()) break;              /* no clock, no since: */
-        uint32_t newest = s_index ? xprsindex_boot_newest_ts(s_index) : 0;
-        if (!newest) break;                 /* empty store: nothing missed */
-        if (!xst_catchup_due(call, 600)) break;
+        const uint32_t newest = cu_since_floor();
+        if (!newest) break;                        /* no clock, no window */
+
+        cu_peer_t *r = cu_find(call, true);
+        if (!r) break;
+        /* `serve:archive,super` is what earns the fast floor: only raised
+         * budgets can serve a fast caller (36.9.4), and asking an ordinary
+         * peer faster steals its whole cross-caller allowance. */
+        r->super = strstr(sv, "super") != NULL;
+        snprintf(r->bearer, sizeof r->bearer, "%s", bearer);
+
+        const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        if (r->await) break;                    /* one chain per peer */
+        if (r->next_ask_s && now_s < r->next_ask_s) break;
+        if (!r->next_ask_s && !xst_catchup_due(call, 600)) break;
+
         /* Park it. Signing is several KB of secp256k1 stack and this runs
          * on the 5 KB bearer task -- the first build here PANIC'd xprslan.
          * idx_task (8 KB) builds and airs the ask. */
         if (s_cu.pending) break;
+        if (!r->resume) r->since = newest;
         snprintf(s_cu.call, sizeof s_cu.call, "%s", call);
         snprintf(s_cu.bearer, sizeof s_cu.bearer, "%s", bearer);
-        s_cu.since = newest;
+        s_cu.since = r->since;
+        s_cu.until = r->resume;
         s_cu.pending = true;
+        r->await = true;
+        r->ask_at_s = now_s;
+        r->rows = 0;
+        r->oldest_seen = 0;
+    } while (0);
+
+    /* ── The other half of 36.10: what came back ───────────────────────
+     * A replay arrives as ordinary heard traffic -- the author's wires, not
+     * the peer's -- so what marks it as OUR page is that the peer we asked
+     * is still awaiting an answer. Count the rows and keep the oldest ts:
+     * that ts is the `until:` a 206 continues from. */
+    do {
+        char rfrom[10];
+        if (!xprs_get_str(&sp, "f", rfrom, sizeof rfrom) || !rfrom[0]) break;
+        const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+
+        char rtype[16];
+        xprs_type(&sp, rtype, sizeof rtype);
+        if (strcmp(rtype, "result") == 0) {
+            /* The answer to our own ask, addressed to us. */
+            char rto[10], code[8];
+            cu_peer_t *r = cu_find(rfrom, false);
+            if (!r || !r->await) break;
+            if (!xprs_get_str(&sp, "d", rto, sizeof rto)) break;
+            if (strncasecmp(rto, s_call, strlen(rto)) != 0) break;
+            if (!xprs_get_str(&sp, "code", code, sizeof code)) break;
+            const int c = atoi(code);
+            if (c == 202) break;                /* "starting": not an answer */
+
+            if (c == 429) {
+                ESP_LOGI(TAG, "catch-up: %s refused us (429)", rfrom);
+                r->resume = 0;
+                r->stalls = 0;
+                cu_answered(r, XC_REFUSED, now_s);
+                break;
+            }
+            if (c == 206 && r->oldest_seen) {
+                /* A continuation must MAKE PROGRESS (25.2.1). A responder
+                 * that answers the same window with the same page is
+                 * stalled, and reading that as a busy room would have us
+                 * ask it faster and faster forever. */
+                if (r->resume && r->oldest_seen >= r->resume) {
+                    ESP_LOGW(TAG, "catch-up: %s made no progress at %lu - "
+                             "ending the chain", rfrom,
+                             (unsigned long)r->resume);
+                    r->resume = 0;
+                    r->stalls++;
+                    cu_answered(r, XC_QUIET, now_s);
+                    break;
+                }
+                r->resume = r->oldest_seen;
+                r->stalls = 0;
+                /* More is held: come straight back for it rather than
+                 * waiting out the cadence. The cadence paces CHAINS, not
+                 * the pages inside one. */
+                r->last_news_s = now_s;
+                r->await = false;
+                r->rows = 0;
+                r->oldest_seen = 0;
+                r->next_ask_s = now_s;
+                ESP_LOGI(TAG, "catch-up: %s has more, continuing until %lu",
+                         rfrom, (unsigned long)r->resume);
+                break;
+            }
+            /* 200 with rows, 200 empty, 404, or a 206 that brought nothing. */
+            const bool news = r->rows > 0;
+            r->resume = 0;
+            cu_answered(r, news ? XC_NEWS : XC_QUIET, now_s);
+            ESP_LOGI(TAG, "catch-up: %s answered %d with %u row(s); "
+                     "next in %lus", rfrom, c, (unsigned)(news ? r->rows : 0),
+                     (unsigned long)r->interval_s);
+            break;
+        }
+
+        cu_peer_t *r = cu_find(rfrom, false);
+        if (!r || !r->await) break;
+        char tsbuf[24];
+        if (!xprs_get_str(&sp, "ts", tsbuf, sizeof tsbuf)) break;
+        const uint32_t ts = xprsindex_ts_to_epoch(tsbuf, (int)strlen(tsbuf));
+        if (!ts) break;
+        if (r->rows < 0xFFFF) r->rows++;
+        if (!r->oldest_seen || ts < r->oldest_seen) r->oldest_seen = ts;
     } while (0);
 
     /* Chat ring + rx/device stats + devices list live in xprs_station now,
@@ -2988,6 +3185,96 @@ static void idx_task(void *arg)
          * task that already owns the card. */
         xota_poll();
 
+        /*
+         * Whose turn is it? The beacon that first introduces an archiver is
+         * what puts it in the table, but it cannot be what paces the asking:
+         * a peer beacons every ten minutes, so a cadence driven by beacons
+         * alone could never be faster than ten minutes however busy the room
+         * got -- and the whole point of 36.10.2 is that a busy room is
+         * followed in seconds. The ladder is checked here instead, on the
+         * task that airs the ask.
+         */
+        {
+            /*
+             * An ask that is never answered must not freeze its peer's chain.
+             * A page is paced at a packet every 1500 ms and a responder may
+             * be working through somebody else's first, so this is generous
+             * -- but it is finite, because `await` left set forever is how a
+             * station stops catching up with no error anywhere.
+             */
+            const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+            for (int i = 0; i < CU_PEERS; i++) {
+                cu_peer_t *r = &s_cu_peers[i];
+                if (!r->used || !r->await) continue;
+                if (now_s - r->ask_at_s < 120) continue;
+                ESP_LOGW(TAG, "catch-up: %s never answered - backing off",
+                         r->call);
+                r->resume = 0;
+                cu_answered(r, XC_QUIET, now_s);
+            }
+        }
+
+        /*
+         * Super-archivers named in the config, seeded into the table so they
+         * are pulled whether or not this station ever hears them beacon. A
+         * board on a LAN hears its neighbours; the super that matters for
+         * the public rooms may be on the far side of a hub (36.12.2), and a
+         * peer nobody has heard from is exactly the one worth asking.
+         */
+        static uint32_t s_supers_at;
+        {
+            const uint32_t nows = (uint32_t)(esp_timer_get_time() / 1000000);
+            if (s_supers_at && nows - s_supers_at < 60) goto supers_done;
+            s_supers_at = nows ? nows : 1;
+            const char *list = xcfg_get("supers", "");
+            char one[10];
+            int w = 0;
+            for (const char *c = list; ; c++) {
+                if (*c && *c != ',' && w < (int)sizeof one - 1) {
+                    one[w++] = *c;
+                    continue;
+                }
+                one[w] = 0;
+                if (w) {
+                    cu_peer_t *r = cu_find(one, true);
+                    if (r) {
+                        r->super = true;
+                        if (!r->bearer[0])
+                            snprintf(r->bearer, sizeof r->bearer, "lan");
+                        if (!r->next_ask_s)
+                            r->next_ask_s =
+                                (uint32_t)(esp_timer_get_time() / 1000000);
+                    }
+                }
+                w = 0;
+                if (!*c) break;
+            }
+        }
+supers_done:
+
+        if (!s_cu.pending && s_index && xst_epoch_now()) {
+            const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+            for (int i = 0; i < CU_PEERS; i++) {
+                cu_peer_t *r = &s_cu_peers[i];
+                if (!r->used || r->await || !r->next_ask_s) continue;
+                if (now_s < r->next_ask_s) continue;
+                if (!r->since) {
+                    r->since = cu_since_floor();
+                    if (!r->since) continue;
+                }
+                snprintf(s_cu.call, sizeof s_cu.call, "%s", r->call);
+                snprintf(s_cu.bearer, sizeof s_cu.bearer, "%s", r->bearer);
+                s_cu.since = r->since;
+                s_cu.until = r->resume;
+                s_cu.pending = true;
+                r->await = true;
+                r->ask_at_s = now_s;
+                r->rows = 0;
+                r->oldest_seen = 0;
+                break;                       /* one ask in flight at a time */
+            }
+        }
+
         /* The parked 36.10 catch-up ask, signed on THIS task's stack. */
         if (s_cu.pending) {
             char since[24], nowts[24];
@@ -2998,10 +3285,19 @@ static void idx_task(void *arg)
             time_t t2 = time(NULL);
             gmtime_r(&t2, &tmv);
             strftime(nowts, sizeof nowts, "%Y-%m-%d_%H:%M:%S", &tmv);
+            char until[32] = "";
+            if (s_cu.until) {
+                /* Continuing a 206: serve what is OLDER than this. */
+                char u[24];
+                time_t tu = (time_t)s_cu.until;
+                gmtime_r(&tu, &tmv);
+                strftime(u, sizeof u, "%Y-%m-%d_%H:%M:%S", &tmv);
+                snprintf(until, sizeof until, " until:%s", u);
+            }
             char ask[XPRSIDX_WIRE_MAX + 1];
             int an = snprintf(ask, sizeof ask,
-                              "t:command f:%s d:%s ts:%s cmd:history since:%s",
-                              s_call, s_cu.call, nowts, since);
+                              "t:command f:%s d:%s ts:%s cmd:history since:%s%s",
+                              s_call, s_cu.call, nowts, since, until);
             if (an > 0 && an < (int)sizeof ask) {
                 an = sign_wire(ask, an, sizeof ask);
                 if (strcmp(s_cu.bearer, "espnow") == 0)
