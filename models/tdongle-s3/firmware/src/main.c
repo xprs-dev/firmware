@@ -958,7 +958,9 @@ static void handle_aprs(const uint8_t *payload, int len, int rssi)
 /* ts: when the clock is plausibly synced, epoch:<boot>.<uptime> otherwise
  * (§10.7 — a clockless station with NVS keeps a boot counter, and a receiver
  * holding a clock anchors the epoch when it first hears it). This firmware
- * has no SNTP, so epoch: is the everyday form. */
+ * DOES run SNTP -- the comment here claimed otherwise long after it stopped
+ * being true -- so ts: is the everyday form, and epoch: covers the minutes
+ * before the first sync and the times there is no network at all. */
 static void xprs_time_field(char *out, int cap)
 {
     time_t t = time(NULL);
@@ -1986,10 +1988,23 @@ static bool xprs_is_super(void)
         said = 1;
         ESP_LOGI(TAG, "announcing serve:archive,super — %llu MB of spool",
                  (unsigned long long)(s_xprs_budget / (1024ull * 1024)));
-#ifndef RNS_HUB_LINK
-        ESP_LOGW(TAG, "super without a hub link: reachable by the stations in "
-                      "range, not by the ones 36.12.2 is about");
-#endif
+    }
+    /* Reach is checked on every announce, not latched with the claim above:
+     * the hub takes a second or two to answer, so a one-shot warning fires
+     * while the socket is still dialling and then never corrects itself. */
+    {
+        static int said_reach;
+        const int now_reach = rns_tcp_is_up() ? 1 : 2;
+        if (said_reach != now_reach) {
+            said_reach = now_reach;
+            if (now_reach == 2)
+                ESP_LOGW(TAG, "super without a hub link: reachable by the "
+                              "stations in range, not by the ones 36.12.2 "
+                              "is about (see [ble] enabled)");
+            else
+                ESP_LOGI(TAG, "super reachable through the hub it dialled "
+                              "(36.12.2)");
+        }
     }
     return true;
 }
@@ -4292,23 +4307,48 @@ void app_main(void)
      * registered when it succeeds can never be reported missing, and
      * "never started at all" is precisely the failure this catches. */
     xh_expect(XH_HTTP,  true);
-    xh_expect(XH_BLE,   true);
+    xh_expect(XH_BLE,   xcfg_get_bool("ble_on", true));
     xh_expect(XH_LAN,   true);
     xh_expect(XH_NOW,   true);
     xh_expect(XH_RELAY, true);
     xh_expect(XH_CARD,  false);   /* a station without a card still works */
 
-    /* The controller only. There is no NimBLE host on this station any more:
+    /*
+     * The controller only. There is no NimBLE host on this station any more:
      * tinynimble speaks HCI to the controller directly, which is where the
      * host's msys pools, its ACL transport buffers and its 5,120-byte task
-     * stack used to go -- and this board has no PSRAM to hide them in. */
+     * stack used to go -- and this board has no PSRAM to hide them in.
+     *
+     * `[ble] enabled = no` is the ROUTER ROLE, and it is one decision with
+     * two payoffs, both measured on this bench. The controller is 59.3 KB of
+     * heap and a hub socket is 12,676 bytes on a board that was about 12 KB
+     * short of holding one -- so BLE off is not a tidy-up, it is what pays
+     * for the link. And WiFi association degrades within minutes with BLE
+     * running beside it (docs/lan.md), which is the other half of what an
+     * always-on box beside a router needs.
+     *
+     * A box beside a router has no phone next to it to talk BLE to. It has
+     * the internet, which is the thing the rest of the network cannot reach
+     * it without.
+     */
+    /* The configuration, BEFORE the first decision that reads it. It was
+     * loaded three hundred lines further down, so this read saw an empty
+     * cache and its default: the operator could set `[ble] enabled = no`,
+     * the value was saved and read back correctly by hand, and the radio
+     * started anyway. NVS is up (model_init above) and xcfg_init only fills
+     * a cache from it, so it is safe to call here and again later. */
+    xcfg_init();
+    const bool ble_wanted = xcfg_get_bool("ble_on", true);
     heap_mark("before ble_init");
-    {
+    if (ble_wanted) {
         esp_err_t berr = tn_start();
         if (berr != ESP_OK) {
             ESP_LOGE(TAG, "tn_start failed: %s", esp_err_to_name(berr));
             return;
         }
+    } else {
+        ESP_LOGW(TAG, "router role: BLE off, so the hub socket has room "
+                      "(docs/esp32.md: the controller is 59.3 KB)");
     }
     heap_mark("before identity");
     identity_init();
@@ -4518,12 +4558,8 @@ void app_main(void)
     }
 #endif
     heap_mark("before rns_tcp");
-#ifdef RNS_HUB_LINK
-    if (rns_tcp_start(NULL, 0) != ESP_OK) {
-        ESP_LOGW(TAG, "Reticulum interface failed to start");
-    }
-#else
-    /* No hub link on this board, deliberately.
+    /*
+     * The hub link, and what it costs.
      *
      * The T-Dongle-S3 cannot run everything at once. Measured, with each
      * subsystem started and none of them failing quietly: WiFi and the
@@ -4539,16 +4575,28 @@ void app_main(void)
      *
      * One socket to one hub is 12,676 bytes -- a 4 KB task stack and, most
      * of it, that connection's two lwip windows. It is almost exactly the
-     * shortfall, and it is the one thing here whose job another station
-     * already does: the m5stack keeps its hub link, and this board is a
-     * local-RF station and archiver -- BLE mesh, ESP-NOW, LAN, the card,
-     * the screen, the API and its own updates.
+     * shortfall, which is why this used to be compiled out and why the
+     * decision now belongs to whoever deploys the board: turning BLE off
+     * frees 59.3 KB, and the socket fits with room to spare. With BLE on
+     * there is no room and this does not try, because a link that fails
+     * silently is worse than one that was never attempted.
      *
-     * Build with -DRNS_HUB_LINK to put it back, and expect to give up
-     * something else in the same breath. */
-    ESP_LOGI(TAG, "no hub link on this board -- local RF and the card "
-                  "(see the budget in main.c)");
-#endif
+     * It DIALS OUT. There is no inbound listener here and none is wanted:
+     * a super-archiver is reachable because it opened the connection, not
+     * because somebody forwarded a port to it.
+     */
+    if (!ble_wanted) {
+        const char *hub = xcfg_get("rns_hub", "");
+        if (rns_tcp_start(hub[0] ? hub : NULL, 0) != ESP_OK) {
+            ESP_LOGW(TAG, "Reticulum hub link failed to start");
+        } else {
+            ESP_LOGI(TAG, "router role: dialling %s",
+                     hub[0] ? hub : "the default hub");
+        }
+    } else {
+        ESP_LOGI(TAG, "BLE on, so no hub link: local RF and the card "
+                      "(see the budget above)");
+    }
 
     xTaskCreatePinnedToCore(heartbeat_task, "heartbeat", 3072, NULL, 1, NULL, 1);
 

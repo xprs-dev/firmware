@@ -67,6 +67,7 @@ static cfg_entry_t s_cfg[] = {
     /* The Reticulum uplink (xprs_bearer_rns): where this archiver dials to
      * be reachable over RNS, and how hard it may lean on that link. */
     { "rns_hub",     {0}, false },
+    { "ble_on",      {0}, false },
     { "rns_pace_ms", {0}, false },
     { "own1",      {0}, false },
     { "own2",      {0}, false },
@@ -251,6 +252,14 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "indexer", "enabled",  "index_on" },
     { "indexer", "super",    "index_super" },
     { "indexer", "supers",   "supers" },
+    /* The hub this station DIALS OUT to. It was in the cache and nowhere in
+     * this map, so it could only be set from a serial console -- which a box
+     * beside a router does not have a cable to. A super-archiver is never
+     * port-forwarded; it dials out, and this is the line that says where. */
+    { "rns",     "hub",      "rns_hub" },
+    /* Bluetooth. On by default, and the one thing a router-side station
+     * turns off: the controller is what pays for the hub socket. */
+    { "ble",     "enabled",  "ble_on" },
     { "hotspot", "enabled",  "ap_on" },
     { "hotspot", "ssid",     "ap_ssid" },
     { "time",    "server",   "ntp" },

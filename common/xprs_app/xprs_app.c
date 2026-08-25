@@ -31,6 +31,7 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 
 #include "xprs.h"
 #include "xprsnow.h"
@@ -1443,17 +1444,58 @@ static void air_signed_observations(void)
 
 /* ── Meeting on a working channel (§23.7) ───────────────────────────────── */
 
-/* No SNTP on this board, so most of the time there is no wall clock and
- * `epoch:<boot>.<uptime>` is the honest thing to send (§4.3). The deadline that
- * brings us home is local milliseconds either way. */
+/*
+ * ts: under a synced clock, `epoch:<boots>.<uptime>` otherwise (10.7).
+ *
+ * The comment here used to say this board had no SNTP. It has had it for some
+ * time -- esp_sntp.h is included above and wifi_up() starts it -- so the
+ * everyday form is now a real timestamp, and epoch: is what covers the
+ * minutes before the first sync and the times there is no network at all.
+ *
+ * The boot counter is the half that was missing. 10.7 dates a clockless
+ * station's packets by <boots>.<uptime> precisely so a receiver can ORDER
+ * them: without the boots ordinal every reboot restarts the uptime and
+ * yesterday's packet and today's are indistinguishable. This sent a hardcoded
+ * zero, so every packet this station ever aired without a clock claimed to be
+ * from the same boot as every other. The dongle has kept the counter in NVS
+ * all along; this is the same thing, in the same shape.
+ */
+static uint32_t s_boot_epoch;
+
+static void boot_epoch_init(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprscfg", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_get_u32(h, "bootcnt", &s_boot_epoch);       /* absent -> 0 */
+        s_boot_epoch++;
+        nvs_set_u32(h, "bootcnt", s_boot_epoch);
+        nvs_commit(h);
+        nvs_close(h);
+    } else {
+        s_boot_epoch = 1;
+    }
+}
+
 static void time_field(char *out, int cap)
 {
-    snprintf(out, cap, "epoch:0.%u",
+    const uint32_t ep = xst_epoch_now();
+    if (ep) {
+        struct tm tmv;
+        time_t t = (time_t)ep;
+        gmtime_r(&t, &tmv);
+        char ts[24];
+        strftime(ts, sizeof ts, "%Y-%m-%d_%H:%M:%S", &tmv);
+        snprintf(out, cap, "ts:%s", ts);
+        return;
+    }
+    snprintf(out, cap, "epoch:%u.%u", (unsigned)s_boot_epoch,
              (unsigned)(esp_timer_get_time() / 1000000ULL));
 }
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
-static uint32_t no_clock(void) { return 0; }
+/* The boots ordinal of 10.7, for whatever asks the ops table for it. Zero
+ * until boot_epoch_init() has read NVS, which happens before anything airs. */
+static uint32_t boot_epoch(void) { return s_boot_epoch; }
 
 static bool verified(const xprs_t *p)
 {
@@ -1484,7 +1526,7 @@ static const xc_ops_t k_chan_ops = {
     .air = xprsnow_send,
     .now_ms = now_ms,
     .time_field = time_field,
-    .epoch = no_clock,
+    .epoch = boot_epoch,
     .hold_reconnect = NULL,      /* handled in the event handler above */
     .announce_identity = air_identity,
     .may_move = may_move,
@@ -3825,6 +3867,9 @@ void xapp_run(const xapp_board_t *board)
     ESP_ERROR_CHECK(err);
 
     xcfg_init();
+    /* Before anything airs: a packet sent with the ordinal still zero is a
+     * packet no receiver can order against the last boot (10.7). */
+    boot_epoch_init();
     snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", board->wifi_ssid));
     snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", board->wifi_pass));
 

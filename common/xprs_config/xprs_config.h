@@ -61,8 +61,23 @@ int xcfg_ini_render(char *buf, size_t cap);
 /** Parse config.ini text and persist every recognised key. */
 esp_err_t xcfg_ini_apply(const char *text, size_t len);
 
-/** Start/stop the browser editor (HTTP, port 80). Serves GET / (editor
- *  page), GET /config.ini (raw) and POST /config.ini (apply + restart). */
+/**
+ * Start/stop the browser editor (HTTP, port 80). Serves GET / (editor
+ * page), GET /config.ini (raw) and POST /config.ini (apply + restart).
+ *
+ * NO AUTHENTICATION AND NO TLS. Anybody who can reach port 80 on this
+ * station can read its configuration -- WiFi password slot aside, the nsec
+ * is never rendered -- and can write a new one and restart it. That is a
+ * deliberate trade for a device configured on a home LAN with a cable's
+ * worth of trust, and it is exactly why an always-on station is NOT
+ * port-forwarded.
+ *
+ * A super-archiver does not need to be. It DIALS OUT to a hub ([rns] hub)
+ * and is reachable through the connection it opened; there is no inbound
+ * listener for XPRS traffic here at all. Anyone reasoning about "how do I
+ * reach my archiver from outside" should reach for that, never for a port
+ * forward to this editor.
+ */
 /** Tell the editor where the rotating log lives; GET /log.txt then streams
  *  the previous file followed by the current one. Call before or after
  *  start; NULL paths disable it. */
