@@ -2633,8 +2633,13 @@ static void idx_task(void *arg)
     if (err == ESP_OK) {
         s_index = xprsindex_open("/idx/xprs");
         xprsindex_set_own(s_index, s_call);
-        /* The FAT partition is ~14 MB; leave room for the log + stats. */
-        xprsindex_set_max_bytes(s_index, 10u * 1024u * 1024u);
+        /* The FAT partition is ~11 MB here; leave room for the log + stats.
+         * A super sizes to the volume instead -- which on a board whose
+         * archive is internal flash is barely more, and that IS the finding:
+         * this board can serve a super's role, but not a super's depth. */
+        xprsindex_set_max_bytes(s_index,
+            xprsindex_budget("/idx", 10u * 1024u * 1024u,
+                             xcfg_get_bool("index_super", false)));
         if (s_index) {
             s_api_cfg.index = s_index;
             xprsindex_set_verifier(s_index, index_verifier);
@@ -2919,8 +2924,13 @@ static void idx_task(void *arg)
             }
             s_index = xprsindex_open("/idx/xprs");
         xprsindex_set_own(s_index, s_call);
-        /* The FAT partition is ~14 MB; leave room for the log + stats. */
-        xprsindex_set_max_bytes(s_index, 10u * 1024u * 1024u);
+        /* The FAT partition is ~11 MB here; leave room for the log + stats.
+         * A super sizes to the volume instead -- which on a board whose
+         * archive is internal flash is barely more, and that IS the finding:
+         * this board can serve a super's role, but not a super's depth. */
+        xprsindex_set_max_bytes(s_index,
+            xprsindex_budget("/idx", 10u * 1024u * 1024u,
+                             xcfg_get_bool("index_super", false)));
             if (s_index) {
                 xprsindex_set_verifier(s_index, index_verifier);
                 s_api_cfg.index = s_index;

@@ -25,6 +25,9 @@
 
 #include "xprs.h"
 #include <time.h>
+#ifndef XPRSIDX_HOST_TEST
+#include "esp_vfs_fat.h"
+#endif
 
 #ifdef XPRSIDX_HOST_TEST
 #define XI_LOGI(fmt, ...) ((void)0)
@@ -61,6 +64,9 @@ static uint64_t xi_card_free(const char *d);
 #endif
 
 #define XI_RECS_PER_SEG   4096u
+/* Directory entries kept in the store. Matches XPRS_DIR_MAX, what the only
+ * caller asks for; an ask for more than this is served by a full walk. */
+#define XI_DIR_MAX        32
 #define XPRSIDX_DECL_MAX  16
 /*
  * REGULARS: callsigns this station has heard on many distinct days. Mail for
@@ -192,6 +198,9 @@ struct xprsidx_s {
     uint32_t verified, unverified, forged;
     volatile bool paused;           /* a reader owns the card right now */
     xi_rec_t queue[XI_QUEUE_LEN];   /* decided, not yet on the card */
+#ifndef XPRSIDX_HOST_TEST
+    TaskHandle_t writer;            /* woken early when the ring fills */
+#endif
     int      q_head, q_count;
     uint32_t q_dropped;
     /* XPRS.md 36.11: the retention classes. own[] is this station's base
@@ -210,6 +219,15 @@ struct xprsidx_s {
     int      reg_n;
     bool     reg_dirty;
     uint64_t max_bytes;             /* 0 = no cap */
+    /* The XDIR1 directory (36.9), kept rather than recomputed. Rebuilding it
+     * means reading every record in the store: on the dongle's filled card
+     * that is ~800k reads and 256 MB off the SD, holding this store's lock
+     * throughout, and the announce path asked for it on a ten-minute clock.
+     * Appends fold into it in place; only an eviction can remove a callsign
+     * entirely, so only an eviction drops it back to a rebuild. */
+    xprsidx_dir_entry_t dircache[XI_DIR_MAX];
+    int      dir_n;
+    bool     dir_valid;
     uint32_t oldest_first;          /* first index of the oldest segment */
     uint32_t newest_ts;             /* the newest stored packet's own ts: */
     uint32_t boot_newest_ts;        /* newest_ts as it was at open() */
@@ -328,6 +346,40 @@ static uint32_t xi_id_hash(const char id[XPRSIDX_ID_LEN])
     return h ? h : 1u;
 }
 
+/* Open a file the store needs, giving a descriptor back if the pool is out.
+ *
+ * The card is mounted with a handful of handles -- three on the T-Dongle,
+ * because CONFIG_FATFS_SECTOR_4096 and PER_FILE_CACHE make every open FILE
+ * cost 4 KB of heap on a board that has about fourteen. The store holds the
+ * active segment, a tail, and a CACHED read handle; when an auxiliary file
+ * (the zone map, the declarations, the regulars) then wants the fourth, the
+ * open fails and something the station needs goes silently unwritten.
+ *
+ * The read handle is only ever a cache -- it saves a re-open on the next
+ * query and holds no state -- so it is the one to give up. Closing it costs
+ * one fopen later; not writing the zone map costs newest_ts across the next
+ * reboot, and with it catch-up (36.10). */
+static void xi_read_close(xprsidx_t *st);
+static void xi_tail_close(xprsidx_t *st);
+
+static FILE *xi_fopen_pressed(xprsidx_t *st, const char *path, const char *mode)
+{
+    FILE *f = fopen(path, mode);
+    if (f || (errno != EMFILE && errno != ENFILE)) return f;
+    if (st->read_fp) {
+        xi_read_close(st);
+        f = fopen(path, mode);
+        if (f) return f;
+    }
+    /* Still nothing: the tail is a cache too, reopened on the next append of
+     * that type. Give it up rather than lose the write. */
+    if (st->tail_fp) {
+        xi_tail_close(st);
+        f = fopen(path, mode);
+    }
+    return f;
+}
+
 /* ── Zone map ───────────────────────────────────────────────────────────── */
 
 static bool xi_zone_read(const xprsidx_t *st, uint32_t n, xi_zone_t *out)
@@ -342,12 +394,12 @@ static bool xi_zone_read(const xprsidx_t *st, uint32_t n, xi_zone_t *out)
     return ok;
 }
 
-static void xi_zone_write(const xprsidx_t *st, uint32_t n, const xi_zone_t *z)
+static void xi_zone_write(xprsidx_t *st, uint32_t n, const xi_zone_t *z)
 {
     char path[96];
     xi_zone_path(st, path, sizeof path);
-    FILE *f = fopen(path, "r+b");
-    if (!f) f = fopen(path, "w+b");
+    FILE *f = xi_fopen_pressed(st, path, "r+b");
+    if (!f) f = xi_fopen_pressed(st, path, "w+b");
     if (!f) {
         /* Say it. This is reached with active_fp AND tail_fp still held (see
          * xi_sync_card), so a descriptor pool sized for the subsystems rather
@@ -492,6 +544,8 @@ static void xi_decl_save(xprsidx_t *st);
 static void xi_reg_load(xprsidx_t *st);
 static void xi_reg_save(xprsidx_t *st);
 static bool xi_evict_locked(xprsidx_t *st);
+static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,
+                       const char *call, uint32_t ts);
 static void xi_sync_card(xprsidx_t *st);
 #ifndef XPRSIDX_HOST_TEST
 static void xi_writer_task(void *arg);
@@ -799,8 +853,8 @@ xprsidx_t *xprsindex_open(const char *dir)
      * verifies a signature before each write, and mbedtls_ecp_muladd on
      * secp256k1 wants several kilobytes of its own; a stack overflow here
      * presents as a reboot loop, so this is sized generously on purpose. */
-    if (xTaskCreatePinnedToCore(xi_writer_task, "xprsidx_wr", 8192, st, 2, NULL,
-                                1) != pdPASS) {
+    if (xTaskCreatePinnedToCore(xi_writer_task, "xprsidx_wr", 8192, st, 2,
+                                &st->writer, 1) != pdPASS) {
         XI_LOGW("writer task failed to start — nothing will reach the card");
         st->ready = false;
         free(st);
@@ -843,7 +897,7 @@ static void xi_decl_save(xprsidx_t *st)
 {
     char path[96];
     xi_decl_path(st, path, sizeof path);
-    FILE *f = fopen(path, "w");
+    FILE *f = xi_fopen_pressed(st, path, "w");
     if (!f) {
         XI_LOGE("declared mailboxes %s not written: %s", path, strerror(errno));
         return;
@@ -897,7 +951,7 @@ static void xi_reg_save(xprsidx_t *st)
 {
     char path[96];
     xi_reg_path(st, path, sizeof path);
-    FILE *f = fopen(path, "w");
+    FILE *f = xi_fopen_pressed(st, path, "w");
     if (!f) {
         XI_LOGE("regulars %s not written: %s", path, strerror(errno));
         return;
@@ -1056,10 +1110,25 @@ static uint32_t xi_rec_until(const xi_rec_t *r)
 
 /* Over budget? Delete the oldest segment, carrying mail forward (36.11).
  * Writer task only, lock held. One segment per call -- the writer loops. */
+/* Bytes the store actually occupies.
+ *
+ * Records are contiguous from the oldest kept index to the next one to be
+ * written, so the span IS the occupancy. Billing nseg * XI_RECS_PER_SEG
+ * over-counted: the active segment is nearly always part-full, so a store
+ * with two segments and one record in the second was charged for 8192
+ * records and evicted at half its real budget. On the dongle's 256 MB that
+ * threw away up to 4096 records -- a whole segment of other people's mail --
+ * every time the writer crossed a segment boundary. */
+static uint64_t xi_used_bytes(const xprsidx_t *st)
+{
+    if (st->next_index <= st->oldest_first) return 0;
+    return (uint64_t)(st->next_index - st->oldest_first) * sizeof(xi_rec_t);
+}
+
 static bool xi_evict_locked(xprsidx_t *st)
 {
     if (!st->max_bytes || st->nseg < 2) return false;
-    uint64_t used = (uint64_t)st->nseg * XI_RECS_PER_SEG * sizeof(xi_rec_t);
+    uint64_t used = xi_used_bytes(st);
     if (used <= st->max_bytes) return false;
 
     uint32_t first = st->oldest_first;
@@ -1085,8 +1154,9 @@ static bool xi_evict_locked(xprsidx_t *st)
     /* What the store will hold once this segment is gone. If that is still
      * over budget, class 2 is what pays: dropping other people's carried mail
      * is the price of keeping the mail of stations that chose this one. */
-    const uint64_t after_evict =
-        (uint64_t)(st->nseg - 1) * XI_RECS_PER_SEG * sizeof(xi_rec_t);
+    const uint64_t used_now = xi_used_bytes(st);
+    const uint64_t seg_bytes = (uint64_t)XI_RECS_PER_SEG * sizeof(xi_rec_t);
+    const uint64_t after_evict = used_now > seg_bytes ? used_now - seg_bytes : 0;
     const bool room_for_class2 = after_evict <= st->max_bytes;
     for (int pass = 0; pass < 2 && f; pass++) {
         if (pass == 1) {
@@ -1136,20 +1206,28 @@ static bool xi_evict_locked(xprsidx_t *st)
     if (st->read_fp && st->read_first == first) xi_read_close(st);
     unlink(path);
     st->nseg--;
-    /* The next-lowest segment becomes the oldest. */
+    /* The next-lowest segment becomes the oldest. Probed with stat() rather
+     * than walked with readdir(): the FAT VFS deadlocks a directory walk
+     * against a concurrent writer on the same volume (docs/esp32.md), and
+     * eviction runs while the station is up, not at boot. Segment firsts are
+     * multiples of XI_RECS_PER_SEG, so stepping is exact; the loop only ever
+     * steps past a gap left by a segment removed out of band, and stops at
+     * the active segment, which always exists. */
     uint32_t next_oldest = st->active_first;
-    DIR *d = opendir(st->dir);
-    if (d) {
-        struct dirent *de;
-        bool seen = false;
-        while ((de = readdir(d)) != NULL) {
-            if (strncmp(de->d_name, "seg_", 4) != 0) continue;
-            uint32_t fs = (uint32_t)strtoul(de->d_name + 4, NULL, 10);
-            if (!seen || fs < next_oldest) { next_oldest = fs; seen = true; }
+    for (uint32_t cand = first + XI_RECS_PER_SEG;
+         cand <= st->active_first; cand += XI_RECS_PER_SEG) {
+        char probe[96];
+        xi_seg_path(st, probe, sizeof probe, cand);
+        struct stat sb;
+        if (cand == st->active_first || stat(probe, &sb) == 0) {
+            next_oldest = cand;
+            break;
         }
-        closedir(d);
     }
     st->oldest_first = next_oldest;
+    /* A dropped segment can take a callsign's last record with it, and the
+     * cache cannot know which -- rebuild on the next ask. */
+    st->dir_valid = false;
     XI_LOGI("evicted seg_%u: %d mail record(s) carried forward", (unsigned)first,
             carried);
     return true;
@@ -1164,6 +1242,45 @@ void xprsindex_set_own(xprsidx_t *st, const char *call)
 void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes)
 {
     if (st) st->max_bytes = bytes;
+}
+
+uint64_t xprsindex_budget(const char *mount, uint64_t base, bool super)
+{
+    if (!super) return base;
+#ifdef XPRSIDX_HOST_TEST
+    (void)mount;
+    return base;
+#else
+    uint64_t total = 0, freeb = 0;
+    if (!mount || esp_vfs_fat_info(mount, &total, &freeb) != ESP_OK || !total) {
+        XI_LOGW("super: cannot size %s, keeping the %llu MB budget",
+                mount ? mount : "(null)",
+                (unsigned long long)(base / (1024u * 1024u)));
+        return base;
+    }
+    /* Four fifths of the volume. The rest is the log, the stats, the
+     * declaration and regulars files, and FAT's own slack -- a store that
+     * fills its volume takes the station's logs down with it. */
+    uint64_t cap = total - total / 5u;
+    /*
+     * And a ceiling, which is NOT about space.
+     *
+     * Eviction drops the directory cache, and rebuilding it walks every
+     * record the store holds. That walk is affordable because it is amortised
+     * over a whole segment of appends -- but the factor is nseg, so on a
+     * volume-sized store it stops being amortised and becomes a full read of
+     * the card every time a segment goes. XPRSIDX_BUDGET_MAX is where that
+     * trade is still sane (~3.3M records). Going deeper needs the directory
+     * to be maintained across an eviction rather than rebuilt, which is the
+     * archiver-to-archiver work, not this.
+     */
+    if (cap > XPRSIDX_BUDGET_MAX) cap = XPRSIDX_BUDGET_MAX;
+    if (cap < base) cap = base;
+    XI_LOGI("super: archive budget %llu MB on %s (%llu MB volume)",
+            (unsigned long long)(cap / (1024u * 1024u)), mount,
+            (unsigned long long)(total / (1024u * 1024u)));
+    return cap;
+#endif
 }
 
 uint32_t xprsindex_newest_ts(const xprsidx_t *st)
@@ -1183,6 +1300,7 @@ void xprsindex_close(xprsidx_t *st)
     /* The writer task holds this pointer; freeing under it was a PANIC.
      * Ask it out and wait -- it checks every drain period. */
     st->closing = true;
+    if (st->writer) xTaskNotifyGive(st->writer);   /* out now, not next tick */
     for (int i = 0; i < (XI_DRAIN_EVERY_MS * 3) / 50 && !st->writer_gone; i++)
         vTaskDelay(pdMS_TO_TICKS(50));
 #endif
@@ -1264,6 +1382,18 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
     }
     st->queue[(st->q_head + st->q_count) % XI_QUEUE_LEN] = *r;
     st->q_count++;
+    /* Half full: wake the writer instead of waiting out its tick.
+     *
+     * The 2 s cadence is a RADIO setting -- it keeps the card idle so the
+     * WiFi station can transmit -- and it is right while records trickle in.
+     * A catch-up page does not trickle: it arrives as a burst, and a burst
+     * longer than this ring loses its tail with nothing but a log line, while
+     * the station that asked moves its resume mark past the records that were
+     * dropped. Waking early spends the card's time only when the alternative
+     * is losing air, and an idle station never reaches this line. */
+    if (st->writer && st->q_count * 2 >= XI_QUEUE_LEN) {
+        xTaskNotifyGive(st->writer);
+    }
     return true;
 #endif
 }
@@ -1373,6 +1503,13 @@ static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec)
      * two leaves them short and rebuildable rather than pointing at nothing. */
     xi_zone_touch(st, &r);
     xi_type_append(st, code, r.index);
+    /* Fold into the directory rather than dirtying it: a stored record can
+     * only add a callsign or move one's last_ts forward, and xi_dir_put does
+     * both in place, so the directory stays answerable without ever reading
+     * the store back. HERE and not at accept -- accept is upstream of the
+     * verifier, and a forged packet that is refused on this task must never
+     * have reached the directory this station publishes. */
+    if (st->dir_valid) xi_dir_put(st->dircache, &st->dir_n, XI_DIR_MAX, r.from, r.ts);
     return true;
 }
 
@@ -1644,7 +1781,8 @@ static void xi_writer_task(void *arg)
 {
     xprsidx_t *st = (xprsidx_t *)arg;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(XI_DRAIN_EVERY_MS));
+        /* The tick is the floor, not the only wake: a filling ring notifies. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(XI_DRAIN_EVERY_MS));
         if (st->closing) {                /* close() wants the store back */
             st->writer_gone = true;
             vTaskDelete(NULL);
@@ -1757,19 +1895,41 @@ static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,
     (*n)++;
 }
 
+/* Walk the live span into `out`. Lock held. Starts at the OLDEST KEPT index,
+ * not at zero: everything below it was evicted, and on a store that has
+ * turned over once those are the majority of the indices -- each one a seek
+ * and a read that fails. */
+static int xi_dir_build_locked(xprsidx_t *st, xprsidx_dir_entry_t *out, int max)
+{
+    int n = 0;
+    xi_rec_t r;
+    for (uint32_t i = st->oldest_first; i < st->next_index; i++) {
+        if (!xi_read_rec(st, i, &r)) continue;
+        /* Mail is listed by its SENDER only. Naming the addressee would tell a
+         * peer who receives mail here, which is the envelope §36.7 keeps. */
+        xi_dir_put(out, &n, max, r.from, r.ts);
+    }
+    return n;
+}
+
 int xprsindex_directory(xprsidx_t *st, xprsidx_dir_entry_t *out, int max)
 {
     if (!st || !st->ready || !out || max <= 0) return 0;
     XI_LOCK(st);
     xi_sync(st);
 
-    int n = 0;
-    xi_rec_t r;
-    for (uint32_t i = 0; i < st->next_index; i++) {
-        if (!xi_read_rec(st, i, &r)) continue;
-        /* Mail is listed by its SENDER only. Naming the addressee would tell a
-         * peer who receives mail here, which is the envelope §36.7 keeps. */
-        xi_dir_put(out, &n, max, r.from, r.ts);
+    int n;
+    if (max > XI_DIR_MAX) {
+        /* More than the cache holds: answer with a full walk rather than
+         * truncating the answer to the cache's capacity. */
+        n = xi_dir_build_locked(st, out, max);
+    } else {
+        if (!st->dir_valid) {
+            st->dir_n = xi_dir_build_locked(st, st->dircache, XI_DIR_MAX);
+            st->dir_valid = true;
+        }
+        n = st->dir_n < max ? st->dir_n : max;
+        for (int i = 0; i < n; i++) out[i] = st->dircache[i];
     }
     XI_UNLOCK(st);
     return n;

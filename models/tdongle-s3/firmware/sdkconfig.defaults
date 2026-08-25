@@ -167,3 +167,12 @@ CONFIG_BT_CONTROLLER_ONLY=y
 # watchdog, so a new image that hung simply sat there. Now it is true.
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
 CONFIG_ESP_TASK_WDT_PANIC=y
+
+# The archive names its segments seg_0000000000.bin -- eighteen characters,
+# which 8.3 short names cannot hold. Without this every fopen() in the store
+# fails while the record counter still says packets are held: the station
+# reports an archive it cannot open a single segment of, and answers 404 to
+# everything asked of it (docs/esp32.md). This board is the one with the SD
+# card and the deepest store, and it was the one building without it.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255

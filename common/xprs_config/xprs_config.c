@@ -35,6 +35,11 @@ static cfg_entry_t s_cfg[] = {
     { "bridge_on", {0}, false },
     { "igate_on",  {0}, false },
     { "index_on",  {0}, false },
+    /* A super-archiver (XPRS.md 36.9.4): keeps everything it is handed, is
+     * asked by many stations, and sizes its spool to the volume rather than
+     * to a pocket device's budget. Off by default -- claiming the word
+     * commits a station to serving it. */
+    { "index_super", {0}, false },
     { "ntp",       {0}, false },
     { "ap_on",     {0}, false },
     { "ap_ssid",   {0}, false },
@@ -239,6 +244,7 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "bridge",  "enabled",  "bridge_on" },
     { "igate",   "enabled",  "igate_on" },
     { "indexer", "enabled",  "index_on" },
+    { "indexer", "super",    "index_super" },
     { "hotspot", "enabled",  "ap_on" },
     { "hotspot", "ssid",     "ap_ssid" },
     { "time",    "server",   "ntp" },

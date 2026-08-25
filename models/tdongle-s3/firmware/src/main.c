@@ -4199,8 +4199,12 @@ void app_main(void)
     if (sdcard_is_mounted()) {
         s_xprs_index = xprsindex_open("/sdcard/xprs");
         xprsindex_set_own(s_xprs_index, s_aprs_call);
-        /* An SD card is roomy; a quarter gigabyte is still weeks of air. */
-        xprsindex_set_max_bytes(s_xprs_index, 256ull * 1024 * 1024);
+        /* An SD card is roomy; a quarter gigabyte is still weeks of air.
+         * The card is the whole point of this board: a super sizes its
+         * archive to the volume rather than to this default. */
+        xprsindex_set_max_bytes(s_xprs_index,
+            xprsindex_budget("/sdcard", 256ull * 1024 * 1024,
+                             xcfg_get_bool("index_super", false)));
         xst_stats_load("/sdcard/xprs/stats.bin");
         if (xprsindex_ready(s_xprs_index)) {
             xprsidx_stats_t xs;

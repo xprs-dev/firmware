@@ -275,6 +275,17 @@ Two consequences worth building around:
   `sdkconfig.defaults` that mounts a store, and when "held" and "served"
   disagree, read ONE record back (`xprsindex_get(st, 0, ...)`) before
   trusting either number.
+  **And it happened again, to the board with the card.** 2026-08-25, the
+  T-Dongle: `xprsidx: open /sdcard/xprs: 0 records, 0 segments` on a 29.28 GB
+  card, announcing `serve:archive -- 19 record(s) held, 0 callsign(s)` in the
+  same boot. LFN lived in `models/tdongle-s3/sdkconfig.tdongle_s3` -- which is
+  the SHARED (multiboard) build's config for this board, not this one's; the
+  env the firmware actually builds from,
+  `firmware/sdkconfig.rns_ble5`, said `CONFIG_FATFS_LFN_NONE=y`, and
+  `firmware/sdkconfig.defaults` said nothing at all. 17,715 records were
+  sitting in five segments the firmware could not open. Check the generated
+  config of the env you BUILD (`grep FATFS_LFN sdkconfig.<env>`), not the
+  first sdkconfig with the board's name on it.
 - **A board's sdkconfig fixes travel by hand.** The dongle had LFN on; the
   M5Stack regenerated its `sdkconfig` from its own `defaults` and silently
   did not. Anything a store or a driver needs (`LFN`, LVGL fonts, flash
@@ -286,6 +297,17 @@ Two consequences worth building around:
   `factory` plus `esp_vfs_fat_spiflash_mount_rw_wl()` gives the index 14 MB
   of wear-levelled FAT and keeps NVS and the app at their old offsets, so
   a reflash loses nothing. Same FatFs, same traps as above.
+
+  **The T-Deck is on that route on purpose.** It has a microSD slot, but it
+  is on SPI behind `TDECK_SD_CS` (39), sharing the bus with the SX1262 at
+  `TDECK_RADIO_CS` (9) and the panel -- while `xprs_sdcard` is SDMMC-only
+  (`sdmmc_host_t`, 1-bit, `SDMMC_SLOT_FLAG_INTERNAL_PULLUP`). Using it means
+  an `sdspi` driver AND arbitrating a bus the radio is on, which is the kind
+  of coupling that turns "the archive is busy" into "the station missed a
+  packet". Its `storage, data, fat` partition is 11.38 MB and its archive
+  budget 10 MB. So the T-Deck can serve a super-archiver's ROLE but not a
+  super-archiver's DEPTH -- 28k records against the dongle's card -- and the
+  board with the card is the one to put beside a router.
 
 ## Heap is the binding constraint -- check it first
 
@@ -873,6 +895,16 @@ Two lessons, and the second is the general one:
    puts them in PSRAM. Measured on X3R8XX, `heap after hotspot` went 70,940 →
    71,100 (unchanged) while PSRAM went 8,263,228 → 8,252,152. On a board with
    no PSRAM the 4 KB is real and internal.
+3. **Where the 4 KB is real, give a handle back instead of buying one.** The
+   T-Dongle cannot afford a bigger pool -- `CONFIG_SDCARD_MAX_FILES=3` is what
+   fits beside WiFi -- and with LFN fixed it hit the same wall the moment its
+   opens began to succeed: `zone map /sdcard/xprs/zone.idx not written: Too
+   many open files in system`. Two of the store's three handles are only
+   CACHES: `read_fp` saves a re-open on the next query and `tail_fp` is
+   reopened on the next append of that type. `xi_fopen_pressed()` retries an
+   auxiliary open after closing them, so the write that matters wins the
+   descriptor and pays one `fopen` later. A cache that cannot be dropped under
+   pressure is not a cache.
 
 ### Flashing the T-Deck: split the write
 

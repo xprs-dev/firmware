@@ -447,6 +447,115 @@ static void test_directory(const char *dir)
     xprsindex_close(st);
 }
 
+/* The directory is CACHED, so what it says must keep matching the store. It is
+ * rebuilt by walking every record, which on a filled card is hundreds of
+ * thousands of reads with the store's lock held -- the announce path asked for
+ * one every ten minutes. Appends fold in instead; this pins that the folding
+ * agrees with the walk. */
+static void test_directory_tracks_the_store(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+
+    const char *first = "t:info f:X1AAAA ts:2026-08-10_09:00:00 m:one";
+    CHECK(xprsindex_add(st, first, (int)strlen(first), -60, false, 0), "first");
+
+    xprsidx_dir_entry_t e[8];
+    CHECK(xprsindex_directory(st, e, 8) == 1, "wanted one station");
+
+    /* Now the cache is warm. A station heard for the FIRST time after that
+     * has to appear, and one heard again has to move its last_ts forward. */
+    const char *second = "t:info f:X1BBBB ts:2026-08-11_09:00:00 m:two";
+    const char *again  = "t:info f:X1AAAA ts:2026-08-12_09:00:00 m:three";
+    CHECK(xprsindex_add(st, second, (int)strlen(second), -60, false, 0), "second");
+    CHECK(xprsindex_add(st, again, (int)strlen(again), -60, false, 0), "again");
+
+    int n = xprsindex_directory(st, e, 8);
+    CHECK(n == 2, "cached directory listed %d, wanted 2", n);
+    if (n == 2) {
+        CHECK(strcmp(e[0].call, "X1AAAA") == 0, "first is %s", e[0].call);
+        CHECK(e[0].last_ts == xi_expect_ts("2026-08-12_09:00:00"),
+              "a cached entry kept a stale last_ts");
+        CHECK(strcmp(e[1].call, "X1BBBB") == 0, "second is %s", e[1].call);
+    }
+
+    /* A packet the store REFUSES must not reach the directory: the station
+     * publishes this list, and it may only name what it actually holds. */
+    const char *ping = "t:ping f:X1NOPE ts:2026-08-13_09:00:00";
+    xprsindex_add(st, ping, (int)strlen(ping), -60, false, 0);
+    n = xprsindex_directory(st, e, 8);
+    for (int i = 0; i < n; i++) {
+        CHECK(strcmp(e[i].call, "X1NOPE") != 0,
+              "a refused packet was published in the directory");
+    }
+
+    /* Reopening rebuilds by walking: the walk and the cache must agree. */
+    xprsindex_close(st);
+    st = xprsindex_open(dir);
+    xprsidx_dir_entry_t w[8];
+    int m = xprsindex_directory(st, w, 8);
+    CHECK(m == 2, "the walk found %d where the cache had 2", m);
+    if (m == 2) {
+        CHECK(strcmp(w[0].call, "X1AAAA") == 0 &&
+              w[0].last_ts == xi_expect_ts("2026-08-12_09:00:00"),
+              "the walk disagrees with the cache about X1AAAA");
+    }
+    xprsindex_close(st);
+}
+
+/* Eviction is billed on the bytes the store REALLY holds. It used to bill
+ * every segment as full, so a store that had just opened its second segment
+ * was charged for 8192 records when it held 4100 -- and threw away 4096 of
+ * them, other people's mail included, to get under a budget it was already
+ * inside. */
+static void test_evicts_on_real_bytes(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+
+    char w[300];
+    const char *oldest = "t:info f:X1FRST ts:2026-01-01_09:00:00 m:the oldest";
+    CHECK(xprsindex_add(st, oldest, (int)strlen(oldest), 0, false, 0), "oldest");
+    /* Just over one segment: 4096 records fill segment 0, the rest open
+     * segment 1 and leave it nearly empty. */
+    for (int i = 0; i < 4100; i++) {
+        snprintf(w, sizeof w, "t:info f:X1FL%02d ts:2026-02-01_09:00:00 m:fill %d",
+                 i % 90, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    }
+
+    xprsidx_stats_t s0;
+    xprsindex_stats(st, &s0);
+    CHECK(s0.segments == 2, "wanted 2 segments, got %u", (unsigned)s0.segments);
+
+    /* 1.5 MB. The store holds ~4101 records = ~1.31 MB and is INSIDE it;
+     * billed by the segment it would read as 2 * 4096 * 320 = 2.5 MB and
+     * evict. */
+    xprsindex_set_max_bytes(st, 1536u * 1024u);
+    snprintf(w, sizeof w, "t:info f:X1LST2 ts:2026-02-02_09:00:00 m:the trigger");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "trigger add");
+
+    xprsidx_stats_t s1;
+    xprsindex_stats(st, &s1);
+    CHECK(s1.segments == 2, "evicted while inside the budget (%u segments left)",
+          (unsigned)s1.segments);
+    xprsidx_query_t q = { .type = -1, .from = "X1FRST", .limit = 5,
+                          .trusted = true };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 1,
+          "the oldest record was evicted while the store was inside its budget");
+
+    /* Past the budget for real, and it must still evict. */
+    xprsindex_set_max_bytes(st, 512u * 1024u);
+    snprintf(w, sizeof w, "t:info f:X1LST3 ts:2026-02-03_09:00:00 m:over");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    xprsidx_stats_t s2;
+    xprsindex_stats(st, &s2);
+    CHECK(s2.segments == 1, "did not evict over budget (%u segments)",
+          (unsigned)s2.segments);
+    xprsindex_close(st);
+}
+
 
 /* XPRS.md 36.11: over budget, the spool goes first, custody mail carries
  * forward, and mail for a declared callsign survives everything. */
@@ -702,6 +811,8 @@ int main(void)
     test_wire_is_kept_verbatim(dir);
     test_torn_tail_still_answers(dir);
     test_directory(dir);
+    test_directory_tracks_the_store(dir);
+    test_evicts_on_real_bytes(dir);
     test_verifies_what_it_stores(dir);
     test_retention_priorities(dir);
     test_regulars_earn_class3(dir);
