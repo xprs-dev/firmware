@@ -72,15 +72,32 @@ static int xb_pump(xb_t *b, uint32_t now)
     for (int i = 0; i < XB_QUEUE_MAX; i++) {
         if (!b->queue[i].used) continue;
         if ((int32_t)(now - b->queue[i].due_ms) < 0) continue;
+        /* §31.1, and the reason this is a WAIT and not a refusal: the slot is
+         * cleared before ops.air() below, so a bearer that answered "not now"
+         * would have its packet dropped rather than delayed. The debt is the
+         * bearer's, so everything queued behind it waits too -- which is the
+         * point, a slow radio is not made faster by a busy neighbour. */
+        if (b->pace_ms && (int32_t)(now - b->free_at_ms) < 0) {
+            if (!b->queue[i].held) {
+                b->queue[i].held = true;
+                b->paced++;
+            }
+            break;
+        }
         b->queue[i].used = false;
+        b->queue[i].held = false;
         XB_LOCK(b);
         bool ok = b->ops.air(b->ops.ctx, b->queue[i].wire, b->queue[i].len);
         if (ok) {
             xb_ring_add(b->aired, &b->aired_pos, b->queue[i].id, now);
             b->tx_count++;
+            b->free_at_ms = now + b->pace_ms;
         }
         XB_UNLOCK(b);
         if (ok) sent++;
+        /* One per tick while metered: the debt this airing just incurred is
+         * owed before the next one, and the tick will come back. */
+        if (ok && b->pace_ms) break;
     }
     return sent;
 }
@@ -209,12 +226,28 @@ bool xb_send(xb_t *b, const char *wire, int len)
     XB_LOCK(b);
     if (have_id) xb_ring_add(b->aired, &b->aired_pos, id, now);
     bool ok = b->ops.air(b->ops.ctx, wire, len);
-    if (ok) b->tx_count++;
+    if (ok) {
+        b->tx_count++;
+        /* Charged, never blocked -- see xb_set_pace(). A beacon is not free. */
+        b->free_at_ms = now + b->pace_ms;
+    }
     XB_UNLOCK(b);
     return ok;
 }
 
 /* ── Beacon and tick ────────────────────────────────────────────────────── */
+
+void xb_set_pace(xb_t *b, uint32_t per_packet_ms)
+{
+    if (b) b->pace_ms = per_packet_ms;
+}
+
+uint32_t xb_owed_ms(const xb_t *b)
+{
+    if (!b || !b->pace_ms || !b->ops.now_ms) return 0;
+    uint32_t now = b->ops.now_ms();
+    return (int32_t)(now - b->free_at_ms) < 0 ? b->free_at_ms - now : 0;
+}
 
 void xb_set_rx_cb(xb_t *b, xb_rx_cb_t cb)       { if (b) b->rx_cb = cb; }
 void xb_set_heard_cb(xb_t *b, xb_heard_cb_t cb) { if (b) b->heard_cb = cb; }

@@ -27,6 +27,8 @@ int      xl_test_pump(uint32_t now);
 void     xl_test_reset(void);
 int      xl_test_queue_len(void);
 uint32_t xl_test_queue_due(int i);
+void     xl_test_set_pace(uint32_t ms);
+uint32_t xl_test_owed_ms(void);
 
 static int checks, failures;
 #define CHECK(cond, fmt, ...) do {                                            \
@@ -295,6 +297,61 @@ static void test_heard_cb_sees_duplicates(void)
     xprslan_set_heard_cb(NULL);
 }
 
+/*
+ * Section 31.1: a metered bearer owes silence after transmitting, and a re-air
+ * that arrives while the debt stands WAITS.
+ *
+ * The waiting is the whole point. The drain loop clears a queue slot before
+ * calling ops.air(), so a bearer that answered "not now" would have its packet
+ * dropped rather than delayed -- which is why pacing is checked here and not
+ * left to the radio to enforce.
+ */
+static void test_pacing_defers_rather_than_drops(void)
+{
+    setup();
+    xl_test_set_pace(5000);
+
+    const char *a = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:first";
+    const char *b = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:second";
+    xprslan_offer(a, (int)strlen(a));
+    xprslan_offer(b, (int)strlen(b));
+    CHECK(xl_test_queue_len() == 2, "both should be queued (%d)",
+          xl_test_queue_len());
+
+    advance(XPRSLAN_JITTER_MIN_MS + 1);
+    CHECK(xl_test_air_count == 1, "one packet should have gone (%d)",
+          xl_test_air_count);
+    CHECK(xl_test_queue_len() == 1, "the second was DROPPED, not deferred (%d)",
+          xl_test_queue_len());
+    CHECK(xl_test_owed_ms() > 0, "nothing owed after a metered transmission");
+
+    advance(4000);
+    CHECK(xl_test_air_count == 1, "aired while the bearer still owed silence");
+
+    advance(1100);
+    CHECK(xl_test_air_count == 2, "never aired after the debt cleared (%d)",
+          xl_test_air_count);
+    CHECK(xl_test_queue_len() == 0, "still queued (%d)", xl_test_queue_len());
+
+    xl_test_set_pace(0);           /* unmetered again for the tests after this */
+}
+
+/* Unmetered is a real setting, not a missing one: with pace 0 the LAN airs
+ * everything due on the same tick, which is what every other test assumes. */
+static void test_unmetered_airs_together(void)
+{
+    setup();
+    xl_test_set_pace(0);
+    const char *a = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:one";
+    const char *b = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:two";
+    xprslan_offer(a, (int)strlen(a));
+    xprslan_offer(b, (int)strlen(b));
+    advance(XPRSLAN_JITTER_MIN_MS + 1);
+    CHECK(xl_test_air_count == 2, "an unmetered bearer held a packet back (%d)",
+          xl_test_air_count);
+    CHECK(xl_test_owed_ms() == 0, "unmetered bearer reported a debt");
+}
+
 int main(void)
 {
     printf("xprslan host tests\n");
@@ -309,6 +366,8 @@ int main(void)
     test_beacon_cadence();
     test_heard_cb_sees_duplicates();
     test_origin_repeat_does_not_cancel();
+    test_pacing_defers_rather_than_drops();
+    test_unmetered_airs_together();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -108,6 +108,7 @@ typedef struct {
     char     id[XB_ID_LEN];
     uint32_t due_ms;
     bool     used;
+    bool     held;      /* pacing made it wait past due_ms (§31.1) */
 } xb_queued_t;
 
 typedef struct {
@@ -140,6 +141,11 @@ typedef struct {
     xb_beacon_cb_t beacon_cb;
     uint32_t     beacon_every_ms, beacon_due_ms;
     uint32_t     rx_count, tx_count, cancelled, dupes;
+    /* §31.1: what one packet owes this bearer in silence. 0 is unmetered, and
+     * that is a real answer -- "the internet | nothing, which is the trap". */
+    uint32_t     pace_ms;
+    uint32_t     free_at_ms;    /* not before this may we transmit again */
+    uint32_t     paced;         /* packets this held back at least once */
 } xb_t;
 
 /** Bring a bearer up. @p call is this station, used for `via:` when relaying. */
@@ -161,8 +167,34 @@ void xb_set_beacon(xb_t *b, xb_beacon_cb_t cb, uint32_t interval_sec,
                    uint32_t first_delay_sec);
 
 /**
+ * How much silence one packet owes this bearer (§31.1).
+ *
+ * | bearer | what binds |
+ * |---|---|
+ * | LoRa on ISM | a legal duty cycle, often 1 % |
+ * | Bluetooth, WiFi Direct | range, so traffic is local and cheap |
+ * | LAN, the internet | nothing, which is the trap |
+ *
+ * A re-air that arrives while the bearer still owes silence WAITS in the queue
+ * rather than being dropped, and is aired when the debt clears. 0 disables it.
+ *
+ * This is not a legal duty-cycle regulator: the real figure depends on band,
+ * spreading factor and region, and belongs to the operator. What it does
+ * guarantee is that a busy neighbour bearer cannot pour traffic onto a slow
+ * radio faster than the radio was told it may speak.
+ */
+void xb_set_pace(xb_t *b, uint32_t per_packet_ms);
+
+/** Milliseconds until this bearer may transmit again; 0 when free now. */
+uint32_t xb_owed_ms(const xb_t *b);
+
+/**
  * Air one packet of OUR OWN, now, with no jitter and no `via:` — it has taken
  * no hops yet. Use xb_offer() for anything heard elsewhere.
+ *
+ * Our own traffic is CHARGED against the pacing budget but never blocked by it:
+ * a beacon is not free (§31.1), and a station that cannot answer at all is
+ * worse than one that answers and then keeps quiet for a while.
  */
 bool xb_send(xb_t *b, const char *wire, int len);
 

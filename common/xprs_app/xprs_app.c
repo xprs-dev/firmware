@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -844,6 +845,81 @@ static struct {
     volatile bool pending;
 } s_rel;
 
+/* ── 13.7: receipts ─────────────────────────────────────────────────────
+ *
+ * Until this existed the station heard its peers' `t:receipt s:ack` and threw
+ * them away, so held mail had no terminal state: the 36.8.1 release was
+ * stopped by REL_THROTTLE_SEC, a clock, and re-aired the same packet every
+ * ten minutes for as long as it was held. Measured on the bench, one message
+ * from 18:27 was re-aired four times in a twenty-minute sample and would have
+ * gone on for as long as the board stayed up.
+ *
+ * Both directions are secp256k1 work -- verifying one, signing one -- so both
+ * are PARKED here and done on idx_task, the same discipline cmd:update and
+ * the diagnostics asks already follow. The radio task decides whether.
+ */
+
+/* Messages whose receipt we have seen and verified: stop holding them.
+ *
+ * Not a purge of the archive -- 13.3 says the ack "releases carriers still
+ * holding a copy", and this station's archive is not its custody queue. The
+ * index keeps the packet, as an index should; this ring is what stops it
+ * being re-aired at somebody who already has it. */
+#define ACKED_MAX 48
+static struct {
+    char id[XPRS_ID_LEN];
+    uint32_t t_ms;
+} s_acked[ACKED_MAX];
+static uint8_t s_acked_pos;
+
+static void acked_note(const char *id)
+{
+    for (int i = 0; i < ACKED_MAX; i++)
+        if (strcmp(s_acked[i].id, id) == 0) return;
+    snprintf(s_acked[s_acked_pos].id, XPRS_ID_LEN, "%s", id);
+    s_acked[s_acked_pos].t_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    s_acked_pos = (uint8_t)((s_acked_pos + 1) % ACKED_MAX);
+}
+
+static bool acked_has(const char *id)
+{
+    for (int i = 0; i < ACKED_MAX; i++)
+        if (s_acked[i].id[0] && strcmp(s_acked[i].id, id) == 0) return true;
+    return false;
+}
+
+/* 13.7.1's one condition: "a direct message has already passed between the two
+ * callsigns, in either direction". The first message from a stranger is not
+ * acknowledged -- it is what establishes the pair -- and every one after it
+ * is. A ring, because a board does not correspond with the world. */
+#define EXCH_MAX 12
+static char s_exch[EXCH_MAX][10];
+static uint8_t s_exch_pos;
+
+static bool exchanged_with(const char *call)
+{
+    for (int i = 0; i < EXCH_MAX; i++)
+        if (s_exch[i][0] && strcasecmp(s_exch[i], call) == 0) return true;
+    return false;
+}
+
+static void exchanged_note(const char *call)
+{
+    if (exchanged_with(call)) return;
+    snprintf(s_exch[s_exch_pos], sizeof s_exch[0], "%s", call);
+    s_exch_pos = (uint8_t)((s_exch_pos + 1) % EXCH_MAX);
+}
+
+/* One slot each way. A dropped job is not a lost fact: an unacknowledged
+ * message is re-sent by its sender's own ladder, and a receipt we missed
+ * arrives again with the next copy. A queue would buy nothing but RAM. */
+static struct {
+    char wire[XPRS_MAX_WIRE + 1];
+    int  len;
+    char bearer[8];
+    volatile bool pending;
+} s_rcpt_in, s_rcpt_out;
+
 /* One delivery attempt per recipient per period, however chatty their
  * beacons: the trigger is cheap, the replay is airtime. */
 #define REL_THROTTLE_SEC 600
@@ -978,6 +1054,53 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     /* The diagnostics asks (cmd:zdiag/zcore/zlog, xprs_diag): parked the
      * same way, verified and answered on idx_task. */
     xdiag_park_parsed(&sp, wire, len, bearer);
+
+    /* 13.7: a receipt heard. Park it -- the signature decides whether it
+     * means anything, and that is curve work for idx_task. An unverifiable
+     * one changes nothing, which is the whole reason it must be checked:
+     * 13.7.1 calls a forged ack "a way to delete a message the attacker
+     * never held". */
+    do {
+        char type[16], r[XPRS_ID_LEN];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "receipt") != 0) break;
+        if (!xprs_get_str(&sp, "r", r, sizeof r) || !r[0]) break;
+        if (s_rcpt_in.pending) break;
+        memcpy(s_rcpt_in.wire, wire, len);
+        s_rcpt_in.wire[len] = 0;
+        s_rcpt_in.len = len;
+        s_rcpt_in.pending = true;
+    } while (0);
+
+    /* 13.7.1: a direct message addressed to us, from a station we have
+     * corresponded with, is acknowledged without anybody asking. The
+     * exclusions are the table in that section -- no `d:` is a broadcast, a
+     * receipt would never terminate, and a stranger has agreed to neither
+     * the airtime nor the disclosure that answering costs. */
+    do {
+        char type[16], dst[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "message") != 0) break;
+        if (!xprs_get_str(&sp, "d", dst, sizeof dst) || !dst[0]) break;
+        char *dash = strchr(dst, '-');
+        if (dash) *dash = 0;                  /* base callsign, section 3.1 */
+        char base[16];
+        snprintf(base, sizeof base, "%s", s_call);
+        dash = strchr(base, '-');
+        if (dash) *dash = 0;
+        if (strcasecmp(dst, base) != 0) break;   /* not ours to acknowledge */
+
+        if (exchanged_with(call) && !s_rcpt_out.pending) {
+            memcpy(s_rcpt_out.wire, wire, len);
+            s_rcpt_out.wire[len] = 0;
+            s_rcpt_out.len = len;
+            snprintf(s_rcpt_out.bearer, sizeof s_rcpt_out.bearer, "%s", bearer);
+            s_rcpt_out.pending = true;
+        }
+        /* Recorded AFTER the test, so the first message establishes the pair
+         * and the second is the first one acknowledged. */
+        exchanged_note(call);
+    } while (0);
 
     /* q:identity (18.1): publish the key binding on request. */
     do {
@@ -3178,6 +3301,57 @@ static void idx_task(void *arg)
             air_identity();
         }
 
+        /* 13.7: a receipt we heard. The signature is what makes it mean
+         * anything -- an unverifiable one changes nothing, because otherwise
+         * anybody who could forge an s:ack could delete a message from every
+         * carrier holding it. */
+        if (s_rcpt_in.pending) {
+            s_rcpt_in.pending = false;
+            esp_task_wdt_reset();
+            xprs_t rp;
+            char r[XPRS_ID_LEN] = "", from[10] = "";
+            if (xprs_parse(s_rcpt_in.wire, s_rcpt_in.len, &rp) &&
+                xprs_get_str(&rp, "r", r, sizeof r) &&
+                xprs_get_str(&rp, "f", from, sizeof from)) {
+                if (verified(&rp)) {
+                    acked_note(r);
+                    ESP_LOGI(TAG, "receipt from %s: %s arrived, released "
+                                  "(13.7)", from, r);
+                } else {
+                    /* Not an error: we may simply not hold their key yet.
+                     * Says so rather than passing silently, because a
+                     * station whose receipts never land looks exactly like
+                     * one that never sends them. */
+                    ESP_LOGW(TAG, "receipt for %s from %s unverifiable -- "
+                                  "still holding", r, from);
+                }
+            }
+        }
+
+        /* 13.7.1: acknowledge a direct message from a station we correspond
+         * with. Signed, because an unsigned ack is worth less than none. */
+        if (s_rcpt_out.pending) {
+            s_rcpt_out.pending = false;
+            esp_task_wdt_reset();
+            xprs_t mp;
+            char from[10] = "", id[XPRS_ID_LEN] = "";
+            if (xprs_parse(s_rcpt_out.wire, s_rcpt_out.len, &mp) &&
+                xprs_get_str(&mp, "f", from, sizeof from) &&
+                xprs_id_of(s_rcpt_out.wire, s_rcpt_out.len, id)) {
+                char w[XPRS_MAX_WIRE + 1], ts[24];
+                time_field(ts, sizeof ts);
+                int n = snprintf(w, sizeof w,
+                                 "t:receipt f:%s d:%s %s r:%s s:ack",
+                                 s_call, from, ts, id);
+                if (n > 0 && n <= XPRS_MAX_WIRE) {
+                    n = sign_wire(w, n, (int)sizeof w);
+                    idx_air(s_rcpt_out.bearer, w, n);
+                    ESP_LOGI(TAG, "acked %s to %s on %s (13.7.1)",
+                             id, from, s_rcpt_out.bearer);
+                }
+            }
+        }
+
         /* 36.8.1: a recipient was heard; re-air what the index holds FOR
          * them, paced, on the bearer they were heard on. The stored wires are
          * the authors' originals, re-signed by nobody -- we only add via:.
@@ -3213,6 +3387,13 @@ static void idx_task(void *arg)
                 if (!xprs_parse(s_page.wire[i], s_page.len[i], &mp)) continue;
                 if (!xprs_get_str(&mp, "d", mto, sizeof mto)) continue;
                 if (strncasecmp(mto, rcall, strlen(rcall)) != 0) continue;
+                /* 13.3: "the recipient's s:ack releases carriers still
+                 * holding a copy". Without this the release is ended by a
+                 * clock, and the same packet goes out every REL_THROTTLE_SEC
+                 * for as long as the board holds it. */
+                char relid[XPRS_ID_LEN];
+                if (xprs_id_of(s_page.wire[i], s_page.len[i], relid) &&
+                    acked_has(relid)) continue;
                 vTaskDelay(pdMS_TO_TICKS(1500));
                 esp_task_wdt_reset();
                 /* 36.8.1: "via: gains the holder's callsign, the 13.1 budget
@@ -3671,6 +3852,17 @@ static bool api_send_wire(const char *wire, int len)
         char type[16];
         xprs_type(&p, type, sizeof type);
         if (strcmp(type, "identity") == 0) identity_heard(&p);
+        /* 13.7.1's condition is "in EITHER direction", so a direct message we
+         * send establishes the pair just as one we receive does -- otherwise
+         * the station we wrote to first would have its reply go unacked. */
+        if (strcmp(type, "message") == 0) {
+            char dst[16];
+            if (xprs_get_str(&p, "d", dst, sizeof dst) && dst[0]) {
+                char *dash = strchr(dst, '-');
+                if (dash) *dash = 0;
+                exchanged_note(dst);
+            }
+        }
         xst_chat_note(&p);   /* our hotspot users' messages show on the LCD too */
     }
 
@@ -4387,8 +4579,15 @@ void xapp_run(const xapp_board_t *board)
      * whose task is what pumps this one's queue too. */
     if (board->lora) {
         splash_step("radio");
-        if (xprslora_start(s_call, board->lora) == ESP_OK)
+        if (xprslora_start(s_call, board->lora) == ESP_OK) {
             xprslora_set_rx_cb(on_lora);
+            /* 31.1 is a legal figure, and the law differs by band and region,
+             * so the operator gets the last word. The default is already set
+             * inside the bearer; this only lets a station be stricter (or,
+             * knowingly, looser) without a rebuild. */
+            const char *pace = xcfg_get("lora_pace_ms", NULL);
+            if (pace && pace[0]) xprslora_set_pace((uint32_t)atoi(pace));
+        }
         else
             ESP_LOGE(TAG, "LoRa radio failed to start -- carrying on without");
     }

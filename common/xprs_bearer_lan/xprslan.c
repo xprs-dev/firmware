@@ -288,5 +288,10 @@ int xl_test_queue_len(void)
     return n;
 }
 uint32_t xl_test_queue_due(int i) { return s_lan.queue[i].due_ms; }
+/* The LAN is unmetered in the field (section 31.1: "the internet | nothing,
+ * which is the trap"). The pacing it does not use is still the shared
+ * engine's, so this bearer is where it gets tested. */
+void xl_test_set_pace(uint32_t ms) { xb_set_pace(&s_lan, ms); }
+uint32_t xl_test_owed_ms(void)     { return xb_owed_ms(&s_lan); }
 
 #endif

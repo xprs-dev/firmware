@@ -165,6 +165,9 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
     }
 
     xb_init(s_lora, &k_lora_ops, callsign);
+    /* section 31.1. Set before anything can be offered, so the radio is never
+     * unmetered even for the first packet after boot. */
+    xb_set_pace(s_lora, XPRSLORA_PACE_DEFAULT_MS);
     xb_register_ticked(s_lora);
     if (!xb_has_driver())
         ESP_LOGE(TAG, "no bearer task is pumping -- start the LAN bearer "
@@ -195,6 +198,16 @@ void xprslora_offer(const char *wire, int len)
 {
     if (s_lora) xb_offer(s_lora, wire, len);
 }
+void xprslora_set_pace(uint32_t per_packet_ms)
+{
+    if (s_lora) xb_set_pace(s_lora, per_packet_ms);
+}
+
+uint32_t xprslora_owed_ms(void)
+{
+    return s_lora ? xb_owed_ms(s_lora) : 0;
+}
+
 bool xprslora_is_active(void)
 {
     return s_radio && s_lora && xb_is_active(s_lora);

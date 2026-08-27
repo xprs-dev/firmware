@@ -55,6 +55,33 @@ void xprslora_offer(const char *wire, int len);
 
 bool xprslora_is_active(void);
 
+/**
+ * Silence one packet owes this radio, in milliseconds (XPRS.md section 31.1:
+ * "LoRa on ISM | a legal duty cycle, often 1 percent -- at SF9 a single packet
+ * owes several seconds of silence").
+ *
+ * Re-airs offered while the debt stands WAIT; they are not dropped. Our own
+ * transmissions are charged but never blocked.
+ *
+ * The default is XPRSLORA_PACE_DEFAULT_MS. It is deliberately not a legal
+ * duty-cycle calculation: the real figure depends on band, spreading factor
+ * and region -- at SF7 a 250-byte packet is ~400 ms, which under a 1 percent
+ * duty cycle owes about 40 seconds -- and that number is the operator's to
+ * set, not this library's to guess. 0 disables pacing.
+ */
+void xprslora_set_pace(uint32_t per_packet_ms);
+
+/** Milliseconds until the radio may transmit again; 0 when free now. */
+uint32_t xprslora_owed_ms(void);
+
+/**
+ * Six seconds, which is section 31.1's own order of magnitude for one packet
+ * at SF9 -- strict enough that a busy LAN cannot pour traffic onto the radio,
+ * loose enough that a bench stays usable. The same figure the Flutter station
+ * uses for its LoRa bearer, so the two implementations agree.
+ */
+#define XPRSLORA_PACE_DEFAULT_MS 6000u
+
 /** RX/TX/cancelled/dupes counters, any may be NULL. */
 void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
                     uint32_t *dupes);
