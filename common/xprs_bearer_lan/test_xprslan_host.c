@@ -28,6 +28,7 @@ void     xl_test_reset(void);
 int      xl_test_queue_len(void);
 uint32_t xl_test_queue_due(int i);
 void     xl_test_set_pace(uint32_t ms);
+void     xl_test_digipeat(const char *w, int n);
 uint32_t xl_test_owed_ms(void);
 
 static int checks, failures;
@@ -352,6 +353,60 @@ static void test_unmetered_airs_together(void)
     CHECK(xl_test_owed_ms() == 0, "unmetered bearer reported a debt");
 }
 
+/*
+ * Section 13.1: "repeats a packet on the medium it heard it".
+ *
+ * The offer path refuses anything already in this bearer's heard ring, which
+ * is right for a packet arriving from ANOTHER bearer -- it is on this medium
+ * already, so repeating adds nothing. For a digipeat it is fatal: xb_on_wire
+ * records the hearing before the callback that offers it back, so the ring
+ * always holds it and every same-medium repeat was silently a no-op.
+ */
+static void test_digipeat_repeats_what_offer_refuses(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:heard right here";
+    const int n = (int)strlen(w);
+
+    xl_test_datagram(w, n, 0x0100A8C0);          /* heard on THIS bearer */
+
+    xprslan_offer(w, n);
+    CHECK(xl_test_queue_len() == 0,
+          "offer queued a packet already heard on this bearer (%d)",
+          xl_test_queue_len());
+
+    xl_test_digipeat(w, n);
+    CHECK(xl_test_queue_len() == 1,
+          "digipeat refused the packet it heard -- 13.1 says repeat it (%d)",
+          xl_test_queue_len());
+
+    advance(XPRSLAN_JITTER_MIN_MS + 1);
+    CHECK(xl_test_air_count == 1, "never re-aired (%d)", xl_test_air_count);
+    CHECK(strstr(xl_test_aired, "via:" SELF) != NULL,
+          "digipeated without saying so: %s", xl_test_aired);
+}
+
+/* What stops a storm is the aired ring, not the heard ring: once we have put
+ * a packet on this bearer we do not put it there again. */
+static void test_digipeat_does_not_repeat_itself(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:only once please";
+    const int n = (int)strlen(w);
+
+    xl_test_datagram(w, n, 0x0100A8C0);
+    xl_test_digipeat(w, n);
+    advance(XPRSLAN_JITTER_MIN_MS + 1);
+    CHECK(xl_test_air_count == 1, "not aired once (%d)", xl_test_air_count);
+
+    xl_test_datagram(w, n, 0x0200A8C0);          /* the origin says it again */
+    xl_test_digipeat(w, n);
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 1,
+          "repeated a packet we had already put on this bearer (%d)",
+          xl_test_air_count);
+}
+
 int main(void)
 {
     printf("xprslan host tests\n");
@@ -366,6 +421,8 @@ int main(void)
     test_beacon_cadence();
     test_heard_cb_sees_duplicates();
     test_origin_repeat_does_not_cancel();
+    test_digipeat_repeats_what_offer_refuses();
+    test_digipeat_does_not_repeat_itself();
     test_pacing_defers_rather_than_drops();
     test_unmetered_airs_together();
     printf("%d checks, %d failed\n", checks, failures);

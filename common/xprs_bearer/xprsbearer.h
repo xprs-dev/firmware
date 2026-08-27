@@ -207,6 +207,18 @@ bool xb_send(xb_t *b, const char *wire, int len);
  */
 void xb_offer(xb_t *b, const char *wire, int len);
 
+/**
+ * Re-air on the bearer it was HEARD on — a digipeater (§13.1: "repeats a
+ * packet on the medium it heard it, within the hop budget, appending itself to
+ * `via:`").
+ *
+ * The same queue, jitter and cancel as xb_offer(); the difference is that
+ * having heard the packet on this bearer does not disqualify it, because here
+ * that is the reason to repeat it. Use xb_offer() when the packet arrived on a
+ * DIFFERENT bearer.
+ */
+void xb_digipeat(xb_t *b, const char *wire, int len);
+
 /** One packet arrived on the medium. Called by the bearer's receive path. */
 void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi);
 

@@ -52,6 +52,8 @@ bool xprsble_send_sub(const uint8_t *payload, int len, uint8_t subtype)
     return false;
 }
 
+void xprsble_digipeat(const char *wire, int len) { (void)wire; (void)len; }
+
 uint32_t xprsble_scan_results(void) { return 0; }
 
 /* -1 is what the live implementation returns before the first frame is heard:
@@ -69,6 +71,11 @@ int xprsble_silent_for(void) { return -1; }
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
+#include "esp_random.h"
+
+#include "freertos/semphr.h"
+
+#include "xprsbearer.h"
 
 #if CONFIG_XPRSBLE_BACKEND_TINYNIMBLE
 /* Same radio, ~21 KB less flash and ~22 KB less heap, because the NimBLE host
@@ -143,6 +150,67 @@ typedef struct {
 static QueueHandle_t s_ad_q;
 static uint32_t      s_ad_dropped;
 
+/* ── §13.1: this bearer relays ──────────────────────────────────────────
+ *
+ * BLE was the one bearer this station heard and never repeated. It could be
+ * gatewayed onto LAN, LoRa and ESP-NOW, so a Bluetooth-only phone was
+ * reachable from the wired world -- but two such phones out of each other's
+ * range could not reach one another, however many stations sat between them.
+ * That is a digipeater's job and §13.1 gives it to every relay: "repeats a
+ * packet on the medium it heard it, within the hop budget, appending itself
+ * to via:".
+ *
+ * The engine is the shared one, so the jitter, the cancel-on-hear, the dedup
+ * rings and the via:/hop-budget decision are the same code the other three
+ * bearers run. What is NOT routed through it is delivery to the application:
+ * handle_ad still calls s_rx_cb for every advert, with its RSSI, so the
+ * station's neighbour freshness and hears: gossip see what they always saw.
+ * xb_on_wire is called alongside it purely to keep the rings and the cancel
+ * honest -- with neither callback registered it does nothing else.
+ */
+static xb_t s_xb;
+static SemaphoreHandle_t s_tx_mutex;
+
+static bool bl_air(void *ctx, const char *wire, int len)
+{
+    (void)ctx;
+    if (len > XPRSBLE_WIRE_MAX) {
+        /* An XPRS packet runs to 250 bytes and an advert holds 248, so a wire
+         * that was already near the limit no longer fits once via: names us.
+         * Said out loud: a relay that silently drops the longest packets is a
+         * bearer that works for every test message and fails for real mail. */
+        ESP_LOGW(TAG, "relay of %dB does not fit an advert (%d) -- not aired",
+                 len, XPRSBLE_WIRE_MAX);
+        return false;
+    }
+    /* The tail, because via: sits at the end of a wire. A digipeater whose
+     * repeats cannot be seen is indistinguishable from one that never
+     * repeats -- which is exactly how the offer/heard-ring bug survived. */
+    ESP_LOGI(TAG, "digipeat %dB ...%s", len,
+             wire + (len > 60 ? len - 60 : 0));
+    return xprsble_send(wire, len);
+}
+
+static uint32_t bl_now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+static uint32_t bl_random(void) { return esp_random(); }
+
+static const xb_ops_t k_ble_ops = {
+    .air     = bl_air,
+    .now_ms  = bl_now_ms,
+    .random  = bl_random,
+    .name    = "ble",
+};
+
+/* Called by both backends' xprsble_start(), once s_call is set. The mutex is
+ * created here rather than lazily because the first two callers race
+ * otherwise: the status task's beacon and the tick task's first re-air. */
+static void ble_relay_start(void)
+{
+    if (!s_tx_mutex) s_tx_mutex = xSemaphoreCreateMutex();
+    xb_init(&s_xb, &k_ble_ops, s_call);
+    xb_register_ticked(&s_xb);
+}
+
 static void handle_ad(const uint8_t *p, int n, int rssi);
 
 /* Called on the controller's / host's task: copy, post, return. */
@@ -212,8 +280,15 @@ static void handle_ad(const uint8_t *p, int n, int rssi)
             const uint8_t *m = &p[i + 2];
             int mlen = adlen - 1;
             if (mlen >= 4 && m[0] == COMPANY_LO && m[1] == COMPANY_HI &&
-                m[2] == MARKER && s_rx_cb) {
-                s_rx_cb(m[3], &m[4], mlen - 4, rssi);
+                m[2] == MARKER) {
+                /* The rings, the peer table and §13.2.1's cancel. No callback
+                 * is registered on s_xb, so this hands nothing on -- delivery
+                 * is the line below, unchanged, because it carries the RSSI
+                 * the engine's rx_cb would drop and the station's hears:
+                 * freshness is built from every hearing, not every new one. */
+                if (m[3] == XPRSBLE_SUB_XPRS)
+                    xb_on_wire(&s_xb, (const char *)&m[4], mlen - 4, 0, rssi);
+                if (s_rx_cb) s_rx_cb(m[3], &m[4], mlen - 4, rssi);
             }
         }
         i += 1 + adlen;
@@ -348,7 +423,14 @@ bool xprsble_send_sub(const uint8_t *payload, int len, uint8_t subtype)
     uint8_t ad[256];
     int n = build_ad(subtype, payload, len, ad);
     if (n <= 0) return false;
-    return air_raw_ad(ad, n);
+    /* One advertising set, and since §13.1 relaying arrived there are two
+     * tasks writing it: the station's own beacons and the re-air queue on the
+     * tick task. The lock is here rather than in the bearer's ops so that
+     * direct callers -- every beacon in xprs_app -- are covered too. */
+    if (s_tx_mutex) xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
+    bool ok = air_raw_ad(ad, n);
+    if (s_tx_mutex) xSemaphoreGive(s_tx_mutex);
+    return ok;
 }
 
 bool xprsble_send(const char *wire, int len)
@@ -364,6 +446,7 @@ bool xprsble_send(const char *wire, int len)
 esp_err_t xprsble_start(const char *callsign)
 {
     if (callsign) snprintf(s_call, sizeof s_call, "%s", callsign);
+    ble_relay_start();
 
     /* Before the radio, so no report can arrive with nowhere to go. */
     esp_err_t qerr = rx_task_start();
@@ -434,6 +517,7 @@ static void host_task(void *arg)
 esp_err_t xprsble_start(const char *callsign)
 {
     if (callsign) snprintf(s_call, sizeof s_call, "%s", callsign);
+    ble_relay_start();
 
     /* The host task has more room than the controller's, but it is still not
      * ours to spend on secp256k1 -- both backends hand off. */
@@ -458,6 +542,11 @@ esp_err_t xprsble_start(const char *callsign)
 }
 
 #endif  /* backend */
+
+void xprsble_digipeat(const char *wire, int len)
+{
+    xb_digipeat(&s_xb, wire, len);
+}
 
 bool xprsble_is_active(void) { return s_ble_up; }
 

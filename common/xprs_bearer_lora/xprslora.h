@@ -53,6 +53,10 @@ bool xprslora_send(const char *wire, int len);
 /** Offer a packet heard elsewhere for re-airing here (the bearer decides). */
 void xprslora_offer(const char *wire, int len);
 
+/** Re-air on THIS bearer what was heard on it -- a digipeater (13.1). Unlike
+ *  xprslora_offer(), having heard the packet here is the reason to repeat it. */
+void xprslora_digipeat(const char *wire, int len);
+
 bool xprslora_is_active(void);
 
 /**

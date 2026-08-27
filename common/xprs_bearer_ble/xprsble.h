@@ -94,6 +94,22 @@ void xprsble_set_rx_cb(xprsble_rx_cb_t cb);
  */
 bool xprsble_send(const char *wire, int len);
 
+/**
+ * Offer a packet heard elsewhere for re-airing ON BLUETOOTH (§13.1: a relay
+ * "repeats a packet on the medium it heard it, within the hop budget,
+ * appending itself to `via:`").
+ *
+ * Queued with the §13.2.1 random wait and dropped if the packet is heard from
+ * somebody else meanwhile; `via:` and the hop budget are xprs_codec's decision,
+ * not this bearer's. Without this a Bluetooth-only station can be reached from
+ * the wired bearers but two of them out of each other's range cannot reach one
+ * another, however many stations sit in between.
+ *
+ * A wire that no longer fits an advert once `via:` is appended is not aired:
+ * XPRS packets run to 250 bytes and an advert holds XPRSBLE_WIRE_MAX.
+ */
+void xprsble_digipeat(const char *wire, int len);
+
 /** As [xprsble_send], for a caller that owns a subtype of its own. */
 bool xprsble_send_sub(const uint8_t *payload, int len, uint8_t subtype);
 

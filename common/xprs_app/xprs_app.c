@@ -1361,8 +1361,11 @@ static void on_espnow(const char *wire, int len, const uint8_t mac[6], int rssi)
      * internet sits behind it), under the ordinary relay rules -- the bearer
      * refuses when we are already in via: or the hop budget is spent. */
     if (xcfg_get_bool("igate_on", true)) xprslan_offer(wire, len);
-    /* Digipeater: re-air on the radio itself, for stations past our reach. */
-    if (xcfg_get_bool("digi_on", false)) xprsnow_offer(wire, len);
+    /* Digipeater: re-air on the radio itself, for stations past our reach.
+     * xprsnow_digipeat(), not _offer(): the offer path refuses a packet
+     * already in this bearer's heard ring, which for a same-medium repeat is
+     * every packet there is -- so this was a no-op until xb_digipeat(). */
+    if (xcfg_get_bool("digi_on", false)) xprsnow_digipeat(wire, len);
     /* And toward the long-range radio, which reaches who WiFi cannot. */
     if (xcfg_get_bool("bridge_on", true)) xprslora_offer(wire, len);
 }
@@ -1450,6 +1453,17 @@ static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
         xprsnow_offer(wire, len);
         xprslora_offer(wire, len);
     }
+    /* Digipeater: re-air on Bluetooth itself, for stations past the sender's
+     * reach -- 13.1's "repeats a packet on the medium it heard it".
+     *
+     * On by default, which the other radios' digi_on is not, and the reason is
+     * in 31.1's own table: ESP-NOW and LoRa are bound by a duty cycle or a
+     * shared channel, while "Bluetooth and WiFi Direct | range, so traffic is
+     * naturally local and cheap". It is also the only bearer where refusing to
+     * digipeat leaves stations unable to reach each other at all: two phones
+     * out of range have no other path, whereas anything on a wired bearer can
+     * still be gatewayed. Turn it off with `cfg set digi_ble_on no`. */
+    if (xcfg_get_bool("digi_ble_on", true)) xprsble_digipeat(wire, len);
 }
 
 /* A wire off the Reticulum uplink (xprsrns.h). Same funnel as every radio;
@@ -1488,7 +1502,7 @@ static void on_lora(const char *wire, int len, int rssi)
         xprslan_offer(wire, len);
         xprsnow_offer(wire, len);
     }
-    if (xcfg_get_bool("digi_on", false)) xprslora_offer(wire, len);
+    if (xcfg_get_bool("digi_on", false)) xprslora_digipeat(wire, len);
 }
 
 /* ── What we say ────────────────────────────────────────────────────────── */

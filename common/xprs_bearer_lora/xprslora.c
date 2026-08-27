@@ -198,6 +198,10 @@ void xprslora_offer(const char *wire, int len)
 {
     if (s_lora) xb_offer(s_lora, wire, len);
 }
+void xprslora_digipeat(const char *wire, int len)
+{
+    if (s_lora) xb_digipeat(s_lora, wire, len);
+}
 void xprslora_set_pace(uint32_t per_packet_ms)
 {
     if (s_lora) xb_set_pace(s_lora, per_packet_ms);

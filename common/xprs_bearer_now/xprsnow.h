@@ -142,6 +142,10 @@ void xprsnow_set_trace(bool on);
 /** Offer a packet heard on another bearer for re-airing here (§13.2.1). */
 void xprsnow_offer(const char *wire, int len);
 
+/** Re-air on THIS bearer what was heard on it -- a digipeater (13.1). Unlike
+ *  xprsnow_offer(), having heard the packet here is the reason to repeat it. */
+void xprsnow_digipeat(const char *wire, int len);
+
 /** Stations heard within [max_age_sec]. */
 int xprsnow_peer_count(uint32_t max_age_sec);
 

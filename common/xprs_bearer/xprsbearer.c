@@ -131,7 +131,7 @@ static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
 
 /* ── Offering a packet from another bearer ──────────────────────────────── */
 
-void xb_offer(xb_t *b, const char *wire, int len)
+static void xb_queue_relay(xb_t *b, const char *wire, int len, bool same_medium)
 {
     if (!b || !b->active || !wire || len <= 0 || len > XB_WIRE_MAX) return;
     if (!xprs_looks_like((const uint8_t *)wire, len)) return;
@@ -140,8 +140,26 @@ void xb_offer(xb_t *b, const char *wire, int len)
     if (!xprs_id_of(wire, len, id)) return;
 
     uint32_t now = b->ops.now_ms();
-    /* Already on this bearer, from us or from anybody: nothing to add. */
-    if (xb_ring_has(b->aired, id, now) || xb_ring_has(b->heard, id, now)) return;
+    /* Never repeat what WE have already put on this bearer, either way. */
+    if (xb_ring_has(b->aired, id, now)) return;
+    /* Whether HEARING it here disqualifies it is the whole difference between
+     * the two callers, and getting it wrong makes one of them do nothing:
+     *
+     *   cross-bearer (xb_offer)   heard here already means the packet is
+     *                             on this medium and we would add nothing.
+     *
+     *   same-medium (xb_digipeat) heard here is the REASON to repeat it --
+     *                             that is what a digipeater is (13.1,
+     *                             "repeats a packet on the medium it heard
+     *                             it"). Refusing on the heard ring made
+     *                             every digipeat a no-op, because
+     *                             xb_on_wire records the hearing before the
+     *                             callback that offers it back.
+     *
+     * What stops a storm here is not the heard ring: it is 13.2's own-callsign
+     * check inside xprs_append_via, the aired ring above, and 13.2.1's cancel
+     * when somebody else's relayed copy arrives first. */
+    if (!same_medium && xb_ring_has(b->heard, id, now)) return;
     for (int i = 0; i < XB_QUEUE_MAX; i++) {
         if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0) return;
     }
@@ -154,6 +172,16 @@ void xb_offer(xb_t *b, const char *wire, int len)
     if (n <= 0) return;
 
     xb_queue_push(b, out, n, id, now);
+}
+
+void xb_offer(xb_t *b, const char *wire, int len)
+{
+    xb_queue_relay(b, wire, len, false);
+}
+
+void xb_digipeat(xb_t *b, const char *wire, int len)
+{
+    xb_queue_relay(b, wire, len, true);
 }
 
 /* ── Receiving ──────────────────────────────────────────────────────────── */

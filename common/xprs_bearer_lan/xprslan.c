@@ -292,6 +292,8 @@ uint32_t xl_test_queue_due(int i) { return s_lan.queue[i].due_ms; }
  * which is the trap"). The pacing it does not use is still the shared
  * engine's, so this bearer is where it gets tested. */
 void xl_test_set_pace(uint32_t ms) { xb_set_pace(&s_lan, ms); }
+/* 13.1's digipeater, the same engine call every bearer's *_digipeat() makes. */
+void xl_test_digipeat(const char *w, int n) { xb_digipeat(&s_lan, w, n); }
 uint32_t xl_test_owed_ms(void)     { return xb_owed_ms(&s_lan); }
 
 #endif
