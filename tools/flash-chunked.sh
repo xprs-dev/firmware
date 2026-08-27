@@ -21,9 +21,16 @@
 # ota_0 left holding mid-image bytes instead of a header. Read the board's
 # partitions.csv:
 #
-#   T-Deck        factory  0x10000
+#   T-Deck        ota_0    0x20000
 #   T-Dongle-S3   ota_0    0x20000
 #   M5Stack-Core  ota_0    0x20000
+#
+# The T-Deck line used to read `factory 0x10000`, and that is now wrong: the
+# board's partitions.csv dropped the single factory slot for ota_0/ota_1 so it
+# could take an over-the-air update, and ota_0 begins at 0x20000. Flashing a
+# T-Deck at 0x10000 today lands on otadata and phy_init -- the same failure
+# this comment already describes for the dongle, in the other direction.
+# The board itself is the arbiter: /api/diag reports part.running.
 #
 # NVS lives at 0x9000 on every board and must never be in the written range --
 # it holds the callsign, the identity and the WiFi credentials.

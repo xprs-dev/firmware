@@ -1264,6 +1264,16 @@ static void heard_espnow(const char *id, const char *wire, int len)
 static void on_lan(const char *wire, int len, uint32_t ip)
 {
     seen_note(wire, len, "lan", 0);
+    /* A key published on the LAN is as good as one published on a radio, and
+     * a station we only ever meet here -- a desktop, typically -- had no other
+     * way to tell us how it signs. Leaving this out made every one of its
+     * packets unverifiable while its identity sat in the log unread. */
+    xprs_t lp;
+    if (xprs_parse(wire, len, &lp)) {
+        char ltype[16];
+        xprs_type(&lp, ltype, sizeof ltype);
+        if (strcmp(ltype, "identity") == 0) identity_heard(&lp);
+    }
     ESP_LOGI(TAG, "lan    %u.%u.%u.%u %3dB  %s",
              (unsigned)(ip & 0xFF), (unsigned)((ip >> 8) & 0xFF),
              (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 24) & 0xFF),
@@ -1280,9 +1290,11 @@ static void on_lan(const char *wire, int len, uint32_t ip)
  * this radio belong to other software -- Reticulum 0x55, the compact APRS
  * frame 0x41, the route beacon 0x4D -- and are not this station's business.
  *
- * Runs on the NimBLE host task, beside the controller. seen_note() only copies
- * into the index queue and parks a history ask, which is what that task can
- * afford; every heavier thing it leads to happens on idx_task.
+ * Runs on xb_rx_task (xprsble.c), not on the controller's task: queue_ad()
+ * copies the AD and posts it, so this side has a 6144-byte stack of its own
+ * and may verify a signature or hand a wire to another bearer. Offering is
+ * cheap in any case -- xb_offer() dedups, appends via: and copies into a
+ * preallocated slot; the transmit happens later on the owning bearer's tick.
  */
 static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
 {
@@ -1300,6 +1312,21 @@ static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
         if (strcmp(type, "identity") == 0) identity_heard(&p);
     }
     ESP_LOGI(TAG, "ble    %19d dBm %3dB  %s", rssi, len, wire);
+    /* iGate: what arrived on the BLE air goes toward the LAN and whatever
+     * internet sits behind it -- the same rule ESP-NOW and LoRa already
+     * follow. Whether it may be relayed at all is xprs_append_via's call
+     * inside the bearer: it refuses when we are already in via: (13.2) or
+     * the type's hop budget is spent (13.1).
+     *
+     * Without this a Bluetooth-only station is unreachable from anywhere
+     * else, because BLE is the one bearer this station hears and never
+     * repeats -- see docs/diagrams/relay-gateway-flow.md. */
+    if (xcfg_get_bool("igate_on", true)) xprslan_offer(wire, len);
+    /* And onto the radios, which reach who Bluetooth cannot. */
+    if (xcfg_get_bool("bridge_on", true)) {
+        xprsnow_offer(wire, len);
+        xprslora_offer(wire, len);
+    }
 }
 
 /* A wire off the Reticulum uplink (xprsrns.h). Same funnel as every radio;
@@ -1308,6 +1335,15 @@ static void on_rns(const char *wire, int len)
 {
     s_heard_count++;
     seen_note(wire, len, "rns", 0);
+    /* Same as the LAN: a peer met only over the internet must still be able
+     * to publish the key it signs with (36.12.2's identity lane is the one
+     * thing guaranteed to cross a shared transport). */
+    xprs_t rp;
+    if (xprs_parse(wire, len, &rp)) {
+        char rtype[16];
+        xprs_type(&rp, rtype, sizeof rtype);
+        if (strcmp(rtype, "identity") == 0) identity_heard(&rp);
+    }
 }
 
 static void on_lora(const char *wire, int len, int rssi)
@@ -3143,9 +3179,15 @@ static void idx_task(void *arg)
         }
 
         /* 36.8.1: a recipient was heard; re-air what the index holds FOR
-         * them, paced, on the bearer they were heard on. The stored wires
-         * are the authors' originals; the receipt (13.7) is what ends the
-         * retries, via the throttle ring on the trigger side. */
+         * them, paced, on the bearer they were heard on. The stored wires are
+         * the authors' originals, re-signed by nobody -- we only add via:.
+         *
+         * What ends the retries here is REL_THROTTLE_SEC, a timer, and not
+         * the 13.7 receipt it should be: this station composes no
+         * t:receipt s:ack for a t:message, only xprs_chan does, and only for
+         * a 23.7 channel move. It hears the receipts its Flutter peers send
+         * and does nothing with them. Until that is built, held mail stops
+         * being re-aired because time passed, not because it arrived. */
         if (s_rel.pending && s_index && xcfg_get_bool("index_on", true)) {
             char rcall[10], rbearer[8];
             snprintf(rcall, sizeof rcall, "%s", (const char *)s_rel.call);
@@ -3173,7 +3215,37 @@ static void idx_task(void *arg)
                 if (strncasecmp(mto, rcall, strlen(rcall)) != 0) continue;
                 vTaskDelay(pdMS_TO_TICKS(1500));
                 esp_task_wdt_reset();
-                idx_air(rbearer, s_page.wire[i], s_page.len[i]);
+                /* 36.8.1: "via: gains the holder's callsign, the 13.1 budget
+                 * and the 13.2 loop check apply". We are handing on someone
+                 * else's mail, so the recipient must be able to tell this
+                 * copy came through us rather than from the author directly
+                 * -- and a copy that comes back to us is then recognisably
+                 * ours and stops. Appended here and not inside idx_air(),
+                 * whose other callers air packets we WROTE (a cmd result,
+                 * an archive reply): via: on those would claim we relayed
+                 * our own saying. 250 bytes is XPRS_MAX_WIRE; when our
+                 * callsign no longer fits, the row stays held rather than
+                 * going out mislabelled as direct. */
+                char rel[XPRS_MAX_WIRE + 1];
+                int rn = xprs_append_via(s_page.wire[i], s_page.len[i],
+                                         s_call, rel, (int)sizeof rel);
+                if (rn <= 0) {
+                    /* Refused: either we are already in this copy's via:
+                     * (13.2 -- it came back to us after we relayed it) or the
+                     * type's hop budget is spent (13.1). Either way it stays
+                     * held, and a row that can never leave is worth a line:
+                     * silent non-delivery is the failure that costs a day. */
+                    ESP_LOGW(TAG, "held for %s: via: refused, staying put",
+                             rcall);
+                    continue;
+                }
+                /* The tail, because via: and m: live at the END of a wire
+                 * and idx_air's line stops at 70 chars -- which is why a
+                 * release that went out mislabelled as direct was invisible
+                 * for as long as it was. */
+                ESP_LOGI(TAG, "  released via:%s ...%s", s_call,
+                         rel + (rn > 80 ? rn - 80 : 0));
+                idx_air(rbearer, rel, rn);
                 aired++;
             }
             if (aired)
