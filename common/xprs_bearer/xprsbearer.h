@@ -146,6 +146,7 @@ typedef struct {
     uint32_t     pace_ms;
     uint32_t     free_at_ms;    /* not before this may we transmit again */
     uint32_t     paced;         /* packets this held back at least once */
+    uint32_t     declined;      /* 13.2.2: relays we sat out, not being named */
 } xb_t;
 
 /** Bring a bearer up. @p call is this station, used for `via:` when relaying. */

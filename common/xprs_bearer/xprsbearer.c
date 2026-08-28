@@ -178,9 +178,21 @@ static void xb_queue_relay(xb_t *b, const char *wire, int len, bool same_medium)
      * one relay standing and which one is a matter of whose random wait was
      * shortest. This is how a sender gets a particular second hop instead. */
     xprs_t rp;
-    if (xprs_parse(wire, len, &rp) && xprs_has_relay(&rp) &&
-        !xprs_relay_next_is(&rp, b->call)) {
-        return;
+    if (xprs_parse(wire, len, &rp) && xprs_has_relay(&rp)) {
+        bool mine = xprs_relay_next_is(&rp, b->call);
+        /* Said out loud, rate-limited. "Why did my station not repeat that"
+         * is otherwise unanswerable from outside, and the first bench run of
+         * this gate was spent guessing at exactly that. */
+        b->declined++;
+        if (b->declined == 1 || (b->declined % 16) == 0) {
+            XB_LOGI("%s: %s relay: names %s, we are %s -- %s",
+                    b->ops.name ? b->ops.name : "?", id,
+                    mine ? "us next" : "somebody else",
+                    b->call[0] ? b->call : "(no callsign)",
+                    mine ? "repeating" : "staying quiet");
+        }
+        if (!mine) return;
+        b->declined--;   /* we are relaying it; not a decline */
     }
 
     char out[XB_WIRE_MAX + 1];
