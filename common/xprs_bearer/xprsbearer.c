@@ -216,8 +216,22 @@ void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi)
      * repeating itself is the opposite signal — it means nobody has carried the
      * packet yet, which is exactly when a digipeater should — so `via:` is what
      * distinguishes "somebody else got there first" from "say it again". */
+    /* "By ANOTHER" is the load-bearing word, and a non-empty `via:` is not
+     * enough to establish it. A station that wrongly appends itself to the
+     * `via:` of its own packet — a defect real phones shipped with — emits an
+     * origin copy that looks relayed, and every board in the room then cancels
+     * its queued repeat on hearing the author say it again. The chain dies and
+     * nothing logs a reason.
+     *
+     * So the test is whether `via:` names anybody who is not the author. */
     xprs_t hp;
-    bool relayed_by_other = xprs_parse(wire, len, &hp) && xprs_via_count(&hp) > 0;
+    bool relayed_by_other = false;
+    if (xprs_parse(wire, len, &hp) && xprs_via_count(&hp) > 0) {
+        char from[10] = "";
+        /* No `f:` at all: treat a via: as a genuine relay rather than guess. */
+        relayed_by_other = !xprs_get_str(&hp, "f", from, sizeof from) ||
+                           !from[0] || !xprs_via_only(&hp, from);
+    }
     if (relayed_by_other) xb_cancel(b, id);
     /* Every hearing, duplicates included — an owner with its own queue on
      * another bearer needs the repeats, which is exactly what the line below

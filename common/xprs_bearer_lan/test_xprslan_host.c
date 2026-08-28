@@ -407,6 +407,72 @@ static void test_digipeat_does_not_repeat_itself(void)
           xl_test_air_count);
 }
 
+/*
+ * 13.2.1's cancel says "somebody ELSE got there first". A station that wrongly
+ * appends itself to the `via:` of its own packet — a defect real phones
+ * shipped with — emits an origin copy that reads as relayed, and every board
+ * in earshot then stands down when the author simply repeats itself. The
+ * chain dies and nothing logs a reason.
+ */
+static void test_author_in_own_via_does_not_cancel(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:say it again";
+    const int n = (int)strlen(w);
+
+    xl_test_datagram(w, n, 0x0100A8C0);
+    xl_test_digipeat(w, n);
+    CHECK(xl_test_queue_len() == 1, "not queued (%d)", xl_test_queue_len());
+
+    /* The author repeating itself, carrying its own callsign in via:. */
+    const char *echo =
+        "t:message f:X1QZ3N d:LISBOA ts:" TS " via:X1QZ3N m:say it again";
+    xl_test_datagram(echo, (int)strlen(echo), 0x0100A8C0);
+
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 1,
+          "the author's own via: cancelled our relay (%d)", xl_test_air_count);
+}
+
+/* And the rule it must not weaken: a genuine third-party relay still cancels. */
+static void test_a_real_relay_still_cancels(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:only once";
+    const int n = (int)strlen(w);
+
+    xl_test_datagram(w, n, 0x0100A8C0);
+    xl_test_digipeat(w, n);
+    CHECK(xl_test_queue_len() == 1, "not queued (%d)", xl_test_queue_len());
+
+    const char *relayed =
+        "t:message f:X1QZ3N d:LISBOA ts:" TS " via:X9OTHER m:only once";
+    xl_test_datagram(relayed, (int)strlen(relayed), 0x0200A8C0);
+
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0,
+          "somebody else relayed it and we said it anyway (%d)",
+          xl_test_air_count);
+}
+
+/* The author among others: X1QZ3N,X9OTHER means a real relay happened. */
+static void test_author_plus_another_cancels(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:mixed via";
+    const int n = (int)strlen(w);
+
+    xl_test_datagram(w, n, 0x0100A8C0);
+    xl_test_digipeat(w, n);
+    const char *mixed = "t:message f:X1QZ3N d:LISBOA ts:" TS
+                        " via:X1QZ3N,X9OTHER m:mixed via";
+    xl_test_datagram(mixed, (int)strlen(mixed), 0x0200A8C0);
+
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0, "a third party was in via: and we aired (%d)",
+          xl_test_air_count);
+}
+
 int main(void)
 {
     printf("xprslan host tests\n");
@@ -421,6 +487,9 @@ int main(void)
     test_beacon_cadence();
     test_heard_cb_sees_duplicates();
     test_origin_repeat_does_not_cancel();
+    test_author_in_own_via_does_not_cancel();
+    test_a_real_relay_still_cancels();
+    test_author_plus_another_cancels();
     test_digipeat_repeats_what_offer_refuses();
     test_digipeat_does_not_repeat_itself();
     test_pacing_defers_rather_than_drops();

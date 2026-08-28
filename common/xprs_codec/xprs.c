@@ -241,6 +241,36 @@ int xprs_via_count(const xprs_t *p)
 
 static char upc(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
 
+/* Is every callsign in `via:` this one?
+ *
+ * The question a digipeater actually has is not "has anybody relayed this"
+ * but "has anybody OTHER THAN THE AUTHOR relayed this" -- section 13.2.1's
+ * cancel exists to stand down when somebody else got there first, and the
+ * author repeating itself is the opposite signal. An empty or absent `via:`
+ * answers true: there is nobody in it who is not @p self.
+ */
+bool xprs_via_only(const xprs_t *p, const char *self)
+{
+    int vl = 0;
+    const char *v = xprs_get(p, "via", &vl);
+    if (!v || vl <= 0) return true;
+    if (!self || !self[0]) return false;
+    int slen = (int)strlen(self);
+    int start = 0;
+    for (int i = 0; i <= vl; i++) {
+        if (i == vl || v[i] == ',') {
+            int n = i - start;
+            if (n > 0) {
+                if (n != slen) return false;
+                for (int k = 0; k < n; k++)
+                    if (upc(v[start + k]) != upc(self[k])) return false;
+            }
+            start = i + 1;
+        }
+    }
+    return true;
+}
+
 bool xprs_via_contains(const xprs_t *p, const char *self)
 {
     int vl = 0;

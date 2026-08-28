@@ -125,6 +125,10 @@ int xprs_via_count(const xprs_t *p);
  * relays, whatever the count says.) Case-insensitive. */
 bool xprs_via_contains(const xprs_t *p, const char *self);
 
+/** True when `via:` is empty or names nobody except @p self (13.2.1: the
+ *  author repeating itself is not somebody else having relayed it). */
+bool xprs_via_only(const xprs_t *p, const char *self);
+
 /* scope:local — for the bearers in range now; never carried, never gatewayed
  * (section 13.11). */
 bool xprs_scope_local(const xprs_t *p);
