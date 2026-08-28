@@ -473,6 +473,88 @@ static void test_author_plus_another_cancels(void)
           xl_test_air_count);
 }
 
+/* ── 13.2.2: the sender names the relays ──────────────────────────────── */
+
+static void digi(const char *w) { xl_test_digipeat(w, (int)strlen(w)); }
+
+static void test_path_names_us_next(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS
+                    " relay:" SELF ",X3NEXT m:go";
+    digi(w);
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 1, "the named hop did not relay (%d)",
+          xl_test_air_count);
+    CHECK(strstr(xl_test_aired, "via:" SELF) != NULL,
+          "relayed without saying so: %s", xl_test_aired);
+    CHECK(strstr(xl_test_aired, "relay:" SELF ",X3NEXT") != NULL,
+          "relay: was altered in flight: %s", xl_test_aired);
+}
+
+static void test_path_does_not_name_us(void)
+{
+    setup();
+    digi("t:message f:X1QZ3N d:LISBOA ts:" TS " relay:X9OTHER,X3NEXT m:go");
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0, "relayed a path we are not on (%d)",
+          xl_test_air_count);
+}
+
+static void test_path_not_our_turn_yet(void)
+{
+    setup();
+    digi("t:message f:X1QZ3N d:LISBOA ts:" TS " relay:X9FIRST," SELF " m:go");
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0, "jumped the queue (%d)", xl_test_air_count);
+}
+
+static void test_path_our_turn_arrives(void)
+{
+    setup();
+    digi("t:message f:X1QZ3N d:LISBOA ts:" TS " relay:X9FIRST," SELF
+         " via:X9FIRST m:go");
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 1, "our turn came and we sat on it (%d)",
+          xl_test_air_count);
+    CHECK(strstr(xl_test_aired, "via:X9FIRST," SELF) != NULL,
+          "appended wrongly: %s", xl_test_aired);
+}
+
+static void test_path_spent_is_terminal(void)
+{
+    setup();
+    digi("t:message f:X1QZ3N d:LISBOA ts:" TS " relay:X9A,X9B via:X9A,X9B m:go");
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0, "relayed a spent path (%d)",
+          xl_test_air_count);
+}
+
+static void test_path_suffix_is_part_of_the_callsign(void)
+{
+    /* 3.1: SELF-9 is a different device, and must not fire here. */
+    setup();
+    digi("t:message f:X1QZ3N d:LISBOA ts:" TS " relay:" SELF "-9 m:go");
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0, "a suffixed callsign matched us (%d)",
+          xl_test_air_count);
+}
+
+/* The guard that matters most: with no relay:, nothing above changed. */
+static void test_unpathed_still_cancels_on_hear(void)
+{
+    setup();
+    const char *w = "t:message f:X1QZ3N d:LISBOA ts:" TS " m:ordinary";
+    digi(w);
+    const char *relayed =
+        "t:message f:X1QZ3N d:LISBOA ts:" TS " via:X9OTHER m:ordinary";
+    xl_test_datagram(relayed, (int)strlen(relayed), 0x0200A8C0);
+    advance(XPRSLAN_JITTER_MAX_MS + 1);
+    CHECK(xl_test_air_count == 0,
+          "13.2.1's cancel stopped working for ordinary traffic (%d)",
+          xl_test_air_count);
+}
+
 int main(void)
 {
     printf("xprslan host tests\n");
@@ -487,6 +569,13 @@ int main(void)
     test_beacon_cadence();
     test_heard_cb_sees_duplicates();
     test_origin_repeat_does_not_cancel();
+    test_path_names_us_next();
+    test_path_does_not_name_us();
+    test_path_not_our_turn_yet();
+    test_path_our_turn_arrives();
+    test_path_spent_is_terminal();
+    test_path_suffix_is_part_of_the_callsign();
+    test_unpathed_still_cancels_on_hear();
     test_author_in_own_via_does_not_cancel();
     test_a_real_relay_still_cancels();
     test_author_plus_another_cancels();

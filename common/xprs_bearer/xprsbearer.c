@@ -167,6 +167,22 @@ static void xb_queue_relay(xb_t *b, const char *wire, int len, bool same_medium)
     /* Whether this may be relayed at all is xprs_codec's decision, not ours:
      * -1 means we are already in via: (§13.2) or the type's budget is spent
      * (§13.1). Relaying is also what puts us in the path for everyone else. */
+    /* 13.2.2: when the sender named the relays, only a named one repeats it.
+     *
+     * Parsed here rather than inside xprs_append_via(), which the mail release
+     * and the dongle also call and which must not acquire path semantics by
+     * surprise. Cheap: a field lookup and two string walks, no allocation --
+     * which is what a receive path can afford (docs/esp32.md).
+     *
+     * On a bearer where every station hears every other, 13.2.1 leaves exactly
+     * one relay standing and which one is a matter of whose random wait was
+     * shortest. This is how a sender gets a particular second hop instead. */
+    xprs_t rp;
+    if (xprs_parse(wire, len, &rp) && xprs_has_relay(&rp) &&
+        !xprs_relay_next_is(&rp, b->call)) {
+        return;
+    }
+
     char out[XB_WIRE_MAX + 1];
     int n = xprs_append_via(wire, len, b->call, out, (int)sizeof out);
     if (n <= 0) return;

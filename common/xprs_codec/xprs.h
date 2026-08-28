@@ -129,6 +129,14 @@ bool xprs_via_contains(const xprs_t *p, const char *self);
  *  author repeating itself is not somebody else having relayed it). */
 bool xprs_via_only(const xprs_t *p, const char *self);
 
+/** True when the packet carries a `relay:` (13.2.2), whatever it names. */
+bool xprs_has_relay(const xprs_t *p);
+
+/** True when @p self is the next hop `relay:` names -- the first callsign in
+ *  it that does not yet appear in `via:` (13.2.2). False when there is no
+ *  `relay:`, and false when the list is spent. */
+bool xprs_relay_next_is(const xprs_t *p, const char *self);
+
 /* scope:local — for the bearers in range now; never carried, never gatewayed
  * (section 13.11). */
 bool xprs_scope_local(const xprs_t *p);

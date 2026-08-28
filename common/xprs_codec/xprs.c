@@ -241,6 +241,69 @@ int xprs_via_count(const xprs_t *p)
 
 static char upc(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
 
+/* Does `via:` hold the @p n-byte callsign at @p s? Callsigns arrive as slices
+ * of the `relay:` value, so this takes a length rather than a C string. */
+static bool via_has_n(const xprs_t *p, const char *s, int n)
+{
+    int vl = 0;
+    const char *v = xprs_get(p, "via", &vl);
+    if (!v || n <= 0) return false;
+    int start = 0;
+    for (int i = 0; i <= vl; i++) {
+        if (i == vl || v[i] == ',') {
+            if (i - start == n) {
+                bool eq = true;
+                for (int k = 0; k < n; k++)
+                    if (upc(v[start + k]) != upc(s[k])) { eq = false; break; }
+                if (eq) return true;
+            }
+            start = i + 1;
+        }
+    }
+    return false;
+}
+
+bool xprs_has_relay(const xprs_t *p)
+{
+    int rl = 0;
+    const char *r = xprs_get(p, "relay", &rl);
+    return r && rl > 0;
+}
+
+/* Section 13.2.2: "The next hop is the first callsign in `relay:` that does
+ * not appear in `via:`."
+ *
+ * Nothing is consumed and nothing is rewritten -- `relay:` is inside the
+ * signature and the section 5 identifier, so a station that edited it would
+ * change the packet's identity at every hop. `via:` is what advances.
+ *
+ * False when there is no `relay:` (the caller decides what that means), and
+ * false when the list is spent: at that point nobody relays.
+ */
+bool xprs_relay_next_is(const xprs_t *p, const char *self)
+{
+    int rl = 0;
+    const char *r = xprs_get(p, "relay", &rl);
+    if (!r || rl <= 0 || !self || !self[0]) return false;
+    int slen = (int)strlen(self);
+    int start = 0;
+    for (int i = 0; i <= rl; i++) {
+        if (i == rl || r[i] == ',') {
+            int n = i - start;
+            if (n > 0 && !via_has_n(p, r + start, n)) {
+                /* The first hop not yet taken. Ours only if it names us --
+                 * whole and case-insensitively, suffix included (3.0.1, 3.1). */
+                if (n != slen) return false;
+                for (int k = 0; k < n; k++)
+                    if (upc(r[start + k]) != upc(self[k])) return false;
+                return true;
+            }
+            start = i + 1;
+        }
+    }
+    return false;
+}
+
 /* Is every callsign in `via:` this one?
  *
  * The question a digipeater actually has is not "has anybody relayed this"
