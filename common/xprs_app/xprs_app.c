@@ -1161,7 +1161,13 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
      * heat bought for nothing. Same argument, same order, as the phone's
      * ingest funnel. */
     do {
-        char type[16], from[10], hears[96], link[8];
+        /* 208 and 25, not 96 and 8: 10.6.3 says "about twenty-five callsigns
+         * fit a packet", and this is the intake for exactly such a packet.
+         * At 96 bytes a busy neighbour's list was cut to a third before the
+         * gossip store ever saw it -- the truncation happened HERE, silently,
+         * after the sender had already paid to transmit the whole thing.
+         * Matches the render buffer at the beacon end, which is 208. */
+        char type[16], from[10], hears[208], link[8];
         xprs_type(&sp, type, sizeof type);
         if (strcmp(type, "observation") != 0) break;
         if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
@@ -1176,10 +1182,10 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!xprs_get_str(&sp, "link", link, sizeof link))
             snprintf(link, sizeof link, "%s", bearer);
 
-        const char *list[8];
+        const char *list[XST_HEARS_MAX];
         char *tok = hears, *next;
         int n = 0;
-        while (tok && *tok && n < 8) {
+        while (tok && *tok && n < XST_HEARS_MAX) {
             next = strchr(tok, ',');
             if (next) *next = 0;
             if (*tok) list[n++] = tok;

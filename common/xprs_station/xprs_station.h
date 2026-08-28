@@ -19,7 +19,17 @@
 extern "C" {
 #endif
 
-#define XST_SEEN_MAX  16
+/* Rows are keyed on (callsign, bearer), so a station heard on two radios
+ * occupies two -- which is the point. Keyed on the callsign alone, the second
+ * bearer overwrote the first, and a table that cannot hold "X on ble AND X on
+ * lan" cannot describe the one path that matters on a mixed mesh: in over
+ * Bluetooth, out over the LAN. 24 rows at ~32 B is under a kilobyte. */
+#define XST_SEEN_MAX  24
+
+/* How many callsigns we will take from somebody else's `hears:`. 10.6.3:
+ * "about twenty-five callsigns fit a packet". Taking fewer than the sender
+ * can say discards topology that was already paid for. */
+#define XST_HEARS_MAX 25
 /* Deep enough to hold a conversation, not just the last few sayings: a UI
  * that filters by room shows a fraction of what is here, so a ring of 8
  * left a room looking empty while the station was busy. ~150 B a row. */

@@ -242,15 +242,26 @@ static void xb_rx_task(void *arg)
             handle_ad(it.data, it.len, it.rssi);
 }
 
-/* 6144 because the caller's callback verifies secp256k1 signatures, and that
- * is what overflowed the controller's stack. The same figure xprs_app uses for
- * its own signing task, and for the same reason. */
+/* 8192, and every byte of the rise is earned.
+ *
+ * 6144 covered a callback that verifies secp256k1 signatures -- that is what
+ * overflowed the controller's stack and why this task exists at all. It no
+ * longer covers what the callback grew into: seen_note() now parses a
+ * neighbour's `hears:` into a 208-byte buffer and a 25-pointer list (10.6.3
+ * says about twenty-five callsigns fit a packet), and those are live ON THE
+ * SAME FRAME while the verify runs underneath them.
+ *
+ * The failure is silent and total, which is what makes it worth this comment:
+ * the task dies, nothing else does, and the station goes on beaconing,
+ * gatewaying LAN and looking healthy while it has gone completely deaf to
+ * Bluetooth. Caught on the bench as "zero BLE receptions" with the radio
+ * demonstrably still transmitting -- see docs/esp32.md on stack sizing. */
 static esp_err_t rx_task_start(void)
 {
     if (s_ad_q) return ESP_OK;
     s_ad_q = xQueueCreate(AD_Q_DEPTH, sizeof(ad_item_t));
     if (!s_ad_q) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(xb_rx_task, "xprsble_rx", 6144, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(xb_rx_task, "xprsble_rx", 8192, NULL, 5, NULL) != pdPASS) {
         vQueueDelete(s_ad_q);
         s_ad_q = NULL;
         return ESP_ERR_NO_MEM;

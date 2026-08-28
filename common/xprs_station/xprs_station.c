@@ -118,7 +118,14 @@ static void dev_upsert(const char *call, const char *bearer, int rssi,
     int slot = -1, oldest = 0;
     bool same = false;
     for (int i = 0; i < XST_SEEN_MAX; i++) {
-        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0) {
+        /* (callsign, bearer) is the key. Matching on the callsign alone made
+         * a station that moved between radios overwrite its own row, so the
+         * table could say "X is on lan" or "X is on ble" but never both --
+         * and both is exactly what a path across two bearers is made of.
+         * xst_hears_render() already filters by bearer, so it now finds the
+         * row it was always asking for instead of whichever arrived last. */
+        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0 &&
+            strcasecmp(s_seen[i].bearer, bearer) == 0) {
             slot = i;
             same = true;
             break;
