@@ -150,12 +150,12 @@ docs:
   - {title: "Meshtastic device page", url: "https://meshtastic.org/docs/hardware/devices/seeed-studio/sensecap/solar-node/"}
 
 images:
-  - file: hardware/images/block-diagram.png
-    caption: "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path."
-    credit: "Seeed Studio, industrial datasheet for SKU 114993633"
   - file: hardware/images/product-front.jpg
     caption: "The node, panel side."
     credit: "Seeed Studio product photography"
+  - file: hardware/images/block-diagram.png
+    caption: "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path."
+    credit: "Seeed Studio, industrial datasheet for SKU 114993633"
   - file: hardware/images/product-angle.jpg
     caption: "Three-quarter view with the antenna fitted."
     credit: "Seeed Studio product photography"

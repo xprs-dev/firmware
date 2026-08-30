@@ -638,16 +638,16 @@
     ],
     "images": [
       {
-        "file": "hardware/images/block-diagram.png",
-        "caption": "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path.",
-        "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/block-diagram.png"
-      },
-      {
         "file": "hardware/images/product-front.jpg",
         "caption": "The node, panel side.",
         "credit": "Seeed Studio product photography",
         "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/product-front.jpg"
+      },
+      {
+        "file": "hardware/images/block-diagram.png",
+        "caption": "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path.",
+        "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/block-diagram.png"
       },
       {
         "file": "hardware/images/product-angle.jpg",
