@@ -19,7 +19,7 @@ try:
 except ImportError:
     sys.exit("PyYAML is needed: pip install pyyaml")
 
-TOP = ["id", "name", "vendor", "sku", "product_url", "manual_url", "summary",
+TOP = ["id", "name", "vendor", "sku", "product_url", "manual_url", "tagline", "summary",
        "status", "silicon", "radios", "bearers", "xprs", "io", "physical",
        "firmware", "docs", "images", "screenshots"]
 STATUS = {"shipping", "legacy", "planned", "unsupported"}

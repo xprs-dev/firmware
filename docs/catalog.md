@@ -55,6 +55,8 @@ vendor:        who makes it
 sku:           vendor part number, or null
 product_url:   where to buy it, or null
 manual_url:    the vendor's manual, datasheet or wiki for THIS board, or null
+tagline:       one line, for the gallery tile at the top of the page: what
+               the device is and what it carries. Under 120 characters.
 summary:       a paragraph. What the device is -- MCU, memory, screen, radios,
                ports -- then what the station on it does and what it is used
                for here. This is the card text; a reader identifies the board

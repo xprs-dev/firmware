@@ -10,6 +10,7 @@ vendor: Heltec Automation
 sku: null
 product_url: https://heltec.org/project/wifi-lora-32-v3/
 manual_url: https://docs.heltec.org/en/node/esp32/wifi_lora_32/index.html
+tagline: "ESP32-S3 + SX1262 LoRa + OLED. Same radio as the T-Deck; port pending."
 summary: >-
   Heltec WiFi LoRa 32 V3: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB
   flash), 0.96" 128x64 SSD1306 OLED, SX1262 LoRa (868/915 or 433 MHz by

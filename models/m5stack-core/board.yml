@@ -5,6 +5,7 @@ vendor: M5Stack
 sku: null
 product_url: https://docs.m5stack.com/en/core/basic
 manual_url: https://docs.m5stack.com/en/core/basic
+tagline: "Boxed ESP32 with a 320x240 screen and three buttons. WiFi and ESP-NOW station with the full dashboard."
 summary: >-
   M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB
   flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front

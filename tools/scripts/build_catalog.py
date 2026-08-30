@@ -177,6 +177,27 @@ def prebuilt_block(b, fw):
             f'{button}<div class="dls">{links}</div></div>')
 
 
+def tile(b, embed):
+    """One gallery tile: photo, name, one line, status. Links to the card."""
+    im = next((i for i in (b.get("images") or []) if i.get("file")), None)
+    src = ""
+    if im:
+        abspath = os.path.join(b["_dir"], im["file"])
+        if os.path.isfile(abspath):
+            src = thumb_data_uri(abspath, 320) if embed else f"{b['_rel']}/{im['file']}"
+    pic = (f'<img src="{esc(src)}" alt="" loading="lazy">' if src
+           else '<div class="tile-nopic mono">no photo</div>')
+    sil = b.get("silicon") or {}
+    fam = FAMILY_LABEL.get(sil.get("family"), sil.get("mcu") or "?")
+    return (f'<a class="tile" href="#{esc(b.get("id"))}" data-tags="{esc(card_tags(b))}" '
+            f'data-status="{esc(b.get("status"))}">'
+            f'<div class="tile-pic">{pic}</div>'
+            f'<div class="tile-body"><div class="tile-name">{esc(b.get("name"))}'
+            f'<span class="chip chip-status s-{esc(b.get("status"))}">{esc(b.get("status"))}</span></div>'
+            f'<div class="tile-line">{esc(b.get("tagline") or "")}</div>'
+            f'<div class="tile-meta mono">{esc(fam)} · {esc(b.get("vendor"))}</div></div></a>')
+
+
 def xprs_chips(b):
     xp = b.get("xprs") or {}
     cells = []
@@ -277,7 +298,7 @@ def card(b, embed):
            if fw.get("version") else "")
 
     return f"""
-<article class="card" data-status="{esc(status)}"
+<article class="card" id="{esc(b.get('id'))}" data-status="{esc(status)}"
          data-tags="{esc(card_tags(b))}">
   <header class="card-head">
     <div class="card-title">
@@ -301,6 +322,24 @@ def card(b, embed):
 
 
 CSS = """
+.gallery{display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:14px;
+  padding-top:26px}
+.tile{display:flex; flex-direction:column; text-decoration:none; color:var(--ink);
+  background:var(--raised); border:1px solid var(--rule); border-radius:12px; overflow:hidden;
+  box-shadow:var(--shadow); transition:border-color .15s, transform .15s}
+.tile:hover{border-color:var(--accent); transform:translateY(-2px)}
+.tile[hidden]{display:none}
+.tile-pic{aspect-ratio:4/3; background:#fff; display:flex; align-items:center; justify-content:center;
+  border-bottom:1px solid var(--rule)}
+.tile-pic img{width:100%; height:100%; object-fit:contain; padding:8px}
+.tile-nopic{color:var(--ink-dim); font-size:12px}
+.tile-body{padding:12px 14px 14px}
+.tile-name{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700; font-size:15px;
+  display:flex; justify-content:space-between; align-items:center; gap:8px}
+.tile-name .chip{font-size:10px; padding:1px 7px}
+.tile-line{font-size:14px; line-height:1.4; margin-top:6px; color:var(--ink)}
+.tile-meta{font-size:11px; color:var(--ink-dim); margin-top:8px}
+.card{scroll-margin-top:16px}
 .prebuilt{margin-top:12px; padding:14px 16px; border:1px dashed var(--rule); border-radius:10px}
 .dls{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
 .dl{font-size:12px; padding:4px 10px; border:1px solid var(--rule); border-radius:8px;
@@ -511,7 +550,7 @@ JS = """
   });
 })();
 const btns=[...document.querySelectorAll('.fbtn')];
-const cards=[...document.querySelectorAll('.card')];
+const cards=[...document.querySelectorAll('.card, .tile')];
 function apply(){
   const on=btns.filter(b=>b.getAttribute('aria-pressed')==='true')
                .map(b=>b.dataset.tag);
@@ -519,7 +558,7 @@ function apply(){
     const has=(c.dataset.tags||'').split(' ').filter(Boolean);
     c.hidden = on.length>0 && !on.every(b=>has.includes(b));
   });
-  const n=cards.filter(c=>!c.hidden).length;
+  const n=cards.filter(c=>!c.hidden && c.classList.contains('card')).length;
   document.getElementById('shown').textContent=n;
 }
 btns.forEach(b=>b.addEventListener('click',()=>{
@@ -632,6 +671,8 @@ def build(embed):
 </div></header>
 
 <div class="wrap">
+  <nav class="gallery" aria-label="Boards">{''.join(tile(b, embed) for b in boards)}</nav>
+
   <div class="filters">
     {filters}
   </div>

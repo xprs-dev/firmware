@@ -5,6 +5,7 @@ vendor: LilyGO
 sku: null
 product_url: https://www.lilygo.cc/products/t-dongle-s3
 manual_url: https://github.com/Xinyuan-LilyGO/T-Dongle-S3
+tagline: "USB stick with a tiny screen. BLE5, WiFi, ESP-NOW; the BLE-to-LAN bridge next to your router."
 summary: >-
   LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB
   flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG

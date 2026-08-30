@@ -9,6 +9,7 @@ vendor:
 sku:
 product_url:
 manual_url:  # vendor manual, datasheet or wiki for this board
+tagline:     # ONE line for the gallery tile: what it is, what it carries
 summary:     # a paragraph: what the device is (MCU, memory, screen, radios, ports), then what the station on it does
 status:      # shipping | legacy | planned | unsupported
 

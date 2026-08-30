@@ -10,6 +10,7 @@ vendor: Espressif
 sku: null
 product_url: https://www.espressif.com/en/products/devkits/esp32-devkitc
 manual_url: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html
+tagline: "Plain ESP32 devkit. No screen, no radio module; for trying bearers."
 summary: >-
   Espressif ESP32-DevKitC: WROOM-32 module (dual-core 240 MHz, 520 KB RAM, 4
   MB flash), EN and BOOT buttons, micro-USB via CP2102. No screen, no radio

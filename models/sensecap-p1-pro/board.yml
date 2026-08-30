@@ -13,6 +13,7 @@ vendor: Seeed Studio
 sku: "114993633"
 product_url: https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html
 manual_url: https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf
+tagline: "Solar outdoor LoRa node, nRF52840, no WiFi. LoRa and BLE5 digipeater on a pole."
 summary: >-
   Seeed SenseCAP Solar Node P1-Pro: nRF52840 (Cortex-M4F 64 MHz, 256 KB RAM, 1
   MB flash + 2 MB QSPI) on a XIAO module, SX1262 LoRa (862-930 MHz), L76K

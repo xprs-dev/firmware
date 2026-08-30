@@ -8,6 +8,7 @@
     "sku": null,
     "product_url": "https://www.lilygo.cc/products/t-deck",
     "manual_url": "https://github.com/Xinyuan-LilyGO/T-Deck",
+    "tagline": "Handheld with keyboard, touchscreen and LoRa. All four bearers; the one you chat from.",
     "summary": "LilyGO T-Deck: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB PSRAM, 16 MB flash), 2.8\" 320x240 ST7789 LCD with GT911 touch, QWERTY keyboard on its own ESP32-C3, trackball, microSD, speaker, microphone, USB-C, LiPo connector. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, and an SX1262 LoRa module (868 MHz on this unit). The only board with all four bearers, and the only one you can type on, so it gets the interactive chat panel. Also serves the BLE GATT mesh session that the P1-Pro connects to.",
     "status": "shipping",
     "silicon": {
@@ -161,6 +162,7 @@
     "sku": null,
     "product_url": "https://www.lilygo.cc/products/t-dongle-s3",
     "manual_url": "https://github.com/Xinyuan-LilyGO/T-Dongle-S3",
+    "tagline": "USB stick with a tiny screen. BLE5, WiFi, ESP-NOW; the BLE-to-LAN bridge next to your router.",
     "summary": "LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross- bearer bridge, APRS-IS iGate, HTTP API, indexer, signed OTA. Meant to be plugged in next to a router as the BLE-to-LAN bridge; the screen cycles three status views on its own since the button is usually under the case.",
     "status": "shipping",
     "silicon": {
@@ -309,6 +311,7 @@
     "sku": null,
     "product_url": "https://docs.m5stack.com/en/core/basic",
     "manual_url": "https://docs.m5stack.com/en/core/basic",
+    "tagline": "Boxed ESP32 with a 320x240 screen and three buttons. WiFi and ESP-NOW station with the full dashboard.",
     "summary": "M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios: WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer). Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot AP with the chat page, digipeater, iGate, indexer and signed OTA. Used as the second station on the bench: anything the T-Dongle or T-Deck sends has something to hear it.",
     "status": "shipping",
     "silicon": {
@@ -463,6 +466,7 @@
     "sku": "114993633",
     "product_url": "https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html",
     "manual_url": "https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf",
+    "tagline": "Solar outdoor LoRa node, nRF52840, no WiFi. LoRa and BLE5 digipeater on a pole.",
     "summary": "Seeed SenseCAP Solar Node P1-Pro: nRF52840 (Cortex-M4F 64 MHz, 256 KB RAM, 1 MB flash + 2 MB QSPI) on a XIAO module, SX1262 LoRa (862-930 MHz), L76K GNSS, Bluetooth 5, four 18650 cells, 5 W solar panel, weatherproof case with pole bracket, RP-SMA antenna, USB-C, Grove port. No WiFi, no screen. Runs a port of the XPRS codec and bearer on the Adafruit nRF52 core: beacons, digipeats on LoRa and BLE5, bridges between the two, and dials a T-Deck's GATT channel. Built to sit outdoors unattended.",
     "status": "shipping",
     "silicon": {
@@ -687,6 +691,7 @@
     "sku": null,
     "product_url": "https://www.espressif.com/en/products/devkits",
     "manual_url": "https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c3/esp32-c3-devkitm-1/user_guide.html",
+    "tagline": "Cheapest headless station: RISC-V, BLE5, WiFi, nothing else. Planned.",
     "summary": "Espressif ESP32-C3 DevKitM-1 class board: single-core RISC-V at 160 MHz, 400 KB RAM, 4 MB flash, one addressable LED, BOOT button, native USB serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. No screen, no LoRa, no SD. Planned as the cheapest headless station: hotspot AP with the chat page, LAN and ESP-NOW bearers, indexer, signed OTA. Ran the old SoftAP web-chat firmware; the multiboard target does not compile today and docs/station-plan.md is the plan.",
     "status": "planned",
     "silicon": {
@@ -840,6 +845,7 @@
     "sku": null,
     "product_url": "https://www.waveshare.com/product/displays/e-paper/esp32-s3-epaper-1.54.htm",
     "manual_url": "https://www.waveshare.com/wiki/ESP32-S3-ePaper-1.54",
+    "tagline": "ESP32-S3 with a 200x200 e-paper panel, RTC and sensors. Legacy build.",
     "summary": "Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, PSRAM, 4 MB flash) behind a 1.54\" 200x200 black-and-white e-paper panel in a white case, with a PCF85063 RTC, SHTC3 temperature/humidity sensor, microSD and a battery. Radios: WiFi 2.4 GHz, Bluetooth 5. The panel keeps its image with the power off, so it suits a status display that updates rarely. Primary target of the old tree; multiboard build, not retested.",
     "status": "legacy",
     "silicon": {
@@ -1002,6 +1008,7 @@
     "sku": null,
     "product_url": "https://www.espressif.com/en/products/devkits/esp32-devkitc",
     "manual_url": "https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html",
+    "tagline": "Plain ESP32 devkit. No screen, no radio module; for trying bearers.",
     "summary": "Espressif ESP32-DevKitC: WROOM-32 module (dual-core 240 MHz, 520 KB RAM, 4 MB flash), EN and BOOT buttons, micro-USB via CP2102. No screen, no radio module, no battery. Radios: WiFi 2.4 GHz, Bluetooth 4.2. A bare devkit for trying a bearer before it goes on a real board; multiboard target, fails at link today.",
     "status": "legacy",
     "silicon": {
@@ -1138,6 +1145,7 @@
     "sku": null,
     "product_url": "https://heltec.org/project/wifi-lora-32/",
     "manual_url": "https://resource.heltec.cn/download/WiFi_LoRa_32/WIFI_LoRa_32_V1.pdf",
+    "tagline": "Original ESP32 + SX1276 LoRa + OLED. Legacy build, prebuilt image in the tree.",
     "summary": "Heltec WiFi LoRa 32 V1: original ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB flash), 0.96\" 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB, LiPo connector, U.FL antenna, RST and PRG buttons. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5), LoRa. Built by the multiboard project as the older station (SoftAP web chat, APRS-IS iGate, console); a prebuilt image is in the tree. Superseded by the V3.",
     "status": "legacy",
     "silicon": {
@@ -1296,6 +1304,7 @@
     "sku": null,
     "product_url": "https://heltec.org/project/wifi-lora-32v2/",
     "manual_url": "https://resource.heltec.cn/download/WiFi_LoRa_32/WIFI_LoRa_32_V2.pdf",
+    "tagline": "Original ESP32 + SX1276 LoRa + OLED, 8 MB flash. Legacy build.",
     "summary": "Heltec WiFi LoRa 32 V2: same shape as the V1 with 8 MB flash, a better power path and Vext control. Original ESP32 (dual-core 240 MHz, 520 KB RAM), 0.96\" 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5), LoRa. Built by the multiboard project as the older station; not retested since the tree was reorganised.",
     "status": "legacy",
     "silicon": {
@@ -1465,6 +1474,7 @@
     "sku": null,
     "product_url": "https://heltec.org/project/wifi-lora-32-v3/",
     "manual_url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/index.html",
+    "tagline": "ESP32-S3 + SX1262 LoRa + OLED. Same radio as the T-Deck; port pending.",
     "summary": "Heltec WiFi LoRa 32 V3: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB flash), 0.96\" 128x64 SSD1306 OLED, SX1262 LoRa (868/915 or 433 MHz by variant), USB-C, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, LoRa. Same MCU and LoRa chip as the T-Deck, so an xprs_app port is a pin table away; today it is a multiboard target that does not compile.",
     "status": "legacy",
     "silicon": {
@@ -1628,6 +1638,7 @@
     "sku": null,
     "product_url": "https://kv4p.com/",
     "manual_url": "https://github.com/VanceVagell/kv4p-ht",
+    "tagline": "ESP32 driving an SA818 VHF transceiver. Packet on 2 m; legacy build.",
     "summary": "kv4p HT: an open-hardware VHF handheld interface. ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB flash) driving an SA818 FM transceiver module (134-174 MHz, 1 W), with PTT, squelch and audio in/out on GPIO, an SMA antenna and a USB-C link to a phone. No screen. Radios: WiFi 2.4 GHz, Bluetooth 4.2, VHF FM. The only board that transmits on an amateur voice band; here it carries packet through xprs_sa818 in the multiboard build.",
     "status": "legacy",
     "silicon": {

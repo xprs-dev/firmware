@@ -10,6 +10,7 @@ vendor: kv4p (Vance Vagell)
 sku: null
 product_url: https://kv4p.com/
 manual_url: https://github.com/VanceVagell/kv4p-ht
+tagline: "ESP32 driving an SA818 VHF transceiver. Packet on 2 m; legacy build."
 summary: >-
   kv4p HT: an open-hardware VHF handheld interface. ESP32 (dual-core 240 MHz,
   520 KB RAM, 4 MB flash) driving an SA818 FM transceiver module (134-174 MHz,

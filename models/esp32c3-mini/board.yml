@@ -10,6 +10,7 @@ vendor: Espressif
 sku: null
 product_url: https://www.espressif.com/en/products/devkits
 manual_url: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c3/esp32-c3-devkitm-1/user_guide.html
+tagline: "Cheapest headless station: RISC-V, BLE5, WiFi, nothing else. Planned."
 summary: >-
   Espressif ESP32-C3 DevKitM-1 class board: single-core RISC-V at 160 MHz, 400
   KB RAM, 4 MB flash, one addressable LED, BOOT button, native USB serial.

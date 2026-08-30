@@ -10,6 +10,7 @@ vendor: Heltec Automation
 sku: null
 product_url: https://heltec.org/project/wifi-lora-32/
 manual_url: https://resource.heltec.cn/download/WiFi_LoRa_32/WIFI_LoRa_32_V1.pdf
+tagline: "Original ESP32 + SX1276 LoRa + OLED. Legacy build, prebuilt image in the tree."
 summary: >-
   Heltec WiFi LoRa 32 V1: original ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB
   flash), 0.96" 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by
