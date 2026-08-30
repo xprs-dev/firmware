@@ -147,9 +147,9 @@ def to_json(b):
 
 
 def prebuilt_block(b, fw):
-    """Download links and, where an ESP Web Tools manifest exists, the
-    install button. Generated from models/<id>/prebuilt/ by
-    collect_prebuilt.py, so what is offered is what is in the tree."""
+    """The install box under the summary: what is in models/<id>/prebuilt/,
+    how to get it onto the board from this page, and the files for doing it
+    by hand. Written by collect_prebuilt.py, so it offers what is in the tree."""
     pre = os.path.join(b["_dir"], "prebuilt")
     rel = f"{b['_rel']}/prebuilt"
     if not os.path.isdir(pre):
@@ -158,27 +158,50 @@ def prebuilt_block(b, fw):
                    if not f.startswith(".") and f != "manifest.json")
     if not files:
         return ""
+    fam = (b.get("silicon") or {}).get("family")
+    sec_id, sec_label = FLASH_SECTION.get(fam, ("flash-source", "from source"))
     manifest = os.path.join(pre, "manifest.json")
-    ver, button = None, ""
+    ver = fw.get("version")
     if os.path.isfile(manifest):
-        m = json.load(open(manifest))
-        ver = m.get("version")
-        button = (f'<esp-web-install-button manifest="{esc(rel)}/manifest.json">'
-                  f'<span slot="unsupported">Web flashing needs Chrome or Edge.</span>'
-                  f'<span slot="not-allowed">Web flashing needs this page served over HTTPS.</span>'
-                  f'</esp-web-install-button>')
-    elif fw.get("version"):
-        ver = fw["version"]
+        ver = json.load(open(manifest)).get("version") or ver
     links = "".join(
         f'<a class="dl mono" href="{esc(rel)}/{esc(f)}" download>{esc(f)}'
         f'<span>{os.path.getsize(os.path.join(pre, f)) // 1024} KB</span></a>'
         for f in files)
-    head = "Firmware" + (f' <span class="mono">v{esc(ver)}</span>' if ver else "")
-    sec_id, sec_label = FLASH_SECTION.get((b.get("silicon") or {}).get("family"),
-                                          ("flash-source", "from source"))
+    head = f'Install XPRS {esc(ver)}' if ver else "Install XPRS"
+
+    if os.path.isfile(manifest):
+        how = (f'<p class="pb-how"><b>Flash it from this page.</b> Plug the board into this '
+               f'computer over USB, press the button, and pick its serial port in the '
+               f'dialog. The browser writes the whole image (bootloader, partition table, '
+               f'application). Needs Chrome or Edge on a desktop; phones and Firefox '
+               f'cannot do this.</p>')
+        button = (f'<esp-web-install-button manifest="{esc(rel)}/manifest.json">'
+                  f'<button slot="activate" class="pb-btn" type="button">'
+                  f'Flash to board over USB</button>'
+                  f'<span slot="unsupported" class="pb-warn">This browser has no Web Serial: '
+                  f'use Chrome or Edge on a desktop, or download the files below.</span>'
+                  f'<span slot="not-allowed" class="pb-warn">Web flashing only works when the '
+                  f'page is served over HTTPS.</span>'
+                  f'</esp-web-install-button>')
+        alt = (f'<p class="pb-alt">Or download the files and flash them with esptool: '
+               f'<a href="#{sec_id}">{esc(sec_label)}</a>.</p>')
+    elif fam == "nrf52":
+        how = (f'<p class="pb-how"><b>No flasher needed.</b> Tap the board\'s reset button '
+               f'twice; it shows up as a USB drive. Copy <span class="mono">firmware.uf2</span> '
+               f'onto that drive and the board reboots into it. Works from any computer, '
+               f'including a phone with a USB-C cable.</p>')
+        button = ""
+        alt = f'<p class="pb-alt">Details: <a href="#{sec_id}">{esc(sec_label)}</a>.</p>'
+    else:
+        how = (f'<p class="pb-how">An application image only, from an older build; it needs '
+               f'a bootloader and partition table from a full build, and its flash offset '
+               f'depends on the partition table it was built against.</p>')
+        button = ""
+        alt = f'<p class="pb-alt">Flashing by hand: <a href="#{sec_id}">{esc(sec_label)}</a>.</p>'
+
     return (f'<div class="prebuilt"><div class="build-head">{head}</div>'
-            f'<div class="pb-row">{button}<div class="dls">{links}</div></div>'
-            f'<p class="flashnote">Flashing: <a href="#{sec_id}">{esc(sec_label)}</a>.</p></div>')
+            f'{how}{button}<div class="dls">{links}</div>{alt}</div>')
 
 
 def tile(b, embed):
@@ -348,8 +371,13 @@ CSS = """
 .card{scroll-margin-top:16px}
 .prebuilt{margin:0 0 18px; padding:14px 16px; border:1px solid var(--accent); border-radius:10px;
   background:var(--accent-soft)}
-.pb-row{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
-.prebuilt .flashnote{margin:10px 0 0}
+.pb-how{margin:8px 0 12px; max-width:70ch}
+.pb-btn{font:inherit; font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700;
+  font-size:15px; cursor:pointer; background:var(--accent); color:var(--ground);
+  border:0; border-radius:999px; padding:12px 22px; margin:0 0 12px}
+.pb-btn:hover{filter:brightness(1.08)}
+.pb-warn{display:block; color:var(--partial); font-size:14px; margin:0 0 12px}
+.pb-alt{margin:12px 0 0; font-size:14px; color:var(--ink-dim)}
 .dls{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
 .dl{font-size:12px; padding:4px 10px; border:1px solid var(--rule); border-radius:8px;
   background:var(--sunk); text-decoration:none; color:var(--ink)}
