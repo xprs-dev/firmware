@@ -53,22 +53,59 @@ def http(url, data=None, timeout=15):
 
 
 def send(gw, wire, bearer):
-    r = json.loads(http(f"http://{gw}/api/xprs/send",
-                        json.dumps({"wire": wire, "bearer": bearer})))
-    if not r.get("ok"):
-        sys.exit(f"gateway refused: {r}")
-    return r["id"]
+    """One packet through the gateway. A gateway that is rebooting (a
+    T-Deck does, now and then) is waited for, up to two minutes: the
+    station's session survives far longer than that."""
+    deadline = time.time() + 120
+    while True:
+        try:
+            r = json.loads(http(f"http://{gw}/api/xprs/send",
+                                json.dumps({"wire": wire, "bearer": bearer})))
+            if not r.get("ok"):
+                sys.exit(f"gateway refused: {r}")
+            return r["id"]
+        except SystemExit:
+            raise
+        except Exception as e:
+            if time.time() > deadline:
+                sys.exit(f"gateway {gw} not answering: {e}")
+            print(f"  gateway not answering ({e.__class__.__name__}) -- waiting"); time.sleep(5)
+
+
+LISTEN = None      # a serial.Serial on a station's console, or None
+LISTEN_BUF = ""
 
 
 def results(gw, station, rid, since_wires):
-    """t:result wires from [station] carrying r:[rid], not seen before."""
+    """t:result wires from [station] carrying r:[rid], not seen before.
+
+    From the gateway's history, or -- with --listen -- off the console of a
+    station on USB (a T-Dongle under the pole): every wire it hears is a
+    log line, and the answer is in there."""
+    global LISTEN_BUF
     rows = []
-    for url in (f"http://{gw}/api/xprs/history?only=result&call={station}&limit=40",
-                f"http://{gw}/api/xprs?type=result&from={station}&limit=40&recent=1"):
+    if LISTEN is not None:
         try:
-            rows += re.findall(r'"wire":"([^"]*)"', http(url, timeout=8))
+            LISTEN_BUF += LISTEN.read(65536).decode("utf-8", "replace")
         except Exception:
             pass
+        LISTEN_BUF = LISTEN_BUF[-200000:]
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", LISTEN_BUF)
+        rows += re.findall(r"(t:result f:%s [^\r\n]*)" % re.escape(station), clean)
+        rows = [re.sub(r"\s*\[0m$", "", r) for r in rows]
+        if gw is None:
+            out = []
+            for w in rows:
+                if f" r:{rid} " in w + " " and w not in since_wires:
+                    since_wires.add(w); out.append(w)
+            return out
+    if LISTEN is None:
+        for url in (f"http://{gw}/api/xprs/history?only=result&call={station}&limit=40",
+                    f"http://{gw}/api/xprs?type=result&from={station}&limit=40&recent=1"):
+            try:
+                rows += re.findall(r'"wire":"([^"]*)"', http(url, timeout=8))
+            except Exception:
+                pass
     out = []
     for w in rows:
         if f" r:{rid} " in w + " " and w not in since_wires:
@@ -105,7 +142,13 @@ def main():
     ap.add_argument("--flutter", default=os.environ.get("XPRS_FLUTTER",
                     os.path.join(os.path.dirname(__file__), "..", "..", "xprs-flutter")))
     ap.add_argument("--board", default="sensecap-p1-pro")
+    ap.add_argument("--listen", help="serial port of a station on USB whose console shows what it hears; "
+                                     "answers are read there instead of the gateway's history")
     a = ap.parse_args()
+    global LISTEN
+    if a.listen:
+        import serial
+        LISTEN = serial.Serial(a.listen, 115200, timeout=0)
 
     if a.bin:
         image = open(a.bin, "rb").read()

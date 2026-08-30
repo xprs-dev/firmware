@@ -1,7 +1,7 @@
 [
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdeck",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdeck",
     "id": "tdeck",
     "name": "T-Deck",
     "vendor": "LilyGO",
@@ -115,13 +115,13 @@
       "version": "0.4.0",
       "artifact": "models/tdeck/prebuilt/firmware.bin",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdeck/firmware",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/prebuilt/firmware.bin"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdeck/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/tdeck/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/tdeck/README.md"
       }
     ],
     "images": [
@@ -129,32 +129,32 @@
         "file": "hardware/images/product-front.jpg",
         "caption": "Front and back: 320x240 screen, trackball, QWERTY keyboard, SD slot, LoRa module.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-front.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/hardware/images/product-front.jpg"
       },
       {
         "file": "hardware/images/product-2.jpg",
         "caption": "Second view.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-2.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/hardware/images/product-2.jpg"
       },
       {
         "file": "hardware/images/product-3.jpg",
         "caption": "Third view.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-3.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/hardware/images/product-3.jpg"
       },
       {
         "file": "hardware/images/product-4.jpg",
         "caption": "Fourth view.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-4.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/hardware/images/product-4.jpg"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdongle-s3",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdongle-s3",
     "id": "tdongle-s3",
     "name": "T-Dongle-S3",
     "vendor": "LilyGO",
@@ -259,17 +259,17 @@
       "version": "0.4.0",
       "artifact": "models/tdongle-s3/prebuilt/firmware.bin",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdongle-s3/firmware",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdongle-s3/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/tdongle-s3/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/tdongle-s3/README.md"
       },
       {
         "title": "Memory and scheduling, binding on this board",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/docs/esp32.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/docs/esp32.md"
       }
     ],
     "images": [
@@ -277,32 +277,32 @@
         "file": "hardware/images/product-front.jpg",
         "caption": "The stick, cap on and cap off: 160x80 screen on the face, ESP32-S3 under the clear shell.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-front.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/hardware/images/product-front.jpg"
       },
       {
         "file": "hardware/images/product-2.jpg",
         "caption": "Second view.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-2.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/hardware/images/product-2.jpg"
       },
       {
         "file": "hardware/images/product-3.jpg",
         "caption": "Third view.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-3.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/hardware/images/product-3.jpg"
       },
       {
         "file": "hardware/images/product-4.jpg",
         "caption": "Fourth view.",
         "credit": "LilyGO product photography, lilygo.cc",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-4.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/hardware/images/product-4.jpg"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/m5stack-core",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/m5stack-core",
     "id": "m5stack-core",
     "name": "M5Stack Core",
     "vendor": "M5Stack",
@@ -417,13 +417,13 @@
       "version": "0.2.0",
       "artifact": "models/m5stack-core/prebuilt/firmware.bin",
       "flashing": "esptool over the CP210x USB-serial port",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/m5stack-core/firmware",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/prebuilt/firmware.bin"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/m5stack-core/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/m5stack-core/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/m5stack-core/README.md"
       }
     ],
     "images": [
@@ -431,32 +431,32 @@
         "file": "hardware/images/product-01.webp",
         "caption": "Core Basic: 320x240 in the black stackable case, three buttons under the screen.",
         "credit": "M5Stack product photography, docs.m5stack.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/product-01.webp"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/hardware/images/product-01.webp"
       },
       {
         "file": "hardware/images/product-02.webp",
         "caption": "Second view.",
         "credit": "M5Stack product photography, docs.m5stack.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/product-02.webp"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/hardware/images/product-02.webp"
       },
       {
         "file": "hardware/images/product-03.webp",
         "caption": "Third view.",
         "credit": "M5Stack product photography, docs.m5stack.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/product-03.webp"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/hardware/images/product-03.webp"
       },
       {
         "file": "hardware/images/dimensions.jpg",
         "caption": "Module dimensions, from the vendor page.",
         "credit": "M5Stack product photography, docs.m5stack.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/dimensions.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/hardware/images/dimensions.jpg"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/sensecap-p1-pro",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-p1-pro",
     "id": "sensecap-p1-pro",
     "name": "SenseCAP Solar Node P1-Pro",
     "vendor": "Seeed Studio",
@@ -615,8 +615,8 @@
       "version": "0.1.0",
       "artifact": "models/sensecap-p1-pro/prebuilt/firmware.uf2",
       "flashing": "UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader that mounts as a mass-storage volume on a double reset-tap; an image is copied onto it. No esptool, no serial protocol, nothing this tree's tools/ scripts know how to do.",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/sensecap-p1-pro/firmware",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/prebuilt/firmware.uf2"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-p1-pro/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/prebuilt/firmware.uf2"
     },
     "docs": [
       {
@@ -637,50 +637,50 @@
         "file": "hardware/images/block-diagram.png",
         "caption": "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path.",
         "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/block-diagram.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/block-diagram.png"
       },
       {
         "file": "hardware/images/product-front.jpg",
         "caption": "The node, panel side.",
         "credit": "Seeed Studio product photography",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-front.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/product-front.jpg"
       },
       {
         "file": "hardware/images/product-angle.jpg",
         "caption": "Three-quarter view with the antenna fitted.",
         "credit": "Seeed Studio product photography",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-angle.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/product-angle.jpg"
       },
       {
         "file": "hardware/images/product-mounted.jpg",
         "caption": "Pole-mounted on its bracket.",
         "credit": "Seeed Studio product photography",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-mounted.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/product-mounted.jpg"
       },
       {
         "file": "hardware/images/product-internals.jpg",
         "caption": "Inside: the four 18650 cells and the carrier board.",
         "credit": "Seeed Studio product photography",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-internals.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/product-internals.jpg"
       },
       {
         "file": "hardware/images/product-ports.jpg",
         "caption": "The port and button row on the underside.",
         "credit": "Seeed Studio product photography",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-ports.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/product-ports.jpg"
       },
       {
         "file": "hardware/images/exterior-callouts.png",
         "caption": "Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend.",
         "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/exterior-callouts.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/exterior-callouts.png"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/esp32c3-mini",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/esp32c3-mini",
     "id": "esp32c3-mini",
     "name": "ESP32-C3 Mini (DevKitM-1 pinout)",
     "vendor": "Espressif",
@@ -793,20 +793,20 @@
       "version": null,
       "artifact": null,
       "flashing": "esptool over the native USB-JTAG CDC port, pio run -e esp32c3_mini -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/esp32c3-mini/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/esp32c3-mini/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       },
       {
         "title": "Station plan",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/esp32c3-mini/docs/station-plan.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/esp32c3-mini/docs/station-plan.md"
       }
     ],
     "images": [
@@ -814,26 +814,26 @@
         "file": "hardware/images/product-front.png",
         "caption": "ESP32-C3-DevKitM-1, isometric.",
         "credit": "Espressif, ESP32-C3-DevKitM-1 user guide",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/esp32c3-mini/hardware/images/product-front.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/hardware/images/product-front.png"
       },
       {
         "file": "hardware/images/annotated.png",
         "caption": "Annotated photo: the module, the two buttons, the RGB LED on GPIO8.",
         "credit": "Espressif, ESP32-C3-DevKitM-1 user guide",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/esp32c3-mini/hardware/images/annotated.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/hardware/images/annotated.png"
       },
       {
         "file": "hardware/images/pinout.png",
         "caption": "Pinout.",
         "credit": "Espressif, ESP32-C3-DevKitM-1 user guide",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/esp32c3-mini/hardware/images/pinout.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/hardware/images/pinout.png"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/epaper-1in54",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/epaper-1in54",
     "id": "epaper-1in54",
     "name": "ESP32-S3-ePaper-1.54",
     "vendor": "Waveshare",
@@ -955,20 +955,20 @@
       "version": null,
       "artifact": null,
       "flashing": "esptool over the USB-serial port, pio run -e esp32s3_epaper_1in54 -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/epaper-1in54/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/epaper-1in54/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       },
       {
         "title": "Firmware summary, written for this board",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/docs/summary.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/docs/summary.md"
       }
     ],
     "images": [
@@ -976,26 +976,26 @@
         "file": "hardware/images/product-front.png",
         "caption": "ESP32-S3-ePaper-1.54 in its white case, the 200x200 panel showing a picture.",
         "credit": "Waveshare product photography, waveshare.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/epaper-1in54/hardware/images/product-front.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/hardware/images/product-front.png"
       },
       {
         "file": "hardware/images/product-2.jpg",
         "caption": "Second view.",
         "credit": "Waveshare product photography, waveshare.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/epaper-1in54/hardware/images/product-2.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/hardware/images/product-2.jpg"
       },
       {
         "file": "hardware/images/product-3.jpg",
         "caption": "Third view.",
         "credit": "Waveshare product photography, waveshare.com",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/epaper-1in54/hardware/images/product-3.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/hardware/images/product-3.jpg"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/generic",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/generic",
     "id": "generic",
     "name": "ESP32-DevKitC (esp32dev)",
     "vendor": "Espressif",
@@ -1101,16 +1101,16 @@
       "version": null,
       "artifact": null,
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/generic/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/generic/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       }
     ],
     "images": [
@@ -1118,20 +1118,20 @@
         "file": "hardware/images/annotated.png",
         "caption": "ESP32-DevKitC V4 functional overview: WROOM-32 module, EN and Boot buttons, USB-UART.",
         "credit": "Espressif, ESP32-DevKitC V4 user guide",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/generic/hardware/images/annotated.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/hardware/images/annotated.png"
       },
       {
         "file": "hardware/images/pinout.png",
         "caption": "Pin layout.",
         "credit": "Espressif, ESP32-DevKitC V4 user guide",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/generic/hardware/images/pinout.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/hardware/images/pinout.png"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v1",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v1",
     "id": "heltec-v1",
     "name": "WiFi LoRa 32 (V1)",
     "vendor": "Heltec Automation",
@@ -1256,17 +1256,17 @@
       "version": null,
       "artifact": "models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin",
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/heltec-v1/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/heltec-v1/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       },
       {
         "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
@@ -1282,14 +1282,14 @@
         "file": "hardware/images/v2-for-layout-front-back.jpg",
         "caption": "NO VENDOR PHOTO OF THE V1 EXISTS ONLINE. This is the V2, same layout: 0.96' OLED, micro-USB, RST/PRG buttons, U.FL antenna. The silk on a V1 reads 'WiFi_LoRa_32' without a version, and it has 4 MB flash to the V2's 8.",
         "credit": "Heltec Automation, docs.heltec.org hardware update log",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v1/hardware/images/v2-for-layout-front-back.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v1/hardware/images/v2-for-layout-front-back.jpg"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v2",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v2",
     "id": "heltec-v2",
     "name": "WiFi LoRa 32 (V2)",
     "vendor": "Heltec Automation",
@@ -1414,16 +1414,16 @@
       "version": null,
       "artifact": null,
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/heltec-v2/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/heltec-v2/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       },
       {
         "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
@@ -1439,26 +1439,26 @@
         "file": "hardware/images/product-front.png",
         "caption": "V2 product photo, heltec.org.",
         "credit": "Heltec Automation, docs.heltec.org hardware update log",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v2/hardware/images/product-front.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v2/hardware/images/product-front.png"
       },
       {
         "file": "hardware/images/board-868-front-back.jpg",
         "caption": "868-915 MHz variant, front and back; silk reads WiFi_LoRa_32_V2.",
         "credit": "Heltec Automation, docs.heltec.org hardware update log",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v2/hardware/images/board-868-front-back.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v2/hardware/images/board-868-front-back.jpg"
       },
       {
         "file": "hardware/images/board-433-front-back.jpg",
         "caption": "433-510 MHz variant, same board, different band marking.",
         "credit": "Heltec Automation, docs.heltec.org hardware update log",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v2/hardware/images/board-433-front-back.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v2/hardware/images/board-433-front-back.jpg"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v3",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3",
     "id": "heltec-v3",
     "name": "WiFi LoRa 32 (V3)",
     "vendor": "Heltec Automation",
@@ -1583,16 +1583,16 @@
       "version": null,
       "artifact": null,
       "flashing": "esptool over the USB-serial port, pio run -e heltec_v3 -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/heltec-v3/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/heltec-v3/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       },
       {
         "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
@@ -1608,20 +1608,20 @@
         "file": "hardware/images/product-2.png",
         "caption": "V3: USB-C, SX1262 under the OLED, the version on the silk.",
         "credit": "Heltec Automation product photography, heltec.org",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v3/hardware/images/product-2.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/hardware/images/product-2.png"
       },
       {
         "file": "hardware/images/product-front.png",
         "caption": "In its packaging: the red LoRa 32 label with the band printed on it.",
         "credit": "Heltec Automation product photography, heltec.org",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v3/hardware/images/product-front.png"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/hardware/images/product-front.png"
       }
     ],
     "screenshots": []
   },
   {
-    "repo": "xprs-dev/xprs-firmware",
-    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/kv4p",
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/kv4p",
     "id": "kv4p",
     "name": "kv4p HT",
     "vendor": "kv4p (Vance Vagell)",
@@ -1746,16 +1746,16 @@
       "version": null,
       "artifact": null,
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
-      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
     "docs": [
       {
         "title": "Board README",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/kv4p/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/kv4p/README.md"
       },
       {
         "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
       }
     ],
     "images": [
@@ -1763,13 +1763,13 @@
         "file": "hardware/images/product-on-desk.jpg",
         "caption": "The kv4p HT in its printed case, SMA antenna fitted, on a phone.",
         "credit": "Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/kv4p/hardware/images/product-on-desk.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/kv4p/hardware/images/product-on-desk.jpg"
       },
       {
         "file": "hardware/images/pcb-v1.8.jpg",
         "caption": "PCB v1.8: the ESP32 module and the SA818 under the shield.",
         "credit": "Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/kv4p/hardware/images/pcb-v1.8.jpg"
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/kv4p/hardware/images/pcb-v1.8.jpg"
       }
     ],
     "screenshots": []

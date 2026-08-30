@@ -49,7 +49,7 @@ except ImportError:
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BEARERS = [("ble5", "BLE5"), ("lora", "LoRa"), ("lan", "LAN"), ("espnow", "ESP-NOW")]
-REPO = "xprs-dev/xprs-firmware"
+REPO = "xprs-dev/firmware"
 REPO_URL = f"https://github.com/{REPO}"
 RAW_URL = f"https://raw.githubusercontent.com/{REPO}/main"
 XPRS_ROLES = [("beacon", "Beacon"), ("digipeater", "Digipeater"), ("bridge", "Bridge"),
@@ -618,7 +618,7 @@ def build(embed):
 
 <header class="top"><div class="top-in">
   <div>
-    <p class="eyebrow">xprs-dev/xprs-firmware</p>
+    <p class="eyebrow">xprs-dev/firmware</p>
     <h1>Supported boards</h1>
     <p class="blurb">Each card is one folder under <span class="mono">models/</span>:
       what the board is, which XPRS bearers it carries, what the station on it

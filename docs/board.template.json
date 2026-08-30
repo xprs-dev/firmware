@@ -1,6 +1,6 @@
 {
-  "repo": "xprs-dev/xprs-firmware",
-  "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/<id>",
+  "repo": "xprs-dev/firmware",
+  "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/<id>",
   "id": "<id>",
   "name": null,
   "vendor": null,
