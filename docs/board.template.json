@@ -1,0 +1,80 @@
+{
+  "repo": "xprs-dev/xprs-firmware",
+  "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/<id>",
+  "id": "<id>",
+  "name": null,
+  "vendor": null,
+  "sku": null,
+  "product_url": null,
+  "manual_url": null,
+  "summary": null,
+  "status": null,
+  "silicon": {
+    "mcu": null,
+    "family": null,
+    "core": null,
+    "ram_kb": null,
+    "psram_mb": null,
+    "flash_mb": null
+  },
+  "radios": {
+    "bluetooth": null,
+    "wifi": null,
+    "lora": null,
+    "other": []
+  },
+  "bearers": {
+    "ble5": null,
+    "ble5_note": null,
+    "lora": null,
+    "lora_note": null,
+    "lan": null,
+    "lan_note": null,
+    "espnow": null,
+    "espnow_note": null
+  },
+  "xprs": {
+    "beacon": null,
+    "digipeater": null,
+    "bridge": null,
+    "igate": null,
+    "hotspot": null,
+    "api": null,
+    "indexer": null,
+    "share": null,
+    "reticulum": null,
+    "ota": null,
+    "gossip": null,
+    "dashboard": null,
+    "chat": null,
+    "mesh_session": null,
+    "vhf": null,
+    "note": null
+  },
+  "io": {
+    "screen": null,
+    "buttons": [],
+    "leds": [],
+    "gnss": null,
+    "connectors": [],
+    "sensors": []
+  },
+  "physical": {
+    "dimensions_mm": null,
+    "weight_g": null,
+    "ip_rating": null,
+    "temp_c": null,
+    "power": null
+  },
+  "firmware": {
+    "toolchain": null,
+    "project": null,
+    "env": null,
+    "version": null,
+    "artifact": null,
+    "flashing": null
+  },
+  "docs": [],
+  "images": [],
+  "screenshots": []
+}

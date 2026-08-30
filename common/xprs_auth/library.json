@@ -1,0 +1,12 @@
+{
+  "name": "xprs_auth",
+  "version": "1.0.0",
+  "description": "May this signed t:command make this station act (XPRS.md 25.4): allow-list, signature, freshness, replay. Off the IDF the board supplies xcfg_get(), nostr_keys_derive_callsign() and xauth_platform_now().",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*", "xprs_id": "*", "xprs_sig": "*", "xprs_nostr": "*"},
+  "build": {
+    "srcFilter": ["+<xprs_auth.c>"],
+    "flags": ["-I."]
+  }
+}

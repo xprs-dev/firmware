@@ -4,9 +4,15 @@ name: T-Dongle-S3
 vendor: LilyGO
 sku: null
 product_url: https://www.lilygo.cc/products/t-dongle-s3
+manual_url: https://github.com/Xinyuan-LilyGO/T-Dongle-S3
 summary: >-
-  The BLE5 bridge. A USB stick that lives beside a router and carries what it
-  hears on Bluetooth onto the LAN, and back.
+  LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB
+  flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG
+  serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs
+  the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross-
+  bearer bridge, APRS-IS iGate, HTTP API, indexer, signed OTA. Meant to be
+  plugged in next to a router as the BLE-to-LAN bridge; the screen cycles
+  three status views on its own since the button is usually under the case.
 status: shipping
 
 silicon:
@@ -16,6 +22,12 @@ silicon:
   ram_kb: 512
   psram_mb: null
   flash_mb: 16
+
+radios:
+  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "ESP32-S3 controller; one XPRS packet fits one extended AD"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA; SoftAP possible but off by default (heap)"}
+  lora: null
+  other: []
 
 bearers:
   ble5: "yes"
@@ -30,6 +42,31 @@ bearers:
   lan_note: WiFi STA. The other half of the bridge, and why the board exists.
   espnow: "yes"
   espnow_note: null
+
+xprs:
+  beacon: "yes"
+  digipeater: "yes"
+  bridge: "yes"
+  igate: "yes"
+  hotspot: "untested"
+  hotspot_note: >-
+    Compiled in, seeded OFF (.hotspot = false in main.c): the AP costs ~9 KB
+    of internal heap and this board has no PSRAM. `cfg set ap_on 1` turns it on.
+  api: "yes"
+  indexer: "yes"
+  share: "yes"
+  reticulum: "untested"
+  reticulum_note: xprs_app brings xprsrns up on every board; not measured here since the rewrite.
+  ota: "yes"
+  gossip: "yes"
+  dashboard: "yes"
+  chat: "no"
+  chat_note: Nothing to type on. The read-only chat table, on the three-view mini UI.
+  mesh_session: "untested"
+  mesh_session_note: The GATT channel is measured T-Deck <-> P1-Pro (docs/ble5-gatt.md), not on this board.
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "The BLE5 bridge: hears on Bluetooth, repeats on LAN and ESP-NOW, and back."
 
 io:
   screen: {controller: ST7735, width: 160, height: 80}
@@ -54,11 +91,25 @@ firmware:
   project: models/tdongle-s3/firmware
   env: tdongle
   version: 0.4.0
-  artifact: null
+  artifact: models/tdongle-s3/prebuilt/firmware.bin
   flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
 
 docs:
   - {title: "Board README", url: "models/tdongle-s3/README.md"}
   - {title: "Memory and scheduling, binding on this board", url: "docs/esp32.md"}
 
-images: []
+images:
+  - file: hardware/images/product-front.jpg
+    caption: 'The stick, cap on and cap off: 160x80 screen on the face, ESP32-S3 under the clear shell.'
+    credit: "LilyGO product photography, lilygo.cc"
+  - file: hardware/images/product-2.jpg
+    caption: 'Second view.'
+    credit: "LilyGO product photography, lilygo.cc"
+  - file: hardware/images/product-3.jpg
+    caption: 'Third view.'
+    credit: "LilyGO product photography, lilygo.cc"
+  - file: hardware/images/product-4.jpg
+    caption: 'Fourth view.'
+    credit: "LilyGO product photography, lilygo.cc"
+
+screenshots: []

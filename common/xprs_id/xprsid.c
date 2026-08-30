@@ -12,16 +12,13 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "mbedtls/sha256.h"
-
+/* The codec's one hash seam: mbedtls on the ESP32s (xprs_sha256_idf.c), a
+ * software SHA-256 on a chip without it (xprs_sha256_sw.c). Going through it
+ * rather than mbedtls directly is what lets this file compile on the
+ * SenseCAP P1-Pro unchanged. */
 static void xid_sha256(const uint8_t *in, size_t len, uint8_t out[32])
 {
-    mbedtls_sha256_context c;
-    mbedtls_sha256_init(&c);
-    mbedtls_sha256_starts(&c, 0);
-    mbedtls_sha256_update(&c, in, len);
-    mbedtls_sha256_finish(&c, out);
-    mbedtls_sha256_free(&c);
+    xprs_sha256(in, len, out);
 }
 
 int xprsid_sign(char *wire, int len, int cap, const uint8_t priv[32])

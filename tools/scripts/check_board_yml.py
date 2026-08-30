@@ -19,8 +19,9 @@ try:
 except ImportError:
     sys.exit("PyYAML is needed: pip install pyyaml")
 
-TOP = ["id", "name", "vendor", "sku", "product_url", "summary", "status",
-       "silicon", "bearers", "io", "physical", "firmware", "docs", "images"]
+TOP = ["id", "name", "vendor", "sku", "product_url", "manual_url", "summary",
+       "status", "silicon", "radios", "bearers", "xprs", "io", "physical",
+       "firmware", "docs", "images", "screenshots"]
 STATUS = {"shipping", "legacy", "planned", "unsupported"}
 FAMILY = {"esp32", "esp32s3", "esp32c3", "nrf52"}
 BEARERS = ["ble5", "lora", "lan", "espnow"]
@@ -28,6 +29,11 @@ BEARERS = ["ble5", "lora", "lan", "espnow"]
 # `untested` is not, which would make one field two types.
 VERDICT = {"yes", "no", "untested"}
 SILICON = ["mcu", "family", "core", "ram_kb", "psram_mb", "flash_mb"]
+RADIOS = ["bluetooth", "wifi", "lora", "other"]
+XPRS = ["beacon", "digipeater", "bridge", "igate", "hotspot", "api", "indexer",
+        "share", "reticulum", "ota", "gossip", "dashboard", "chat",
+        "mesh_session", "vhf"]
+XPRS_VERDICT = {"yes", "no", "planned", "untested"}
 FIRMWARE = ["toolchain", "project", "env", "version", "artifact", "flashing"]
 
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,6 +78,24 @@ def check(path, d, is_template):
         if v in ("no", "untested") and not (bea.get(k + "_note") or "").strip():
             bad(f"bearers.{k} is '{v}' with no {k}_note saying why")
 
+    rad = d.get("radios") or {}
+    for k in RADIOS:
+        if k not in rad:
+            bad(f"radios is missing '{k}'")
+
+    xp = d.get("xprs") or {}
+    for k in XPRS:
+        v = xp.get(k)
+        if v not in XPRS_VERDICT:
+            bad(f"xprs.{k} is {v!r}; want one of {sorted(XPRS_VERDICT)} as a "
+                f"quoted string")
+        elif v != "yes" and not (xp.get(k + "_note") or "").strip():
+            bad(f"xprs.{k} is '{v}' with no {k}_note saying why")
+    for k in xp:
+        base = k[:-5] if k.endswith("_note") else k
+        if base not in XPRS and k != "note":
+            bad(f"xprs has unknown role '{k}'")
+
     fw = d.get("firmware") or {}
     for k in FIRMWARE:
         if k not in fw:
@@ -90,6 +114,14 @@ def check(path, d, is_template):
         f = img.get("file")
         if f and not os.path.isfile(os.path.join(os.path.dirname(path), f)):
             bad(f"images[{i}] file '{f}' does not exist")
+
+    for i, sc in enumerate(d.get("screenshots") or []):
+        for k in ("file", "caption"):
+            if not (sc.get(k) or "").strip():
+                bad(f"screenshots[{i}] has no '{k}'")
+        f = sc.get("file")
+        if f and not os.path.isfile(os.path.join(os.path.dirname(path), f)):
+            bad(f"screenshots[{i}] file '{f}' does not exist")
 
 
 paths = sorted(glob.glob(os.path.join(root, "models", "*", "board.yml")))

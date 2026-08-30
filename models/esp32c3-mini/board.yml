@@ -1,0 +1,124 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# Pins and modules are from common/xprs_model_esp32c3_mini/model_config.h and
+# the env in multiboard/platformio.ini; memory from the sdkconfig fragment and
+# the chip datasheet. Anything null has not been measured on this bench.
+
+id: esp32c3-mini
+name: ESP32-C3 Mini (DevKitM-1 pinout)
+vendor: Espressif
+sku: null
+product_url: https://www.espressif.com/en/products/devkits
+manual_url: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c3/esp32-c3-devkitm-1/user_guide.html
+summary: >-
+  Espressif ESP32-C3 DevKitM-1 class board: single-core RISC-V at 160 MHz, 400
+  KB RAM, 4 MB flash, one addressable LED, BOOT button, native USB serial.
+  Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. No screen,
+  no LoRa, no SD. Planned as the cheapest headless station: hotspot AP with
+  the chat page, LAN and ESP-NOW bearers, indexer, signed OTA. Ran the old
+  SoftAP web-chat firmware; the multiboard target does not compile today and
+  docs/station-plan.md is the plan.
+status: planned
+
+silicon:
+  mcu: ESP32-C3
+  family: esp32c3
+  core: RISC-V single @ 160 MHz
+  ram_kb: 400
+  psram_mb: null
+  flash_mb: 4
+
+radios:
+  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "the chip can; every historical C3 config left CONFIG_BT_ENABLED off"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
+  lora: null
+  other: []
+
+bearers:
+  ble5: "untested"
+  ble5_note: The C3 has extended advertising, but BLE was OFF in every build that ran on this board and docs/espnow.md warns a BLE controller steals the radio from an unassociated STA. First thing the plan tests.
+  lora: "no"
+  lora_note: No LoRa radio.
+  lan: "untested"
+  lan_note: The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.
+  espnow: "untested"
+  espnow_note: Same -- the radio can, the legacy build does not.
+
+# The multiboard build predates xprs_app: it is the older station (SoftAP +
+# web chat over ESP-Mesh-Lite, APRS-IS iGate, telnet/SSH console) and carries
+# no XPRS bearer. Nothing below has been measured since the tree moved, and
+# multiboard/README.md says which targets even compile.
+xprs:
+  beacon: "no"
+  beacon_note: multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.
+  digipeater: "no"
+  digipeater_note: No XPRS bearers in the legacy build.
+  bridge: "no"
+  bridge_note: No XPRS bearers in the legacy build.
+  igate: "untested"
+  igate_note: The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.
+  hotspot: "untested"
+  hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
+  api: "untested"
+  api_note: Legacy xprs_http station API; not run since the move.
+  indexer: "no"
+  indexer_note: xprs_index is an xprs_app thing.
+  share: "no"
+  share_note: xprs_app only.
+  reticulum: "no"
+  reticulum_note: xprs_app only.
+  ota: "untested"
+  ota_note: Legacy xprs_updates path; unsigned, not run since the move.
+  gossip: "no"
+  gossip_note: xprs_app only.
+  dashboard: "no"
+  dashboard_note: No screen; the plan keeps it that way.
+  chat: "no"
+  chat_note: Nothing to type on.
+  mesh_session: "no"
+  mesh_session_note: BLE mesh session is xprs_app / tinynimble; not in the legacy build.
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "Does not compile today (msgstore.h, nimble_port.h). docs/station-plan.md is the port plan: WiFi STA+AP with web chat, ESP-NOW and LAN bearers, the index, signed OTA."
+
+io:
+  screen: null
+  buttons:
+    - {name: boot, pin: GPIO9, note: "the C3 strap pin"}
+  leds: [{name: led, pin: GPIO8, note: "the DevKitM-1 addressable LED pin"}]
+  gnss: null
+  connectors: [{name: micro-USB, note: "native USB-JTAG CDC"}]
+  sensors: []
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb
+
+firmware:
+  toolchain: esp-idf
+  project: multiboard
+  env: esp32c3_mini
+  version: null
+  artifact: null
+  flashing: "esptool over the native USB-JTAG CDC port, pio run -e esp32c3_mini -t upload"
+
+docs:
+  - {title: "Board README", url: "models/esp32c3-mini/README.md"}
+  - {title: "The shared build, and which targets compile", url: "multiboard/README.md"}
+  - {title: "Station plan", url: "models/esp32c3-mini/docs/station-plan.md"}
+
+images:
+  - file: hardware/images/product-front.png
+    caption: 'ESP32-C3-DevKitM-1, isometric.'
+    credit: "Espressif, ESP32-C3-DevKitM-1 user guide"
+  - file: hardware/images/annotated.png
+    caption: 'Annotated photo: the module, the two buttons, the RGB LED on GPIO8.'
+    credit: "Espressif, ESP32-C3-DevKitM-1 user guide"
+  - file: hardware/images/pinout.png
+    caption: 'Pinout.'
+    credit: "Espressif, ESP32-C3-DevKitM-1 user guide"
+
+screenshots: []

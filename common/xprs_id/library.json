@@ -1,0 +1,12 @@
+{
+  "name": "xprs_id",
+  "version": "1.0.0",
+  "description": "Signing and checking one XPRS packet (XPRS.md 9.1): sig: appended before m:, verified over the canonical text.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*", "xprs_sig": "*"},
+  "build": {
+    "srcFilter": ["+<xprsid.c>"],
+    "flags": ["-I."]
+  }
+}

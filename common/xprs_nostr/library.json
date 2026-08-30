@@ -1,0 +1,11 @@
+{
+  "name": "xprs_nostr",
+  "version": "1.0.0",
+  "description": "Only bech32.c is portable: the npub/nsec encoding a callsign is derived from (XPRS.md section 3). nostr_keys.c is NVS + IDF and stays with the ESP32 boards.",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcFilter": ["+<bech32.c>"],
+    "flags": ["-I."]
+  }
+}

@@ -4,9 +4,16 @@ name: M5Stack Core
 vendor: M5Stack
 sku: null
 product_url: https://docs.m5stack.com/en/core/basic
+manual_url: https://docs.m5stack.com/en/core/basic
 summary: >-
-  The second voice on the air. Testing a bearer with one device proves only
-  that loopback works; this is the other end.
+  M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB
+  flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front
+  buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios:
+  WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer).
+  Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot
+  AP with the chat page, digipeater, iGate, indexer and signed OTA. Used as
+  the second station on the bench: anything the T-Dongle or T-Deck sends has
+  something to hear it.
 status: shipping
 
 silicon:
@@ -16,6 +23,12 @@ silicon:
   ram_kb: 520
   psram_mb: null
   flash_mb: 16
+
+radios:
+  bluetooth: {version: "4.2 LE", extended_advertising: false, note: "original ESP32: 31-byte legacy advertising only"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
+  lora: null
+  other: []
 
 bearers:
   ble5: "no"
@@ -29,6 +42,28 @@ bearers:
   lan_note: null
   espnow: "yes"
   espnow_note: "What this board is here for."
+
+xprs:
+  beacon: "yes"
+  digipeater: "yes"
+  bridge: "yes"
+  igate: "yes"
+  hotspot: "yes"
+  api: "yes"
+  indexer: "yes"
+  share: "yes"
+  reticulum: "untested"
+  reticulum_note: xprs_app brings xprsrns up on every board; not measured here since the rewrite.
+  ota: "yes"
+  gossip: "yes"
+  dashboard: "yes"
+  chat: "no"
+  chat_note: Three buttons, no keyboard. The read-only chat table.
+  mesh_session: "no"
+  mesh_session_note: No BLE5 on this chip, so no BLE bearer to carry a session.
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "The second voice on the air: ESP-NOW and LAN, seven-panel dashboard."
 
 io:
   screen: {controller: ILI9342C, width: 320, height: 240}
@@ -56,10 +91,24 @@ firmware:
   project: models/m5stack-core/firmware
   env: m5stack
   version: 0.2.0
-  artifact: null
+  artifact: models/m5stack-core/prebuilt/firmware.bin
   flashing: "esptool over the CP210x USB-serial port"
 
 docs:
   - {title: "Board README", url: "models/m5stack-core/README.md"}
 
-images: []
+images:
+  - file: hardware/images/product-01.webp
+    caption: 'Core Basic: 320x240 in the black stackable case, three buttons under the screen.'
+    credit: "M5Stack product photography, docs.m5stack.com"
+  - file: hardware/images/product-02.webp
+    caption: 'Second view.'
+    credit: "M5Stack product photography, docs.m5stack.com"
+  - file: hardware/images/product-03.webp
+    caption: 'Third view.'
+    credit: "M5Stack product photography, docs.m5stack.com"
+  - file: hardware/images/dimensions.jpg
+    caption: 'Module dimensions, from the vendor page.'
+    credit: "M5Stack product photography, docs.m5stack.com"
+
+screenshots: []

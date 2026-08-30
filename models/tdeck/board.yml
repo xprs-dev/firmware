@@ -4,10 +4,15 @@ name: T-Deck
 vendor: LilyGO
 sku: null
 product_url: https://www.lilygo.cc/products/t-deck
+manual_url: https://github.com/Xinyuan-LilyGO/T-Deck
 summary: >-
-  The one you can type on. Screen, trackball and a QWERTY keyboard, so it is
-  the board that earns the interactive chat panel -- and the only one
-  carrying all four bearers at once.
+  LilyGO T-Deck: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB PSRAM, 16 MB
+  flash), 2.8" 320x240 ST7789 LCD with GT911 touch, QWERTY keyboard on its own
+  ESP32-C3, trackball, microSD, speaker, microphone, USB-C, LiPo connector.
+  Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, and an SX1262
+  LoRa module (868 MHz on this unit). The only board with all four bearers,
+  and the only one you can type on, so it gets the interactive chat panel.
+  Also serves the BLE GATT mesh session that the P1-Pro connects to.
 status: shipping
 
 silicon:
@@ -18,6 +23,12 @@ silicon:
   psram_mb: 8
   flash_mb: 16
 
+radios:
+  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "ESP32-S3 controller"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
+  lora: {chip: SX1262, band_mhz: "868 (this variant; 433/915 sold)"}
+  other: []
+
 bearers:
   ble5: "yes"
   ble5_note: "An S3. Same tinynimble backend as the T-Dongle."
@@ -27,6 +38,26 @@ bearers:
   lan_note: null
   espnow: "yes"
   espnow_note: null
+
+xprs:
+  beacon: "yes"
+  digipeater: "yes"
+  bridge: "yes"
+  igate: "yes"
+  hotspot: "yes"
+  api: "yes"
+  indexer: "yes"
+  share: "yes"
+  reticulum: "untested"
+  reticulum_note: xprs_app brings xprsrns up on every board; not measured here since the rewrite.
+  ota: "yes"
+  gossip: "yes"
+  dashboard: "yes"
+  chat: "yes"
+  mesh_session: "yes"
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "All four bearers, a keyboard, and the GATT server (tn_att) a P1-Pro dials."
 
 io:
   screen: {controller: ST7789, width: 320, height: 240}
@@ -53,10 +84,24 @@ firmware:
   project: models/tdeck/firmware
   env: tdeck
   version: 0.4.0
-  artifact: null
+  artifact: models/tdeck/prebuilt/firmware.bin
   flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
 
 docs:
   - {title: "Board README", url: "models/tdeck/README.md"}
 
-images: []
+images:
+  - file: hardware/images/product-front.jpg
+    caption: 'Front and back: 320x240 screen, trackball, QWERTY keyboard, SD slot, LoRa module.'
+    credit: "LilyGO product photography, lilygo.cc"
+  - file: hardware/images/product-2.jpg
+    caption: 'Second view.'
+    credit: "LilyGO product photography, lilygo.cc"
+  - file: hardware/images/product-3.jpg
+    caption: 'Third view.'
+    credit: "LilyGO product photography, lilygo.cc"
+  - file: hardware/images/product-4.jpg
+    caption: 'Fourth view.'
+    credit: "LilyGO product photography, lilygo.cc"
+
+screenshots: []

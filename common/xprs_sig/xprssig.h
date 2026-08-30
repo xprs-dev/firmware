@@ -86,6 +86,16 @@ int xprssig_b85_encode(const uint8_t *in, size_t len, char *out, size_t cap);
 int xprssig_b85_decode(const char *in, size_t len, uint8_t *out, size_t cap);
 
 /**
+ * @brief Entropy, on a target that is not an ESP32 and not the host harness.
+ *
+ * The IDF boards fill this from esp_fill_random() inside xprssig.c; any other
+ * chip implements it (the SenseCAP P1-Pro draws on the SoftDevice's RNG). It
+ * feeds the signing nonce and mbedtls's scalar blinding, so it must be a real
+ * random source and never a counter.
+ */
+void xprssig_platform_random(uint8_t *out, size_t len);
+
+/**
  * @brief Generate a private scalar from the platform's entropy.
  * @return false if a usable key could not be produced.
  */

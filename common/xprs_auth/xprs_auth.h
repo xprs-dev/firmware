@@ -84,6 +84,13 @@ void xauth_remember(const char *id, int code);
 bool xauth_is_owner(const char *call);
 
 /**
+ * The allow-listed key behind [call], as 32 x-only bytes. For a board that
+ * has to learn something else from an owner before it can take a command
+ * -- the clockless P1-Pro takes the time from an owner's signed packet.
+ */
+bool xauth_owner_key_of(const char *call, uint8_t out[32]);
+
+/**
  * The HTTP door. [auth_header] is a complete signed XPRS command wire, and
  * [body_sha16] is the first 16 hex characters of sha256(request body) which
  * the wire must carry in `zsha:` -- so an authorisation captured from one

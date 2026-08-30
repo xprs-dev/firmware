@@ -10,11 +10,30 @@
 #include <time.h>
 
 #include "bech32.h"
+#include "xprsid.h"
+#include "xprssig.h"
+
+#if defined(ESP_PLATFORM)
 #include "esp_log.h"
 #include "nostr_keys.h"
 #include "xprs_config.h"
-#include "xprsid.h"
-#include "xprssig.h"
+#define XAUTH_NOW() ((uint32_t)time(NULL))
+#else
+/* A target without the IDF (the SenseCAP P1-Pro). Three things this file
+ * takes from the ESP32 stack, and the board supplies them instead: the
+ * allow-list out of its own config store (xcfg_get), the callsign that a
+ * key derives to (nostr_keys_derive_callsign, the same four characters of
+ * the npub), and the clock (xauth_platform_now, epoch seconds or 0 for
+ * none -- the gate refuses with 408 rather than guess). Logs to stdout. */
+#include <stdio.h>
+#define NOSTR_CALLSIGN_LEN 10
+const char *xcfg_get(const char *key, const char *def);
+esp_err_t nostr_keys_derive_callsign(const char *npub, char *callsign);
+uint32_t xauth_platform_now(void);
+#define XAUTH_NOW() xauth_platform_now()
+#define ESP_LOGW(tag, fmt, ...) printf("%s: " fmt "\n", tag, ##__VA_ARGS__)
+#define ESP_LOGE(tag, fmt, ...) printf("%s: " fmt "\n", tag, ##__VA_ARGS__)
+#endif
 
 static const char *TAG = "xauth";
 
@@ -66,8 +85,8 @@ static bool base_eq(const char *a, const char *b)
 
 static uint32_t now_sec(void)
 {
-    time_t t = time(NULL);
-    return t > 1700000000 ? (uint32_t)t : 0;   /* 0 = no clock */
+    uint32_t t = XAUTH_NOW();
+    return t > 1700000000u ? t : 0;   /* 0 = no clock */
 }
 
 /* `ts:` (YYYY-MM-DD_hh:mm:ss UTC, section 4.3) as epoch seconds, 0 when it
@@ -142,6 +161,11 @@ static bool owner_key(const char *call, uint8_t out[32])
         return true;
     }
     return false;
+}
+
+bool xauth_owner_key_of(const char *call, uint8_t out[32])
+{
+    return call && out && owner_key(call, out);
 }
 
 void xauth_remember(const char *id, int code)

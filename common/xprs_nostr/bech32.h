@@ -10,7 +10,19 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#if defined(ESP_PLATFORM)
 #include "esp_err.h"
+#else
+/* bech32.c is pure C and wanted only for its return-code spelling. On a
+ * target without the IDF (the SenseCAP P1-Pro) the three codes it uses are
+ * given the IDF's values, so a caller reads them the same way everywhere. */
+typedef int esp_err_t;
+#define ESP_OK               0
+#define ESP_FAIL            -1
+#define ESP_ERR_NO_MEM       0x101
+#define ESP_ERR_INVALID_ARG  0x102
+#define ESP_ERR_INVALID_CRC  0x109
+#endif
 
 #ifdef __cplusplus
 extern "C" {

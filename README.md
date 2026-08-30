@@ -28,7 +28,15 @@ Each board folder also holds a `board.yml` -- the same facts as its README
 but flat, so a program can read them. That is what a download-and-browse
 catalogue page would be built on; [`docs/catalog.md`](docs/catalog.md) is
 the schema and `models/_template/` is the empty shape to copy. The files are
-checked for shape by `tools/scripts/check_board_yml.py`.
+checked for shape by `tools/scripts/check_board_yml.py`, and rendered by
+`tools/scripts/build_catalog.py` into [`index.html`](index.html)
+and [`docs/boards.json`](docs/boards.json) -- every board as JSON, with a
+link to its folder here, its vendor page and manual, what its radios are,
+and which XPRS roles (digipeater, iGate, hotspot, indexer, ...) it fills.
+[`docs/board.template.json`](docs/board.template.json) is the empty shape.
+`tools/scripts/collect_prebuilt.py` copies each built image into
+`models/<board>/prebuilt/` with a web-flasher manifest, and the page offers
+them for download or, served over HTTPS in Chrome, flashes them directly.
 
 
 | Board | Chip | Firmware |

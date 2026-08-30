@@ -1,0 +1,12 @@
+{
+  "name": "xprs_sig",
+  "version": "1.0.0",
+  "description": "XPRS signatures (XPRS.md 9.1): Schnorr over secp256k1, 48 bytes. mbedtls on the device; the board supplies xprssig_platform_random() when it is not an ESP32.",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*", "mbedtls_ecp": "*"},
+  "build": {
+    "srcFilter": ["+<xprssig.c>"],
+    "flags": ["-I."]
+  }
+}

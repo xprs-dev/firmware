@@ -1,0 +1,11 @@
+{
+  "name": "mbedtls_ecp",
+  "version": "3.5.2",
+  "description": "mbedtls 3.5.2 bignum + ECP (secp256k1 only), vendored from the ESP-IDF package so common/xprs_sig compiles on the nRF52840 unchanged.",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "flags": ["-Iinclude", "-Isrc", "-DMBEDTLS_CONFIG_FILE=\\\"xprs_mbedtls_config.h\\\""],
+    "srcFilter": ["+<*.c>"]
+  }
+}

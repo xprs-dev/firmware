@@ -90,6 +90,11 @@ static void sd_fault(uint32_t id, uint32_t pc, uint32_t info)
 
 void SD_EVT_IRQHandler(void) { s_evt_flag = true; }
 
+/* Every SoC event the pump drains, offered to the application. Weak and
+ * empty by default; a station that writes flash through sd_flash_write()
+ * overrides it to learn NRF_EVT_FLASH_OPERATION_SUCCESS / _ERROR. */
+__attribute__((weak)) void tn_soc_event(uint32_t evt) { (void)evt; }
+
 tn_err_t tn_start(void)
 {
     if (s_up) return TN_OK;
@@ -497,6 +502,9 @@ void tn_gatt_pump(void)
     }
     uint32_t soc;
     while (sd_evt_get(&soc) == NRF_SUCCESS) {
+        /* Flash completion and the like: the application's, if it wants
+         * them. sd_flash_write() reports through here and nowhere else. */
+        tn_soc_event(soc);
         int32_t usb = soc == NRF_EVT_POWER_USB_DETECTED    ? NRFX_POWER_USB_EVT_DETECTED :
                       soc == NRF_EVT_POWER_USB_POWER_READY ? NRFX_POWER_USB_EVT_READY :
                       soc == NRF_EVT_POWER_USB_REMOVED     ? NRFX_POWER_USB_EVT_REMOVED : -1;

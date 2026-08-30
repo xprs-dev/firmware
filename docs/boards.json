@@ -1,0 +1,1777 @@
+[
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdeck",
+    "id": "tdeck",
+    "name": "T-Deck",
+    "vendor": "LilyGO",
+    "sku": null,
+    "product_url": "https://www.lilygo.cc/products/t-deck",
+    "manual_url": "https://github.com/Xinyuan-LilyGO/T-Deck",
+    "summary": "LilyGO T-Deck: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB PSRAM, 16 MB flash), 2.8\" 320x240 ST7789 LCD with GT911 touch, QWERTY keyboard on its own ESP32-C3, trackball, microSD, speaker, microphone, USB-C, LiPo connector. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, and an SX1262 LoRa module (868 MHz on this unit). The only board with all four bearers, and the only one you can type on, so it gets the interactive chat panel. Also serves the BLE GATT mesh session that the P1-Pro connects to.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "ESP32-S3",
+      "family": "esp32s3",
+      "core": "Xtensa LX7 dual @ 240 MHz",
+      "ram_kb": 512,
+      "psram_mb": 8,
+      "flash_mb": 16
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "ESP32-S3 controller"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": {
+        "chip": "SX1262",
+        "band_mhz": "868 (this variant; 433/915 sold)"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "yes",
+      "ble5_note": "An S3. Same tinynimble backend as the T-Dongle.",
+      "lora": "yes",
+      "lora_note": "SX1262 at 868 MHz, sharing the panel's SPI bus.",
+      "lan": "yes",
+      "lan_note": null,
+      "espnow": "yes",
+      "espnow_note": null
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "yes",
+      "bridge": "yes",
+      "igate": "yes",
+      "hotspot": "yes",
+      "api": "yes",
+      "indexer": "yes",
+      "share": "yes",
+      "reticulum": "untested",
+      "reticulum_note": "xprs_app brings xprsrns up on every board; not measured here since the rewrite.",
+      "ota": "yes",
+      "gossip": "yes",
+      "dashboard": "yes",
+      "chat": "yes",
+      "mesh_session": "yes",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "All four bearers, a keyboard, and the GATT server (tn_att) a P1-Pro dials."
+    },
+    "io": {
+      "screen": {
+        "controller": "ST7789",
+        "width": 320,
+        "height": 240
+      },
+      "buttons": [
+        {
+          "name": "trackball",
+          "pin": null,
+          "note": "four direction contacts plus a click; rolling makes and breaks several times per turn, so it is counted, not debounced"
+        }
+      ],
+      "leds": [],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "USB-C",
+          "note": "native USB-JTAG CDC"
+        },
+        {
+          "name": "microSD",
+          "note": "shares the panel's SPI bus"
+        }
+      ],
+      "sensors": [
+        {
+          "name": "GT911",
+          "note": "capacitive touch over the panel"
+        },
+        {
+          "name": "keyboard",
+          "note": "an ESP32-C3 of its own, answering on I2C; needs half a second to boot before it replies"
+        }
+      ]
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "models/tdeck/firmware",
+      "env": "tdeck",
+      "version": "0.4.0",
+      "artifact": "models/tdeck/prebuilt/firmware.bin",
+      "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdeck/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/prebuilt/firmware.bin"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/tdeck/README.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-front.jpg",
+        "caption": "Front and back: 320x240 screen, trackball, QWERTY keyboard, SD slot, LoRa module.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-front.jpg"
+      },
+      {
+        "file": "hardware/images/product-2.jpg",
+        "caption": "Second view.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-2.jpg"
+      },
+      {
+        "file": "hardware/images/product-3.jpg",
+        "caption": "Third view.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-3.jpg"
+      },
+      {
+        "file": "hardware/images/product-4.jpg",
+        "caption": "Fourth view.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdeck/hardware/images/product-4.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdongle-s3",
+    "id": "tdongle-s3",
+    "name": "T-Dongle-S3",
+    "vendor": "LilyGO",
+    "sku": null,
+    "product_url": "https://www.lilygo.cc/products/t-dongle-s3",
+    "manual_url": "https://github.com/Xinyuan-LilyGO/T-Dongle-S3",
+    "summary": "LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross- bearer bridge, APRS-IS iGate, HTTP API, indexer, signed OTA. Meant to be plugged in next to a router as the BLE-to-LAN bridge; the screen cycles three status views on its own since the button is usually under the case.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "ESP32-S3",
+      "family": "esp32s3",
+      "core": "Xtensa LX7 dual @ 240 MHz",
+      "ram_kb": 512,
+      "psram_mb": null,
+      "flash_mb": 16
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "ESP32-S3 controller; one XPRS packet fits one extended AD"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA; SoftAP possible but off by default (heap)"
+      },
+      "lora": null,
+      "other": []
+    },
+    "bearers": {
+      "ble5": "yes",
+      "ble5_note": "An S3, so extended advertising is available and an XPRS packet fits one AD. Runs the tinynimble backend (CONFIG_XPRSBLE_BACKEND_TINYNIMBLE), not the NimBLE host: no PSRAM here, and the host's msys pools, ACL buffers and 5,120-byte task stack were all internal DRAM.",
+      "lora": "no",
+      "lora_note": "No radio on this board.",
+      "lan": "yes",
+      "lan_note": "WiFi STA. The other half of the bridge, and why the board exists.",
+      "espnow": "yes",
+      "espnow_note": null
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "yes",
+      "bridge": "yes",
+      "igate": "yes",
+      "hotspot": "untested",
+      "hotspot_note": "Compiled in, seeded OFF (.hotspot = false in main.c): the AP costs ~9 KB of internal heap and this board has no PSRAM. `cfg set ap_on 1` turns it on.",
+      "api": "yes",
+      "indexer": "yes",
+      "share": "yes",
+      "reticulum": "untested",
+      "reticulum_note": "xprs_app brings xprsrns up on every board; not measured here since the rewrite.",
+      "ota": "yes",
+      "gossip": "yes",
+      "dashboard": "yes",
+      "chat": "no",
+      "chat_note": "Nothing to type on. The read-only chat table, on the three-view mini UI.",
+      "mesh_session": "untested",
+      "mesh_session_note": "The GATT channel is measured T-Deck <-> P1-Pro (docs/ble5-gatt.md), not on this board.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "The BLE5 bridge: hears on Bluetooth, repeats on LAN and ESP-NOW, and back."
+    },
+    "io": {
+      "screen": {
+        "controller": "ST7735",
+        "width": 160,
+        "height": 80
+      },
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin; there is no other button, and it is half under the case in most mountings"
+        }
+      ],
+      "leds": [],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "USB-A",
+          "note": "male, the body of the stick; native USB-JTAG CDC"
+        },
+        {
+          "name": "microSD",
+          "note": "present, but the archive lives in internal flash since 0.4.0"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "models/tdongle-s3/firmware",
+      "env": "tdongle",
+      "version": "0.4.0",
+      "artifact": "models/tdongle-s3/prebuilt/firmware.bin",
+      "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdongle-s3/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/tdongle-s3/README.md"
+      },
+      {
+        "title": "Memory and scheduling, binding on this board",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/docs/esp32.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-front.jpg",
+        "caption": "The stick, cap on and cap off: 160x80 screen on the face, ESP32-S3 under the clear shell.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-front.jpg"
+      },
+      {
+        "file": "hardware/images/product-2.jpg",
+        "caption": "Second view.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-2.jpg"
+      },
+      {
+        "file": "hardware/images/product-3.jpg",
+        "caption": "Third view.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-3.jpg"
+      },
+      {
+        "file": "hardware/images/product-4.jpg",
+        "caption": "Fourth view.",
+        "credit": "LilyGO product photography, lilygo.cc",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/tdongle-s3/hardware/images/product-4.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/m5stack-core",
+    "id": "m5stack-core",
+    "name": "M5Stack Core",
+    "vendor": "M5Stack",
+    "sku": null,
+    "product_url": "https://docs.m5stack.com/en/core/basic",
+    "manual_url": "https://docs.m5stack.com/en/core/basic",
+    "summary": "M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios: WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer). Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot AP with the chat page, digipeater, iGate, indexer and signed OTA. Used as the second station on the bench: anything the T-Dongle or T-Deck sends has something to hear it.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "ESP32",
+      "family": "esp32",
+      "core": "Xtensa LX6 dual @ 240 MHz",
+      "ram_kb": 520,
+      "psram_mb": null,
+      "flash_mb": 16
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "4.2 LE",
+        "extended_advertising": false,
+        "note": "original ESP32: 31-byte legacy advertising only"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": null,
+      "other": []
+    },
+    "bearers": {
+      "ble5": "no",
+      "ble5_note": "An original ESP32 (D0WDQ6): legacy 31-byte advertising only. An XPRS beacon runs to 112-173 bytes, so this bearer cannot exist here at all -- see docs/esp32.md, \"Radio capability per chip\".",
+      "lora": "no",
+      "lora_note": "No radio on this board.",
+      "lan": "yes",
+      "lan_note": null,
+      "espnow": "yes",
+      "espnow_note": "What this board is here for."
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "yes",
+      "bridge": "yes",
+      "igate": "yes",
+      "hotspot": "yes",
+      "api": "yes",
+      "indexer": "yes",
+      "share": "yes",
+      "reticulum": "untested",
+      "reticulum_note": "xprs_app brings xprsrns up on every board; not measured here since the rewrite.",
+      "ota": "yes",
+      "gossip": "yes",
+      "dashboard": "yes",
+      "chat": "no",
+      "chat_note": "Three buttons, no keyboard. The read-only chat table.",
+      "mesh_session": "no",
+      "mesh_session_note": "No BLE5 on this chip, so no BLE bearer to carry a session.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "The second voice on the air: ESP-NOW and LAN, seven-panel dashboard."
+    },
+    "io": {
+      "screen": {
+        "controller": "ILI9342C",
+        "width": 320,
+        "height": 240
+      },
+      "buttons": [
+        {
+          "name": "A",
+          "pin": "GPIO39",
+          "note": "short: next panel or OK. held: home"
+        },
+        {
+          "name": "B",
+          "pin": "GPIO38",
+          "note": "up"
+        },
+        {
+          "name": "C",
+          "pin": "GPIO37",
+          "note": "down"
+        }
+      ],
+      "leds": [],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "USB-C"
+        },
+        {
+          "name": "microSD"
+        },
+        {
+          "name": "Grove"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "models/m5stack-core/firmware",
+      "env": "m5stack",
+      "version": "0.2.0",
+      "artifact": "models/m5stack-core/prebuilt/firmware.bin",
+      "flashing": "esptool over the CP210x USB-serial port",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/m5stack-core/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/prebuilt/firmware.bin"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/m5stack-core/README.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-01.webp",
+        "caption": "Core Basic: 320x240 in the black stackable case, three buttons under the screen.",
+        "credit": "M5Stack product photography, docs.m5stack.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/product-01.webp"
+      },
+      {
+        "file": "hardware/images/product-02.webp",
+        "caption": "Second view.",
+        "credit": "M5Stack product photography, docs.m5stack.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/product-02.webp"
+      },
+      {
+        "file": "hardware/images/product-03.webp",
+        "caption": "Third view.",
+        "credit": "M5Stack product photography, docs.m5stack.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/product-03.webp"
+      },
+      {
+        "file": "hardware/images/dimensions.jpg",
+        "caption": "Module dimensions, from the vendor page.",
+        "credit": "M5Stack product photography, docs.m5stack.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/m5stack-core/hardware/images/dimensions.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/sensecap-p1-pro",
+    "id": "sensecap-p1-pro",
+    "name": "SenseCAP Solar Node P1-Pro",
+    "vendor": "Seeed Studio",
+    "sku": "114993633",
+    "product_url": "https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html",
+    "manual_url": "https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf",
+    "summary": "Seeed SenseCAP Solar Node P1-Pro: nRF52840 (Cortex-M4F 64 MHz, 256 KB RAM, 1 MB flash + 2 MB QSPI) on a XIAO module, SX1262 LoRa (862-930 MHz), L76K GNSS, Bluetooth 5, four 18650 cells, 5 W solar panel, weatherproof case with pole bracket, RP-SMA antenna, USB-C, Grove port. No WiFi, no screen. Runs a port of the XPRS codec and bearer on the Adafruit nRF52 core: beacons, digipeats on LoRa and BLE5, bridges between the two, and dials a T-Deck's GATT channel. Built to sit outdoors unattended.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "nRF52840",
+      "family": "nrf52",
+      "core": "ARM Cortex-M4F single @ 64 MHz",
+      "ram_kb": 256,
+      "psram_mb": null,
+      "flash_mb": 1,
+      "extra_qspi_flash_mb": 2
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "nRF52840 with SoftDevice S140 v7.3.0; one advertising set"
+      },
+      "wifi": null,
+      "lora": {
+        "chip": "SX1262",
+        "band_mhz": "862-930"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "yes",
+      "ble5_note": "Working, measured 2026-08-30 (docs/ble5-nrf52.md). tinynimble's SoftDevice port speaks to S140 v7.3.0 directly -- Bluefruit, the core's own library, is capped at 31 bytes and cannot carry an XPRS beacon -- and puts a 255-byte extended advert on the air that a T-Dongle digipeated (\"via:X3WWAJ\"); what it hears on BLE is bridged onto LoRa. The mesh channel over a CONNECTION is measured too (docs/ble5-gatt.md): this board dials a T-Deck serving tn_att, MTU 247, 244-byte frames both ways, hang-up and re-dial. One advertising set on this chip, so the beacon is silent while a session is up.",
+      "lora": "yes",
+      "lora_note": "Working, both directions, measured against a T-Deck on 2026-08-30: 6 of 7 beacons received there at -30 dBm SNR 12, 29 wires received here in 180 s, none corrupt and none unparsed. A beacon from this station was then digipeated by the T-Deck onto the LAN as \"via:X3GSLC,X3WWAJ\", so the packets are first-class on the network and not merely audible. Driven by RadioLib rather than a port of common/xprs_sx1262, which is ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which MUST stay equal to xprslora.c or the two radios are deaf to each other.",
+      "lan": "no",
+      "lan_note": "nRF52840 has no WiFi radio, so there is no LAN and there never will be on this board. xprs_bearer_lan is not portable here, and the LAN bearer's task is also what pumps every other bearer's re-air queue -- which is a real structural problem for a port, not just a missing feature. See the note in models/sensecap-p1-pro/README.md.",
+      "espnow": "no",
+      "espnow_note": "ESP-NOW is an Espressif WiFi protocol. No WiFi radio, no ESP-NOW."
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "yes",
+      "bridge": "yes",
+      "igate": "no",
+      "igate_note": "No IP on this board, so no APRS-IS.",
+      "hotspot": "no",
+      "hotspot_note": "No WiFi radio.",
+      "api": "no",
+      "api_note": "No IP, no HTTP. The station talks only on the air.",
+      "indexer": "no",
+      "indexer_note": "Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.",
+      "share": "no",
+      "share_note": "Nothing to serve and nothing to serve it over.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_bearer_rns is ESP-IDF and TCP; neither exists here.",
+      "ota": "no",
+      "ota_note": "UF2 over USB only. No signed OTA path on this core yet.",
+      "gossip": "no",
+      "gossip_note": "Not ported.",
+      "dashboard": "no",
+      "dashboard_note": "Headless, by design.",
+      "chat": "no",
+      "chat_note": "Nothing to type on and nothing to read it from.",
+      "mesh_session": "yes",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "A LoRa <-> BLE5 digipeater on a pole. xprs_codec and xprs_bearer verbatim; nothing else of common/."
+    },
+    "io": {
+      "screen": null,
+      "buttons": [
+        {
+          "name": "reset",
+          "pin": "nRF52840 RESET",
+          "note": "hardware reset, not a GPIO"
+        },
+        {
+          "name": "user",
+          "pin": "P1.07"
+        },
+        {
+          "name": "power",
+          "pin": "P1.01",
+          "note": "power on/off"
+        }
+      ],
+      "leds": [
+        {
+          "name": "user",
+          "pin": "P0.15",
+          "colour": "white"
+        },
+        {
+          "name": "mesh",
+          "pin": "P0.19",
+          "colour": "blue",
+          "note": "labelled PWR LED on the board"
+        },
+        {
+          "name": "charging",
+          "pin": null,
+          "colour": "red",
+          "note": "wired to the CN3165 charger, not to the MCU"
+        },
+        {
+          "name": "charge-done",
+          "pin": null,
+          "colour": "green",
+          "note": "charger, not MCU"
+        },
+        {
+          "name": "solar",
+          "pin": null,
+          "colour": "yellow",
+          "note": "charger, not MCU"
+        }
+      ],
+      "gnss": "Seeed XIAO L76K (GPS / GLONASS / Galileo / BeiDou)",
+      "connectors": [
+        {
+          "name": "USB-C",
+          "note": "debug and charge"
+        },
+        {
+          "name": "Grove",
+          "note": "one, IIC/UART/GPIO, behind an NMOS level shift"
+        },
+        {
+          "name": "RP-SMA",
+          "note": "LoRa antenna"
+        },
+        {
+          "name": "SWD test point",
+          "note": "on the PCB, not brought out of the case"
+        }
+      ],
+      "sensors": [
+        {
+          "name": "NTC 10K B=3950",
+          "note": "battery pack temperature, read by the charger"
+        }
+      ]
+    },
+    "physical": {
+      "dimensions_mm": "191.2 x 201.2 x 42.1",
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": "discharge -40..60, charge 0..50 (battery limits; no figure published for the electronics)",
+      "power": "solar+battery"
+    },
+    "firmware": {
+      "toolchain": "arduino-nrf52",
+      "project": "models/sensecap-p1-pro/firmware",
+      "env": "p1pro",
+      "version": "0.1.0",
+      "artifact": "models/sensecap-p1-pro/prebuilt/firmware.uf2",
+      "flashing": "UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader that mounts as a mass-storage volume on a double reset-tap; an image is copied onto it. No esptool, no serial protocol, nothing this tree's tools/ scripts know how to do.",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/sensecap-p1-pro/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/prebuilt/firmware.uf2"
+    },
+    "docs": [
+      {
+        "title": "Product page",
+        "url": "https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html"
+      },
+      {
+        "title": "Industrial datasheet (PDF)",
+        "url": "https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf"
+      },
+      {
+        "title": "Meshtastic device page",
+        "url": "https://meshtastic.org/docs/hardware/devices/seeed-studio/sensecap/solar-node/"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/block-diagram.png",
+        "caption": "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path.",
+        "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/block-diagram.png"
+      },
+      {
+        "file": "hardware/images/product-front.jpg",
+        "caption": "The node, panel side.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-front.jpg"
+      },
+      {
+        "file": "hardware/images/product-angle.jpg",
+        "caption": "Three-quarter view with the antenna fitted.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-angle.jpg"
+      },
+      {
+        "file": "hardware/images/product-mounted.jpg",
+        "caption": "Pole-mounted on its bracket.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-mounted.jpg"
+      },
+      {
+        "file": "hardware/images/product-internals.jpg",
+        "caption": "Inside: the four 18650 cells and the carrier board.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-internals.jpg"
+      },
+      {
+        "file": "hardware/images/product-ports.jpg",
+        "caption": "The port and button row on the underside.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/product-ports.jpg"
+      },
+      {
+        "file": "hardware/images/exterior-callouts.png",
+        "caption": "Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend.",
+        "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/sensecap-p1-pro/hardware/images/exterior-callouts.png"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/esp32c3-mini",
+    "id": "esp32c3-mini",
+    "name": "ESP32-C3 Mini (DevKitM-1 pinout)",
+    "vendor": "Espressif",
+    "sku": null,
+    "product_url": "https://www.espressif.com/en/products/devkits",
+    "manual_url": "https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c3/esp32-c3-devkitm-1/user_guide.html",
+    "summary": "Espressif ESP32-C3 DevKitM-1 class board: single-core RISC-V at 160 MHz, 400 KB RAM, 4 MB flash, one addressable LED, BOOT button, native USB serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. No screen, no LoRa, no SD. Planned as the cheapest headless station: hotspot AP with the chat page, LAN and ESP-NOW bearers, indexer, signed OTA. Ran the old SoftAP web-chat firmware; the multiboard target does not compile today and docs/station-plan.md is the plan.",
+    "status": "planned",
+    "silicon": {
+      "mcu": "ESP32-C3",
+      "family": "esp32c3",
+      "core": "RISC-V single @ 160 MHz",
+      "ram_kb": 400,
+      "psram_mb": null,
+      "flash_mb": 4
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "the chip can; every historical C3 config left CONFIG_BT_ENABLED off"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": null,
+      "other": []
+    },
+    "bearers": {
+      "ble5": "untested",
+      "ble5_note": "The C3 has extended advertising, but BLE was OFF in every build that ran on this board and docs/espnow.md warns a BLE controller steals the radio from an unassociated STA. First thing the plan tests.",
+      "lora": "no",
+      "lora_note": "No LoRa radio.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "no",
+      "dashboard_note": "No screen; the plan keeps it that way.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "Does not compile today (msgstore.h, nimble_port.h). docs/station-plan.md is the port plan: WiFi STA+AP with web chat, ESP-NOW and LAN bearers, the index, signed OTA."
+    },
+    "io": {
+      "screen": null,
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO9",
+          "note": "the C3 strap pin"
+        }
+      ],
+      "leds": [
+        {
+          "name": "led",
+          "pin": "GPIO8",
+          "note": "the DevKitM-1 addressable LED pin"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "micro-USB",
+          "note": "native USB-JTAG CDC"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "esp32c3_mini",
+      "version": null,
+      "artifact": null,
+      "flashing": "esptool over the native USB-JTAG CDC port, pio run -e esp32c3_mini -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/esp32c3-mini/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      },
+      {
+        "title": "Station plan",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/esp32c3-mini/docs/station-plan.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-front.png",
+        "caption": "ESP32-C3-DevKitM-1, isometric.",
+        "credit": "Espressif, ESP32-C3-DevKitM-1 user guide",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/esp32c3-mini/hardware/images/product-front.png"
+      },
+      {
+        "file": "hardware/images/annotated.png",
+        "caption": "Annotated photo: the module, the two buttons, the RGB LED on GPIO8.",
+        "credit": "Espressif, ESP32-C3-DevKitM-1 user guide",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/esp32c3-mini/hardware/images/annotated.png"
+      },
+      {
+        "file": "hardware/images/pinout.png",
+        "caption": "Pinout.",
+        "credit": "Espressif, ESP32-C3-DevKitM-1 user guide",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/esp32c3-mini/hardware/images/pinout.png"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/epaper-1in54",
+    "id": "epaper-1in54",
+    "name": "ESP32-S3-ePaper-1.54",
+    "vendor": "Waveshare",
+    "sku": null,
+    "product_url": "https://www.waveshare.com/product/displays/e-paper/esp32-s3-epaper-1.54.htm",
+    "manual_url": "https://www.waveshare.com/wiki/ESP32-S3-ePaper-1.54",
+    "summary": "Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, PSRAM, 4 MB flash) behind a 1.54\" 200x200 black-and-white e-paper panel in a white case, with a PCF85063 RTC, SHTC3 temperature/humidity sensor, microSD and a battery. Radios: WiFi 2.4 GHz, Bluetooth 5. The panel keeps its image with the power off, so it suits a status display that updates rarely. Primary target of the old tree; multiboard build, not retested.",
+    "status": "legacy",
+    "silicon": {
+      "mcu": "ESP32-S3",
+      "family": "esp32s3",
+      "core": "Xtensa LX7 dual @ 240 MHz",
+      "ram_kb": 512,
+      "psram_mb": null,
+      "flash_mb": 4
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "the chip can; the legacy build does not enable BT"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": null,
+      "other": []
+    },
+    "bearers": {
+      "ble5": "untested",
+      "ble5_note": "The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer.",
+      "lora": "no",
+      "lora_note": "No LoRa radio.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "untested",
+      "dashboard_note": "xprs_ui_epaper on LVGL; not run since the move.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "The primary target of the old tree (docs/summary.md). Not retested since the move; vendor and part number of the carrier not recorded."
+    },
+    "io": {
+      "screen": {
+        "controller": "1.54in e-paper (SSD1681 class)",
+        "width": 200,
+        "height": 200
+      },
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        }
+      ],
+      "leds": [],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "USB-C"
+        },
+        {
+          "name": "microSD"
+        }
+      ],
+      "sensors": [
+        {
+          "name": "SHTC3",
+          "note": "temperature and humidity, I2C"
+        },
+        {
+          "name": "PCF85063",
+          "note": "RTC, I2C"
+        }
+      ]
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "esp32s3_epaper_1in54",
+      "version": null,
+      "artifact": null,
+      "flashing": "esptool over the USB-serial port, pio run -e esp32s3_epaper_1in54 -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/epaper-1in54/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      },
+      {
+        "title": "Firmware summary, written for this board",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/docs/summary.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-front.png",
+        "caption": "ESP32-S3-ePaper-1.54 in its white case, the 200x200 panel showing a picture.",
+        "credit": "Waveshare product photography, waveshare.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/epaper-1in54/hardware/images/product-front.png"
+      },
+      {
+        "file": "hardware/images/product-2.jpg",
+        "caption": "Second view.",
+        "credit": "Waveshare product photography, waveshare.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/epaper-1in54/hardware/images/product-2.jpg"
+      },
+      {
+        "file": "hardware/images/product-3.jpg",
+        "caption": "Third view.",
+        "credit": "Waveshare product photography, waveshare.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/epaper-1in54/hardware/images/product-3.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/generic",
+    "id": "generic",
+    "name": "ESP32-DevKitC (esp32dev)",
+    "vendor": "Espressif",
+    "sku": null,
+    "product_url": "https://www.espressif.com/en/products/devkits/esp32-devkitc",
+    "manual_url": "https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html",
+    "summary": "Espressif ESP32-DevKitC: WROOM-32 module (dual-core 240 MHz, 520 KB RAM, 4 MB flash), EN and BOOT buttons, micro-USB via CP2102. No screen, no radio module, no battery. Radios: WiFi 2.4 GHz, Bluetooth 4.2. A bare devkit for trying a bearer before it goes on a real board; multiboard target, fails at link today.",
+    "status": "legacy",
+    "silicon": {
+      "mcu": "ESP32",
+      "family": "esp32",
+      "core": "Xtensa LX6 dual @ 240 MHz",
+      "ram_kb": 520,
+      "psram_mb": null,
+      "flash_mb": 4
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "4.2 LE",
+        "extended_advertising": false,
+        "note": "original ESP32: 31-byte legacy advertising only"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": null,
+      "other": []
+    },
+    "bearers": {
+      "ble5": "no",
+      "ble5_note": "Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md.",
+      "lora": "no",
+      "lora_note": "No LoRa radio.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "no",
+      "dashboard_note": "No screen.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "Fails at link today (multiboard/README.md)."
+    },
+    "io": {
+      "screen": null,
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        }
+      ],
+      "leds": [],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "micro-USB"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "esp32_generic",
+      "version": null,
+      "artifact": null,
+      "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/generic/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/annotated.png",
+        "caption": "ESP32-DevKitC V4 functional overview: WROOM-32 module, EN and Boot buttons, USB-UART.",
+        "credit": "Espressif, ESP32-DevKitC V4 user guide",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/generic/hardware/images/annotated.png"
+      },
+      {
+        "file": "hardware/images/pinout.png",
+        "caption": "Pin layout.",
+        "credit": "Espressif, ESP32-DevKitC V4 user guide",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/generic/hardware/images/pinout.png"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v1",
+    "id": "heltec-v1",
+    "name": "WiFi LoRa 32 (V1)",
+    "vendor": "Heltec Automation",
+    "sku": null,
+    "product_url": "https://heltec.org/project/wifi-lora-32/",
+    "manual_url": "https://resource.heltec.cn/download/WiFi_LoRa_32/WIFI_LoRa_32_V1.pdf",
+    "summary": "Heltec WiFi LoRa 32 V1: original ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB flash), 0.96\" 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB, LiPo connector, U.FL antenna, RST and PRG buttons. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5), LoRa. Built by the multiboard project as the older station (SoftAP web chat, APRS-IS iGate, console); a prebuilt image is in the tree. Superseded by the V3.",
+    "status": "legacy",
+    "silicon": {
+      "mcu": "ESP32",
+      "family": "esp32",
+      "core": "Xtensa LX6 dual @ 240 MHz",
+      "ram_kb": 520,
+      "psram_mb": null,
+      "flash_mb": 4
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "4.2 LE",
+        "extended_advertising": false,
+        "note": "original ESP32: 31-byte legacy advertising only"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": {
+        "chip": "SX1276",
+        "band_mhz": "868 (as configured; 433/915 sold)"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "no",
+      "ble5_note": "Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md.",
+      "lora": "untested",
+      "lora_note": "SX1276 on SPI2 (NSS 18, RST 14, DIO0 26); the legacy build drives it, the XPRS LoRa bearer (xprs_sx1276) has not been measured here.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "untested",
+      "dashboard_note": "The legacy SSD1306 status screen; not run since the move.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "Legacy LoRa station; the prebuilt .bin in prebuilt/ is what last ran on it."
+    },
+    "io": {
+      "screen": {
+        "controller": "SSD1306",
+        "width": 128,
+        "height": 64
+      },
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        }
+      ],
+      "leds": [
+        {
+          "name": "white",
+          "pin": "GPIO25"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "micro-USB"
+        },
+        {
+          "name": "LiPo JST"
+        },
+        {
+          "name": "U.FL / IPEX",
+          "note": "LoRa antenna"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "heltec_v1",
+      "version": null,
+      "artifact": "models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin",
+      "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/heltec-v1/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      },
+      {
+        "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
+        "url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html"
+      },
+      {
+        "title": "Heltec resource downloads: schematics per version",
+        "url": "https://resource.heltec.cn/download/WiFi_LoRa_32/"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/v2-for-layout-front-back.jpg",
+        "caption": "NO VENDOR PHOTO OF THE V1 EXISTS ONLINE. This is the V2, same layout: 0.96' OLED, micro-USB, RST/PRG buttons, U.FL antenna. The silk on a V1 reads 'WiFi_LoRa_32' without a version, and it has 4 MB flash to the V2's 8.",
+        "credit": "Heltec Automation, docs.heltec.org hardware update log",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v1/hardware/images/v2-for-layout-front-back.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v2",
+    "id": "heltec-v2",
+    "name": "WiFi LoRa 32 (V2)",
+    "vendor": "Heltec Automation",
+    "sku": null,
+    "product_url": "https://heltec.org/project/wifi-lora-32v2/",
+    "manual_url": "https://resource.heltec.cn/download/WiFi_LoRa_32/WIFI_LoRa_32_V2.pdf",
+    "summary": "Heltec WiFi LoRa 32 V2: same shape as the V1 with 8 MB flash, a better power path and Vext control. Original ESP32 (dual-core 240 MHz, 520 KB RAM), 0.96\" 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5), LoRa. Built by the multiboard project as the older station; not retested since the tree was reorganised.",
+    "status": "legacy",
+    "silicon": {
+      "mcu": "ESP32",
+      "family": "esp32",
+      "core": "Xtensa LX6 dual @ 240 MHz",
+      "ram_kb": 520,
+      "psram_mb": null,
+      "flash_mb": 4
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "4.2 LE",
+        "extended_advertising": false,
+        "note": "original ESP32: 31-byte legacy advertising only"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": {
+        "chip": "SX1276",
+        "band_mhz": "868 (as configured; 433/915 sold)"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "no",
+      "ble5_note": "Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md.",
+      "lora": "untested",
+      "lora_note": "SX1276 on SPI2 (NSS 18, RST 14, DIO0 26); the XPRS LoRa bearer has not been measured here.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "untested",
+      "dashboard_note": "The legacy SSD1306 status screen; not run since the move.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "Legacy LoRa station. Not retested since the tree moved."
+    },
+    "io": {
+      "screen": {
+        "controller": "SSD1306",
+        "width": 128,
+        "height": 64
+      },
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        }
+      ],
+      "leds": [
+        {
+          "name": "white",
+          "pin": "GPIO25"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "micro-USB"
+        },
+        {
+          "name": "LiPo JST"
+        },
+        {
+          "name": "U.FL / IPEX",
+          "note": "LoRa antenna"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "heltec_v2",
+      "version": null,
+      "artifact": null,
+      "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/heltec-v2/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      },
+      {
+        "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
+        "url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html"
+      },
+      {
+        "title": "Heltec resource downloads: schematics per version",
+        "url": "https://resource.heltec.cn/download/WiFi_LoRa_32/"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-front.png",
+        "caption": "V2 product photo, heltec.org.",
+        "credit": "Heltec Automation, docs.heltec.org hardware update log",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v2/hardware/images/product-front.png"
+      },
+      {
+        "file": "hardware/images/board-868-front-back.jpg",
+        "caption": "868-915 MHz variant, front and back; silk reads WiFi_LoRa_32_V2.",
+        "credit": "Heltec Automation, docs.heltec.org hardware update log",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v2/hardware/images/board-868-front-back.jpg"
+      },
+      {
+        "file": "hardware/images/board-433-front-back.jpg",
+        "caption": "433-510 MHz variant, same board, different band marking.",
+        "credit": "Heltec Automation, docs.heltec.org hardware update log",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v2/hardware/images/board-433-front-back.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v3",
+    "id": "heltec-v3",
+    "name": "WiFi LoRa 32 (V3)",
+    "vendor": "Heltec Automation",
+    "sku": null,
+    "product_url": "https://heltec.org/project/wifi-lora-32-v3/",
+    "manual_url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/index.html",
+    "summary": "Heltec WiFi LoRa 32 V3: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB flash), 0.96\" 128x64 SSD1306 OLED, SX1262 LoRa (868/915 or 433 MHz by variant), USB-C, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, LoRa. Same MCU and LoRa chip as the T-Deck, so an xprs_app port is a pin table away; today it is a multiboard target that does not compile.",
+    "status": "legacy",
+    "silicon": {
+      "mcu": "ESP32-S3",
+      "family": "esp32s3",
+      "core": "Xtensa LX7 dual @ 240 MHz",
+      "ram_kb": 512,
+      "psram_mb": null,
+      "flash_mb": 8
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "the chip can; the legacy build does not enable BT"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": {
+        "chip": "SX1262",
+        "band_mhz": "868 (as configured; 433/915 sold)"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "untested",
+      "ble5_note": "The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer.",
+      "lora": "untested",
+      "lora_note": "SX1262 on SPI2 (NSS 8, RST 12, BUSY 13, DIO1 14) -- the same part xprs_sx1262 drives on the T-Deck, so a port is pins, not a driver. Not measured.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "untested",
+      "dashboard_note": "The legacy SSD1306 status screen; not run since the move.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "Fails to build today (nimble/nimble_port.h, multiboard/README.md). The natural next xprs_app port: S3 plus SX1262."
+    },
+    "io": {
+      "screen": {
+        "controller": "SSD1306",
+        "width": 128,
+        "height": 64
+      },
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        }
+      ],
+      "leds": [
+        {
+          "name": "white",
+          "pin": "GPIO35"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "USB-C"
+        },
+        {
+          "name": "LiPo JST"
+        },
+        {
+          "name": "U.FL / IPEX",
+          "note": "LoRa antenna"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "heltec_v3",
+      "version": null,
+      "artifact": null,
+      "flashing": "esptool over the USB-serial port, pio run -e heltec_v3 -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/heltec-v3/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      },
+      {
+        "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
+        "url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html"
+      },
+      {
+        "title": "Heltec resource downloads: schematics per version",
+        "url": "https://resource.heltec.cn/download/WiFi_LoRa_32/"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-2.png",
+        "caption": "V3: USB-C, SX1262 under the OLED, the version on the silk.",
+        "credit": "Heltec Automation product photography, heltec.org",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v3/hardware/images/product-2.png"
+      },
+      {
+        "file": "hardware/images/product-front.png",
+        "caption": "In its packaging: the red LoRa 32 label with the band printed on it.",
+        "credit": "Heltec Automation product photography, heltec.org",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/heltec-v3/hardware/images/product-front.png"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/xprs-firmware",
+    "source_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/models/kv4p",
+    "id": "kv4p",
+    "name": "kv4p HT",
+    "vendor": "kv4p (Vance Vagell)",
+    "sku": null,
+    "product_url": "https://kv4p.com/",
+    "manual_url": "https://github.com/VanceVagell/kv4p-ht",
+    "summary": "kv4p HT: an open-hardware VHF handheld interface. ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB flash) driving an SA818 FM transceiver module (134-174 MHz, 1 W), with PTT, squelch and audio in/out on GPIO, an SMA antenna and a USB-C link to a phone. No screen. Radios: WiFi 2.4 GHz, Bluetooth 4.2, VHF FM. The only board that transmits on an amateur voice band; here it carries packet through xprs_sa818 in the multiboard build.",
+    "status": "legacy",
+    "silicon": {
+      "mcu": "ESP32",
+      "family": "esp32",
+      "core": "Xtensa LX6 dual @ 240 MHz",
+      "ram_kb": 520,
+      "psram_mb": null,
+      "flash_mb": 4
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "4.2 LE",
+        "extended_advertising": false,
+        "note": "original ESP32: 31-byte legacy advertising only"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": null,
+      "other": [
+        {
+          "name": "SA818",
+          "note": "VHF 134-174 MHz FM module on UART2 (TX 17, RX 16), PTT 18, PD 19, SQ 32, audio out 26 / in 34"
+        }
+      ]
+    },
+    "bearers": {
+      "ble5": "no",
+      "ble5_note": "Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md.",
+      "lora": "no",
+      "lora_note": "No LoRa radio.",
+      "lan": "untested",
+      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
+      "espnow": "untested",
+      "espnow_note": "Same -- the radio can, the legacy build does not."
+    },
+    "xprs": {
+      "beacon": "no",
+      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
+      "digipeater": "no",
+      "digipeater_note": "No XPRS bearers in the legacy build.",
+      "bridge": "no",
+      "bridge_note": "No XPRS bearers in the legacy build.",
+      "igate": "untested",
+      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
+      "hotspot": "untested",
+      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
+      "api": "untested",
+      "api_note": "Legacy xprs_http station API; not run since the move.",
+      "indexer": "no",
+      "indexer_note": "xprs_index is an xprs_app thing.",
+      "share": "no",
+      "share_note": "xprs_app only.",
+      "reticulum": "no",
+      "reticulum_note": "xprs_app only.",
+      "ota": "untested",
+      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
+      "gossip": "no",
+      "gossip_note": "xprs_app only.",
+      "dashboard": "no",
+      "dashboard_note": "No screen.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
+      "vhf": "untested",
+      "vhf_note": "xprs_sa818 and xprs_radio_tx exist in common/ and the legacy main.cpp drives them; not run since the move.",
+      "note": "VHF packet interface. The only board with a transmitter on an amateur voice band."
+    },
+    "io": {
+      "screen": null,
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        },
+        {
+          "name": "ptt1",
+          "pin": "GPIO5",
+          "note": "physical PTT"
+        }
+      ],
+      "leds": [
+        {
+          "name": "status",
+          "pin": "GPIO13"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "micro-USB"
+        },
+        {
+          "name": "SMA",
+          "note": "VHF antenna"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "multiboard",
+      "env": "kv4p",
+      "version": null,
+      "artifact": null,
+      "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
+      "project_url": "https://github.com/xprs-dev/xprs-firmware/tree/main/multiboard"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/models/kv4p/README.md"
+      },
+      {
+        "title": "The shared build, and which targets compile",
+        "url": "https://github.com/xprs-dev/xprs-firmware/blob/main/multiboard/README.md"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-on-desk.jpg",
+        "caption": "The kv4p HT in its printed case, SMA antenna fitted, on a phone.",
+        "credit": "Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/kv4p/hardware/images/product-on-desk.jpg"
+      },
+      {
+        "file": "hardware/images/pcb-v1.8.jpg",
+        "caption": "PCB v1.8: the ESP32 module and the SA818 under the shield.",
+        "credit": "Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/xprs-firmware/main/models/kv4p/hardware/images/pcb-v1.8.jpg"
+      }
+    ],
+    "screenshots": []
+  }
+]

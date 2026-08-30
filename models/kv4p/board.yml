@@ -1,0 +1,120 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# Pins and modules are from common/xprs_model_kv4p/model_config.h and
+# the env in multiboard/platformio.ini; memory from the sdkconfig fragment and
+# the chip datasheet. Anything null has not been measured on this bench.
+
+id: kv4p
+name: kv4p HT
+vendor: kv4p (Vance Vagell)
+sku: null
+product_url: https://kv4p.com/
+manual_url: https://github.com/VanceVagell/kv4p-ht
+summary: >-
+  kv4p HT: an open-hardware VHF handheld interface. ESP32 (dual-core 240 MHz,
+  520 KB RAM, 4 MB flash) driving an SA818 FM transceiver module (134-174 MHz,
+  1 W), with PTT, squelch and audio in/out on GPIO, an SMA antenna and a USB-C
+  link to a phone. No screen. Radios: WiFi 2.4 GHz, Bluetooth 4.2, VHF FM. The
+  only board that transmits on an amateur voice band; here it carries packet
+  through xprs_sa818 in the multiboard build.
+status: legacy
+
+silicon:
+  mcu: ESP32
+  family: esp32
+  core: Xtensa LX6 dual @ 240 MHz
+  ram_kb: 520
+  psram_mb: null
+  flash_mb: 4
+
+radios:
+  bluetooth: {version: "4.2 LE", extended_advertising: false, note: "original ESP32: 31-byte legacy advertising only"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
+  lora: null
+  other: [{name: SA818, note: "VHF 134-174 MHz FM module on UART2 (TX 17, RX 16), PTT 18, PD 19, SQ 32, audio out 26 / in 34"}]
+
+bearers:
+  ble5: "no"
+  ble5_note: Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md.
+  lora: "no"
+  lora_note: No LoRa radio.
+  lan: "untested"
+  lan_note: The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.
+  espnow: "untested"
+  espnow_note: Same -- the radio can, the legacy build does not.
+
+# The multiboard build predates xprs_app: it is the older station (SoftAP +
+# web chat over ESP-Mesh-Lite, APRS-IS iGate, telnet/SSH console) and carries
+# no XPRS bearer. Nothing below has been measured since the tree moved, and
+# multiboard/README.md says which targets even compile.
+xprs:
+  beacon: "no"
+  beacon_note: multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.
+  digipeater: "no"
+  digipeater_note: No XPRS bearers in the legacy build.
+  bridge: "no"
+  bridge_note: No XPRS bearers in the legacy build.
+  igate: "untested"
+  igate_note: The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.
+  hotspot: "untested"
+  hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
+  api: "untested"
+  api_note: Legacy xprs_http station API; not run since the move.
+  indexer: "no"
+  indexer_note: xprs_index is an xprs_app thing.
+  share: "no"
+  share_note: xprs_app only.
+  reticulum: "no"
+  reticulum_note: xprs_app only.
+  ota: "untested"
+  ota_note: Legacy xprs_updates path; unsigned, not run since the move.
+  gossip: "no"
+  gossip_note: xprs_app only.
+  dashboard: "no"
+  dashboard_note: No screen.
+  chat: "no"
+  chat_note: Nothing to type on.
+  mesh_session: "no"
+  mesh_session_note: BLE mesh session is xprs_app / tinynimble; not in the legacy build.
+  vhf: "untested"
+  vhf_note: xprs_sa818 and xprs_radio_tx exist in common/ and the legacy main.cpp drives them; not run since the move.
+  note: "VHF packet interface. The only board with a transmitter on an amateur voice band."
+
+io:
+  screen: null
+  buttons:
+    - {name: boot, pin: GPIO0, note: "the strap pin"}
+    - {name: ptt1, pin: GPIO5, note: "physical PTT"}
+  leds: [{name: status, pin: GPIO13}]
+  gnss: null
+  connectors: [{name: micro-USB}, {name: SMA, note: "VHF antenna"}]
+  sensors: []
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb
+
+firmware:
+  toolchain: esp-idf
+  project: multiboard
+  env: kv4p
+  version: null
+  artifact: null
+  flashing: "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload"
+
+docs:
+  - {title: "Board README", url: "models/kv4p/README.md"}
+  - {title: "The shared build, and which targets compile", url: "multiboard/README.md"}
+
+images:
+  - file: hardware/images/product-on-desk.jpg
+    caption: 'The kv4p HT in its printed case, SMA antenna fitted, on a phone.'
+    credit: "Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project"
+  - file: hardware/images/pcb-v1.8.jpg
+    caption: 'PCB v1.8: the ESP32 module and the SA818 under the shield.'
+    credit: "Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project"
+
+screenshots: []

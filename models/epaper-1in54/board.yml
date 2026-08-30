@@ -1,0 +1,123 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# Pins and modules are from common/xprs_model_epaper_1in54/model_config.h and
+# the env in multiboard/platformio.ini; memory from the sdkconfig fragment and
+# the chip datasheet. Anything null has not been measured on this bench.
+
+id: epaper-1in54
+name: ESP32-S3-ePaper-1.54
+vendor: Waveshare
+sku: null
+product_url: https://www.waveshare.com/product/displays/e-paper/esp32-s3-epaper-1.54.htm
+manual_url: https://www.waveshare.com/wiki/ESP32-S3-ePaper-1.54
+summary: >-
+  Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (dual-core 240 MHz, 512 KB RAM,
+  PSRAM, 4 MB flash) behind a 1.54" 200x200 black-and-white e-paper panel in a
+  white case, with a PCF85063 RTC, SHTC3 temperature/humidity sensor, microSD
+  and a battery. Radios: WiFi 2.4 GHz, Bluetooth 5. The panel keeps its image
+  with the power off, so it suits a status display that updates rarely.
+  Primary target of the old tree; multiboard build, not retested.
+status: legacy
+
+silicon:
+  mcu: ESP32-S3
+  family: esp32s3
+  core: Xtensa LX7 dual @ 240 MHz
+  ram_kb: 512
+  psram_mb: null  # CONFIG_SPIRAM=y in the fragment; size not recorded
+  flash_mb: 4
+
+radios:
+  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "the chip can; the legacy build does not enable BT"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
+  lora: null
+  other: []
+
+bearers:
+  ble5: "untested"
+  ble5_note: The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer.
+  lora: "no"
+  lora_note: No LoRa radio.
+  lan: "untested"
+  lan_note: The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.
+  espnow: "untested"
+  espnow_note: Same -- the radio can, the legacy build does not.
+
+# The multiboard build predates xprs_app: it is the older station (SoftAP +
+# web chat over ESP-Mesh-Lite, APRS-IS iGate, telnet/SSH console) and carries
+# no XPRS bearer. Nothing below has been measured since the tree moved, and
+# multiboard/README.md says which targets even compile.
+xprs:
+  beacon: "no"
+  beacon_note: multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.
+  digipeater: "no"
+  digipeater_note: No XPRS bearers in the legacy build.
+  bridge: "no"
+  bridge_note: No XPRS bearers in the legacy build.
+  igate: "untested"
+  igate_note: The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.
+  hotspot: "untested"
+  hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
+  api: "untested"
+  api_note: Legacy xprs_http station API; not run since the move.
+  indexer: "no"
+  indexer_note: xprs_index is an xprs_app thing.
+  share: "no"
+  share_note: xprs_app only.
+  reticulum: "no"
+  reticulum_note: xprs_app only.
+  ota: "untested"
+  ota_note: Legacy xprs_updates path; unsigned, not run since the move.
+  gossip: "no"
+  gossip_note: xprs_app only.
+  dashboard: "untested"
+  dashboard_note: xprs_ui_epaper on LVGL; not run since the move.
+  chat: "no"
+  chat_note: Nothing to type on.
+  mesh_session: "no"
+  mesh_session_note: BLE mesh session is xprs_app / tinynimble; not in the legacy build.
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "The primary target of the old tree (docs/summary.md). Not retested since the move; vendor and part number of the carrier not recorded."
+
+io:
+  screen: {controller: "1.54in e-paper (SSD1681 class)", width: 200, height: 200}
+  buttons:
+    - {name: boot, pin: GPIO0, note: "the strap pin"}
+  leds: []
+  gnss: null
+  connectors: [{name: USB-C}, {name: microSD}]
+  sensors: [{name: SHTC3, note: "temperature and humidity, I2C"}, {name: PCF85063, note: "RTC, I2C"}]
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb+battery
+
+firmware:
+  toolchain: esp-idf
+  project: multiboard
+  env: esp32s3_epaper_1in54
+  version: null
+  artifact: null
+  flashing: "esptool over the USB-serial port, pio run -e esp32s3_epaper_1in54 -t upload"
+
+docs:
+  - {title: "Board README", url: "models/epaper-1in54/README.md"}
+  - {title: "The shared build, and which targets compile", url: "multiboard/README.md"}
+  - {title: "Firmware summary, written for this board", url: "docs/summary.md"}
+
+images:
+  - file: hardware/images/product-front.png
+    caption: 'ESP32-S3-ePaper-1.54 in its white case, the 200x200 panel showing a picture.'
+    credit: "Waveshare product photography, waveshare.com"
+  - file: hardware/images/product-2.jpg
+    caption: 'Second view.'
+    credit: "Waveshare product photography, waveshare.com"
+  - file: hardware/images/product-3.jpg
+    caption: 'Third view.'
+    credit: "Waveshare product photography, waveshare.com"
+
+screenshots: []

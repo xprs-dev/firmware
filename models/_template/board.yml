@@ -8,7 +8,8 @@ name:
 vendor:
 sku:
 product_url:
-summary:     # one line: what this board is FOR in the fleet
+manual_url:  # vendor manual, datasheet or wiki for this board
+summary:     # a paragraph: what the device is (MCU, memory, screen, radios, ports), then what the station on it does
 status:      # shipping | legacy | planned | unsupported
 
 silicon:
@@ -18,6 +19,13 @@ silicon:
   ram_kb:
   psram_mb:  # null when there is none
   flash_mb:
+
+# What the board physically carries, in the vendor's terms.
+radios:
+  bluetooth:   # {version: "5.0", extended_advertising: true|false, note: ...} or null
+  wifi:        # {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"} or null
+  lora:        # {chip: SX1262, band_mhz: "862-930"} or null
+  other:       []   # anything else that transmits, e.g. {name: SA818, note: "VHF 134-174 MHz"}
 
 # What this board can do on the XPRS network, and WHY. yes | no | untested.
 bearers:
@@ -29,6 +37,26 @@ bearers:
   lan_note:
   espnow:
   espnow_note:
+
+# What the station on this board DOES. yes | no | planned | untested,
+# with a _note for anything that is not a plain yes. Roles: docs/catalog.md.
+xprs:
+  beacon:
+  digipeater:
+  bridge:
+  igate:
+  hotspot:
+  api:
+  indexer:
+  share:
+  reticulum:
+  ota:
+  gossip:
+  dashboard:
+  chat:
+  mesh_session:
+  vhf:
+  note:        # one line on what this board's station is, or null
 
 io:
   screen:      # {controller, width, height} or null
@@ -56,3 +84,5 @@ firmware:
 docs: []       # - {title: ..., url: ...}
 
 images: []     # - {file: hardware/images/x.jpg, caption: ..., credit: ...}
+
+screenshots: []  # - {file: docs/screenshots/x.png, caption: ...} -- what the firmware shows

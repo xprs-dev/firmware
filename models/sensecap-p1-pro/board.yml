@@ -12,9 +12,15 @@ name: SenseCAP Solar Node P1-Pro
 vendor: Seeed Studio
 sku: "114993633"
 product_url: https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html
+manual_url: https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf
 summary: >-
-  Solar-powered outdoor node. The first board in the fleet with no WiFi at
-  all, and the first that is not an ESP32.
+  Seeed SenseCAP Solar Node P1-Pro: nRF52840 (Cortex-M4F 64 MHz, 256 KB RAM, 1
+  MB flash + 2 MB QSPI) on a XIAO module, SX1262 LoRa (862-930 MHz), L76K
+  GNSS, Bluetooth 5, four 18650 cells, 5 W solar panel, weatherproof case with
+  pole bracket, RP-SMA antenna, USB-C, Grove port. No WiFi, no screen. Runs a
+  port of the XPRS codec and bearer on the Adafruit nRF52 core: beacons,
+  digipeats on LoRa and BLE5, bridges between the two, and dials a T-Deck's
+  GATT channel. Built to sit outdoors unattended.
 status: shipping
 
 silicon:
@@ -30,6 +36,12 @@ silicon:
   extra_qspi_flash_mb: 2
 
 # What this board can do on the XPRS network, and why.
+radios:
+  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "nRF52840 with SoftDevice S140 v7.3.0; one advertising set"}
+  wifi: null
+  lora: {chip: SX1262, band_mhz: "862-930"}
+  other: []
+
 bearers:
   ble5: "yes"
   ble5_note: >-
@@ -61,6 +73,35 @@ bearers:
     feature. See the note in models/sensecap-p1-pro/README.md.
   espnow: "no"
   espnow_note: ESP-NOW is an Espressif WiFi protocol. No WiFi radio, no ESP-NOW.
+
+xprs:
+  beacon: "yes"
+  digipeater: "yes"
+  bridge: "yes"
+  igate: "no"
+  igate_note: No IP on this board, so no APRS-IS.
+  hotspot: "no"
+  hotspot_note: No WiFi radio.
+  api: "no"
+  api_note: No IP, no HTTP. The station talks only on the air.
+  indexer: "no"
+  indexer_note: Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.
+  share: "no"
+  share_note: Nothing to serve and nothing to serve it over.
+  reticulum: "no"
+  reticulum_note: xprs_bearer_rns is ESP-IDF and TCP; neither exists here.
+  ota: "no"
+  ota_note: UF2 over USB only. No signed OTA path on this core yet.
+  gossip: "no"
+  gossip_note: Not ported.
+  dashboard: "no"
+  dashboard_note: Headless, by design.
+  chat: "no"
+  chat_note: Nothing to type on and nothing to read it from.
+  mesh_session: "yes"
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "A LoRa <-> BLE5 digipeater on a pole. xprs_codec and xprs_bearer verbatim; nothing else of common/."
 
 io:
   screen: null
@@ -95,7 +136,7 @@ firmware:
   project: models/sensecap-p1-pro/firmware
   env: p1pro
   version: 0.1.0
-  artifact: null
+  artifact: models/sensecap-p1-pro/prebuilt/firmware.uf2
   flashing: >-
     UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader
     that mounts as a mass-storage volume on a double reset-tap; an image is
@@ -129,3 +170,5 @@ images:
   - file: hardware/images/exterior-callouts.png
     caption: "Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend."
     credit: "Seeed Studio, industrial datasheet for SKU 114993633"
+
+screenshots: []

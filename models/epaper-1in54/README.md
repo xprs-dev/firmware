@@ -7,6 +7,7 @@ An e-paper station. The display driver is `xprs_epaper_1in54` in `common/`.
 | | |
 |---|---|
 | Chip | `esp32s3` |
+| `board.yml` | the catalogue entry, machine-readable (`docs/catalog.md`) |
 | `sdkconfig.esp32s3_epaper_1in54` | this board's ESP-IDF configuration, read by the shared build |
 | `docs/` | anything true of this board and not of the others |
 | `hardware/` | pinouts, photos, enclosures, 3D prints -- empty until there are some |

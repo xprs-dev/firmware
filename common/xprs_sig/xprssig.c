@@ -160,9 +160,13 @@ static bool xs_sc_valid(const uint8_t d[32])
 #else  /* on the device */
 
 #include "mbedtls/ecp.h"
+#include "mbedtls/bignum.h"
+
+#if defined(ESP_PLATFORM)
+/* The IDF boards: mbedtls is the IDF's, and so are the hash, the entropy and
+ * the log. */
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "mbedtls/bignum.h"
 #include "mbedtls/sha256.h"
 #include "esp_random.h"
 
@@ -174,6 +178,26 @@ static void xs_random(uint8_t *out, size_t len)
 {
     esp_fill_random(out, len);
 }
+#else
+/* Any other chip (today: the nRF52840 of the SenseCAP P1-Pro). The curve
+ * maths is still mbedtls -- a cut-down copy of bignum + ecp lives beside that
+ * board (models/sensecap-p1-pro/firmware/lib/mbedtls_ecp) -- but the hash is
+ * the codec's own xprs_sha256(), which every target already has, and the
+ * entropy is the board's to supply: it implements xprssig_platform_random(),
+ * declared in xprssig.h, from whatever its radio stack allows (on the nRF52
+ * with a SoftDevice running, NRF_RNG is not the application's to touch). */
+#include "xprs.h"
+#include <stdio.h>
+
+static void xs_sha256(const uint8_t *in, size_t len, uint8_t out[32])
+{
+    xprs_sha256(in, len, out);
+}
+static void xs_random(uint8_t *out, size_t len)
+{
+    xprssig_platform_random(out, len);
+}
+#endif
 
 /* mbedtls blinds scalar multiplication and REFUSES to run without an RNG —
  * passing NULL costs a MBEDTLS_ERR_ECP_BAD_INPUT_DATA and, further up, a
@@ -181,7 +205,7 @@ static void xs_random(uint8_t *out, size_t len)
 static int xs_rng(void *ctx, unsigned char *out, size_t len)
 {
     (void)ctx;
-    esp_fill_random(out, len);
+    xs_random(out, len);
     return 0;
 }
 
@@ -218,10 +242,15 @@ static void xs_log_fail(const char *step, int rc)
 {
     bool oom = rc == MBEDTLS_ERR_MPI_ALLOC_FAILED || rc == MBEDTLS_ERR_ECP_ALLOC_FAILED;
     s_last = oom ? XPRSSIG_NO_MEM : XPRSSIG_BAD;
+#if defined(ESP_PLATFORM)
     ESP_LOGW("xprssig", "ecp %s failed: -0x%04x%s (heap free %u, largest %u)",
              step, (unsigned)(-rc), oom ? " OUT OF MEMORY" : "",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
              (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+#else
+    printf("xprssig: ecp %s failed: -0x%04x%s\n", step, (unsigned)(-rc),
+           oom ? " OUT OF MEMORY" : "");
+#endif
 }
 
 static bool xs_mul_g_add_p(const uint8_t a[32], const uint8_t *b,

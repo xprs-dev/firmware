@@ -1,0 +1,593 @@
+<title>XPRS Board Catalogue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+.prebuilt{margin-top:12px; padding:14px 16px; border:1px dashed var(--rule); border-radius:10px}
+.dls{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
+.dl{font-size:12px; padding:4px 10px; border:1px solid var(--rule); border-radius:8px;
+  background:var(--sunk); text-decoration:none; color:var(--ink)}
+.dl span{color:var(--ink-dim); margin-left:6px}
+.dl:hover{border-color:var(--accent)}
+esp-web-install-button{--esp-tools-button-color:var(--accent);
+  --esp-tools-button-text-color:var(--ground); --esp-tools-button-border-radius:999px}
+.shot-link{display:block; cursor:zoom-in}
+.lb{position:fixed; inset:0; background:rgba(0,0,0,.88); display:flex; flex-direction:column;
+  align-items:center; justify-content:center; z-index:50; padding:24px}
+.lb[hidden]{display:none}
+.lb img{max-width:min(96vw,1400px); max-height:78vh; object-fit:contain; background:#fff; border-radius:6px}
+.lb .lb-cap{color:#f0f0f0; font-size:15px; margin:14px 0 0; text-align:center; max-width:80ch}
+.lb .lb-credit{color:#948c84; font-size:12px; display:block; margin-top:4px}
+.lb button,.lb a.lb-dl{position:absolute; font:inherit; font-size:14px; font-weight:600;
+  background:rgba(255,255,255,.12); color:#f0f0f0; border:1px solid rgba(255,255,255,.3);
+  border-radius:999px; padding:8px 14px; cursor:pointer; text-decoration:none}
+.lb button:hover,.lb a.lb-dl:hover{background:rgba(255,255,255,.25)}
+.lb .lb-prev{left:16px; top:50%; transform:translateY(-50%)}
+.lb .lb-next{right:16px; top:50%; transform:translateY(-50%)}
+.lb .lb-close{right:16px; top:16px}
+.lb a.lb-dl{left:16px; top:16px}
+.lb .lb-n{position:absolute; bottom:16px; color:#948c84; font-size:12px}
+.flash{margin-top:56px; padding-top:28px; border-top:1px solid var(--rule)}
+.flash h2{font-size:24px; margin-bottom:6px}
+.flash h3{font-size:16px; margin:26px 0 6px}
+.flash p{margin:6px 0; max-width:78ch}
+.flash pre{background:var(--sunk); padding:12px 14px; border-radius:8px; overflow-x:auto;
+  font-size:13px; max-width:78ch}
+.flash ul{max-width:78ch; padding-left:22px}
+.roles{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0}
+.role{font-family:Archivo,"Helvetica Neue",Arial,sans-serif;font-size:11px;
+  letter-spacing:.04em;padding:2px 8px;border-radius:999px;border:1px solid var(--rule);
+  color:var(--ink-dim);background:var(--sunk)}
+.role-yes{color:var(--ok);border-color:var(--ok)}
+.role-untested,.role-planned{color:var(--partial);border-color:var(--partial)}
+.role-no{opacity:.55;text-decoration:line-through}
+:root{
+  /* The station's own palette. #ffa86a on #101010 with #f0f0f0 text is what
+     xprs_ui.h and the hotspot chat page already draw with; this page is the
+     same project seen from the outside, so it uses the same three. Light is
+     derived from that accent rather than being a second, unrelated scheme. */
+  --accent:#c2551a; --accent-soft:#f0e2d6;
+  --ground:#f1eeea; --raised:#fbf9f7; --sunk:#e7e2dc;
+  --ink:#1c1815; --ink-dim:#6b6259; --rule:#dcd5cc;
+  --ok:#4e7d3c; --absent:#8a827a; --partial:#a9761a;
+  --shadow:0 1px 2px rgba(28,24,21,.06),0 8px 24px -12px rgba(28,24,21,.18);
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+  --accent:#ffa86a; --accent-soft:#2a1c10;
+  --ground:#101010; --raised:#1b1b1b; --sunk:#161616;
+  --ink:#f0f0f0; --ink-dim:#948c84; --rule:#2e2b28;
+  --ok:#86c06c; --absent:#7a7570; --partial:#e0a836;
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
+}}
+:root[data-theme="dark"]{
+  --accent:#ffa86a; --accent-soft:#2a1c10;
+  --ground:#101010; --raised:#1b1b1b; --sunk:#161616;
+  --ink:#f0f0f0; --ink-dim:#948c84; --rule:#2e2b28;
+  --ok:#86c06c; --absent:#7a7570; --partial:#e0a836;
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:Newsreader,Georgia,serif; font-size:17px; line-height:1.6;
+  margin:0; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums}
+h1,h2,h3,.eyebrow,.chip,.bearer-name,.build-head,.filters{
+  font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1,h2{text-wrap:balance; margin:0}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:3px}
+
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+
+/* ── Masthead ─────────────────────────────────────────────────────────── */
+.top{border-bottom:1px solid var(--rule); background:var(--raised)}
+.top-in{max-width:1080px; margin:0 auto; padding:44px 24px 34px;
+  display:flex; flex-wrap:wrap; gap:28px; align-items:flex-end;
+  justify-content:space-between}
+.eyebrow{font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:700; margin:0 0 10px}
+h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
+  line-height:1.05}
+.blurb{color:var(--ink-dim); max-width:52ch; margin:14px 0 0; font-size:16px}
+.counts{display:flex; gap:26px}
+.count b{display:block; font-family:Archivo,sans-serif; font-weight:800;
+  font-size:30px; line-height:1; font-variant-numeric:tabular-nums}
+.count span{font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink-dim); font-family:Archivo,sans-serif}
+
+/* ── Filters ──────────────────────────────────────────────────────────── */
+.filters{display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  padding:22px 0 4px; font-size:12px}
+.filters .lbl{letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink-dim); margin-right:4px; font-weight:600}
+.filters .lbl-2{margin-left:14px}
+.fbtn{font:inherit; font-weight:600; cursor:pointer; border:1px solid var(--rule);
+  background:var(--raised); color:var(--ink); padding:6px 13px; border-radius:999px;
+  letter-spacing:.02em}
+.fbtn[aria-pressed="true"]{background:var(--accent); border-color:var(--accent);
+  color:var(--ground)}
+
+/* ── Cards ────────────────────────────────────────────────────────────── */
+.grid{display:grid; gap:22px; padding-top:22px}
+.card{background:var(--raised); border:1px solid var(--rule); border-radius:14px;
+  padding:26px 26px 22px; box-shadow:var(--shadow)}
+.card[hidden]{display:none}
+.card-head{display:flex; flex-wrap:wrap; gap:12px 20px;
+  align-items:flex-start; justify-content:space-between}
+.card-title h2{font-size:25px; font-weight:800; letter-spacing:-.015em}
+.vendor{margin:3px 0 0; color:var(--ink-dim); font-size:14px}
+.card-tags{display:flex; flex-wrap:wrap; gap:7px; align-items:center}
+.chip{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  padding:5px 10px; border-radius:5px; border:1px solid var(--rule); white-space:nowrap}
+.chip-fam{background:var(--sunk)}
+.s-shipping{color:var(--ok); border-color:currentColor}
+.s-planned{color:var(--partial); border-color:currentColor}
+.s-legacy,.s-unsupported{color:var(--absent); border-color:currentColor}
+.ver{font-size:12px; color:var(--ink-dim)}
+.summary{margin:16px 0 20px; max-width:64ch}
+
+/* The spine: four fixed cells, same order on every card, so the answer reads
+   down the page as well as across one board. */
+.bearers{display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+  background:var(--rule); border:1px solid var(--rule); border-radius:9px;
+  overflow:hidden; margin-bottom:20px}
+.bearer{background:var(--raised); padding:11px 8px; text-align:center; cursor:help}
+.bearer-mark{display:block; font-size:17px; line-height:1.1}
+.bearer-name{font-size:10px; font-weight:700; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--ink-dim)}
+.b-yes .bearer-mark{color:var(--ok)}
+.b-no .bearer-mark{color:var(--absent)}
+.b-untested .bearer-mark{color:var(--partial)}
+.b-no .bearer-name{opacity:.55}
+
+.specs{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  gap:0 26px; margin:0 0 20px}
+.spec{display:flex; gap:12px; justify-content:space-between; align-items:baseline;
+  padding:7px 0; border-bottom:1px solid var(--rule)}
+.spec dt{font-size:11px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--ink-dim); font-family:Archivo,sans-serif; font-weight:600;
+  white-space:nowrap}
+.spec dd{margin:0; font-size:13px; text-align:right}
+
+.shots{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:12px; margin-bottom:20px}
+.shot{margin:0}
+.shot img{width:100%; height:150px; object-fit:cover; border-radius:8px;
+  border:1px solid var(--rule); background:var(--sunk); display:block}
+.shot figcaption{font-size:11.5px; color:var(--ink-dim); line-height:1.45;
+  padding-top:7px}
+.credit{display:block; opacity:.65; font-size:10.5px; font-style:italic}
+
+.build{background:var(--sunk); border-radius:9px; padding:16px 18px}
+.build-head{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase;
+  font-weight:700; color:var(--accent); margin-bottom:9px}
+.build-none .build-head{color:var(--partial)}
+.build pre{margin:0 0 10px; font-size:12.5px; line-height:1.75; overflow-x:auto;
+  font-family:"JetBrains Mono",ui-monospace,monospace}
+.flashnote{margin:0; font-size:13px; color:var(--ink-dim); max-width:70ch}
+.card-foot{display:flex; flex-wrap:wrap; gap:16px; margin-top:16px;
+  padding-top:14px; border-top:1px solid var(--rule)}
+.doclink{font-size:13px; text-decoration:none; border-bottom:1px solid transparent}
+.doclink:hover{border-bottom-color:currentColor}
+
+.legend{display:flex; flex-wrap:wrap; gap:18px; padding:26px 0 0;
+  border-top:1px solid var(--rule); margin-top:34px; font-size:12.5px;
+  color:var(--ink-dim)}
+.legend b{font-weight:700; font-style:normal}
+.foot{color:var(--ink-dim); font-size:13px; padding-top:16px; max-width:70ch}
+@media (max-width:640px){
+  .bearers{grid-template-columns:repeat(2,1fr)}
+  .card{padding:20px 18px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+
+<header class="top"><div class="top-in">
+  <div>
+    <p class="eyebrow">xprs-dev/xprs-firmware</p>
+    <h1>Supported boards</h1>
+    <p class="blurb">Each card is one folder under <span class="mono">models/</span>:
+      what the board is, which XPRS bearers it carries, what the station on it
+      does, how to build and flash it. Filter by bearer or by hardware.</p>
+  </div>
+  <div class="counts">
+    <div class="count"><b id="shown">11</b><span>shown</span></div>
+    <div class="count"><b>4</b><span>shipping</span></div>
+    <div class="count"><b>4</b><span>chip families</span></div>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <div class="filters">
+    <span class="lbl">Bearer</span><button class="fbtn" data-tag="ble5" aria-pressed="false">BLE5</button><button class="fbtn" data-tag="lora" aria-pressed="false">LoRa</button><button class="fbtn" data-tag="lan" aria-pressed="false">LAN</button><button class="fbtn" data-tag="espnow" aria-pressed="false">ESP-NOW</button><span class="lbl lbl-2">Hardware</span><button class="fbtn" data-tag="screen" aria-pressed="false">Screen</button><button class="fbtn" data-tag="lora_radio" aria-pressed="false">LoRa radio</button><button class="fbtn" data-tag="vhf" aria-pressed="false">VHF radio</button><button class="fbtn" data-tag="gnss" aria-pressed="false">GNSS</button><button class="fbtn" data-tag="battery" aria-pressed="false">Battery</button>
+  </div>
+  <main class="grid">
+<article class="card" data-status="shipping"
+         data-tags="ble5 lora lan espnow screen lora_radio battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>T-Deck</h2>
+      <p class="vendor">LilyGO</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-S3</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.4.0</span>
+    </div>
+  </header>
+  <p class="summary">LilyGO T-Deck: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB PSRAM, 16 MB flash), 2.8&quot; 320x240 ST7789 LCD with GT911 touch, QWERTY keyboard on its own ESP32-C3, trackball, microSD, speaker, microphone, USB-C, LiPo connector. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, and an SX1262 LoRa module (868 MHz on this unit). The only board with all four bearers, and the only one you can type on, so it gets the interactive chat panel. Also serves the BLE GATT mesh session that the P1-Pro connects to.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-yes" title="An S3. Same tinynimble backend as the T-Dongle."><span class="bearer-mark">●</span><span class="bearer-name">BLE5</span></div><div class="bearer b-yes" title="SX1262 at 868 MHz, sharing the panel's SPI bus."><span class="bearer-mark">●</span><span class="bearer-name">LoRa</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">LAN</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX7 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">512 KB RAM · 8 MB PSRAM · 16 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">ST7789 320×240</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-yes">Beacon</span><span class="role role-yes">Digipeater</span><span class="role role-yes">Bridge</span><span class="role role-yes">iGate</span><span class="role role-yes">Hotspot</span><span class="role role-yes">API</span><span class="role role-yes">Indexer</span><span class="role role-yes">Share</span><span class="role role-untested" title="xprs_app brings xprsrns up on every board; not measured here since the rewrite.">Reticulum</span><span class="role role-yes">OTA</span><span class="role role-yes">Gossip</span><span class="role role-yes">Dashboard</span><span class="role role-yes">Chat</span><span class="role role-yes">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/tdeck/hardware/images/product-front.jpg" data-caption="Front and back: 320x240 screen, trackball, QWERTY keyboard, SD slot, LoRa module." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdeck/hardware/images/product-front.jpg" alt="Front and back: 320x240 screen, trackball, QWERTY keyboard, SD slot, LoRa module." loading="lazy"></a><figcaption>Front and back: 320x240 screen, trackball, QWERTY keyboard, SD slot, LoRa module.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/tdeck/hardware/images/product-2.jpg" data-caption="Second view." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdeck/hardware/images/product-2.jpg" alt="Second view." loading="lazy"></a><figcaption>Second view.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/tdeck/hardware/images/product-3.jpg" data-caption="Third view." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdeck/hardware/images/product-3.jpg" alt="Third view." loading="lazy"></a><figcaption>Third view.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/tdeck/hardware/images/product-4.jpg" data-caption="Fourth view." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdeck/hardware/images/product-4.jpg" alt="Fourth view." loading="lazy"></a><figcaption>Fourth view.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd models/tdeck/firmware
+~/.platformio/penv/bin/pio run -e tdeck
+~/.platformio/penv/bin/pio run -e tdeck -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32s3">ESP32-S3 / C3 over native USB</a>.</p></div><div class="prebuilt"><div class="build-head">Prebuilt image <span class="mono">v0.4.0</span></div><esp-web-install-button manifest="models/tdeck/prebuilt/manifest.json"><span slot="unsupported">Web flashing needs Chrome or Edge.</span><span slot="not-allowed">Web flashing needs this page served over HTTPS.</span></esp-web-install-button><div class="dls"><a class="dl mono" href="models/tdeck/prebuilt/bootloader.bin" download>bootloader.bin<span>20 KB</span></a><a class="dl mono" href="models/tdeck/prebuilt/firmware.bin" download>firmware.bin<span>1370 KB</span></a><a class="dl mono" href="models/tdeck/prebuilt/manifest.json" download>manifest.json<span>0 KB</span></a><a class="dl mono" href="models/tdeck/prebuilt/partitions.bin" download>partitions.bin<span>3 KB</span></a></div></div>
+  <footer class="card-foot"><a class="doclink" href="models/tdeck/README.md">Board README</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdeck">Source folder</a></footer>
+</article>
+<article class="card" data-status="shipping"
+         data-tags="ble5 lan espnow screen">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>T-Dongle-S3</h2>
+      <p class="vendor">LilyGO</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-S3</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.4.0</span>
+    </div>
+  </header>
+  <p class="summary">LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross- bearer bridge, APRS-IS iGate, HTTP API, indexer, signed OTA. Meant to be plugged in next to a router as the BLE-to-LAN bridge; the screen cycles three status views on its own since the button is usually under the case.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-yes" title="An S3, so extended advertising is available and an XPRS packet fits one AD. Runs the tinynimble backend (CONFIG_XPRSBLE_BACKEND_TINYNIMBLE), not the NimBLE host: no PSRAM here, and the host's msys pools, ACL buffers and 5,120-byte task stack were all internal DRAM."><span class="bearer-mark">●</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No radio on this board."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-yes" title="WiFi STA. The other half of the bridge, and why the board exists."><span class="bearer-mark">●</span><span class="bearer-name">LAN</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX7 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">512 KB RAM · 16 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">ST7735 160×80</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-yes">Beacon</span><span class="role role-yes">Digipeater</span><span class="role role-yes">Bridge</span><span class="role role-yes">iGate</span><span class="role role-untested" title="Compiled in, seeded OFF (.hotspot = false in main.c): the AP costs ~9 KB of internal heap and this board has no PSRAM. `cfg set ap_on 1` turns it on.">Hotspot</span><span class="role role-yes">API</span><span class="role role-yes">Indexer</span><span class="role role-yes">Share</span><span class="role role-untested" title="xprs_app brings xprsrns up on every board; not measured here since the rewrite.">Reticulum</span><span class="role role-yes">OTA</span><span class="role role-yes">Gossip</span><span class="role role-yes">Dashboard</span><span class="role role-no" title="Nothing to type on. The read-only chat table, on the three-view mini UI.">Chat</span><span class="role role-untested" title="The GATT channel is measured T-Deck <-> P1-Pro (docs/ble5-gatt.md), not on this board.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/tdongle-s3/hardware/images/product-front.jpg" data-caption="The stick, cap on and cap off: 160x80 screen on the face, ESP32-S3 under the clear shell." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdongle-s3/hardware/images/product-front.jpg" alt="The stick, cap on and cap off: 160x80 screen on the face, ESP32-S3 under the clear shell." loading="lazy"></a><figcaption>The stick, cap on and cap off: 160x80 screen on the face, ESP32-S3 under the clear shell.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/tdongle-s3/hardware/images/product-2.jpg" data-caption="Second view." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdongle-s3/hardware/images/product-2.jpg" alt="Second view." loading="lazy"></a><figcaption>Second view.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/tdongle-s3/hardware/images/product-3.jpg" data-caption="Third view." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdongle-s3/hardware/images/product-3.jpg" alt="Third view." loading="lazy"></a><figcaption>Third view.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/tdongle-s3/hardware/images/product-4.jpg" data-caption="Fourth view." data-credit="LilyGO product photography, lilygo.cc"><img src="models/tdongle-s3/hardware/images/product-4.jpg" alt="Fourth view." loading="lazy"></a><figcaption>Fourth view.<span class="credit">LilyGO product photography, lilygo.cc</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd models/tdongle-s3/firmware
+~/.platformio/penv/bin/pio run -e tdongle
+~/.platformio/penv/bin/pio run -e tdongle -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32s3">ESP32-S3 / C3 over native USB</a>.</p></div><div class="prebuilt"><div class="build-head">Prebuilt image <span class="mono">v0.4.0</span></div><esp-web-install-button manifest="models/tdongle-s3/prebuilt/manifest.json"><span slot="unsupported">Web flashing needs Chrome or Edge.</span><span slot="not-allowed">Web flashing needs this page served over HTTPS.</span></esp-web-install-button><div class="dls"><a class="dl mono" href="models/tdongle-s3/prebuilt/bootloader.bin" download>bootloader.bin<span>20 KB</span></a><a class="dl mono" href="models/tdongle-s3/prebuilt/firmware.bin" download>firmware.bin<span>1389 KB</span></a><a class="dl mono" href="models/tdongle-s3/prebuilt/manifest.json" download>manifest.json<span>0 KB</span></a><a class="dl mono" href="models/tdongle-s3/prebuilt/partitions.bin" download>partitions.bin<span>3 KB</span></a></div></div>
+  <footer class="card-foot"><a class="doclink" href="models/tdongle-s3/README.md">Board README</a><a class="doclink" href="docs/esp32.md">Memory and scheduling, binding on this board</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/tdongle-s3">Source folder</a></footer>
+</article>
+<article class="card" data-status="shipping"
+         data-tags="lan espnow screen battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>M5Stack Core</h2>
+      <p class="vendor">M5Stack</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.2.0</span>
+    </div>
+  </header>
+  <p class="summary">M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios: WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer). Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot AP with the chat page, digipeater, iGate, indexer and signed OTA. Used as the second station on the bench: anything the T-Dongle or T-Deck sends has something to hear it.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-no" title="An original ESP32 (D0WDQ6): legacy 31-byte advertising only. An XPRS beacon runs to 112-173 bytes, so this bearer cannot exist here at all -- see docs/esp32.md, \"Radio capability per chip\"."><span class="bearer-mark">—</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No radio on this board."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">LAN</span></div><div class="bearer b-yes" title="What this board is here for."><span class="bearer-mark">●</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX6 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">520 KB RAM · 16 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">ILI9342C 320×240</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-yes">Beacon</span><span class="role role-yes">Digipeater</span><span class="role role-yes">Bridge</span><span class="role role-yes">iGate</span><span class="role role-yes">Hotspot</span><span class="role role-yes">API</span><span class="role role-yes">Indexer</span><span class="role role-yes">Share</span><span class="role role-untested" title="xprs_app brings xprsrns up on every board; not measured here since the rewrite.">Reticulum</span><span class="role role-yes">OTA</span><span class="role role-yes">Gossip</span><span class="role role-yes">Dashboard</span><span class="role role-no" title="Three buttons, no keyboard. The read-only chat table.">Chat</span><span class="role role-no" title="No BLE5 on this chip, so no BLE bearer to carry a session.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/m5stack-core/hardware/images/product-01.webp" data-caption="Core Basic: 320x240 in the black stackable case, three buttons under the screen." data-credit="M5Stack product photography, docs.m5stack.com"><img src="models/m5stack-core/hardware/images/product-01.webp" alt="Core Basic: 320x240 in the black stackable case, three buttons under the screen." loading="lazy"></a><figcaption>Core Basic: 320x240 in the black stackable case, three buttons under the screen.<span class="credit">M5Stack product photography, docs.m5stack.com</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/m5stack-core/hardware/images/product-02.webp" data-caption="Second view." data-credit="M5Stack product photography, docs.m5stack.com"><img src="models/m5stack-core/hardware/images/product-02.webp" alt="Second view." loading="lazy"></a><figcaption>Second view.<span class="credit">M5Stack product photography, docs.m5stack.com</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/m5stack-core/hardware/images/product-03.webp" data-caption="Third view." data-credit="M5Stack product photography, docs.m5stack.com"><img src="models/m5stack-core/hardware/images/product-03.webp" alt="Third view." loading="lazy"></a><figcaption>Third view.<span class="credit">M5Stack product photography, docs.m5stack.com</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/m5stack-core/hardware/images/dimensions.jpg" data-caption="Module dimensions, from the vendor page." data-credit="M5Stack product photography, docs.m5stack.com"><img src="models/m5stack-core/hardware/images/dimensions.jpg" alt="Module dimensions, from the vendor page." loading="lazy"></a><figcaption>Module dimensions, from the vendor page.<span class="credit">M5Stack product photography, docs.m5stack.com</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd models/m5stack-core/firmware
+~/.platformio/penv/bin/pio run -e m5stack
+~/.platformio/penv/bin/pio run -e m5stack -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32">ESP32 over USB-serial</a>.</p></div><div class="prebuilt"><div class="build-head">Prebuilt image <span class="mono">v0.2.0</span></div><esp-web-install-button manifest="models/m5stack-core/prebuilt/manifest.json"><span slot="unsupported">Web flashing needs Chrome or Edge.</span><span slot="not-allowed">Web flashing needs this page served over HTTPS.</span></esp-web-install-button><div class="dls"><a class="dl mono" href="models/m5stack-core/prebuilt/bootloader.bin" download>bootloader.bin<span>26 KB</span></a><a class="dl mono" href="models/m5stack-core/prebuilt/firmware.bin" download>firmware.bin<span>1457 KB</span></a><a class="dl mono" href="models/m5stack-core/prebuilt/manifest.json" download>manifest.json<span>0 KB</span></a><a class="dl mono" href="models/m5stack-core/prebuilt/partitions.bin" download>partitions.bin<span>3 KB</span></a></div></div>
+  <footer class="card-foot"><a class="doclink" href="models/m5stack-core/README.md">Board README</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/m5stack-core">Source folder</a></footer>
+</article>
+<article class="card" data-status="shipping"
+         data-tags="ble5 lora lora_radio gnss battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>SenseCAP Solar Node P1-Pro</h2>
+      <p class="vendor">Seeed Studio · SKU 114993633</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">nRF52840</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.1.0</span>
+    </div>
+  </header>
+  <p class="summary">Seeed SenseCAP Solar Node P1-Pro: nRF52840 (Cortex-M4F 64 MHz, 256 KB RAM, 1 MB flash + 2 MB QSPI) on a XIAO module, SX1262 LoRa (862-930 MHz), L76K GNSS, Bluetooth 5, four 18650 cells, 5 W solar panel, weatherproof case with pole bracket, RP-SMA antenna, USB-C, Grove port. No WiFi, no screen. Runs a port of the XPRS codec and bearer on the Adafruit nRF52 core: beacons, digipeats on LoRa and BLE5, bridges between the two, and dials a T-Deck's GATT channel. Built to sit outdoors unattended.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-yes" title="Working, measured 2026-08-30 (docs/ble5-nrf52.md). tinynimble's SoftDevice port speaks to S140 v7.3.0 directly -- Bluefruit, the core's own library, is capped at 31 bytes and cannot carry an XPRS beacon -- and puts a 255-byte extended advert on the air that a T-Dongle digipeated (\"via:X3WWAJ\"); what it hears on BLE is bridged onto LoRa. The mesh channel over a CONNECTION is measured too (docs/ble5-gatt.md): this board dials a T-Deck serving tn_att, MTU 247, 244-byte frames both ways, hang-up and re-dial. One advertising set on this chip, so the beacon is silent while a session is up."><span class="bearer-mark">●</span><span class="bearer-name">BLE5</span></div><div class="bearer b-yes" title="Working, both directions, measured against a T-Deck on 2026-08-30: 6 of 7 beacons received there at -30 dBm SNR 12, 29 wires received here in 180 s, none corrupt and none unparsed. A beacon from this station was then digipeated by the T-Deck onto the LAN as \"via:X3GSLC,X3WWAJ\", so the packets are first-class on the network and not merely audible. Driven by RadioLib rather than a port of common/xprs_sx1262, which is ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which MUST stay equal to xprslora.c or the two radios are deaf to each other."><span class="bearer-mark">●</span><span class="bearer-name">LoRa</span></div><div class="bearer b-no" title="nRF52840 has no WiFi radio, so there is no LAN and there never will be on this board. xprs_bearer_lan is not portable here, and the LAN bearer's task is also what pumps every other bearer's re-air queue -- which is a real structural problem for a port, not just a missing feature. See the note in models/sensecap-p1-pro/README.md."><span class="bearer-mark">—</span><span class="bearer-name">LAN</span></div><div class="bearer b-no" title="ESP-NOW is an Espressif WiFi protocol. No WiFi radio, no ESP-NOW."><span class="bearer-mark">—</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">ARM Cortex-M4F single @ 64 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">256 KB RAM · 1 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">none</dd></div><div class="spec"><dt>GNSS</dt><dd class="mono">Seeed XIAO L76K (GPS / GLONASS / Galileo / BeiDou)</dd></div><div class="spec"><dt>Power</dt><dd class="mono">solar+battery</dd></div><div class="spec"><dt>Size</dt><dd class="mono">191.2 x 201.2 x 42.1 mm</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">arduino-nrf52</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-yes">Beacon</span><span class="role role-yes">Digipeater</span><span class="role role-yes">Bridge</span><span class="role role-no" title="No IP on this board, so no APRS-IS.">iGate</span><span class="role role-no" title="No WiFi radio.">Hotspot</span><span class="role role-no" title="No IP, no HTTP. The station talks only on the air.">API</span><span class="role role-no" title="Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.">Indexer</span><span class="role role-no" title="Nothing to serve and nothing to serve it over.">Share</span><span class="role role-no" title="xprs_bearer_rns is ESP-IDF and TCP; neither exists here.">Reticulum</span><span class="role role-no" title="UF2 over USB only. No signed OTA path on this core yet.">OTA</span><span class="role role-no" title="Not ported.">Gossip</span><span class="role role-no" title="Headless, by design.">Dashboard</span><span class="role role-no" title="Nothing to type on and nothing to read it from.">Chat</span><span class="role role-yes">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/block-diagram.png" data-caption="Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path." data-credit="Seeed Studio, industrial datasheet for SKU 114993633"><img src="models/sensecap-p1-pro/hardware/images/block-diagram.png" alt="Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path." loading="lazy"></a><figcaption>Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path.<span class="credit">Seeed Studio, industrial datasheet for SKU 114993633</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/product-front.jpg" data-caption="The node, panel side." data-credit="Seeed Studio product photography"><img src="models/sensecap-p1-pro/hardware/images/product-front.jpg" alt="The node, panel side." loading="lazy"></a><figcaption>The node, panel side.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/product-angle.jpg" data-caption="Three-quarter view with the antenna fitted." data-credit="Seeed Studio product photography"><img src="models/sensecap-p1-pro/hardware/images/product-angle.jpg" alt="Three-quarter view with the antenna fitted." loading="lazy"></a><figcaption>Three-quarter view with the antenna fitted.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/product-mounted.jpg" data-caption="Pole-mounted on its bracket." data-credit="Seeed Studio product photography"><img src="models/sensecap-p1-pro/hardware/images/product-mounted.jpg" alt="Pole-mounted on its bracket." loading="lazy"></a><figcaption>Pole-mounted on its bracket.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/product-internals.jpg" data-caption="Inside: the four 18650 cells and the carrier board." data-credit="Seeed Studio product photography"><img src="models/sensecap-p1-pro/hardware/images/product-internals.jpg" alt="Inside: the four 18650 cells and the carrier board." loading="lazy"></a><figcaption>Inside: the four 18650 cells and the carrier board.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/product-ports.jpg" data-caption="The port and button row on the underside." data-credit="Seeed Studio product photography"><img src="models/sensecap-p1-pro/hardware/images/product-ports.jpg" alt="The port and button row on the underside." loading="lazy"></a><figcaption>The port and button row on the underside.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/sensecap-p1-pro/hardware/images/exterior-callouts.png" data-caption="Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend." data-credit="Seeed Studio, industrial datasheet for SKU 114993633"><img src="models/sensecap-p1-pro/hardware/images/exterior-callouts.png" alt="Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend." loading="lazy"></a><figcaption>Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend.<span class="credit">Seeed Studio, industrial datasheet for SKU 114993633</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd models/sensecap-p1-pro/firmware
+~/.platformio/penv/bin/pio run -e p1pro
+~/.platformio/penv/bin/pio run -e p1pro -t upload</pre><p class="flashnote">Flashing: <a href="#flash-nrf52">nRF52 by UF2 drag-and-drop</a>.</p></div><div class="prebuilt"><div class="build-head">Prebuilt image <span class="mono">v0.1.0</span></div><div class="dls"><a class="dl mono" href="models/sensecap-p1-pro/prebuilt/firmware.uf2" download>firmware.uf2<span>285 KB</span></a></div></div>
+  <footer class="card-foot"><a class="doclink" href="https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html">Product page</a><a class="doclink" href="https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf">Industrial datasheet (PDF)</a><a class="doclink" href="https://meshtastic.org/docs/hardware/devices/seeed-studio/sensecap/solar-node/">Meshtastic device page</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/sensecap-p1-pro">Source folder</a></footer>
+</article>
+<article class="card" data-status="planned"
+         data-tags="">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>ESP32-C3 Mini (DevKitM-1 pinout)</h2>
+      <p class="vendor">Espressif</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-C3</span>
+      <span class="chip chip-status s-planned">planned</span>
+      
+    </div>
+  </header>
+  <p class="summary">Espressif ESP32-C3 DevKitM-1 class board: single-core RISC-V at 160 MHz, 400 KB RAM, 4 MB flash, one addressable LED, BOOT button, native USB serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. No screen, no LoRa, no SD. Planned as the cheapest headless station: hotspot AP with the chat page, LAN and ESP-NOW bearers, indexer, signed OTA. Ran the old SoftAP web-chat firmware; the multiboard target does not compile today and docs/station-plan.md is the plan.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-untested" title="The C3 has extended advertising, but BLE was OFF in every build that ran on this board and docs/espnow.md warns a BLE controller steals the radio from an unassociated STA. First thing the plan tests."><span class="bearer-mark">◐</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No LoRa radio."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">RISC-V single @ 160 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">400 KB RAM · 4 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">none</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-no" title="No screen; the plan keeps it that way.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/esp32c3-mini/hardware/images/product-front.png" data-caption="ESP32-C3-DevKitM-1, isometric." data-credit="Espressif, ESP32-C3-DevKitM-1 user guide"><img src="models/esp32c3-mini/hardware/images/product-front.png" alt="ESP32-C3-DevKitM-1, isometric." loading="lazy"></a><figcaption>ESP32-C3-DevKitM-1, isometric.<span class="credit">Espressif, ESP32-C3-DevKitM-1 user guide</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/esp32c3-mini/hardware/images/annotated.png" data-caption="Annotated photo: the module, the two buttons, the RGB LED on GPIO8." data-credit="Espressif, ESP32-C3-DevKitM-1 user guide"><img src="models/esp32c3-mini/hardware/images/annotated.png" alt="Annotated photo: the module, the two buttons, the RGB LED on GPIO8." loading="lazy"></a><figcaption>Annotated photo: the module, the two buttons, the RGB LED on GPIO8.<span class="credit">Espressif, ESP32-C3-DevKitM-1 user guide</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/esp32c3-mini/hardware/images/pinout.png" data-caption="Pinout." data-credit="Espressif, ESP32-C3-DevKitM-1 user guide"><img src="models/esp32c3-mini/hardware/images/pinout.png" alt="Pinout." loading="lazy"></a><figcaption>Pinout.<span class="credit">Espressif, ESP32-C3-DevKitM-1 user guide</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e esp32c3_mini
+~/.platformio/penv/bin/pio run -e esp32c3_mini -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32s3">ESP32-S3 / C3 over native USB</a>.</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/esp32c3-mini/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="models/esp32c3-mini/docs/station-plan.md">Station plan</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/esp32c3-mini">Source folder</a></footer>
+</article>
+<article class="card" data-status="legacy"
+         data-tags="screen battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>ESP32-S3-ePaper-1.54</h2>
+      <p class="vendor">Waveshare</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-S3</span>
+      <span class="chip chip-status s-legacy">legacy</span>
+      
+    </div>
+  </header>
+  <p class="summary">Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, PSRAM, 4 MB flash) behind a 1.54&quot; 200x200 black-and-white e-paper panel in a white case, with a PCF85063 RTC, SHTC3 temperature/humidity sensor, microSD and a battery. Radios: WiFi 2.4 GHz, Bluetooth 5. The panel keeps its image with the power off, so it suits a status display that updates rarely. Primary target of the old tree; multiboard build, not retested.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-untested" title="The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer."><span class="bearer-mark">◐</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No LoRa radio."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX7 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">512 KB RAM · 4 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">1.54in e-paper (SSD1681 class) 200×200</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-untested" title="xprs_ui_epaper on LVGL; not run since the move.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/epaper-1in54/hardware/images/product-front.png" data-caption="ESP32-S3-ePaper-1.54 in its white case, the 200x200 panel showing a picture." data-credit="Waveshare product photography, waveshare.com"><img src="models/epaper-1in54/hardware/images/product-front.png" alt="ESP32-S3-ePaper-1.54 in its white case, the 200x200 panel showing a picture." loading="lazy"></a><figcaption>ESP32-S3-ePaper-1.54 in its white case, the 200x200 panel showing a picture.<span class="credit">Waveshare product photography, waveshare.com</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/epaper-1in54/hardware/images/product-2.jpg" data-caption="Second view." data-credit="Waveshare product photography, waveshare.com"><img src="models/epaper-1in54/hardware/images/product-2.jpg" alt="Second view." loading="lazy"></a><figcaption>Second view.<span class="credit">Waveshare product photography, waveshare.com</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/epaper-1in54/hardware/images/product-3.jpg" data-caption="Third view." data-credit="Waveshare product photography, waveshare.com"><img src="models/epaper-1in54/hardware/images/product-3.jpg" alt="Third view." loading="lazy"></a><figcaption>Third view.<span class="credit">Waveshare product photography, waveshare.com</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e esp32s3_epaper_1in54
+~/.platformio/penv/bin/pio run -e esp32s3_epaper_1in54 -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32s3">ESP32-S3 / C3 over native USB</a>.</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/epaper-1in54/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="docs/summary.md">Firmware summary, written for this board</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/epaper-1in54">Source folder</a></footer>
+</article>
+<article class="card" data-status="legacy"
+         data-tags="">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>ESP32-DevKitC (esp32dev)</h2>
+      <p class="vendor">Espressif</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32</span>
+      <span class="chip chip-status s-legacy">legacy</span>
+      
+    </div>
+  </header>
+  <p class="summary">Espressif ESP32-DevKitC: WROOM-32 module (dual-core 240 MHz, 520 KB RAM, 4 MB flash), EN and BOOT buttons, micro-USB via CP2102. No screen, no radio module, no battery. Radios: WiFi 2.4 GHz, Bluetooth 4.2. A bare devkit for trying a bearer before it goes on a real board; multiboard target, fails at link today.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-no" title="Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md."><span class="bearer-mark">—</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No LoRa radio."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX6 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">520 KB RAM · 4 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">none</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-no" title="No screen.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/generic/hardware/images/annotated.png" data-caption="ESP32-DevKitC V4 functional overview: WROOM-32 module, EN and Boot buttons, USB-UART." data-credit="Espressif, ESP32-DevKitC V4 user guide"><img src="models/generic/hardware/images/annotated.png" alt="ESP32-DevKitC V4 functional overview: WROOM-32 module, EN and Boot buttons, USB-UART." loading="lazy"></a><figcaption>ESP32-DevKitC V4 functional overview: WROOM-32 module, EN and Boot buttons, USB-UART.<span class="credit">Espressif, ESP32-DevKitC V4 user guide</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/generic/hardware/images/pinout.png" data-caption="Pin layout." data-credit="Espressif, ESP32-DevKitC V4 user guide"><img src="models/generic/hardware/images/pinout.png" alt="Pin layout." loading="lazy"></a><figcaption>Pin layout.<span class="credit">Espressif, ESP32-DevKitC V4 user guide</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e esp32_generic
+~/.platformio/penv/bin/pio run -e esp32_generic -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32">ESP32 over USB-serial</a>.</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/generic/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/generic">Source folder</a></footer>
+</article>
+<article class="card" data-status="legacy"
+         data-tags="screen lora_radio battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>WiFi LoRa 32 (V1)</h2>
+      <p class="vendor">Heltec Automation</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32</span>
+      <span class="chip chip-status s-legacy">legacy</span>
+      
+    </div>
+  </header>
+  <p class="summary">Heltec WiFi LoRa 32 V1: original ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB flash), 0.96&quot; 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB, LiPo connector, U.FL antenna, RST and PRG buttons. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5), LoRa. Built by the multiboard project as the older station (SoftAP web chat, APRS-IS iGate, console); a prebuilt image is in the tree. Superseded by the V3.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-no" title="Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md."><span class="bearer-mark">—</span><span class="bearer-name">BLE5</span></div><div class="bearer b-untested" title="SX1276 on SPI2 (NSS 18, RST 14, DIO0 26); the legacy build drives it, the XPRS LoRa bearer (xprs_sx1276) has not been measured here."><span class="bearer-mark">◐</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX6 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">520 KB RAM · 4 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">SSD1306 128×64</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-untested" title="The legacy SSD1306 status screen; not run since the move.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/heltec-v1/hardware/images/v2-for-layout-front-back.jpg" data-caption="NO VENDOR PHOTO OF THE V1 EXISTS ONLINE. This is the V2, same layout: 0.96' OLED, micro-USB, RST/PRG buttons, U.FL antenna. The silk on a V1 reads 'WiFi_LoRa_32' without a version, and it has 4 MB flash to the V2's 8." data-credit="Heltec Automation, docs.heltec.org hardware update log"><img src="models/heltec-v1/hardware/images/v2-for-layout-front-back.jpg" alt="NO VENDOR PHOTO OF THE V1 EXISTS ONLINE. This is the V2, same layout: 0.96' OLED, micro-USB, RST/PRG buttons, U.FL antenna. The silk on a V1 reads 'WiFi_LoRa_32' without a version, and it has 4 MB flash to the V2's 8." loading="lazy"></a><figcaption>NO VENDOR PHOTO OF THE V1 EXISTS ONLINE. This is the V2, same layout: 0.96' OLED, micro-USB, RST/PRG buttons, U.FL antenna. The silk on a V1 reads 'WiFi_LoRa_32' without a version, and it has 4 MB flash to the V2's 8.<span class="credit">Heltec Automation, docs.heltec.org hardware update log</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e heltec_v1
+~/.platformio/penv/bin/pio run -e heltec_v1 -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32">ESP32 over USB-serial</a>.</p></div><div class="prebuilt"><div class="build-head">Prebuilt image</div><div class="dls"><a class="dl mono" href="models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin" download>xprs-HeltecV1-LoRa.bin<span>1451 KB</span></a></div></div>
+  <footer class="card-foot"><a class="doclink" href="models/heltec-v1/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html">Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart</a><a class="doclink" href="https://resource.heltec.cn/download/WiFi_LoRa_32/">Heltec resource downloads: schematics per version</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v1">Source folder</a></footer>
+</article>
+<article class="card" data-status="legacy"
+         data-tags="screen lora_radio battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>WiFi LoRa 32 (V2)</h2>
+      <p class="vendor">Heltec Automation</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32</span>
+      <span class="chip chip-status s-legacy">legacy</span>
+      
+    </div>
+  </header>
+  <p class="summary">Heltec WiFi LoRa 32 V2: same shape as the V1 with 8 MB flash, a better power path and Vext control. Original ESP32 (dual-core 240 MHz, 520 KB RAM), 0.96&quot; 128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5), LoRa. Built by the multiboard project as the older station; not retested since the tree was reorganised.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-no" title="Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md."><span class="bearer-mark">—</span><span class="bearer-name">BLE5</span></div><div class="bearer b-untested" title="SX1276 on SPI2 (NSS 18, RST 14, DIO0 26); the XPRS LoRa bearer has not been measured here."><span class="bearer-mark">◐</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX6 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">520 KB RAM · 4 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">SSD1306 128×64</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-untested" title="The legacy SSD1306 status screen; not run since the move.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/heltec-v2/hardware/images/product-front.png" data-caption="V2 product photo, heltec.org." data-credit="Heltec Automation, docs.heltec.org hardware update log"><img src="models/heltec-v2/hardware/images/product-front.png" alt="V2 product photo, heltec.org." loading="lazy"></a><figcaption>V2 product photo, heltec.org.<span class="credit">Heltec Automation, docs.heltec.org hardware update log</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/heltec-v2/hardware/images/board-868-front-back.jpg" data-caption="868-915 MHz variant, front and back; silk reads WiFi_LoRa_32_V2." data-credit="Heltec Automation, docs.heltec.org hardware update log"><img src="models/heltec-v2/hardware/images/board-868-front-back.jpg" alt="868-915 MHz variant, front and back; silk reads WiFi_LoRa_32_V2." loading="lazy"></a><figcaption>868-915 MHz variant, front and back; silk reads WiFi_LoRa_32_V2.<span class="credit">Heltec Automation, docs.heltec.org hardware update log</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/heltec-v2/hardware/images/board-433-front-back.jpg" data-caption="433-510 MHz variant, same board, different band marking." data-credit="Heltec Automation, docs.heltec.org hardware update log"><img src="models/heltec-v2/hardware/images/board-433-front-back.jpg" alt="433-510 MHz variant, same board, different band marking." loading="lazy"></a><figcaption>433-510 MHz variant, same board, different band marking.<span class="credit">Heltec Automation, docs.heltec.org hardware update log</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e heltec_v2
+~/.platformio/penv/bin/pio run -e heltec_v2 -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32">ESP32 over USB-serial</a>.</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/heltec-v2/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html">Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart</a><a class="doclink" href="https://resource.heltec.cn/download/WiFi_LoRa_32/">Heltec resource downloads: schematics per version</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v2">Source folder</a></footer>
+</article>
+<article class="card" data-status="legacy"
+         data-tags="screen lora_radio battery">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>WiFi LoRa 32 (V3)</h2>
+      <p class="vendor">Heltec Automation</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-S3</span>
+      <span class="chip chip-status s-legacy">legacy</span>
+      
+    </div>
+  </header>
+  <p class="summary">Heltec WiFi LoRa 32 V3: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB flash), 0.96&quot; 128x64 SSD1306 OLED, SX1262 LoRa (868/915 or 433 MHz by variant), USB-C, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, LoRa. Same MCU and LoRa chip as the T-Deck, so an xprs_app port is a pin table away; today it is a multiboard target that does not compile.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-untested" title="The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer."><span class="bearer-mark">◐</span><span class="bearer-name">BLE5</span></div><div class="bearer b-untested" title="SX1262 on SPI2 (NSS 8, RST 12, BUSY 13, DIO1 14) -- the same part xprs_sx1262 drives on the T-Deck, so a port is pins, not a driver. Not measured."><span class="bearer-mark">◐</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX7 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">512 KB RAM · 8 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">SSD1306 128×64</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-untested" title="The legacy SSD1306 status screen; not run since the move.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-no" title="No SA818.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/heltec-v3/hardware/images/product-2.png" data-caption="V3: USB-C, SX1262 under the OLED, the version on the silk." data-credit="Heltec Automation product photography, heltec.org"><img src="models/heltec-v3/hardware/images/product-2.png" alt="V3: USB-C, SX1262 under the OLED, the version on the silk." loading="lazy"></a><figcaption>V3: USB-C, SX1262 under the OLED, the version on the silk.<span class="credit">Heltec Automation product photography, heltec.org</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/heltec-v3/hardware/images/product-front.png" data-caption="In its packaging: the red LoRa 32 label with the band printed on it." data-credit="Heltec Automation product photography, heltec.org"><img src="models/heltec-v3/hardware/images/product-front.png" alt="In its packaging: the red LoRa 32 label with the band printed on it." loading="lazy"></a><figcaption>In its packaging: the red LoRa 32 label with the band printed on it.<span class="credit">Heltec Automation product photography, heltec.org</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e heltec_v3
+~/.platformio/penv/bin/pio run -e heltec_v3 -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32s3">ESP32-S3 / C3 over native USB</a>.</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/heltec-v3/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html">Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart</a><a class="doclink" href="https://resource.heltec.cn/download/WiFi_LoRa_32/">Heltec resource downloads: schematics per version</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/heltec-v3">Source folder</a></footer>
+</article>
+<article class="card" data-status="legacy"
+         data-tags="vhf">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>kv4p HT</h2>
+      <p class="vendor">kv4p (Vance Vagell)</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32</span>
+      <span class="chip chip-status s-legacy">legacy</span>
+      
+    </div>
+  </header>
+  <p class="summary">kv4p HT: an open-hardware VHF handheld interface. ESP32 (dual-core 240 MHz, 520 KB RAM, 4 MB flash) driving an SA818 FM transceiver module (134-174 MHz, 1 W), with PTT, squelch and audio in/out on GPIO, an SMA antenna and a USB-C link to a phone. No screen. Radios: WiFi 2.4 GHz, Bluetooth 4.2, VHF FM. The only board that transmits on an amateur voice band; here it carries packet through xprs_sa818 in the multiboard build.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-no" title="Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md."><span class="bearer-mark">—</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No LoRa radio."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-untested" title="The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer."><span class="bearer-mark">◐</span><span class="bearer-name">LAN</span></div><div class="bearer b-untested" title="Same -- the radio can, the legacy build does not."><span class="bearer-mark">◐</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX6 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">520 KB RAM · 4 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">none</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  <div class="roles" aria-label="XPRS roles"><span class="role role-no" title="multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.">Beacon</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Digipeater</span><span class="role role-no" title="No XPRS bearers in the legacy build.">Bridge</span><span class="role role-untested" title="The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.">iGate</span><span class="role role-untested" title="Legacy SoftAP with the web chat page; not run since the move.">Hotspot</span><span class="role role-untested" title="Legacy xprs_http station API; not run since the move.">API</span><span class="role role-no" title="xprs_index is an xprs_app thing.">Indexer</span><span class="role role-no" title="xprs_app only.">Share</span><span class="role role-no" title="xprs_app only.">Reticulum</span><span class="role role-untested" title="Legacy xprs_updates path; unsigned, not run since the move.">OTA</span><span class="role role-no" title="xprs_app only.">Gossip</span><span class="role role-no" title="No screen.">Dashboard</span><span class="role role-no" title="Nothing to type on.">Chat</span><span class="role role-no" title="BLE mesh session is xprs_app / tinynimble; not in the legacy build.">Mesh session</span><span class="role role-untested" title="xprs_sa818 and xprs_radio_tx exist in common/ and the legacy main.cpp drives them; not run since the move.">VHF</span></div>
+  <div class="shots"><figure class="shot"><a class="shot-link" href="models/kv4p/hardware/images/product-on-desk.jpg" data-caption="The kv4p HT in its printed case, SMA antenna fitted, on a phone." data-credit="Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project"><img src="models/kv4p/hardware/images/product-on-desk.jpg" alt="The kv4p HT in its printed case, SMA antenna fitted, on a phone." loading="lazy"></a><figcaption>The kv4p HT in its printed case, SMA antenna fitted, on a phone.<span class="credit">Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project</span></figcaption></figure><figure class="shot"><a class="shot-link" href="models/kv4p/hardware/images/pcb-v1.8.jpg" data-caption="PCB v1.8: the ESP32 module and the SA818 under the shield." data-credit="Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project"><img src="models/kv4p/hardware/images/pcb-v1.8.jpg" alt="PCB v1.8: the ESP32 module and the SA818 under the shield." loading="lazy"></a><figcaption>PCB v1.8: the ESP32 module and the SA818 under the shield.<span class="credit">Vance Vagell, kv4p-ht repository (website-src/img), CC-licensed project</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build from source</div><pre class="mono">cd multiboard
+~/.platformio/penv/bin/pio run -e kv4p
+~/.platformio/penv/bin/pio run -e kv4p -t upload</pre><p class="flashnote">Flashing: <a href="#flash-esp32">ESP32 over USB-serial</a>.</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/kv4p/README.md">Board README</a><a class="doclink" href="multiboard/README.md">The shared build, and which targets compile</a><a class="doclink" href="https://github.com/xprs-dev/xprs-firmware/tree/main/models/kv4p">Source folder</a></footer>
+</article></main>
+
+  
+<section class="flash" id="flashing">
+  <h2>Flashing</h2>
+  <p>Each card links to the one of these that applies. The prebuilt images are
+    whatever <span class="mono">tools/scripts/collect_prebuilt.py</span> last copied
+    out of a <span class="mono">pio run</span>; the version is printed beside them.</p>
+
+  <h3 id="flash-web">From this page (ESP32 boards)</h3>
+  <p>The <b>Install</b> button on a card uses
+    <a href="https://esphome.github.io/esp-web-tools/">ESP Web Tools</a>: the browser
+    talks to the board over Web Serial and writes bootloader, partition table and
+    application at the offsets in the board's <span class="mono">manifest.json</span>.
+    It needs Chrome or Edge, and this page served over HTTPS (it does not work from a
+    <span class="mono">file://</span> URL, and Firefox and Safari have no Web Serial).
+    Tick "erase" on a board that ran something else before; it clears NVS and the OTA
+    selector. On Linux the user must be in the <span class="mono">dialout</span> group.</p>
+
+  <h3 id="flash-esp32">ESP32 over USB-serial</h3>
+  <p>Original ESP32 boards (M5Stack Core, Heltec V1/V2, kv4p, DevKitC) have a
+    CP210x or CH340 USB-serial bridge. It shows up as
+    <span class="mono">/dev/ttyUSB0</span> on Linux, <span class="mono">COMx</span> on
+    Windows. Most auto-reset into the bootloader; if esptool reports "Failed to
+    connect", hold BOOT, tap EN/RST, release BOOT. The bootloader goes at
+    <span class="mono">0x1000</span> on this chip.</p>
+  <pre class="mono">pip install esptool
+esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash \
+  0x1000  bootloader.bin \
+  0x8000  partitions.bin \
+  0x20000 firmware.bin</pre>
+  <p>Add <span class="mono">--erase-all</span> the first time, or after a different firmware.</p>
+
+  <h3 id="flash-esp32s3">ESP32-S3 / ESP32-C3 over native USB</h3>
+  <p>The S3 and C3 boards here (T-Dongle, T-Deck, Heltec V3, DevKitM-1, the
+    e-paper board) use the chip's own USB-JTAG-serial port: no bridge chip, and it
+    appears as <span class="mono">/dev/ttyACM0</span> or under
+    <span class="mono">/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*</span>.
+    Bootloader at <span class="mono">0x0</span>. If the port does not appear, hold BOOT
+    while plugging in. The T-Dongle's cable and hub combination loses the link with
+    the flasher stub, so its project pins <span class="mono">--no-stub</span> and
+    115200 baud; the T-Deck does not need that.</p>
+  <pre class="mono">esptool.py --chip esp32s3 --port /dev/ttyACM0 write_flash \
+  0x0     bootloader.bin \
+  0x8000  partitions.bin \
+  0x20000 firmware.bin</pre>
+  <p>Use <span class="mono">--chip esp32c3</span> for the C3. With two S3 boards on
+    one machine, use the by-id path; the projects do, so
+    <span class="mono">pio run -t upload</span> cannot hit the wrong one.</p>
+
+  <h3 id="flash-nrf52">nRF52 by UF2 drag-and-drop</h3>
+  <p>The SenseCAP P1-Pro's XIAO nRF52840 has an Adafruit-style UF2 bootloader. Tap
+    reset twice, quickly; a USB drive named <span class="mono">XIAO-SENSE</span>
+    (or similar) mounts. Copy <span class="mono">firmware.uf2</span> onto it; the board
+    reboots into the new image when the copy finishes. No driver, no tool, any OS. If
+    the drive does not appear, the second tap was too slow or the board is not in
+    reach of the reset button through the case: the button row is on the underside
+    (see the photos).</p>
+
+  <h3 id="flash-source">From source</h3>
+  <p>Every card's "Build from source" block is the exact command pair. The projects
+    pin their upload port by USB serial number in <span class="mono">platformio.ini</span>;
+    on a different machine change <span class="mono">upload_port</span> or pass
+    <span class="mono">--upload-port</span>. Multiboard targets marked legacy may not
+    compile today; <span class="mono">multiboard/README.md</span> keeps the table.</p>
+</section>
+
+
+  <div class="legend">
+    <span><b style="color:var(--ok)">●</b> yes, tested on hardware</span>
+    <span><b style="color:var(--partial)">◐</b> untested, or hardware supports it but firmware does not yet</span>
+    <span><b style="color:var(--absent)">—</b> not possible on this hardware</span>
+  </div>
+  <p class="foot">Generated from <span class="mono">models/*/board.yml</span> by
+    <span class="mono">tools/scripts/build_catalog.py</span>. Do not edit this file;
+    edit the board's <span class="mono">board.yml</span> and rebuild. Hover a bearer or
+    a role for the note behind it. Photo credits are on each card; the same data is
+    in <span class="mono">docs/boards.json</span>.</p>
+</div>
+<div class="lb" id="lb" hidden>
+  <a class="lb-dl" href="#" download>Download</a>
+  <button class="lb-close" type="button">Close (Esc)</button>
+  <button class="lb-prev" type="button" aria-label="previous">&larr;</button>
+  <img src="" alt="">
+  <p class="lb-cap"></p><span class="lb-credit"></span>
+  <button class="lb-next" type="button" aria-label="next">&rarr;</button>
+  <span class="lb-n mono"></span>
+</div>
+<script>
+(function(){
+  const lb=document.getElementById('lb'); if(!lb) return;
+  const img=lb.querySelector('img'), cap=lb.querySelector('.lb-cap'), cred=lb.querySelector('.lb-credit'),
+        dl=lb.querySelector('.lb-dl'), n=lb.querySelector('.lb-n');
+  let group=[], i=0;
+  function show(k){
+    i=(k+group.length)%group.length; const a=group[i];
+    img.src=a.href; img.alt=a.dataset.caption||''; cap.textContent=a.dataset.caption||'';
+    cred.textContent=a.dataset.credit||''; dl.href=a.href; dl.download=a.href.split('/').pop();
+    n.textContent=(i+1)+' / '+group.length; lb.hidden=false;
+  }
+  document.querySelectorAll('.card').forEach(card=>{
+    const links=[...card.querySelectorAll('.shot-link')];
+    links.forEach((a,k)=>a.addEventListener('click',e=>{e.preventDefault(); group=links; show(k);}));
+  });
+  lb.querySelector('.lb-prev').onclick=()=>show(i-1);
+  lb.querySelector('.lb-next').onclick=()=>show(i+1);
+  lb.querySelector('.lb-close').onclick=()=>lb.hidden=true;
+  lb.addEventListener('click',e=>{ if(e.target===lb) lb.hidden=true; });
+  document.addEventListener('keydown',e=>{
+    if(lb.hidden) return;
+    if(e.key==='Escape') lb.hidden=true;
+    else if(e.key==='ArrowLeft') show(i-1);
+    else if(e.key==='ArrowRight') show(i+1);
+  });
+})();
+const btns=[...document.querySelectorAll('.fbtn')];
+const cards=[...document.querySelectorAll('.card')];
+function apply(){
+  const on=btns.filter(b=>b.getAttribute('aria-pressed')==='true')
+               .map(b=>b.dataset.tag);
+  cards.forEach(c=>{
+    const has=(c.dataset.tags||'').split(' ').filter(Boolean);
+    c.hidden = on.length>0 && !on.every(b=>has.includes(b));
+  });
+  const n=cards.filter(c=>!c.hidden).length;
+  document.getElementById('shown').textContent=n;
+}
+btns.forEach(b=>b.addEventListener('click',()=>{
+  b.setAttribute('aria-pressed', b.getAttribute('aria-pressed')==='true'?'false':'true');
+  apply();
+}));
+apply();
+</script>

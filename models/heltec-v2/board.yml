@@ -1,0 +1,124 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# Pins and modules are from common/xprs_model_heltec_v2/model_config.h and
+# the env in multiboard/platformio.ini; memory from the sdkconfig fragment and
+# the chip datasheet. Anything null has not been measured on this bench.
+
+id: heltec-v2
+name: WiFi LoRa 32 (V2)
+vendor: Heltec Automation
+sku: null
+product_url: https://heltec.org/project/wifi-lora-32v2/
+manual_url: https://resource.heltec.cn/download/WiFi_LoRa_32/WIFI_LoRa_32_V2.pdf
+summary: >-
+  Heltec WiFi LoRa 32 V2: same shape as the V1 with 8 MB flash, a better power
+  path and Vext control. Original ESP32 (dual-core 240 MHz, 520 KB RAM), 0.96"
+  128x64 SSD1306 OLED, SX1276 LoRa (868/915 or 433 MHz by variant), micro-USB,
+  LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 4.2 (no BLE5),
+  LoRa. Built by the multiboard project as the older station; not retested
+  since the tree was reorganised.
+status: legacy
+
+silicon:
+  mcu: ESP32
+  family: esp32
+  core: Xtensa LX6 dual @ 240 MHz
+  ram_kb: 520
+  psram_mb: null
+  flash_mb: 4
+
+radios:
+  bluetooth: {version: "4.2 LE", extended_advertising: false, note: "original ESP32: 31-byte legacy advertising only"}
+  wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
+  lora: {chip: SX1276, band_mhz: "868 (as configured; 433/915 sold)"}
+  other: []
+
+bearers:
+  ble5: "no"
+  ble5_note: Original ESP32, legacy advertising only; an XPRS beacon does not fit. See docs/esp32.md.
+  lora: "untested"
+  lora_note: SX1276 on SPI2 (NSS 18, RST 14, DIO0 26); the XPRS LoRa bearer has not been measured here.
+  lan: "untested"
+  lan_note: The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.
+  espnow: "untested"
+  espnow_note: Same -- the radio can, the legacy build does not.
+
+# The multiboard build predates xprs_app: it is the older station (SoftAP +
+# web chat over ESP-Mesh-Lite, APRS-IS iGate, telnet/SSH console) and carries
+# no XPRS bearer. Nothing below has been measured since the tree moved, and
+# multiboard/README.md says which targets even compile.
+xprs:
+  beacon: "no"
+  beacon_note: multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.
+  digipeater: "no"
+  digipeater_note: No XPRS bearers in the legacy build.
+  bridge: "no"
+  bridge_note: No XPRS bearers in the legacy build.
+  igate: "untested"
+  igate_note: The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.
+  hotspot: "untested"
+  hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
+  api: "untested"
+  api_note: Legacy xprs_http station API; not run since the move.
+  indexer: "no"
+  indexer_note: xprs_index is an xprs_app thing.
+  share: "no"
+  share_note: xprs_app only.
+  reticulum: "no"
+  reticulum_note: xprs_app only.
+  ota: "untested"
+  ota_note: Legacy xprs_updates path; unsigned, not run since the move.
+  gossip: "no"
+  gossip_note: xprs_app only.
+  dashboard: "untested"
+  dashboard_note: The legacy SSD1306 status screen; not run since the move.
+  chat: "no"
+  chat_note: Nothing to type on.
+  mesh_session: "no"
+  mesh_session_note: BLE mesh session is xprs_app / tinynimble; not in the legacy build.
+  vhf: "no"
+  vhf_note: No SA818.
+  note: "Legacy LoRa station. Not retested since the tree moved."
+
+io:
+  screen: {controller: SSD1306, width: 128, height: 64}
+  buttons:
+    - {name: boot, pin: GPIO0, note: "the strap pin"}
+  leds: [{name: white, pin: GPIO25}]
+  gnss: null
+  connectors: [{name: micro-USB}, {name: "LiPo JST"}, {name: "U.FL / IPEX", note: "LoRa antenna"}]
+  sensors: []
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb+battery
+
+firmware:
+  toolchain: esp-idf
+  project: multiboard
+  env: heltec_v2
+  version: null
+  artifact: null
+  flashing: "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload"
+
+docs:
+  - {title: "Board README", url: "models/heltec-v2/README.md"}
+  - {title: "The shared build, and which targets compile", url: "multiboard/README.md"}
+  - {title: "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart", url: "https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html"}
+  - {title: "Heltec resource downloads: schematics per version", url: "https://resource.heltec.cn/download/WiFi_LoRa_32/"}
+
+images:
+  - file: hardware/images/product-front.png
+    caption: 'V2 product photo, heltec.org.'
+    credit: "Heltec Automation, docs.heltec.org hardware update log"
+  - file: hardware/images/board-868-front-back.jpg
+    caption: '868-915 MHz variant, front and back; silk reads WiFi_LoRa_32_V2.'
+    credit: "Heltec Automation, docs.heltec.org hardware update log"
+  - file: hardware/images/board-433-front-back.jpg
+    caption: '433-510 MHz variant, same board, different band marking.'
+    credit: "Heltec Automation, docs.heltec.org hardware update log"
+
+screenshots: []

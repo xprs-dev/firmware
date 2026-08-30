@@ -3,4 +3,4 @@
 idf_component_register(
     SRCS "xprsid.c"
     INCLUDE_DIRS "."
-    REQUIRES xprs_codec xprs_sig mbedtls log)
+    REQUIRES xprs_codec xprs_sig)
