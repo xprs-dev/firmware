@@ -58,7 +58,15 @@ XPRS_ROLES = [("beacon", "Beacon"), ("digipeater", "Digipeater"), ("bridge", "Br
               ("ota", "OTA"), ("gossip", "Gossip"), ("dashboard", "Dashboard"),
               ("chat", "Chat"), ("mesh_session", "Mesh session"), ("vhf", "VHF")]
 HW_TAGS = [("screen", "Screen"), ("lora_radio", "LoRa radio"), ("vhf", "VHF radio"),
-           ("gnss", "GNSS"), ("battery", "Battery")]
+           ("gnss", "GNSS"), ("battery", "Battery"), ("sdcard", "SD card")]
+
+
+def sd_slot(b):
+    """The connector that is a card slot, or None."""
+    for c in ((b.get("io") or {}).get("connectors") or []):
+        if "sd" in (c.get("name") or "").lower():
+            return c
+    return None
 
 
 def card_tags(b):
@@ -75,6 +83,8 @@ def card_tags(b):
         tags.append("gnss")
     if "battery" in (phys.get("power") or ""):
         tags.append("battery")
+    if sd_slot(b):
+        tags.append("sdcard")
     return " ".join(tags)
 
 
@@ -279,6 +289,13 @@ def spec_rows(b):
     if sil.get("flash_mb"):
         mem.append(f"{sil['flash_mb']} MB flash")
     row("Memory", " · ".join(mem) if mem else None)
+    sto = []
+    sd = sd_slot(b)
+    if sd:
+        sto.append(sd.get("name") + (f" ({sd['note']})" if sd.get("note") else ""))
+    if sil.get("extra_qspi_flash_mb"):
+        sto.append(f"{sil['extra_qspi_flash_mb']} MB QSPI flash")
+    row("Storage", " · ".join(sto) if sto else "none")
 
     scr = io_.get("screen")
     row("Screen", f"{scr['controller']} {scr['width']}×{scr['height']}"
