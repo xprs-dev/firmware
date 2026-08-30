@@ -381,6 +381,7 @@ static struct {
     int16_t len;
     int8_t  rssi;
     uint8_t bearer;   /* xprsidx_bearer_t */
+    bool    own;      /* we sent it: archived as outgoing, dated now */
 } s_idxq[IDXQ_N];
 static volatile int s_idxq_w, s_idxq_r;   /* single writer set, single reader */
 static uint32_t s_idxq_dropped;
@@ -428,6 +429,27 @@ static void idx_enqueue(const char *wire, int len, int rssi, uint8_t bearer)
     s_idxq[w].len = (int16_t)len;
     s_idxq[w].rssi = (int8_t)(rssi < -127 ? -127 : rssi);
     s_idxq[w].bearer = bearer;
+    s_idxq[w].own = false;
+    s_idxq_w = nw;
+}
+
+/* Our own packet, for the archive, the same way: queued for idx_task. It
+ * used to be written straight from api_send_wire() on the httpd task, and
+ * an index that is mid-replay holds its lock for seconds -- the send door
+ * had put the packet on the air in 0.4 s and then sat on the request until
+ * the client gave up, and a second request queued behind it never ran. */
+static void idx_enqueue_own(const char *wire, int len, uint8_t bearer)
+{
+    if (!s_index || !xcfg_get_bool("index_on", true)) return;
+    if (len > XPRSIDX_WIRE_MAX) return;
+    int w = s_idxq_w, nw = (w + 1) % IDXQ_N;
+    if (nw == s_idxq_r) { s_idxq_dropped++; return; }
+    memcpy(s_idxq[w].wire, wire, len);
+    s_idxq[w].wire[len] = 0;
+    s_idxq[w].len = (int16_t)len;
+    s_idxq[w].rssi = 0;
+    s_idxq[w].bearer = bearer;
+    s_idxq[w].own = true;
     s_idxq_w = nw;
 }
 
@@ -3311,7 +3333,9 @@ static void idx_task(void *arg)
             int r = s_idxq_r;
             if (s_index && xcfg_get_bool("index_on", true))
                 xprsindex_add2(s_index, s_idxq[r].wire, s_idxq[r].len,
-                               s_idxq[r].rssi, false, 0, s_idxq[r].bearer);
+                               s_idxq[r].rssi, s_idxq[r].own,
+                               s_idxq[r].own ? (uint32_t)time(NULL) : 0,
+                               s_idxq[r].bearer);
             s_idxq_r = (r + 1) % IDXQ_N;
         }
 
@@ -3930,9 +3954,9 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         #undef TOOK
         if (!n) took[0] = 0;
     }
-    if ((lan || now || lra || ble) && s_index && xcfg_get_bool("index_on", true))
-        xprsindex_add2(s_index, wire, len, 0, true, (uint32_t)time(NULL),
-                       lan ? XI_B_LAN : now ? XI_B_ESPNOW : lra ? XI_B_LORA : XI_B_BLE);
+    if (lan || now || lra || ble)
+        idx_enqueue_own(wire, len,
+                        lan ? XI_B_LAN : now ? XI_B_ESPNOW : lra ? XI_B_LORA : XI_B_BLE);
     return lan || now || lra || ble || rns;
 }
 

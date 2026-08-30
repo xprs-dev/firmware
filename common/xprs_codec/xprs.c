@@ -378,6 +378,28 @@ int xprs_append_via(const char *wire, int len, const char *self,
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return -1;
     if (xprs_via_contains(&p, self)) return -1;          /* loop (13.2) */
+    /* The AUTHOR is in the path too, whatever via: says: a station that
+     * hears its own packet come back from a neighbour and repeats it puts a
+     * third copy on every medium it has, and the bench saw exactly that --
+     * f:X3GSLC out on LoRa, back on BLE as via:X54W6W, out again on the LAN
+     * and ESP-NOW as via:X54W6W,X3GSLC. */
+    {
+        int fl = 0;
+        const char *f = xprs_get(&p, "f", &fl);
+        if (f && fl > 0) {
+            /* Compare the base callsign, case-insensitively: X3GSLC-7 is
+             * X3GSLC's own packet as much as X3GSLC is. */
+            int sl = 0;
+            while (self[sl] && self[sl] != '-') sl++;
+            int bl = 0;
+            while (bl < fl && f[bl] != '-') bl++;
+            if (bl == sl) {
+                int i = 0;
+                while (i < sl && upc(f[i]) == upc(self[i])) i++;
+                if (i == sl) return -1;                  /* our own (13.2) */
+            }
+        }
+    }
     if (xprs_via_count(&p) >= xprs_relay_limit(&p)) return -1; /* spent (13.1) */
 
     /* New via value: old path + ",SELF" (uppercased), or SELF alone. A path

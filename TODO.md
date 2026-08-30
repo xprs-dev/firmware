@@ -151,28 +151,27 @@ the air".
 
 ## Found on the bench, 2026-08-30 (the LoRa -> BLE -> LAN chain test)
 
+Still open:
+
 - **`wifi_on=0` does not keep the deck off the LAN.** `wifi_up()` starts the
   driver for ESP-NOW with a blank SSID, and the driver auto-associates from
   its OWN NVS copy of the last credentials ("config NVS flash: enabled" ...
   "connected with ---___---"). Fix: `esp_wifi_set_storage(WIFI_STORAGE_RAM)`
   before start, or an explicit disconnect. Until then "WiFi off" is a lie
   the health line repeats.
-- **A station relays its own origin.** X3GSLC sent on LoRa, heard its packet
-  come back on BLE with `via:X54W6W`, and put it on the LAN and ESP-NOW as
-  `via:X54W6W,X3GSLC`; the dongle then aired `via:X54W6W,X3WWAJ,X3GSLC`. The
-  13.2 loop check looks at `via:` only; `f:` should count as "already in the
-  path" for a relay decision. One line in xprs_codec's relay predicate.
-- **`/api/xprs/send` answers late.** ~3 s for the first LoRa-only send and
-  past 8 s for the second, though the packet was on the air within 0.4 s.
-  Something after `xprslora_send()` in `api_send_wire` blocks the httpd task
-  -- the index write, or the LoRa pace. Measure, then move it off the
-  request path.
 - **A typed chat message rides `idx_task`**, and `idx_task` can wedge on
   `rns_tcp` DNS while WiFi is flapping ("chat: the last message has not
   gone out yet", then TASK WDT in `idx`, crash in `rns_tcp`). The outbox
   should not depend on the task that also talks to the internet.
-- **The desktop app does not listen on UDP 4242** although
-  `/api/xprs/bearers` reports lan `active:true`; its process holds no such
-  socket and `/api/xprs/history` never shows LAN-borne packets. Chain test
-  packets reached the host (a raw listener on 4242 saw them) but not the
-  app. xprs-flutter, not this tree.
+- **The desktop app leaks HTTPS connections**: 1,323 TCP sockets in
+  CLOSE_WAIT to four hosts on :443 after five hours. xprs-flutter.
+
+Fixed the same day:
+
+- A station relayed its own origin (`f:` was not counted as "in the path";
+  xprs_codec's `xprs_append_via` now refuses the author's own packet).
+- `/api/xprs/send` blocked the httpd task on an index write; our own sends
+  now go through the index queue like everything else, and the door answers
+  in 0.2 s.
+- The desktop app's LAN socket died silently and stayed "up"; it reopens
+  now (xprs-flutter).

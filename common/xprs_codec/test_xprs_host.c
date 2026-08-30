@@ -135,6 +135,12 @@ int main(void)
     char tmp[XPRS_MAX_WIRE + 1];
     CHECK(xprs_append_via(hop1, l1, "x32dva", tmp, sizeof tmp) == -1,
           "loop not refused (case-insensitive)");
+    /* The author is in the path before via: says so. Heard back from a
+     * neighbour, its own packet is not something a station repeats. */
+    CHECK(xprs_append_via(hop1, l1, "X1QZ3N", tmp, sizeof tmp) == -1,
+          "the author must not relay its own packet");
+    CHECK(xprs_append_via(hop1, l1, "x1qz3n-7", tmp, sizeof tmp) == -1,
+          "nor under an SSID");
     CHECK(xprs_append_via(hop3, l3, "X1AAAA", tmp, sizeof tmp) == -1,
           "3-hop message budget not refused");
     const char *sos = "t:sos f:X1QZ3N pos:38.7,-9.1 via:A1,B2,C3 m:need water";
