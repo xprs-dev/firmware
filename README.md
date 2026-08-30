@@ -26,7 +26,7 @@ shared `multiboard/` build.
 
 | Board | Chip | Firmware |
 |---|---|---|
-| [`tdongle-s3`](models/tdongle-s3/) | ESP32-S3 | own project -- the reference station |
+| [`tdongle-s3`](models/tdongle-s3/) | ESP32-S3 | own project -- the BLE5 bridge, 160x80 |
 | [`m5stack-core`](models/m5stack-core/) | ESP32 | own project -- the second voice on the air |
 | [`tdeck`](models/tdeck/) | ESP32-S3 | own project -- screen, trackball, keyboard; 868 MHz radio idle |
 | [`heltec-v1`](models/heltec-v1/) [`v2`](models/heltec-v2/) [`v3`](models/heltec-v3/) | ESP32 / S3 | `multiboard` -- LoRa, SX1276 / SX1262 |
@@ -37,13 +37,16 @@ shared `multiboard/` build.
 
 ## Building
 
-The reference station:
+The BLE5 bridge:
 
 ```sh
 cd models/tdongle-s3/firmware
-~/.platformio/penv/bin/pio run -e rns_ble5
-~/.platformio/penv/bin/pio run -e rns_ble5 -t upload --upload-port /dev/ttyACM0
+~/.platformio/penv/bin/pio run
+~/.platformio/penv/bin/pio run -t upload
 ```
+
+The port is pinned by-id in each project's `platformio.ini`, so `-t upload`
+cannot reach the wrong board when two are plugged in.
 
 One of the shared targets:
 
@@ -61,6 +64,19 @@ are `xprs_codec` (the codec), `xprs_bearer` (the queue, the duplicate
 rings, the relay decision, shared by every bearer), `xprs_bearer_lan`,
 `xprs_bearer_now`, `xprs_chan` (meeting on a working channel, spec
 section 23.7), `xprs_id`, `xprs_sig` and `xprs_index`.
+
+**The station itself is `xprs_app`**, and the three boards with their own
+project all run it: the T-Deck, the M5Stack and the T-Dongle. A board's
+`main.c` is its screen, its pins and how a person presses something,
+described in one `xapp_board_t` and handed to `xapp_run()` -- 150 to 650
+lines, no station logic at all. A fix to a bearer, a panel or the indexer is
+made once and every board has it.
+
+The screen is the one thing the boards genuinely disagree about, so it is
+an interface with two implementations: `xprs_ui_api` is the header,
+`xprs_ui` draws the seven-panel dashboard on 240px-and-up, and
+`xprs_ui_mini` folds those panels into three views on the T-Dongle's 160x80
+strip. A board names exactly one of the two in its `REQUIRES`.
 
 Projects take them by symlink rather than by copy, so a fix reaches every board
 that uses it. Several components carry **host test suites** that build with gcc

@@ -935,6 +935,10 @@ void xui_set_title(const char *text)
     s_title_dirty = true;
 }
 
+/* The condensed implementations need this; here every panel has its own
+ * object tree and the app has already filled the right one. */
+void xui_set_panel(int idx) { (void)idx; }
+
 void xui_set_device_count(int count)
 {
     s_dev_count = count;

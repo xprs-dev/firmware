@@ -477,6 +477,10 @@ static xapp_board_t k_tdeck = {
      * available and an XPRS packet fits one AD. It is the only bearer here a
      * phone can reach with no access point and no pairing. */
     .ble = true,
+    /* Somebody walks up to this board with a phone, and it has the room
+     * for the access point that serves them (xprs_app.h). */
+    .hotspot = true,
+
     /* BENCH KEY, temporary. The private half is
      * 0101..01 and is in the shell history of whoever set this up, which is
      * exactly the handling a real key must never get. Production seeds this

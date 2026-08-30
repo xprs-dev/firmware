@@ -3,18 +3,31 @@
 # the m5stack table for the argument -- rollback beats a stale golden image,
 # and the watchdog is what triggers it.
 #
-# NVS keeps its address and size, so the RNS identity, the callsign and the
+# NVS keeps its address and size, so the identity, the callsign and the
 # WiFi credentials survive the one cable visit. Never erase_flash.
 nvs,      data, nvs,      0x9000,   0x6000
 otadata,  data, ota,      0xf000,   0x2000
 phy_init, data, phy,      0x11000,  0x1000
-# 2 MB per slot; the image is about 1.41 MB, so ~33% spare. This board has
-# 16 MB and stores everything else on the SD card, so the slots cost nothing.
+# 2 MB per slot; the image is about 1.42 MB, so ~30% spare. This board has
+# 16 MB, so the slots cost nothing.
 ota_0,    app,  ota_0,    0x20000,  0x200000
 ota_1,    app,  ota_1,    0x220000, 0x200000
-# New here: until now a panic on this board left nothing at all behind, which
-# is the single biggest reason a roof node was undiagnosable.
-coredump, data, coredump, 0x420000, 0x10000
-# Reserved for the flash-backed log ring (phase 2). Raw, not FAT: mounting
-# FATFS costs 4-8 KB of heap and this board runs at about 13 KB free.
-logs,     data, 0x40,     0x430000, 0x80000
+# The indexer's store: a wear-levelled FAT over the spare flash, at the same
+# offset and size as the T-Deck's, so the two 16 MB S3 boards have one table
+# between them and neither can be given the other's image by accident.
+#
+# NEW ON THIS BOARD, and it replaces two things. The archive used to live on
+# the microSD card, which meant a dongle with an empty slot kept nothing;
+# and the raw `logs` partition that sat here was reserved for a flash log
+# ring that was never written, because the station's log now goes to
+# /idx/log/cur.txt on this filesystem. The first boot on this table formats
+# it once. NVS above is untouched and the station keeps its identity.
+#
+# It costs heap: mounting FATFS is 4-8 KB, and the note this table used to
+# carry said the board ran at about 13 KB free. That was the old firmware,
+# which was also an APRS-IS iGate, a BLE street mesh and a Reticulum uplink
+# at the same time. None of those is here now.
+storage,  data, fat,      0x420000, 0xB60000
+# Until the OTA slots arrived a panic on this board left nothing behind,
+# which was the single biggest reason a roof node was undiagnosable.
+coredump, data, coredump, 0xF80000, 0x10000

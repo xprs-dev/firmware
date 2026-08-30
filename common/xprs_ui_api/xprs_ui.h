@@ -1,11 +1,23 @@
 /**
  * @file xprs_ui.h
- * @brief Generic LVGL status UI for XPRS stations with a colour display.
+ * @brief The station UI INTERFACE. Two components implement it; xprs_app
+ *        calls it and never learns which one it got.
  *
- * The T-Dongle's three-band dashboard, board-independent: give xui_init()
- * the panel size and a flush callback and every element scales to fit.
- * Proven on the M5Stack Core (ILI9342C, 320x240); any ESP32 with a
- * 240px-or-taller RGB565 panel and an LVGL build should be comfortable.
+ * Give xui_init() the panel size and a flush callback and every element
+ * scales to fit. The board decides who draws:
+ *
+ *   xprs_ui       the seven-panel dashboard below, on a 240px-or-taller
+ *                 RGB565 panel. Proven on the M5Stack Core (ILI9342C,
+ *                 320x240) and the T-Deck (ST7789). Refuses anything
+ *                 under 160x120 rather than draw something unreadable.
+ *   xprs_ui_mini  three rotating views on a strip -- the T-Dongle's
+ *                 160x80 ST7735 is the reference. Panels condense: home
+ *                 and the tables become DEVICES, stats becomes STATS,
+ *                 chat becomes CHAT, and what a strip cannot show (the
+ *                 radar, the button legend, the splash) is a no-op.
+ *
+ * A board names ONE of them in its component's REQUIRES. Naming both is a
+ * duplicate-symbol error, which is the right way for that to be found.
  *
  *   +--------------------------------------------+
  *   |  orange top bar   (uptime | panel title)   |
@@ -44,6 +56,29 @@ void xui_set_body(const char *text);
 
 /** Panel indicator in the top bar's right corner (e.g. "Flow 2/5"). */
 void xui_set_title(const char *text);
+
+/* ---- Which panel is up --------------------------------------------------
+ *
+ * The dashboard's panels, as the app's own index rather than as a title
+ * string. The seven-panel implementation already draws the panel it was
+ * told to and ignores this; a CONDENSED implementation has fewer views
+ * than there are panels and needs to know which panel it is condensing --
+ * a chat table and a device table are the same xui_table_rows() call, and
+ * only the panel says them apart.
+ *
+ * Called once per render pass, after the panel's own setters.
+ */
+enum {
+    XUI_PANEL_HOME = 0,      /**< radar + link status                     */
+    XUI_PANEL_CHAT,          /**< the conversation: bubbles, or a table   */
+    XUI_PANEL_STATS,         /**< three bar charts                        */
+    XUI_PANEL_REACHABLE,     /**< everyone in range, as a table           */
+    XUI_PANEL_TRAFFIC,       /**< packets going past, newest first        */
+    XUI_PANEL_THIS_DEVICE,   /**< this station's own facts                */
+    XUI_PANEL_SETTINGS,      /**< the toggles                             */
+    XUI_PANEL_COUNT
+};
+void xui_set_panel(int idx);
 
 /** Bottom-right device count, drawn with the wireless symbol. */
 void xui_set_device_count(int count);

@@ -140,10 +140,18 @@ CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE=20
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
 CONFIG_LWIP_TCP_WND_DEFAULT=2880
 
-# Each open file is a 4 KB sector cache; sdcard_init() cost this board
-# 40,248 bytes with five. It keeps the index segment and the SCF spool open
-# and reads one file at a time.
-CONFIG_SDCARD_MAX_FILES=3
+# Each open file is a 4 KB sector cache. Three was right when the archive
+# lived on the microSD card and this board kept the index segment and the
+# mesh spool open and read one file at a time -- and it was measured there,
+# where sdcard_init() cost 40,248 bytes with five.
+#
+# The archive is now the internal FAT (partitions.csv) and the station is
+# the shared one, which holds five things open at once: the index segment,
+# /idx/log/cur.txt, a gossip bucket, stats.bin and chat.bin. At three it
+# printed "vfs_fat: open: no free file descriptors" every couple of seconds
+# and the sixth thing to ask simply did not get written. Five is the
+# M5Stack's number for the same set of files.
+CONFIG_SDCARD_MAX_FILES=5
 
 # ── tinynimble ──────────────────────────────────────────────────────────────
 # This station speaks HCI to the controller directly. The NimBLE host is not
@@ -160,6 +168,14 @@ CONFIG_SDCARD_MAX_FILES=3
 CONFIG_BT_NIMBLE_ENABLED=n
 CONFIG_BT_CONTROLLER_ENABLED=y
 CONFIG_BT_CONTROLLER_ONLY=y
+# And this is what tells the SHARED bearer so. The board used to call
+# tinynimble from its own main.c, so xprs_bearer_ble never saw the choice and
+# compiled its NimBLE path against headers that are not there once the host is
+# off. Now that the station is common/xprs_app, the bearer is the one that
+# talks to the radio and the backend is its Kconfig -- the same line the
+# T-Deck carries. To go back, set this to n and NIMBLE_ENABLED=y: the NimBLE
+# path is kept, not deleted, precisely so that is one line.
+CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
 
 # The task watchdog the partition table's rollback argument relies on. It
 # said "the 90 s task watchdog (panic on trigger) is what turns a hang into

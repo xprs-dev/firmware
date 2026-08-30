@@ -136,6 +136,9 @@ static const xapp_board_t k_m5stack = {
     .flush = display_flush,
     .input_init = input_init,
     .input_poll = input_poll,
+    /* Somebody walks up to this board with a phone, and it has the room for
+     * the access point that serves them (xprs_app.h). */
+    .hotspot = true,
 };
 
 void app_main(void)

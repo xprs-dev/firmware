@@ -79,11 +79,20 @@ static char s_pass[64];
 #define XH_ADDR  "wifi address"
 #define XH_INDEX "archive"
 
-/* What this board is documented to boot with; see docs/esp32.md. Measured
- * 2026-08-21 at CONFIG_SDCARD_MAX_FILES=4: about 12 KB free once the
- * archive has opened its files. The floor catches a step change -- a
- * setting that stopped being applied -- not ordinary drift. */
-#define M5_HEAP_FLOOR 6000
+/* What a board is documented to boot with; see docs/esp32.md. The floor
+ * catches a step change -- a setting that stopped being applied -- not
+ * ordinary drift, so it sits below the transient and above the failure.
+ *
+ * 6,000 was measured on the M5Stack on 2026-08-21 at
+ * CONFIG_SDCARD_MAX_FILES=4: about 12 KB free once the archive had opened
+ * its files. It was the only figure here for a while and every board was
+ * judged by it, which is wrong in both directions -- a roomier board's
+ * regression goes unnoticed and a tighter one is condemned for being
+ * itself. A board that knows its own number says so (xprs_app.h); this is
+ * what the rest get. */
+#define XAPP_HEAP_FLOOR_DEFAULT 6000
+
+static uint32_t heap_floor(void);   /* the board's, or the default above */
 
 
 #include "xprs_auth.h"
@@ -121,6 +130,12 @@ __attribute__((weak)) void xs_app_ready(void) { }
  * three numbers that actually decide whether the next subsystem starts --
  * and the PSRAM total alongside, separately, where it cannot be mistaken
  * for headroom it is not. Identical output on a board without PSRAM. */
+static uint32_t heap_floor(void)
+{
+    return s_board->heap_floor ? (uint32_t)s_board->heap_floor
+                               : XAPP_HEAP_FLOOR_DEFAULT;
+}
+
 static void heap_mark(const char *stage)
 {
     unsigned internal = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -1837,7 +1852,7 @@ static void status_task(void *arg)
         xh_set(XH_ADDR, !xcfg_get_bool("wifi_on", true) || s_ip_str[0] != 0);
         xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
         xh_report(false);
-        xh_heap_floor(M5_HEAP_FLOOR);
+        xh_heap_floor(heap_floor());
 
         ESP_LOGW(TAG, "alive %us heap=%u/%u call=%s ch=%u espnow rx=%u tx=%u "
                       "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u",
@@ -1953,6 +1968,11 @@ static void inet_probe_task(void *arg)
  * then talking, then the numbers, then the lists, then the machine itself.
  * (Traffic's raw counters left the rotation -- /api/status still has them.) */
 #define UI_PANEL_COUNT 7
+/* The UI is told which of these is up, and a screen with fewer views
+ * than there are panels folds them by that number. Both sides have to
+ * be counting the same panels. */
+_Static_assert(UI_PANEL_COUNT == XUI_PANEL_COUNT,
+               "panel numbering must match xprs_ui.h");
 #define UI_INRANGE_SEC 300
 
 static int s_panel;
@@ -2698,6 +2718,11 @@ static void ui_render(void)
     }
     xui_set_body(body);
     xui_set_device_count(xst_devices_in_range(UI_INRANGE_SEC));
+    /* Last, and after every setter: a screen too small for seven panels
+     * folds them into the views it has, and the panel is the only thing
+     * that tells a chat table from a device table (xprs_ui.h). The
+     * seven-panel implementation ignores this. */
+    xui_set_panel(s_panel);
 
     /* Every list panel keeps its own selection: clamp it to what is on the
      * screen, and take the first row when rows appear after the panel was
@@ -4051,6 +4076,15 @@ static void ui_task(void *arg)
 
     esp_task_wdt_add(NULL);   /* a frozen UI becomes a logged reboot */
 
+    /* A board with no reachable control asks for the tour to be running
+     * already (xprs_app.h). The first press stops it, exactly as if it had
+     * been started from the home panel. */
+    if (s_board->rotate) {
+        s_rotate = true;
+        s_rotate_next_us = esp_timer_get_time() + 30000000ULL;
+        ESP_LOGI(TAG, "rotate: on (this board asked for it at boot)");
+    }
+
     uint64_t next_render_us = 0;
     for (;;) {
         bool force = false;
@@ -4395,6 +4429,12 @@ void xapp_run(const xapp_board_t *board)
         xcfg_set("own1", s_board->fw_owner);
     if (!xcfg_get("scriptkey", "")[0] && s_board->script_key && s_board->script_key[0])
         xcfg_set("scriptkey", s_board->script_key);
+    /* Same idiom, for the one setting whose right answer is a property of
+     * the board rather than of the operator (xprs_app.h). Seeded once so
+     * that this file and the status page read the same stored value, and
+     * changeable with a cable ever after. */
+    if (!xcfg_get("ap_on", "")[0])
+        xcfg_set("ap_on", s_board->hotspot ? "1" : "0");
 
     /* Only NOW may the script host load anything: it needs xcfg_init() to
      * have run and the publisher key above to be seeded, and both happen
@@ -4694,5 +4734,5 @@ void xapp_run(const xapp_board_t *board)
     xh_set(XH_LAN, xprslan_is_active());
     xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
     xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
-    xh_heap_floor(M5_HEAP_FLOOR);
+    xh_heap_floor(heap_floor());
 }

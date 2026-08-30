@@ -120,6 +120,50 @@ typedef struct {
     void (*screen_power)(bool on);
 
     /**
+     * Start with the hands-off tour running: home, stats, chat, every 30 s,
+     * until somebody presses something.
+     *
+     * The default (false) suits a board you stand in front of -- it shows
+     * the dashboard and waits. It does not suit a board whose only control
+     * is the BOOT strap pin, half under the case, which is the T-Dongle:
+     * there the tour IS the interface, and a screen that needs a press to
+     * show its second page is a screen with one page.
+     */
+    bool rotate;
+
+    /**
+     * The least free heap this board is documented to boot with, in bytes,
+     * or 0 to take the shared default (6,000 -- the M5Stack's figure).
+     *
+     * It is not a budget, it is a tripwire: the station complains below it,
+     * so a setting that quietly stopped being applied shows up as a step
+     * change rather than as a board that dies next Tuesday. Set it under
+     * the boot transient and over the failure, from what THIS board
+     * actually measures (docs/esp32.md keeps the table), and raise it when
+     * the board genuinely gets roomier.
+     */
+    int heap_floor;
+
+    /**
+     * Does this board run the walk-up hotspot -- its own access point, with
+     * the chat page and the API on it -- by default?
+     *
+     * It is for a board somebody walks up to with a phone and no shared
+     * network. A board that lives plugged in beside a router already has
+     * one, and the AP costs it about 9 KB of internal heap, measured here:
+     * the T-Dongle ran at 12 KB free with a worst case of 96 BYTES with the
+     * AP up, and at 21 KB free with it down. On a board with PSRAM that is
+     * a rounding error and the hotspot is worth having; on one without it
+     * is the difference between a station and a station that is one
+     * allocation from failing.
+     *
+     * Seeded into config once, like the keys above, so it is a DEFAULT and
+     * not a verdict: `cfg set ap_on 1` turns it on afterwards and the
+     * setting survives the next update.
+     */
+    bool hotspot;
+
+    /**
      * The board's LoRa radio, or NULL for a board without one. The station
      * brings it up as a third bearer beside ESP-NOW and the LAN: same wire,
      * same relay rules, real range.
