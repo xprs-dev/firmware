@@ -104,6 +104,7 @@ firmware:
   env: esp32c3_mini
   version: null
   artifact: null
+  flash_port: native-usb
   flashing: "esptool over the native USB-JTAG CDC port, pio run -e esp32c3_mini -t upload"
 
 docs:

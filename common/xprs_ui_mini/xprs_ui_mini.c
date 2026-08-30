@@ -16,8 +16,18 @@ static const char *TAG = "xum";
 
 #define TOP_H     13
 #define BUF_ROWS  20
+/* Montserrat 10 with LVGL's default line spacing sits on a 12 px pitch.
+ * How many rows fit under the top bar is the panel's business, not the
+ * caller's: 160x80 holds five, the Heltec's 128x64 holds four. */
+#define ROW_PITCH 12
 
 static int s_w, s_h;
+
+static int rows_fit(int cap)
+{
+    int n = (s_h - TOP_H) / ROW_PITCH;
+    return n < cap ? n : cap;
+}
 static xum_flush_fn s_flush;
 static void *s_flush_ctx;
 
@@ -317,7 +327,7 @@ void xum_devices(const xum_dev_t *rows, int n)
     if (!s_dev_label) return;
     char buf[XUM_DEV_ROWS * 40 + 8];
     int o = 0;
-    if (n > XUM_DEV_ROWS) n = XUM_DEV_ROWS;
+    if (n > rows_fit(XUM_DEV_ROWS)) n = rows_fit(XUM_DEV_ROWS);
     for (int i = 0; i < n; i++) {
         char d[16];
         if (rows[i].dist_m >= 0)
@@ -365,7 +375,7 @@ void xum_chat(const xum_chat_t *rows, int n)
     if (!s_chat_label) return;
     char buf[XUM_CHAT_ROWS * 80 + 8];
     int o = 0;
-    if (n > XUM_CHAT_ROWS) n = XUM_CHAT_ROWS;
+    if (n > rows_fit(XUM_CHAT_ROWS)) n = rows_fit(XUM_CHAT_ROWS);
     /* rows arrive newest first; show them oldest first, newest at the
      * bottom, the way a chat reads. */
     for (int i = n - 1; i >= 0; i--) {

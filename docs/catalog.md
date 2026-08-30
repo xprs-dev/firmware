@@ -114,7 +114,11 @@ xprs:          what the station on this board does on the network, one key
 
 io:            screen (or null), buttons, leds, gnss, connectors, sensors
 physical:      dimensions_mm, weight_g, ip_rating, temp_c, power
-firmware:      toolchain, project, env, version, artifact, flashing
+firmware:      toolchain, project, env, version, artifact, flashing,
+               flash_port: usb-serial | native-usb | uf2 -- how bytes reach
+               it, which is not the same as the chip family (the Heltec V3
+               is an S3 behind a CP2102). The page picks its flashing
+               section from this.
 docs:          list of {title, url}
 images:        list of {file, caption, credit} -- photographs of the HARDWARE
 screenshots:   list of {file, caption} -- what the FIRMWARE shows: the screen,

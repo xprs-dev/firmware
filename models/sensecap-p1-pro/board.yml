@@ -138,6 +138,7 @@ firmware:
   env: p1pro
   version: 0.1.0
   artifact: models/sensecap-p1-pro/prebuilt/firmware.uf2
+  flash_port: uf2
   flashing: >-
     UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader
     that mounts as a mass-storage volume on a double reset-tap; an image is

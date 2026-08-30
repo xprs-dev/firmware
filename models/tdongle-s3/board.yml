@@ -93,6 +93,7 @@ firmware:
   env: tdongle
   version: 0.4.0
   artifact: models/tdongle-s3/prebuilt/firmware.bin
+  flash_port: native-usb
   flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
 
 docs:

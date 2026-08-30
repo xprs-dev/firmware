@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include "esp_err.h"
 #include "ssd1306.h"
-#include "sx1262.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,10 +24,10 @@ esp_err_t model_deinit(void);
  */
 ssd1306_handle_t model_get_display(void);
 
-/**
- * @brief Get LoRa radio handle
- */
-sx1262_handle_t model_get_lora(void);
+/* There is deliberately no LoRa handle here. The SX1262 is brought up by
+ * common/xprs_bearer_lora from the pins in model_config.h (see
+ * models/heltec-v3/firmware/src/main.c); a second driver on the same SPI
+ * bus and CS pin is exactly the collision this component used to cause. */
 
 /**
  * @brief Vext power control (powers OLED + LoRa)

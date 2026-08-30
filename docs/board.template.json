@@ -73,6 +73,7 @@
     "env": null,
     "version": null,
     "artifact": null,
+    "flash_port": null,
     "flashing": null
   },
   "docs": [],

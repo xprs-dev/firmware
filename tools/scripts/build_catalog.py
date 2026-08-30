@@ -89,15 +89,20 @@ def card_tags(b):
 
 
 FLASH_ONELINE = {
-    "esp32": "USB-serial port (CP210x/CH340), esptool, bootloader at 0x1000; hold BOOT if it will not connect",
-    "esp32s3": "the chip's own USB port, esptool, bootloader at 0x0; hold BOOT while plugging in if no port appears",
-    "esp32c3": "the chip's own USB port, esptool, bootloader at 0x0; hold BOOT while plugging in if no port appears",
-    "nrf52": "double-tap reset, copy the .uf2 onto the USB drive that appears",
+    "usb-serial": "a USB-serial bridge (CP210x/CH340), esptool; hold BOOT if it will not connect",
+    "native-usb": "the chip's own USB port, esptool; hold BOOT while plugging in if no port appears",
+    "uf2": "double-tap reset, copy the .uf2 onto the USB drive that appears",
 }
-FLASH_SECTION = {"esp32": ("flash-esp32", "ESP32 over USB-serial"),
-                 "esp32s3": ("flash-esp32s3", "ESP32-S3 / C3 over native USB"),
-                 "esp32c3": ("flash-esp32s3", "ESP32-S3 / C3 over native USB"),
-                 "nrf52": ("flash-nrf52", "nRF52 by UF2 drag-and-drop")}
+FLASH_SECTION = {"usb-serial": ("flash-esp32", "ESP32 over USB-serial"),
+                 "native-usb": ("flash-esp32s3", "ESP32-S3 / C3 over native USB"),
+                 "uf2": ("flash-nrf52", "nRF52 by UF2 drag-and-drop")}
+FLASH_PORT_DEFAULT = {"esp32": "usb-serial", "esp32s3": "native-usb",
+                      "esp32c3": "native-usb", "nrf52": "uf2"}
+
+
+def flash_port(b):
+    fw, sil = b.get("firmware") or {}, b.get("silicon") or {}
+    return fw.get("flash_port") or FLASH_PORT_DEFAULT.get(sil.get("family"))
 FAMILY_LABEL = {"esp32": "ESP32", "esp32s3": "ESP32-S3",
                 "esp32c3": "ESP32-C3", "nrf52": "nRF52840"}
 
@@ -169,11 +174,11 @@ def prebuilt_block(b, fw):
     pre = os.path.join(b["_dir"], "prebuilt")
     rel = f"{b['_rel']}/prebuilt"
     fam = (b.get("silicon") or {}).get("family")
-    sec_id, sec_label = FLASH_SECTION.get(fam, ("flash-source", "from source"))
+    sec_id, sec_label = FLASH_SECTION.get(flash_port(b), ("flash-source", "from source"))
     files = (sorted(f for f in os.listdir(pre) if not f.startswith(".") and f != "manifest.json")
              if os.path.isdir(pre) else [])
     if not files:
-        one = FLASH_ONELINE.get(fam, "see the build block below")
+        one = FLASH_ONELINE.get(flash_port(b), "see the build block below")
         why = ("No firmware for this board yet." if not fw.get("project")
                else "No prebuilt image: build it from source (below), then flash over ")
         return (f'<div class="prebuilt prebuilt-none"><div class="build-head">Install XPRS</div>'
@@ -335,7 +340,7 @@ def card(b, embed):
         f'<a class="doclink" href="{esc(d.get("url"))}">{esc(d.get("title"))}</a>'
         for d in (b.get("docs") or []) if d.get("url"))
 
-    sec_id, sec_label = FLASH_SECTION.get(sil.get("family"), ("flash-source", "from source"))
+    sec_id, sec_label = FLASH_SECTION.get(flash_port(b), ("flash-source", "from source"))
     prebuilt = prebuilt_block(b, fw)
     if fw.get("project"):
         build = (f'<div class="build"><div class="build-head">Build from source</div>'
@@ -686,7 +691,8 @@ FLASHING = """
 
   <h3 id="flash-esp32">ESP32 over USB-serial</h3>
   <p>Original ESP32 boards (M5Stack Core, Heltec V1/V2, kv4p, DevKitC) have a
-    CP210x or CH340 USB-serial bridge. It shows up as
+    CP210x or CH340 USB-serial bridge; so does the Heltec V3, an S3 behind a
+    CP2102, whose bootloader goes at <span class="mono">0x0</span> like every S3. The port shows up as
     <span class="mono">/dev/ttyUSB0</span> on Linux, <span class="mono">COMx</span> on
     Windows. Most auto-reset into the bootloader; if esptool reports "Failed to
     connect", hold BOOT, tap EN/RST, release BOOT. The bootloader goes at
@@ -699,8 +705,8 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash \\
   <p>Add <span class="mono">--erase-all</span> the first time, or after a different firmware.</p>
 
   <h3 id="flash-esp32s3">ESP32-S3 / ESP32-C3 over native USB</h3>
-  <p>The S3 and C3 boards here (T-Dongle, T-Deck, Heltec V3, DevKitM-1, the
-    e-paper board) use the chip's own USB-JTAG-serial port: no bridge chip, and it
+  <p>The S3 and C3 boards here (T-Dongle, T-Deck, DevKitM-1, the e-paper
+    board) use the chip's own USB-JTAG-serial port: no bridge chip, and it
     appears as <span class="mono">/dev/ttyACM0</span> or under
     <span class="mono">/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*</span>.
     Bootloader at <span class="mono">0x0</span>. If the port does not appear, hold BOOT

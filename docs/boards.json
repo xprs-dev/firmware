@@ -115,6 +115,7 @@
       "env": "tdeck",
       "version": "0.4.0",
       "artifact": "models/tdeck/prebuilt/firmware.bin",
+      "flash_port": "native-usb",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdeck/firmware",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin"
@@ -149,6 +150,158 @@
         "caption": "Fourth view.",
         "credit": "LilyGO product photography, lilygo.cc",
         "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/hardware/images/product-4.jpg"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3",
+    "id": "heltec-v3",
+    "name": "WiFi LoRa 32 (V3)",
+    "vendor": "Heltec Automation",
+    "sku": null,
+    "product_url": "https://heltec.org/project/wifi-lora-32-v3/",
+    "manual_url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/index.html",
+    "tagline": "ESP32-S3 + SX1262 LoRa + OLED. Same radio as the T-Deck; port pending.",
+    "summary": "Heltec WiFi LoRa 32 V3: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB flash), 0.96\" 128x64 SSD1306 OLED, SX1262 LoRa (868/915 or 433 MHz by variant), USB-C, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, LoRa. Same MCU and LoRa chip as the T-Deck, so an xprs_app port is a pin table away; today it is a multiboard target that does not compile.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "ESP32-S3",
+      "family": "esp32s3",
+      "core": "Xtensa LX7 dual @ 240 MHz",
+      "ram_kb": 512,
+      "psram_mb": null,
+      "flash_mb": 8
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "the chip can; the legacy build does not enable BT"
+      },
+      "wifi": {
+        "standards": "802.11 b/g/n",
+        "band_ghz": "2.4",
+        "modes": "STA, SoftAP"
+      },
+      "lora": {
+        "chip": "SX1262",
+        "band_mhz": "868 (as configured; 433/915 sold)"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "yes",
+      "ble5_note": "tinynimble backend like the T-Dongle (no NimBLE host, no PSRAM to hold one). Up as X3H3MZ on the first boot, 2026-08-30, hearing and digipeating the bench's beacons within two seconds of the controller coming up.",
+      "lora": "untested",
+      "lora_note": "SX1262 on SPI2 (NSS 8, RST 12, BUSY 13, DIO1 14) -- the same part xprs_sx1262 drives on the T-Deck, so a port is pins, not a driver. Not measured.",
+      "lan": "yes",
+      "lan_note": "WiFi STA; associated on the first boot and reachable at /api/status. UDP 4242 like every other station.",
+      "espnow": "yes",
+      "espnow_note": "peers=1 with the T-Deck on channel 6 from the first alive line."
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "yes",
+      "bridge": "yes",
+      "igate": "yes",
+      "hotspot": "untested",
+      "hotspot_note": "Compiled in, seeded OFF (.hotspot = false in main.c): no PSRAM, and the T-Dongle measured the AP at ~9 KB of internal heap on this chip. `cfg set ap_on 1` turns it on.",
+      "api": "yes",
+      "indexer": "yes",
+      "share": "yes",
+      "reticulum": "no",
+      "reticulum_note": "CONFIG_XPRS_BEARER_RNS=n. The hub link's socket and task cost 12.7 KB on the T-Dongle, and this board has none to spare.",
+      "ota": "yes",
+      "gossip": "yes",
+      "dashboard": "yes",
+      "chat": "no",
+      "chat_note": "One button, no keyboard. The read-only chat table on the three-view mini UI.",
+      "mesh_session": "untested",
+      "mesh_session_note": "The GATT channel is measured T-Deck <-> P1-Pro; not on this board.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "The T-Deck's radio set without the keyboard: LoRa, BLE5, LAN, ESP-NOW, on a 128x64 OLED."
+    },
+    "io": {
+      "screen": {
+        "controller": "SSD1306",
+        "width": 128,
+        "height": 64
+      },
+      "buttons": [
+        {
+          "name": "boot",
+          "pin": "GPIO0",
+          "note": "the strap pin"
+        }
+      ],
+      "leds": [
+        {
+          "name": "white",
+          "pin": "GPIO35"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "USB-C"
+        },
+        {
+          "name": "LiPo JST"
+        },
+        {
+          "name": "U.FL / IPEX",
+          "note": "LoRa antenna"
+        }
+      ],
+      "sensors": []
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "usb+battery"
+    },
+    "firmware": {
+      "toolchain": "esp-idf",
+      "project": "models/heltec-v3/firmware",
+      "env": "heltec_v3",
+      "version": "0.1.0",
+      "artifact": "models/heltec-v3/prebuilt/firmware.bin",
+      "flash_port": "usb-serial",
+      "flashing": "esptool over the CP2102 USB-serial port at 921600; an S3, so the bootloader goes at 0x0. The stub works here; none of the T-Dongle's --no-stub caveats apply.",
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt/firmware.bin"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/heltec-v3/README.md"
+      },
+      {
+        "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
+        "url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html"
+      },
+      {
+        "title": "Heltec resource downloads: schematics per version",
+        "url": "https://resource.heltec.cn/download/WiFi_LoRa_32/"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-2.png",
+        "caption": "V3: USB-C, SX1262 under the OLED, the version on the silk.",
+        "credit": "Heltec Automation product photography, heltec.org",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/hardware/images/product-2.png"
+      },
+      {
+        "file": "hardware/images/product-front.png",
+        "caption": "In its packaging: the red LoRa 32 label with the band printed on it.",
+        "credit": "Heltec Automation product photography, heltec.org",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/hardware/images/product-front.png"
       }
     ],
     "screenshots": []
@@ -260,6 +413,7 @@
       "env": "tdongle",
       "version": "0.4.0",
       "artifact": "models/tdongle-s3/prebuilt/firmware.bin",
+      "flash_port": "native-usb",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdongle-s3/firmware",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
@@ -419,6 +573,7 @@
       "env": "m5stack",
       "version": "0.2.0",
       "artifact": "models/m5stack-core/prebuilt/firmware.bin",
+      "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x USB-serial port",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/m5stack-core/firmware",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin"
@@ -618,6 +773,7 @@
       "env": "p1pro",
       "version": "0.1.0",
       "artifact": "models/sensecap-p1-pro/prebuilt/firmware.uf2",
+      "flash_port": "uf2",
       "flashing": "UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader that mounts as a mass-storage volume on a double reset-tap; an image is copied onto it. No esptool, no serial protocol, nothing this tree's tools/ scripts know how to do.",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-p1-pro/firmware",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/prebuilt/firmware.uf2"
@@ -797,6 +953,7 @@
       "env": "esp32c3_mini",
       "version": null,
       "artifact": null,
+      "flash_port": "native-usb",
       "flashing": "esptool over the native USB-JTAG CDC port, pio run -e esp32c3_mini -t upload",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
@@ -960,6 +1117,7 @@
       "env": "esp32s3_epaper_1in54",
       "version": null,
       "artifact": null,
+      "flash_port": "native-usb",
       "flashing": "esptool over the USB-serial port, pio run -e esp32s3_epaper_1in54 -t upload",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
@@ -1107,6 +1265,7 @@
       "env": "esp32_generic",
       "version": null,
       "artifact": null,
+      "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
@@ -1263,6 +1422,7 @@
       "env": "heltec_v1",
       "version": null,
       "artifact": "models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin",
+      "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin"
@@ -1422,6 +1582,7 @@
       "env": "heltec_v2",
       "version": null,
       "artifact": null,
+      "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },
@@ -1461,170 +1622,6 @@
         "caption": "433-510 MHz variant, same board, different band marking.",
         "credit": "Heltec Automation, docs.heltec.org hardware update log",
         "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v2/hardware/images/board-433-front-back.jpg"
-      }
-    ],
-    "screenshots": []
-  },
-  {
-    "repo": "xprs-dev/firmware",
-    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3",
-    "id": "heltec-v3",
-    "name": "WiFi LoRa 32 (V3)",
-    "vendor": "Heltec Automation",
-    "sku": null,
-    "product_url": "https://heltec.org/project/wifi-lora-32-v3/",
-    "manual_url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/index.html",
-    "tagline": "ESP32-S3 + SX1262 LoRa + OLED. Same radio as the T-Deck; port pending.",
-    "summary": "Heltec WiFi LoRa 32 V3: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, 8 MB flash), 0.96\" 128x64 SSD1306 OLED, SX1262 LoRa (868/915 or 433 MHz by variant), USB-C, LiPo connector, U.FL antenna. Radios: WiFi 2.4 GHz, Bluetooth 5 with extended advertising, LoRa. Same MCU and LoRa chip as the T-Deck, so an xprs_app port is a pin table away; today it is a multiboard target that does not compile.",
-    "status": "legacy",
-    "silicon": {
-      "mcu": "ESP32-S3",
-      "family": "esp32s3",
-      "core": "Xtensa LX7 dual @ 240 MHz",
-      "ram_kb": 512,
-      "psram_mb": null,
-      "flash_mb": 8
-    },
-    "radios": {
-      "bluetooth": {
-        "version": "5.0 LE",
-        "extended_advertising": true,
-        "note": "the chip can; the legacy build does not enable BT"
-      },
-      "wifi": {
-        "standards": "802.11 b/g/n",
-        "band_ghz": "2.4",
-        "modes": "STA, SoftAP"
-      },
-      "lora": {
-        "chip": "SX1262",
-        "band_mhz": "868 (as configured; 433/915 sold)"
-      },
-      "other": []
-    },
-    "bearers": {
-      "ble5": "untested",
-      "ble5_note": "The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer.",
-      "lora": "untested",
-      "lora_note": "SX1262 on SPI2 (NSS 8, RST 12, BUSY 13, DIO1 14) -- the same part xprs_sx1262 drives on the T-Deck, so a port is pins, not a driver. Not measured.",
-      "lan": "untested",
-      "lan_note": "The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.",
-      "espnow": "untested",
-      "espnow_note": "Same -- the radio can, the legacy build does not."
-    },
-    "xprs": {
-      "beacon": "no",
-      "beacon_note": "multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.",
-      "digipeater": "no",
-      "digipeater_note": "No XPRS bearers in the legacy build.",
-      "bridge": "no",
-      "bridge_note": "No XPRS bearers in the legacy build.",
-      "igate": "untested",
-      "igate_note": "The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.",
-      "hotspot": "untested",
-      "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
-      "api": "untested",
-      "api_note": "Legacy xprs_http station API; not run since the move.",
-      "indexer": "no",
-      "indexer_note": "xprs_index is an xprs_app thing.",
-      "share": "no",
-      "share_note": "xprs_app only.",
-      "reticulum": "no",
-      "reticulum_note": "xprs_app only.",
-      "ota": "untested",
-      "ota_note": "Legacy xprs_updates path; unsigned, not run since the move.",
-      "gossip": "no",
-      "gossip_note": "xprs_app only.",
-      "dashboard": "untested",
-      "dashboard_note": "The legacy SSD1306 status screen; not run since the move.",
-      "chat": "no",
-      "chat_note": "Nothing to type on.",
-      "mesh_session": "no",
-      "mesh_session_note": "BLE mesh session is xprs_app / tinynimble; not in the legacy build.",
-      "vhf": "no",
-      "vhf_note": "No SA818.",
-      "note": "Fails to build today (nimble/nimble_port.h, multiboard/README.md). The natural next xprs_app port: S3 plus SX1262."
-    },
-    "io": {
-      "screen": {
-        "controller": "SSD1306",
-        "width": 128,
-        "height": 64
-      },
-      "buttons": [
-        {
-          "name": "boot",
-          "pin": "GPIO0",
-          "note": "the strap pin"
-        }
-      ],
-      "leds": [
-        {
-          "name": "white",
-          "pin": "GPIO35"
-        }
-      ],
-      "gnss": null,
-      "connectors": [
-        {
-          "name": "USB-C"
-        },
-        {
-          "name": "LiPo JST"
-        },
-        {
-          "name": "U.FL / IPEX",
-          "note": "LoRa antenna"
-        }
-      ],
-      "sensors": []
-    },
-    "physical": {
-      "dimensions_mm": null,
-      "weight_g": null,
-      "ip_rating": null,
-      "temp_c": null,
-      "power": "usb+battery"
-    },
-    "firmware": {
-      "toolchain": "esp-idf",
-      "project": "multiboard",
-      "env": "heltec_v3",
-      "version": null,
-      "artifact": null,
-      "flashing": "esptool over the USB-serial port, pio run -e heltec_v3 -t upload",
-      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
-    },
-    "docs": [
-      {
-        "title": "Board README",
-        "url": "https://github.com/xprs-dev/firmware/blob/main/models/heltec-v3/README.md"
-      },
-      {
-        "title": "The shared build, and which targets compile",
-        "url": "https://github.com/xprs-dev/firmware/blob/main/multiboard/README.md"
-      },
-      {
-        "title": "Heltec hardware update log: how to tell V1, V2, V2.1 and V3 apart",
-        "url": "https://docs.heltec.org/en/node/esp32/wifi_lora_32/hardware_update_log.html"
-      },
-      {
-        "title": "Heltec resource downloads: schematics per version",
-        "url": "https://resource.heltec.cn/download/WiFi_LoRa_32/"
-      }
-    ],
-    "images": [
-      {
-        "file": "hardware/images/product-2.png",
-        "caption": "V3: USB-C, SX1262 under the OLED, the version on the silk.",
-        "credit": "Heltec Automation product photography, heltec.org",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/hardware/images/product-2.png"
-      },
-      {
-        "file": "hardware/images/product-front.png",
-        "caption": "In its packaging: the red LoRa 32 label with the band printed on it.",
-        "credit": "Heltec Automation product photography, heltec.org",
-        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/hardware/images/product-front.png"
       }
     ],
     "screenshots": []
@@ -1756,6 +1753,7 @@
       "env": "kv4p",
       "version": null,
       "artifact": null,
+      "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
     },

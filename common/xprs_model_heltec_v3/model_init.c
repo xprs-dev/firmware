@@ -6,14 +6,19 @@
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
-#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "model_init";
 
 // Device handles
 static ssd1306_handle_t s_display = NULL;
-static sx1262_handle_t s_lora = NULL;
-static bool s_adc_initialized = false;
+static adc_oneshot_unit_handle_t s_adc = NULL;
+static adc_cali_handle_t s_adc_cali = NULL;
+static adc_channel_t s_adc_ch;
 
 // ============================================================================
 // Vext power control
@@ -57,15 +62,17 @@ void model_led_set_brightness(uint8_t brightness)
 
 float model_get_battery_voltage(void)
 {
-    if (!s_adc_initialized) return 0.0f;
+    if (!s_adc) return 0.0f;
 
-    int raw = adc1_get_raw(ADC1_CHANNEL_0);
-    if (raw < 0) return 0.0f;
-
-    // ESP32-S3 ADC: 12-bit (0-4095), ~0-2.5V reference
-    // Battery divider: 390k / 100k -> scale = (390+100)/100 = 4.9
-    float voltage = ((float)raw / 4095.0f) * 2.5f * BATTERY_ADC_SCALE;
-    return voltage;
+    int raw = 0, mv = 0;
+    if (adc_oneshot_read(s_adc, s_adc_ch, &raw) != ESP_OK) return 0.0f;
+    if (s_adc_cali) {
+        if (adc_cali_raw_to_voltage(s_adc_cali, raw, &mv) != ESP_OK) return 0.0f;
+    } else {
+        mv = raw * 3100 / 4095;   /* 12 dB attenuation, uncalibrated */
+    }
+    /* Divider 390k / 100k -> the pin sees the cell over 4.9. */
+    return (float)mv * BATTERY_ADC_SCALE / 1000.0f;
 }
 
 // ============================================================================
@@ -75,11 +82,6 @@ float model_get_battery_voltage(void)
 ssd1306_handle_t model_get_display(void)
 {
     return s_display;
-}
-
-sx1262_handle_t model_get_lora(void)
-{
-    return s_lora;
 }
 
 // ============================================================================
@@ -153,43 +155,9 @@ esp_err_t model_init(void)
     }
     ESP_LOGI(TAG, "OLED display initialized (128x64, I2C 0x%02X)", I2C_ADDR_OLED);
 
-    // 5. Initialize SX1262 LoRa radio
-    sx1262_spi_config_t lora_spi = {
-        .mosi_pin = LORA_PIN_MOSI,
-        .miso_pin = LORA_PIN_MISO,
-        .sck_pin = LORA_PIN_SCK,
-        .cs_pin = LORA_PIN_NSS,
-        .rst_pin = LORA_PIN_RST,
-        .busy_pin = LORA_PIN_BUSY,
-        .dio1_pin = LORA_PIN_DIO1,
-    };
-    ret = sx1262_create(&lora_spi, &s_lora);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SX1262 create failed: %s", esp_err_to_name(ret));
-        // Non-fatal: continue without LoRa
-        s_lora = NULL;
-    } else {
-        sx1262_lora_config_t lora_config = {
-            .frequency_hz = LORA_DEFAULT_FREQ_HZ,
-            .sf = SX1262_SF7,
-            .bw = SX1262_BW_125,
-            .cr = SX1262_CR_4_5,
-            .tx_power_dbm = 14,
-            .preamble_len = 8,
-            .crc_on = true,
-            .use_tcxo = true,
-            .use_dio2_rf_switch = true,
-        };
-        ret = sx1262_init(s_lora, &lora_config);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "SX1262 init failed: %s", esp_err_to_name(ret));
-            sx1262_delete(s_lora);
-            s_lora = NULL;
-        } else {
-            ESP_LOGI(TAG, "LoRa initialized (freq=%luHz, SF7, BW125)",
-                     (unsigned long)LORA_DEFAULT_FREQ_HZ);
-        }
-    }
+    // 5. The SX1262 is NOT brought up here. xprs_bearer_lora creates and
+    //    owns it from the pins in model_config.h; a driver here as well was
+    //    two owners of SPI2 and one CS pin.
 
     // 6. Initialize LED (LEDC PWM)
     ledc_timer_config_t ledc_timer = {
@@ -213,18 +181,24 @@ esp_err_t model_init(void)
     ledc_channel_config(&ledc_channel);
     ESP_LOGI(TAG, "LED initialized on GPIO%d (PWM)", LED_PIN);
 
-    // 7. Initialize battery ADC (legacy driver)
-    ret = adc1_config_width(ADC_WIDTH_BIT_12);
-    if (ret == ESP_OK) {
-        ret = adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_12);
+    // 7. Battery ADC, oneshot driver with curve-fitting calibration where
+    //    the chip has it (the T-Deck's pattern).
+    adc_unit_t unit;
+    if (adc_oneshot_io_to_channel(BATTERY_ADC_PIN, &unit, &s_adc_ch) == ESP_OK) {
+        adc_oneshot_unit_init_cfg_t uc = { .unit_id = unit };
+        if (adc_oneshot_new_unit(&uc, &s_adc) == ESP_OK) {
+            adc_oneshot_chan_cfg_t cc = { .bitwidth = ADC_BITWIDTH_12,
+                                          .atten = ADC_ATTEN_DB_12 };
+            adc_oneshot_config_channel(s_adc, s_adc_ch, &cc);
+            adc_cali_curve_fitting_config_t cf = { .unit_id = unit, .chan = s_adc_ch,
+                .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_12 };
+            if (adc_cali_create_scheme_curve_fitting(&cf, &s_adc_cali) != ESP_OK)
+                s_adc_cali = NULL;
+            ESP_LOGI(TAG, "Battery ADC on GPIO%d%s", BATTERY_ADC_PIN,
+                     s_adc_cali ? "" : " (uncalibrated)");
+        }
     }
-    if (ret == ESP_OK) {
-        s_adc_initialized = true;
-        ESP_LOGI(TAG, "Battery ADC initialized on GPIO%d", BATTERY_ADC_PIN);
-    } else {
-        ESP_LOGW(TAG, "Battery ADC init failed: %s", esp_err_to_name(ret));
-        s_adc_initialized = false;
-    }
+    if (!s_adc) ESP_LOGW(TAG, "Battery ADC not available");
 
     ESP_LOGI(TAG, "Board initialization complete");
     return ESP_OK;
@@ -232,15 +206,12 @@ esp_err_t model_init(void)
 
 esp_err_t model_deinit(void)
 {
-    if (s_lora) {
-        sx1262_delete(s_lora);
-        s_lora = NULL;
-    }
+    if (s_adc_cali) { adc_cali_delete_scheme_curve_fitting(s_adc_cali); s_adc_cali = NULL; }
+    if (s_adc) { adc_oneshot_del_unit(s_adc); s_adc = NULL; }
     if (s_display) {
         ssd1306_delete(s_display);
         s_display = NULL;
     }
-    s_adc_initialized = false;
     i2c_bus_deinit();
     model_vext_off();
     ESP_LOGI(TAG, "Board deinitialization complete");

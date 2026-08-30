@@ -93,6 +93,7 @@ firmware:
   env: m5stack
   version: 0.2.0
   artifact: models/m5stack-core/prebuilt/firmware.bin
+  flash_port: usb-serial
   flashing: "esptool over the CP210x USB-serial port"
 
 docs:

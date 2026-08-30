@@ -44,7 +44,8 @@ them for download or, served over HTTPS in Chrome, flashes them directly.
 | [`tdongle-s3`](models/tdongle-s3/) | ESP32-S3 | own project -- the BLE5 bridge, 160x80 |
 | [`m5stack-core`](models/m5stack-core/) | ESP32 | own project -- the second voice on the air |
 | [`tdeck`](models/tdeck/) | ESP32-S3 | own project -- screen, trackball, keyboard; 868 MHz radio idle |
-| [`heltec-v1`](models/heltec-v1/) [`v2`](models/heltec-v2/) [`v3`](models/heltec-v3/) | ESP32 / S3 | `multiboard` -- LoRa, SX1276 / SX1262 |
+| [`heltec-v3`](models/heltec-v3/) | ESP32-S3 | own project -- LoRa SX1262 + BLE5 + WiFi on a 128x64 OLED; the shelf digipeater |
+| [`heltec-v1`](models/heltec-v1/) [`v2`](models/heltec-v2/) | ESP32 | `multiboard` -- LoRa, SX1276, legacy |
 | [`kv4p`](models/kv4p/) | ESP32 | `multiboard` -- VHF handheld via SA818 |
 | [`esp32c3-mini`](models/esp32c3-mini/) | ESP32-C3 | `multiboard` |
 | [`epaper-1in54`](models/epaper-1in54/) | ESP32-S3 | `multiboard` -- e-paper display |
@@ -86,8 +87,8 @@ rings, the relay decision, shared by every bearer), `xprs_bearer_lan`,
 `xprs_bearer_now`, `xprs_chan` (meeting on a working channel, spec
 section 23.7), `xprs_id`, `xprs_sig` and `xprs_index`.
 
-**The station itself is `xprs_app`**, and the three boards with their own
-project all run it: the T-Deck, the M5Stack and the T-Dongle. A board's
+**The station itself is `xprs_app`**, and the four boards with their own
+project all run it: the T-Deck, the M5Stack, the T-Dongle and the Heltec V3. A board's
 `main.c` is its screen, its pins and how a person presses something,
 described in one `xapp_board_t` and handed to `xapp_run()` -- 150 to 650
 lines, no station logic at all. A fix to a bearer, a panel or the indexer is

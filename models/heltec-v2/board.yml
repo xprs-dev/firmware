@@ -103,6 +103,7 @@ firmware:
   env: heltec_v2
   version: null
   artifact: null
+  flash_port: usb-serial
   flashing: "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload"
 
 docs:

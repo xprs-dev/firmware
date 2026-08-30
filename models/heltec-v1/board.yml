@@ -103,6 +103,7 @@ firmware:
   env: heltec_v1
   version: null
   artifact: models/heltec-v1/prebuilt/xprs-HeltecV1-LoRa.bin
+  flash_port: usb-serial
   flashing: "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload"
 
 docs:

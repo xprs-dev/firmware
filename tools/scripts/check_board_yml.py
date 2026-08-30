@@ -34,7 +34,8 @@ XPRS = ["beacon", "digipeater", "bridge", "igate", "hotspot", "api", "indexer",
         "share", "reticulum", "ota", "gossip", "dashboard", "chat",
         "mesh_session", "vhf"]
 XPRS_VERDICT = {"yes", "no", "planned", "untested"}
-FIRMWARE = ["toolchain", "project", "env", "version", "artifact", "flashing"]
+FIRMWARE = ["toolchain", "project", "env", "version", "artifact", "flash_port", "flashing"]
+FLASH_PORT = {"usb-serial", "native-usb", "uf2", None}
 
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 problems = []
@@ -100,6 +101,8 @@ def check(path, d, is_template):
     for k in FIRMWARE:
         if k not in fw:
             bad(f"firmware is missing '{k}'")
+    if fw.get("flash_port") not in FLASH_PORT:
+        bad(f"firmware.flash_port {fw.get('flash_port')!r} is not one of usb-serial | native-usb | uf2")
     proj = fw.get("project")
     if proj and not os.path.isdir(os.path.join(root, proj)):
         bad(f"firmware.project '{proj}' does not exist")

@@ -103,6 +103,7 @@ firmware:
   env: esp32s3_epaper_1in54
   version: null
   artifact: null
+  flash_port: native-usb
   flashing: "esptool over the USB-serial port, pio run -e esp32s3_epaper_1in54 -t upload"
 
 docs:

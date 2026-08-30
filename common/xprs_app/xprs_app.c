@@ -3328,7 +3328,13 @@ static void idx_task(void *arg)
     uint32_t last_logflush_s = 0;
     uint32_t last_stats_save_s = 0;
     for (;;) {
-        /* Drain what the radios heard. */
+        /* Drain what the radios heard. Every add is a flash write, and on
+         * a bench where four stations digipeat one another the queue can
+         * refill faster than it drains -- so the watchdog is fed per
+         * packet, not per pass. Without this the T-Deck sat in this loop
+         * for the whole 90 s budget and rebooted with "idx did not reset
+         * the watchdog" while the UI task was the one caught running
+         * (2026-08-30, the first evening the Heltec V3 was on the air). */
         while (s_idxq_r != s_idxq_w) {
             int r = s_idxq_r;
             if (s_index && xcfg_get_bool("index_on", true))
@@ -3337,6 +3343,7 @@ static void idx_task(void *arg)
                                s_idxq[r].own ? (uint32_t)time(NULL) : 0,
                                s_idxq[r].bearer);
             s_idxq_r = (r + 1) % IDXQ_N;
+            esp_task_wdt_reset();
         }
 
         /* Say what this station serves, every ten minutes (section 36). */
@@ -4719,7 +4726,12 @@ void xapp_run(const xapp_board_t *board)
     if (s_display_up) {
         if (s_board->touch_read) xui_touch_enable(s_board->touch_read);
         splash_step("ready");
-        if (xTaskCreate(ui_task, "ui", 6144, NULL, 4, NULL) != pdPASS)
+        /* 8 KB, not 6: the T-Deck's UI task overflowed 6,144 on
+         * 2026-08-30 ("A stack overflow in task ui has been detected", in
+         * the core dump) under the traffic of a fourth station on the
+         * bench. The chat scratch is already static; what is left on this
+         * stack is LVGL's draw path, and it is deeper than it looks. */
+        if (xTaskCreate(ui_task, "ui", 8192, NULL, 4, NULL) != pdPASS)
             ESP_LOGE(TAG, "UI task failed to start");
     }
 

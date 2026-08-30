@@ -80,6 +80,7 @@ firmware:
   env:         # PlatformIO env name, or null
   version:     # contents of version.txt, or null
   artifact:    # path to a published binary, or null
+  flash_port:  # usb-serial | native-usb | uf2
   flashing:    # one line: how an image gets onto it
 
 docs: []       # - {title: ..., url: ...}

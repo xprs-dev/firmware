@@ -1,0 +1,202 @@
+# NimBLE with BLE 5 extended advertising, observer (scan) role only.
+CONFIG_BT_ENABLED=y
+# CONFIG_BT_NIMBLE_ENABLED=y   (host retired: tinynimble)
+# CONFIG_BT_NIMBLE_EXT_ADV=y   (host retired: tinynimble)
+# CONFIG_BT_NIMBLE_ROLE_OBSERVER=y   (host retired: tinynimble)
+# CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y   (host retired: tinynimble)
+# CONFIG_BT_NIMBLE_ROLE_CENTRAL=n   (host retired: tinynimble)
+# CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y   (host retired: tinynimble)
+
+# BLE 5.0 controller features (ESP32-S3).
+CONFIG_BT_LE_50_FEATURE_SUPPORT=y
+CONFIG_BT_LE_EXT_ADV=y
+
+# Console on UART0: the Heltec V3 talks through a CP2102, not native USB.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# Larger host-task stack: the gap callbacks run here and Ed25519 signing is
+# stack-heavy.
+# CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120   (host retired: tinynimble)
+
+# Select the Heltec V3 board so the OLED and model components compile (they are
+# guarded by CONFIG_XPRS_BOARD_HELTEC_V3 and would otherwise be empty).
+CONFIG_XPRS_BOARD_HELTEC_V3=y
+
+# Partition table comes from platformio.ini (board_build.partitions =
+# partitions.csv): a 2MB factory app, NVS kept at 0x9000 so the RNS identity
+# persists. 8MB flash on this board: partitions.csv is cut for it.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
+# LVGL is configured via Kconfig (the esp-idf lvgl component defaults to
+# CONFIG_LV_CONF_SKIP=y, so lv_conf.h is ignored). LVGL's Kconfig defaults enable
+# Montserrat 14 but NOT 10; tdongle_ui uses the 10px font, so enable it here.
+CONFIG_LV_FONT_MONTSERRAT_10=y
+
+# WiFi + BLE coexistence (the iGate needs WiFi STA while BLE5 keeps running).
+# Software coexistence lets the single radio time-share WiFi and BLE.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# Custom 2-app-OTA-less layout would be overkill; the firmware (LVGL + WiFi +
+# APRS-IS) outgrows the 1MB single-app, so use a 2MB factory partition.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE is not set
+
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=2   (host retired: tinynimble)
+
+# The mesh transport REQUIRES repeated advert reports (beacons re-air
+# on a TTL; the same fixed-address phone must surface every time). The
+# controller dedup filter suppresses a fixed address after ONE report.
+CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
+
+# ── Heap headroom ──────────────────────────────────────────────────────────
+# This board runs the BLE controller, the NimBLE host, WiFi STA, an APRS-IS
+# iGate, a Reticulum hub, an HTTP server, an SD-backed XPRS index and three XPRS
+# bearers at once, and it finished boot with about eight kilobytes free and a
+# largest block of 7,680. That is under the 8,192 the relay task's stack asks
+# for, so the task that carries the beacons, the service announcements, the
+# history replay and the section 23.7 clock silently failed to start — measured,
+# with one boot line as the only evidence.
+#
+# The stack is now claimed first (see app_main), which makes THAT allocation
+# certain; these settings are what pays for it. Every number below is a buffer
+# count, so the cost is peak burst capacity rather than throughput, and the
+# Reticulum links here are latency-bound rather than window-bound.
+
+# WiFi receive/transmit buffers. Static ones are ~1.6 KB each and permanent;
+# dynamic ones are a ceiling on what the driver may take while busy.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
+# Sixteen listening sockets and sixteen raw PCBs are far more than this station
+# opens: one hub connection, one HTTP server, one UDP bearer, one APRS-IS link.
+CONFIG_LWIP_MAX_LISTENING_TCP=2
+CONFIG_LWIP_MAX_ACTIVE_TCP=4
+CONFIG_LWIP_MAX_UDP_PCBS=8
+CONFIG_LWIP_MAX_RAW_PCBS=4
+
+# One connection at a time (CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1), so eight ACL
+# buffers of 255 bytes is a queue depth nothing here reaches.
+# CONFIG_BT_NIMBLE_ACL_BUF_COUNT=5   (host retired: tinynimble)
+
+# ---- Over-the-air updates (XPRS.md 25.8) -------------------------------
+# Rollback is the safety net that makes flashing a roof node reasonable: a
+# new image boots PENDING_VERIFY and any reset before it marks itself valid
+# sends the bootloader back to the slot that worked. The 90 s task watchdog
+# (panic on trigger, already set) is what turns a hang into that reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+# This board is GIVEN its image; it never goes and gets one. The fetching
+# half of the updater links esp_http_client and the TLS stack behind it,
+# and those are resident whether an update is running or not. Measured on
+# this board: with them linked, boot reached the HTTP server with 5284
+# bytes free and 2816 in the largest block, the server failed to start,
+# and the station went deaf on the LAN while still gossiping happily over
+# ESP-NOW -- which is a nasty way to fail, because it looks healthy on the
+# air. Without them the push door does the same job: the operator carries
+# the bytes to the station (POST /api/update) instead of naming a URL.
+# docs/device.md section 6 has the rule; the m5stack keeps the puller.
+CONFIG_XPRS_OTA_PULL=n
+
+# A panic on this board used to leave nothing behind at all; the core dump
+# keeps the culprit's name for the next boot, and /api/coredump can hand the
+# ELF to espcoredump.py without a cable.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+
+# LVGL's pool is static RAM: it comes off the top of the heap before a
+# single task runs, and on this board the heap is the scarcest thing there
+# is. Sized from lv_mem_monitor(), not from a guess -- this screen is
+# 160x80 with three plain views and reports 26% of 32 KB used (about
+# 8.4 KB) on the T-Dongle; this panel is 128x64, 64% of those pixels, and
+# 12 KB is the same margin. Measure with lv_mem_monitor() before trimming
+# further. The M5Stack learned the other half of this rule the hard way: it
+# has a 320x240 dashboard using ~20 KB and a 32->24 KB trim there starved
+# the renderer into a 70-second reboot loop. The number is per board and
+# per screen, and it is measured every time.
+CONFIG_LV_MEM_SIZE_KILOBYTES=12
+
+# The NimBLE reclaim, restored. docs/esp32.md measured this table ON THIS
+# BOARD and recorded the result: free heap after BLE init 11,432 -> 29,408,
+# largest block 7,680 -> 21,504, reachability 1-of-86 pings -> 137-of-137.
+# The settings were absent from this file, so the build had the "was"
+# column and the board was living on a minimum-ever free heap of 64 bytes:
+# WiFi associated and dropped, and every HTTP handler that needed two
+# kilobytes got nothing. The defaults are sized for a busy central; this
+# station advertises, scans, and holds at most one connection.
+# CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8   (host retired: tinynimble)
+# CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8   (host retired: tinynimble)
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE=20
+
+# One TCP connection's send and receive windows are 5,744 bytes each by
+# default, and they are heap. Measured here: rns_tcp_start(), which opens a
+# single socket to one Reticulum hub and has a 4 KB task stack, cost 12,676
+# bytes -- the other 8.7 KB was that one socket. Four MSS each is still more
+# window than a hub link or a JSON endpoint ever fills, and the 1.5 MB
+# firmware push is a LAN transfer that stays comfortably ahead of the flash
+# writes behind it. Two listeners because there is one HTTP server.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+
+# Each open file is a 4 KB sector cache. Three was right when the archive
+# lived on the microSD card and this board kept the index segment and the
+# mesh spool open and read one file at a time -- and it was measured there,
+# where sdcard_init() cost 40,248 bytes with five.
+#
+# The archive is now the internal FAT (partitions.csv) and the station is
+# the shared one, which holds five things open at once: the index segment,
+# /idx/log/cur.txt, a gossip bucket, stats.bin and chat.bin. At three it
+# printed "vfs_fat: open: no free file descriptors" every couple of seconds
+# and the sixth thing to ask simply did not get written. Five is the
+# M5Stack's number for the same set of files.
+CONFIG_SDCARD_MAX_FILES=5
+
+# ── tinynimble ──────────────────────────────────────────────────────────────
+# This station speaks HCI to the controller directly. The NimBLE host is not
+# linked at all, which is the point on a board with no PSRAM: the host's msys
+# pools, its ACL transport buffers and its 5,120-byte task stack were all
+# internal DRAM, and this station runs at about 13 KB free with a min-ever of
+# 2,024. That shortage is what made `ext_adv_configure rc=519`
+# (BLE_HS_HCI_ERR 0x07, Memory Capacity Exceeded) a permanent condition: the
+# dongle could hear BLE but could not advertise at all.
+#
+# GATT goes with it. The connectable instance, the FFE0/FFF1/FFF2 service and
+# the MSP bulk path are retired -- this board broadcasts and listens, like
+# every other XPRS station.
+CONFIG_BT_NIMBLE_ENABLED=n
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=y
+# And this is what tells the SHARED bearer so. The board used to call
+# tinynimble from its own main.c, so xprs_bearer_ble never saw the choice and
+# compiled its NimBLE path against headers that are not there once the host is
+# off. Now that the station is common/xprs_app, the bearer is the one that
+# talks to the radio and the backend is its Kconfig -- the same line the
+# T-Deck carries. To go back, set this to n and NIMBLE_ENABLED=y: the NimBLE
+# path is kept, not deleted, precisely so that is one line.
+CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
+
+# The task watchdog the partition table's rollback argument relies on. It
+# said "the 90 s task watchdog (panic on trigger) is what turns a hang into
+# the reset that rolls back" -- and the built config had a 5 s warn-only
+# watchdog, so a new image that hung simply sat there. Now it is true.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# The archive names its segments seg_0000000000.bin -- eighteen characters,
+# which 8.3 short names cannot hold. Without this every fopen() in the store
+# fails while the record counter still says packets are held: the station
+# reports an archive it cannot open a single segment of, and answers 404 to
+# everything asked of it (docs/esp32.md). This board is the one with the SD
+# card and the deepest store, and it was the one building without it.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+
+# No Reticulum bearer on this board. The T-Dongle keeps it because it is
+# the fleet's deepest archive and dials a hub; this board is a radio on a
+# shelf, and the hub link's one TCP socket plus its task cost the T-Dongle
+# 12,676 bytes -- measured there, and this board finished its first boot
+# with 6,440 free and a min-ever of 16. The T-Deck runs without it too.
+CONFIG_XPRS_BEARER_RNS=n

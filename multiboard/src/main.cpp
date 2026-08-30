@@ -1982,7 +1982,10 @@ extern "C" void app_main(void)
 
     // Get device handles
     ssd1306_handle_t display = model_get_display();
-    sx1262_handle_t lora = model_get_lora();
+    /* The model component no longer brings the SX1262 up: on this board the
+     * radio belongs to xprs_bearer_lora (models/heltec-v3/firmware), and this
+     * legacy build has no LoRa bearer of its own. */
+    sx1262_handle_t lora = NULL;
 
     // Show boot splash on OLED
     if (display) {
