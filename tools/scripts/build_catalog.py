@@ -78,6 +78,12 @@ def card_tags(b):
     return " ".join(tags)
 
 
+FLASH_ONELINE = {
+    "esp32": "USB-serial port (CP210x/CH340), esptool, bootloader at 0x1000; hold BOOT if it will not connect",
+    "esp32s3": "the chip's own USB port, esptool, bootloader at 0x0; hold BOOT while plugging in if no port appears",
+    "esp32c3": "the chip's own USB port, esptool, bootloader at 0x0; hold BOOT while plugging in if no port appears",
+    "nrf52": "double-tap reset, copy the .uf2 onto the USB drive that appears",
+}
 FLASH_SECTION = {"esp32": ("flash-esp32", "ESP32 over USB-serial"),
                  "esp32s3": ("flash-esp32s3", "ESP32-S3 / C3 over native USB"),
                  "esp32c3": ("flash-esp32s3", "ESP32-S3 / C3 over native USB"),
@@ -152,14 +158,17 @@ def prebuilt_block(b, fw):
     by hand. Written by collect_prebuilt.py, so it offers what is in the tree."""
     pre = os.path.join(b["_dir"], "prebuilt")
     rel = f"{b['_rel']}/prebuilt"
-    if not os.path.isdir(pre):
-        return ""
-    files = sorted(f for f in os.listdir(pre)
-                   if not f.startswith(".") and f != "manifest.json")
-    if not files:
-        return ""
     fam = (b.get("silicon") or {}).get("family")
     sec_id, sec_label = FLASH_SECTION.get(fam, ("flash-source", "from source"))
+    files = (sorted(f for f in os.listdir(pre) if not f.startswith(".") and f != "manifest.json")
+             if os.path.isdir(pre) else [])
+    if not files:
+        one = FLASH_ONELINE.get(fam, "see the build block below")
+        why = ("No firmware for this board yet." if not fw.get("project")
+               else "No prebuilt image: build it from source (below), then flash over ")
+        return (f'<div class="prebuilt prebuilt-none"><div class="build-head">Install XPRS</div>'
+                f'<p class="pb-how">{why}{esc(one) + "." if fw.get("project") else ""} '
+                f'<a href="#{sec_id}">Details</a>.</p></div>')
     manifest = os.path.join(pre, "manifest.json")
     ver = fw.get("version")
     if os.path.isfile(manifest):
@@ -372,6 +381,8 @@ CSS = """
 .prebuilt{margin:0 0 18px; padding:14px 16px; border:1px solid var(--accent); border-radius:10px;
   background:var(--accent-soft)}
 .pb-how{margin:8px 0 12px; max-width:70ch}
+.prebuilt-none{border-style:dashed; background:transparent}
+.prebuilt-none .pb-how{margin-bottom:0}
 .pb-btn{font:inherit; font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-weight:700;
   font-size:15px; cursor:pointer; background:var(--accent); color:var(--ground);
   border:0; border-radius:999px; padding:12px 22px; margin:0 0 12px}
