@@ -12,6 +12,7 @@
  * stricter than usual because the context belongs to the link layer. */
 
 #include "tinynimble.h"
+#include "tn_att.h"
 
 #include <string.h>
 
@@ -34,6 +35,7 @@ static SemaphoreHandle_t s_can_send;
 static tn_report_cb_t s_rx_cb;
 static void          *s_rx_ctx;
 static bool           s_up;
+static volatile uint16_t s_conn = 0xFFFF;   /* the mesh channel's link, below */
 
 /* ── VHCI callbacks, both in controller context ─────────────────────────── */
 
@@ -42,17 +44,24 @@ static void vhci_send_available(void)
     if (s_can_send) xSemaphoreGive(s_can_send);
 }
 
+static void gatt_on_acl(const uint8_t *pkt, uint16_t len);      /* below */
+static void gatt_on_link(const tn_link_evt_t *e, void *ctx);
+
 static int vhci_recv(uint8_t *data, uint16_t len)
 {
     /* A command result unblocks tn_send_cmd(); an advertising report goes
-     * straight to the caller. Everything else the controller says is ignored,
-     * which is the whole event policy. */
+     * straight to the caller; ACL data and link events are PARKED for
+     * tn_gatt_pump(), because answering an ATT request means sending, and
+     * sending from the controller's own callback is not a thing this port
+     * will do. Everything else the controller says is ignored. */
+    if (len > 0 && data[0] == TN_H4_ACL) { gatt_on_acl(data, len); return 0; }
     uint8_t status;
     if (tn_hci_cmd_result(data, len, s_cmd_opcode, &status)) {
         s_cmd_status = status;
         if (s_cmd_done) xSemaphoreGive(s_cmd_done);
         return 0;
     }
+    if (tn_hci_feed_link(data, len, gatt_on_link, NULL) != 0) return 0;
     tn_hci_feed_evt(data, len, s_rx_cb, s_rx_ctx);
     return 0;
 }
@@ -135,6 +144,7 @@ esp_err_t tn_start(void)
     }
 
     s_up = true;   /* commands may be sent from here on */
+    s_conn = 0xFFFF;
 
     /* The bring-up sequence. Skipping the two masks costs an afternoon: the
      * controller accepts scan parameters and a scan enable, reports no error,
@@ -206,7 +216,15 @@ esp_err_t tn_adv_configure(const tn_adv_cfg_t *cfg)
 {
     if (!s_up || !cfg) return ESP_ERR_INVALID_STATE;
     uint8_t buf[40];
-    int n = tn_hci_ext_adv_params(buf, sizeof buf, cfg);
+    int n;
+    /* Parameters cannot change on an ENABLED set: the controller answers
+     * 0x0C Command Disallowed, which is what turning the beacon connectable
+     * ran into. Disable first; the next tn_adv_set_data() re-enables. */
+    if (s_adv_configured) {
+        n = tn_hci_ext_adv_enable(buf, sizeof buf, s_adv.handle, false);
+        if (n > 0) tn_send_cmd(buf, n, TN_OP_EXT_ADV_ENABLE);
+    }
+    n = tn_hci_ext_adv_params(buf, sizeof buf, cfg);
     if (n < 0) return ESP_ERR_INVALID_ARG;
     esp_err_t err = tn_send_cmd(buf, n, TN_OP_EXT_ADV_PARAMS);
     if (err != ESP_OK) return err;
@@ -243,6 +261,15 @@ esp_err_t tn_adv_set_data(const uint8_t *ad, size_t len)
     if (n < 0) return ESP_ERR_INVALID_ARG;
     esp_err_t err = tn_send_cmd(buf, n, TN_OP_EXT_ADV_DATA);
     if (err != ESP_OK) return err;
+
+    /* A CONNECTABLE set cannot be enabled while its link is up: the
+     * controller has one activity slot for "this set's connection" and it
+     * is in use, so the enable answers 0x07 Memory Capacity Exceeded, every
+     * beacon, for the whole session. The data is set and stays set; the
+     * pump enables the set again the moment the link drops. While connected
+     * this station is therefore silent on the broadcast plane -- which
+     * docs/ble5-gatt.md already asks sessions to be short for. */
+    if (s_conn != 0xFFFF && (s_adv.props & TN_ADV_PROP_CONNECTABLE)) return ESP_OK;
 
     n = tn_hci_ext_adv_enable(buf, sizeof buf, s_adv.handle, true);
     if (n < 0) return ESP_ERR_INVALID_ARG;
@@ -295,4 +322,168 @@ esp_err_t tn_set_random_addr(const uint8_t addr[6])
     if (n < 0) return ESP_ERR_INVALID_ARG;
     memcpy(s_rand_addr, addr, 6);   /* remembered for the advertising set */
     return tn_send_cmd(buf, n, TN_OP_SET_RANDOM_ADDR);
+}
+
+/* ── The mesh channel over a connection ─────────────────────────────────
+ *
+ * The controller opens the link when a peer answers the connectable set;
+ * from then on ACL packets arrive in vhci_recv and are parked here, one
+ * L2CAP frame at a time, for tn_gatt_pump() to answer from the caller's
+ * task. ATT is strictly request/response, so one slot is enough for every
+ * request; a Write Command that lands while the slot is full is dropped and
+ * counted, which MSP tolerates (it re-sends what was not acked).
+ *
+ * One connection, because the T-Deck's controller is configured for one
+ * (CONFIG_BT_CTRL_BLE_MAX_ACT=2: the advertising set and one link) and one
+ * is the whole design -- docs/ble5-gatt.md, "a connected station is partly
+ * deaf". */
+static tn_gatt_cb_t     s_gatt;
+static bool             s_gatt_serving;
+static tn_att_t         s_att;
+
+/* Parked inbound L2CAP frame, assembled across HCI fragments. */
+static uint8_t          s_in[4 + TN_ATT_MTU_MAX];
+static volatile int     s_in_len;        /* bytes so far */
+static volatile int     s_in_want;       /* 4 + L2CAP length, once known */
+static volatile bool    s_in_ready;
+static volatile uint32_t s_in_dropped;
+
+/* Parked link events, delivered in order from the pump. */
+static volatile uint8_t s_ev_conn, s_ev_disc, s_ev_reason;
+static volatile uint16_t s_ev_handle;
+
+static void gatt_on_link(const tn_link_evt_t *e, void *ctx)
+{
+    (void)ctx;
+    if (e->connected) {
+        s_conn = e->conn;
+        s_ev_handle = e->conn;
+        s_ev_conn = 1;
+        s_in_len = 0; s_in_ready = false;
+    } else if (e->conn == s_conn) {
+        s_conn = 0xFFFF;
+        s_ev_handle = e->conn;
+        s_ev_reason = e->reason;
+        s_ev_disc = 1;
+    }
+}
+
+static void gatt_on_acl(const uint8_t *pkt, uint16_t len)
+{
+    uint16_t conn; uint8_t pb; const uint8_t *d;
+    int n = tn_hci_acl_decode(pkt, len, &conn, &pb, &d);
+    if (n < 0 || conn != s_conn) return;
+    if (pb != TN_ACL_PB_CONT) {
+        if (s_in_ready) { s_in_dropped++; return; }   /* pump has not drained */
+        if (n < 4) return;
+        s_in_len = 0;
+        s_in_want = 4 + (int)(d[0] | (d[1] << 8));
+        if (s_in_want > (int)sizeof s_in) { s_in_want = 0; return; }   /* over MTU */
+    } else if (s_in_want == 0) {
+        return;                                          /* continuation of nothing */
+    }
+    if (s_in_len + n > s_in_want) return;               /* would overrun the frame */
+    memcpy(s_in + s_in_len, d, n);
+    s_in_len += n;
+    if (s_in_len == s_in_want) s_in_ready = true;
+}
+
+static esp_err_t gatt_send_l2cap(const uint8_t *pdu, int len)
+{
+    static uint8_t acl[5 + 4 + TN_ATT_MTU_MAX];
+    uint8_t l2[4 + TN_ATT_MTU_MAX];
+    int m = tn_l2cap_wrap(l2, sizeof l2, TN_L2CAP_CID_ATT, pdu, len);
+    if (m < 0) return ESP_ERR_INVALID_SIZE;
+    int n = tn_hci_acl_encode(acl, sizeof acl, s_conn, TN_ACL_PB_FIRST_NONFLUSH, l2, m);
+    if (n < 0) return ESP_ERR_INVALID_SIZE;
+    /* The controller says when it can take a packet. No Number Of Completed
+     * Packets bookkeeping beyond that: ATT is one PDU in flight per
+     * direction, and MSP above it waits for acks, so the controller's ACL
+     * buffers are never asked to hold more than a couple. */
+    if (!esp_vhci_host_check_send_available() &&
+        xSemaphoreTake(s_can_send, pdMS_TO_TICKS(500)) != pdTRUE)
+        return ESP_ERR_TIMEOUT;
+    esp_vhci_host_send_packet(acl, (uint16_t)n);
+    return ESP_OK;
+}
+
+static void gatt_on_write(void *ctx, const uint8_t *data, int len)
+{
+    (void)ctx;
+    if (s_gatt.rx) s_gatt.rx(s_gatt.ctx, data, len);
+}
+
+tn_err_t tn_gatt_serve(const tn_gatt_cb_t *cb)
+{
+    if (!s_up || !cb) return ESP_ERR_INVALID_STATE;
+    s_gatt = *cb;
+    s_gatt_serving = true;
+    tn_att_init(&s_att);
+    return ESP_OK;
+}
+
+tn_err_t tn_gatt_dial(uint8_t addr_type, const uint8_t addr[6], const tn_gatt_cb_t *cb)
+{
+    /* Central role is not written for this port -- the ESP32 stations are
+     * dialled by phones and by the SoftDevice port, not the other way. */
+    (void)addr_type; (void)addr; (void)cb;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+void tn_gatt_pump(void)
+{
+    if (!s_gatt_serving) return;
+
+    if (s_ev_conn) {
+        s_ev_conn = 0;
+        tn_att_init(&s_att);
+        ESP_LOGI(TAG, "link 0x%04x up", s_ev_handle);
+        if (s_gatt.connected) s_gatt.connected(s_gatt.ctx, s_ev_handle, false);
+    }
+    if (s_in_ready) {
+        uint16_t cid; const uint8_t *pdu;
+        int n = tn_l2cap_unwrap(s_in, s_in_len, &cid, &pdu);
+        uint8_t out[TN_ATT_MTU_MAX];
+        int m = 0;
+        if (n > 0 && cid == TN_L2CAP_CID_ATT)
+            m = tn_att_handle(&s_att, pdu, n, out, sizeof out, gatt_on_write, NULL);
+        s_in_len = 0; s_in_want = 0;
+        s_in_ready = false;                  /* slot free before the send blocks */
+        if (m > 0) gatt_send_l2cap(out, m);
+    }
+    if (s_ev_disc) {
+        s_ev_disc = 0;
+        ESP_LOGI(TAG, "link 0x%04x down (0x%02x)", s_ev_handle, s_ev_reason);
+        if (s_gatt.disconnected) s_gatt.disconnected(s_gatt.ctx, s_ev_handle, s_ev_reason);
+        /* A connectable set stops advertising the moment it is answered
+         * (Vol 6 Part B, 4.4.2.4). Put it back, so the next peer can find
+         * us; the beacon rotation would do this within seconds anyway, but a
+         * station that is quiet for a while should not be invisible. */
+        if (s_adv_configured) {
+            uint8_t buf[16];
+            int n = tn_hci_ext_adv_enable(buf, sizeof buf, s_adv.handle, true);
+            if (n > 0) tn_send_cmd(buf, n, TN_OP_EXT_ADV_ENABLE);
+        }
+    }
+}
+
+bool tn_gatt_connected(void) { return s_conn != 0xFFFF; }
+int  tn_gatt_mtu(void)       { return tn_att_notify_max(&s_att); }
+
+tn_err_t tn_gatt_send(const uint8_t *data, int len)
+{
+    if (!tn_gatt_connected()) return ESP_ERR_INVALID_STATE;
+    uint8_t pdu[TN_ATT_MTU_MAX];
+    int n = tn_att_notify(&s_att, data, len, pdu, sizeof pdu);
+    if (n < 0) return ESP_ERR_INVALID_SIZE;    /* not subscribed, or too long */
+    return gatt_send_l2cap(pdu, n);
+}
+
+tn_err_t tn_gatt_disconnect(void)
+{
+    if (!tn_gatt_connected()) return ESP_OK;
+    uint8_t buf[16];
+    int n = tn_hci_disconnect(buf, sizeof buf, s_conn, TN_HCI_ERR_REMOTE_USER_TERM);
+    if (n < 0) return ESP_ERR_INVALID_ARG;
+    return tn_send_cmd(buf, n, TN_OP_DISCONNECT);
 }

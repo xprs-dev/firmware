@@ -1,0 +1,286 @@
+<title>XPRS Board Catalogue</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  /* The station's own palette. #ffa86a on #101010 with #f0f0f0 text is what
+     xprs_ui.h and the hotspot chat page already draw with; this page is the
+     same project seen from the outside, so it uses the same three. Light is
+     derived from that accent rather than being a second, unrelated scheme. */
+  --accent:#c2551a; --accent-soft:#f0e2d6;
+  --ground:#f1eeea; --raised:#fbf9f7; --sunk:#e7e2dc;
+  --ink:#1c1815; --ink-dim:#6b6259; --rule:#dcd5cc;
+  --ok:#4e7d3c; --absent:#8a827a; --partial:#a9761a;
+  --shadow:0 1px 2px rgba(28,24,21,.06),0 8px 24px -12px rgba(28,24,21,.18);
+}
+@media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
+  --accent:#ffa86a; --accent-soft:#2a1c10;
+  --ground:#101010; --raised:#1b1b1b; --sunk:#161616;
+  --ink:#f0f0f0; --ink-dim:#948c84; --rule:#2e2b28;
+  --ok:#86c06c; --absent:#7a7570; --partial:#e0a836;
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
+}}
+:root[data-theme="dark"]{
+  --accent:#ffa86a; --accent-soft:#2a1c10;
+  --ground:#101010; --raised:#1b1b1b; --sunk:#161616;
+  --ink:#f0f0f0; --ink-dim:#948c84; --rule:#2e2b28;
+  --ok:#86c06c; --absent:#7a7570; --partial:#e0a836;
+  --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
+}
+*{box-sizing:border-box}
+body{
+  background:var(--ground); color:var(--ink);
+  font-family:Newsreader,Georgia,serif; font-size:17px; line-height:1.6;
+  margin:0; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-variant-numeric:tabular-nums}
+h1,h2,h3,.eyebrow,.chip,.bearer-name,.build-head,.filters{
+  font-family:Archivo,"Helvetica Neue",Arial,sans-serif}
+h1,h2{text-wrap:balance; margin:0}
+a{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:3px}
+
+.wrap{max-width:1080px; margin:0 auto; padding:0 24px 96px}
+
+/* ── Masthead ─────────────────────────────────────────────────────────── */
+.top{border-bottom:1px solid var(--rule); background:var(--raised)}
+.top-in{max-width:1080px; margin:0 auto; padding:44px 24px 34px;
+  display:flex; flex-wrap:wrap; gap:28px; align-items:flex-end;
+  justify-content:space-between}
+.eyebrow{font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--accent); font-weight:700; margin:0 0 10px}
+h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
+  line-height:1.05}
+.blurb{color:var(--ink-dim); max-width:52ch; margin:14px 0 0; font-size:16px}
+.counts{display:flex; gap:26px}
+.count b{display:block; font-family:Archivo,sans-serif; font-weight:800;
+  font-size:30px; line-height:1; font-variant-numeric:tabular-nums}
+.count span{font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink-dim); font-family:Archivo,sans-serif}
+
+/* ── Filters ──────────────────────────────────────────────────────────── */
+.filters{display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  padding:22px 0 4px; font-size:12px}
+.filters .lbl{letter-spacing:.13em; text-transform:uppercase;
+  color:var(--ink-dim); margin-right:4px; font-weight:600}
+.fbtn{font:inherit; font-weight:600; cursor:pointer; border:1px solid var(--rule);
+  background:var(--raised); color:var(--ink); padding:6px 13px; border-radius:999px;
+  letter-spacing:.02em}
+.fbtn[aria-pressed="true"]{background:var(--accent); border-color:var(--accent);
+  color:var(--ground)}
+
+/* ── Cards ────────────────────────────────────────────────────────────── */
+.grid{display:grid; gap:22px; padding-top:22px}
+.card{background:var(--raised); border:1px solid var(--rule); border-radius:14px;
+  padding:26px 26px 22px; box-shadow:var(--shadow)}
+.card[hidden]{display:none}
+.card-head{display:flex; flex-wrap:wrap; gap:12px 20px;
+  align-items:flex-start; justify-content:space-between}
+.card-title h2{font-size:25px; font-weight:800; letter-spacing:-.015em}
+.vendor{margin:3px 0 0; color:var(--ink-dim); font-size:14px}
+.card-tags{display:flex; flex-wrap:wrap; gap:7px; align-items:center}
+.chip{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase;
+  padding:5px 10px; border-radius:5px; border:1px solid var(--rule); white-space:nowrap}
+.chip-fam{background:var(--sunk)}
+.s-shipping{color:var(--ok); border-color:currentColor}
+.s-planned{color:var(--partial); border-color:currentColor}
+.s-legacy,.s-unsupported{color:var(--absent); border-color:currentColor}
+.ver{font-size:12px; color:var(--ink-dim)}
+.summary{margin:16px 0 20px; max-width:64ch}
+
+/* The spine: four fixed cells, same order on every card, so the answer reads
+   down the page as well as across one board. */
+.bearers{display:grid; grid-template-columns:repeat(4,1fr); gap:1px;
+  background:var(--rule); border:1px solid var(--rule); border-radius:9px;
+  overflow:hidden; margin-bottom:20px}
+.bearer{background:var(--raised); padding:11px 8px; text-align:center; cursor:help}
+.bearer-mark{display:block; font-size:17px; line-height:1.1}
+.bearer-name{font-size:10px; font-weight:700; letter-spacing:.11em;
+  text-transform:uppercase; color:var(--ink-dim)}
+.b-yes .bearer-mark{color:var(--ok)}
+.b-no .bearer-mark{color:var(--absent)}
+.b-untested .bearer-mark{color:var(--partial)}
+.b-no .bearer-name{opacity:.55}
+
+.specs{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+  gap:0 26px; margin:0 0 20px}
+.spec{display:flex; gap:12px; justify-content:space-between; align-items:baseline;
+  padding:7px 0; border-bottom:1px solid var(--rule)}
+.spec dt{font-size:11px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--ink-dim); font-family:Archivo,sans-serif; font-weight:600;
+  white-space:nowrap}
+.spec dd{margin:0; font-size:13px; text-align:right}
+
+.shots{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:12px; margin-bottom:20px}
+.shot{margin:0}
+.shot img{width:100%; height:150px; object-fit:cover; border-radius:8px;
+  border:1px solid var(--rule); background:var(--sunk); display:block}
+.shot figcaption{font-size:11.5px; color:var(--ink-dim); line-height:1.45;
+  padding-top:7px}
+.credit{display:block; opacity:.65; font-size:10.5px; font-style:italic}
+
+.build{background:var(--sunk); border-radius:9px; padding:16px 18px}
+.build-head{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase;
+  font-weight:700; color:var(--accent); margin-bottom:9px}
+.build-none .build-head{color:var(--partial)}
+.build pre{margin:0 0 10px; font-size:12.5px; line-height:1.75; overflow-x:auto;
+  font-family:"JetBrains Mono",ui-monospace,monospace}
+.flashnote{margin:0; font-size:13px; color:var(--ink-dim); max-width:70ch}
+.card-foot{display:flex; flex-wrap:wrap; gap:16px; margin-top:16px;
+  padding-top:14px; border-top:1px solid var(--rule)}
+.doclink{font-size:13px; text-decoration:none; border-bottom:1px solid transparent}
+.doclink:hover{border-bottom-color:currentColor}
+
+.legend{display:flex; flex-wrap:wrap; gap:18px; padding:26px 0 0;
+  border-top:1px solid var(--rule); margin-top:34px; font-size:12.5px;
+  color:var(--ink-dim)}
+.legend b{font-weight:700; font-style:normal}
+.foot{color:var(--ink-dim); font-size:13px; padding-top:16px; max-width:70ch}
+@media (max-width:640px){
+  .bearers{grid-template-columns:repeat(2,1fr)}
+  .card{padding:20px 18px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="top"><div class="top-in">
+  <div>
+    <p class="eyebrow">XPRS firmware</p>
+    <h1>Every board the fleet speaks for</h1>
+    <p class="blurb">One station, many radios. Each board below runs the same
+      XPRS station over whatever radios it happens to have — pick by what it
+      can reach, not by what it costs.</p>
+  </div>
+  <div class="counts">
+    <div class="count"><b id="shown">4</b><span>shown</span></div>
+    <div class="count"><b>4</b><span>shipping</span></div>
+    <div class="count"><b>3</b><span>chip families</span></div>
+  </div>
+</div></header>
+
+<div class="wrap">
+  <div class="filters">
+    <span class="lbl">Must carry</span><button class="fbtn" data-bearer="ble5" aria-pressed="false">BLE5</button><button class="fbtn" data-bearer="lora" aria-pressed="false">LoRa</button><button class="fbtn" data-bearer="lan" aria-pressed="false">LAN</button><button class="fbtn" data-bearer="espnow" aria-pressed="false">ESP-NOW</button>
+  </div>
+  <main class="grid">
+<article class="card" data-status="shipping"
+         data-bearers="ble5 lora lan espnow">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>T-Deck</h2>
+      <p class="vendor">LilyGO</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-S3</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.4.0</span>
+    </div>
+  </header>
+  <p class="summary">The one you can type on. Screen, trackball and a QWERTY keyboard, so it is the board that earns the interactive chat panel -- and the only one carrying all four bearers at once.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-yes" title="An S3. Same tinynimble backend as the T-Dongle."><span class="bearer-mark">●</span><span class="bearer-name">BLE5</span></div><div class="bearer b-yes" title="SX1262 at 868 MHz, sharing the panel's SPI bus."><span class="bearer-mark">●</span><span class="bearer-name">LoRa</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">LAN</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX7 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">512 KB RAM · 8 MB PSRAM · 16 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">ST7789 320×240</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  
+  <div class="build"><div class="build-head">Build it</div><pre class="mono">cd models/tdeck/firmware
+~/.platformio/penv/bin/pio run -e tdeck
+~/.platformio/penv/bin/pio run -e tdeck -t upload</pre><p class="flashnote">esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/tdeck/README.md">Board README</a></footer>
+</article>
+<article class="card" data-status="shipping"
+         data-bearers="ble5 lan espnow">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>T-Dongle-S3</h2>
+      <p class="vendor">LilyGO</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32-S3</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.4.0</span>
+    </div>
+  </header>
+  <p class="summary">The BLE5 bridge. A USB stick that lives beside a router and carries what it hears on Bluetooth onto the LAN, and back.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-yes" title="An S3, so extended advertising is available and an XPRS packet fits one AD. Runs the tinynimble backend (CONFIG_XPRSBLE_BACKEND_TINYNIMBLE), not the NimBLE host: no PSRAM here, and the host's msys pools, ACL buffers and 5,120-byte task stack were all internal DRAM."><span class="bearer-mark">●</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No radio on this board."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-yes" title="WiFi STA. The other half of the bridge, and why the board exists."><span class="bearer-mark">●</span><span class="bearer-name">LAN</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX7 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">512 KB RAM · 16 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">ST7735 160×80</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  
+  <div class="build"><div class="build-head">Build it</div><pre class="mono">cd models/tdongle-s3/firmware
+~/.platformio/penv/bin/pio run -e tdongle
+~/.platformio/penv/bin/pio run -e tdongle -t upload</pre><p class="flashnote">esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/tdongle-s3/README.md">Board README</a><a class="doclink" href="docs/esp32.md">Memory and scheduling, binding on this board</a></footer>
+</article>
+<article class="card" data-status="shipping"
+         data-bearers="lan espnow">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>M5Stack Core</h2>
+      <p class="vendor">M5Stack</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">ESP32</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.2.0</span>
+    </div>
+  </header>
+  <p class="summary">The second voice on the air. Testing a bearer with one device proves only that loopback works; this is the other end.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-no" title="An original ESP32 (D0WDQ6): legacy 31-byte advertising only. An XPRS beacon runs to 112-173 bytes, so this bearer cannot exist here at all -- see docs/esp32.md, \"Radio capability per chip\"."><span class="bearer-mark">—</span><span class="bearer-name">BLE5</span></div><div class="bearer b-no" title="No radio on this board."><span class="bearer-mark">—</span><span class="bearer-name">LoRa</span></div><div class="bearer b-yes"><span class="bearer-mark">●</span><span class="bearer-name">LAN</span></div><div class="bearer b-yes" title="What this board is here for."><span class="bearer-mark">●</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">Xtensa LX6 dual @ 240 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">520 KB RAM · 16 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">ILI9342C 320×240</dd></div><div class="spec"><dt>Power</dt><dd class="mono">usb+battery</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">esp-idf</dd></div></dl>
+  
+  <div class="build"><div class="build-head">Build it</div><pre class="mono">cd models/m5stack-core/firmware
+~/.platformio/penv/bin/pio run -e m5stack
+~/.platformio/penv/bin/pio run -e m5stack -t upload</pre><p class="flashnote">esptool over the CP210x USB-serial port</p></div>
+  <footer class="card-foot"><a class="doclink" href="models/m5stack-core/README.md">Board README</a></footer>
+</article>
+<article class="card" data-status="shipping"
+         data-bearers="ble5 lora">
+  <header class="card-head">
+    <div class="card-title">
+      <h2>SenseCAP Solar Node P1-Pro</h2>
+      <p class="vendor">Seeed Studio · SKU 114993633</p>
+    </div>
+    <div class="card-tags">
+      <span class="chip chip-fam mono">nRF52840</span>
+      <span class="chip chip-status s-shipping">shipping</span>
+      <span class="ver mono">v0.1.0</span>
+    </div>
+  </header>
+  <p class="summary">Solar-powered outdoor node. The first board in the fleet with no WiFi at all, and the first that is not an ESP32.</p>
+  <div class="bearers" aria-label="XPRS bearers"><div class="bearer b-yes" title="Working, measured 2026-08-30 (docs/ble5-nrf52.md). tinynimble's SoftDevice port speaks to S140 v7.3.0 directly -- Bluefruit, the core's own library, is capped at 31 bytes and cannot carry an XPRS beacon -- and puts a 255-byte extended advert on the air that a T-Dongle digipeated (\"via:X3WWAJ\"); what it hears on BLE is bridged onto LoRa. The mesh channel over a CONNECTION is measured too (docs/ble5-gatt.md): this board dials a T-Deck serving tn_att, MTU 247, 244-byte frames both ways, hang-up and re-dial. One advertising set on this chip, so the beacon is silent while a session is up."><span class="bearer-mark">●</span><span class="bearer-name">BLE5</span></div><div class="bearer b-yes" title="Working, both directions, measured against a T-Deck on 2026-08-30: 6 of 7 beacons received there at -30 dBm SNR 12, 29 wires received here in 180 s, none corrupt and none unparsed. A beacon from this station was then digipeated by the T-Deck onto the LAN as \"via:X3GSLC,X3WWAJ\", so the packets are first-class on the network and not merely audible. Driven by RadioLib rather than a port of common/xprs_sx1262, which is ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which MUST stay equal to xprslora.c or the two radios are deaf to each other."><span class="bearer-mark">●</span><span class="bearer-name">LoRa</span></div><div class="bearer b-no" title="nRF52840 has no WiFi radio, so there is no LAN and there never will be on this board. xprs_bearer_lan is not portable here, and the LAN bearer's task is also what pumps every other bearer's re-air queue -- which is a real structural problem for a port, not just a missing feature. See the note in models/sensecap-p1-pro/README.md."><span class="bearer-mark">—</span><span class="bearer-name">LAN</span></div><div class="bearer b-no" title="ESP-NOW is an Espressif WiFi protocol. No WiFi radio, no ESP-NOW."><span class="bearer-mark">—</span><span class="bearer-name">ESP-NOW</span></div></div>
+  <dl class="specs"><div class="spec"><dt>Core</dt><dd class="mono">ARM Cortex-M4F single @ 64 MHz</dd></div><div class="spec"><dt>Memory</dt><dd class="mono">256 KB RAM · 1 MB flash</dd></div><div class="spec"><dt>Screen</dt><dd class="mono">none</dd></div><div class="spec"><dt>GNSS</dt><dd class="mono">Seeed XIAO L76K (GPS / GLONASS / Galileo / BeiDou)</dd></div><div class="spec"><dt>Power</dt><dd class="mono">solar+battery</dd></div><div class="spec"><dt>Size</dt><dd class="mono">191.2 x 201.2 x 42.1 mm</dd></div><div class="spec"><dt>Toolchain</dt><dd class="mono">arduino-nrf52</dd></div></dl>
+  <div class="shots"><figure class="shot"><img src="models/sensecap-p1-pro/hardware/images/block-diagram.png" alt="Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path." loading="lazy"><figcaption>Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path.<span class="credit">Seeed Studio, industrial datasheet for SKU 114993633</span></figcaption></figure><figure class="shot"><img src="models/sensecap-p1-pro/hardware/images/product-front.jpg" alt="The node, panel side." loading="lazy"><figcaption>The node, panel side.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><img src="models/sensecap-p1-pro/hardware/images/product-angle.jpg" alt="Three-quarter view with the antenna fitted." loading="lazy"><figcaption>Three-quarter view with the antenna fitted.<span class="credit">Seeed Studio product photography</span></figcaption></figure><figure class="shot"><img src="models/sensecap-p1-pro/hardware/images/product-mounted.jpg" alt="Pole-mounted on its bracket." loading="lazy"><figcaption>Pole-mounted on its bracket.<span class="credit">Seeed Studio product photography</span></figcaption></figure></div>
+  <div class="build"><div class="build-head">Build it</div><pre class="mono">cd models/sensecap-p1-pro/firmware
+~/.platformio/penv/bin/pio run -e p1pro
+~/.platformio/penv/bin/pio run -e p1pro -t upload</pre><p class="flashnote">UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader that mounts as a mass-storage volume on a double reset-tap; an image is copied onto it. No esptool, no serial protocol, nothing this tree's tools/ scripts know how to do.</p></div>
+  <footer class="card-foot"><a class="doclink" href="https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html">Product page</a><a class="doclink" href="https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf">Industrial datasheet (PDF)</a><a class="doclink" href="https://meshtastic.org/docs/hardware/devices/seeed-studio/sensecap/solar-node/">Meshtastic device page</a></footer>
+</article></main>
+
+  <div class="legend">
+    <span><b style="color:var(--ok)">●</b> carries it, measured on hardware</span>
+    <span><b style="color:var(--partial)">◐</b> the chip can, the code cannot yet</span>
+    <span><b style="color:var(--absent)">—</b> the hardware cannot, ever</span>
+  </div>
+  <p class="foot">Generated from <span class="mono">models/*/board.yml</span> by
+    <span class="mono">tools/scripts/build_catalog.py</span> — never edited by hand,
+    so it cannot disagree with the boards. Hover a bearer for the reason behind it.
+    Photographs are credited to their source on each card.</p>
+</div>
+<script>
+const btns=[...document.querySelectorAll('.fbtn')];
+const cards=[...document.querySelectorAll('.card')];
+function apply(){
+  const on=btns.filter(b=>b.getAttribute('aria-pressed')==='true')
+               .map(b=>b.dataset.bearer);
+  cards.forEach(c=>{
+    const has=(c.dataset.bearers||'').split(' ').filter(Boolean);
+    c.hidden = on.length>0 && !on.every(b=>has.includes(b));
+  });
+  const n=cards.filter(c=>!c.hidden).length;
+  document.getElementById('shown').textContent=n;
+}
+btns.forEach(b=>b.addEventListener('click',()=>{
+  b.setAttribute('aria-pressed', b.getAttribute('aria-pressed')==='true'?'false':'true');
+  apply();
+}));
+apply();
+</script>

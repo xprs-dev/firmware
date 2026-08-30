@@ -275,6 +275,59 @@ int main(void)
         CHECK(st == 0x0C, "Command Status status decoded wrong");
     }
 
+    /* ── connections: events in, disconnect and ACL out ──────────────── */
+    {
+        static int links; static tn_link_evt_t le;
+        void on_link(const tn_link_evt_t *e, void *c) { (void)c; le = *e; links++; }
+        /* LE Connection Complete: handle 0x0040, peripheral, peer random static */
+        const uint8_t cc[] = { 0x04, 0x3E, 0x13, 0x01, 0x00, 0x40, 0x00, 0x01, 0x01,
+                               0xC6,0x5B,0x4B,0x43,0xCA,0x48, 0x18,0x00, 0x00,0x00, 0x48,0x00, 0x00 };
+        CHECK(tn_hci_feed_link(cc, sizeof cc, on_link, NULL) == 1 && links == 1 &&
+              le.connected && le.conn == 0x40 && le.role == 1 &&
+              le.peer_addr_type == 1 && le.peer_addr[5] == 0x48,
+              "LE Connection Complete decoded");
+        /* Enhanced: same, with the two RPAs in the middle */
+        const uint8_t ecc[] = { 0x04, 0x3E, 0x1F, 0x0A, 0x00, 0x41, 0x00, 0x00, 0x01,
+                                1,2,3,4,5,6, 0,0,0,0,0,0, 0,0,0,0,0,0,
+                                0x18,0x00, 0x00,0x00, 0x48,0x00, 0x00 };
+        CHECK(tn_hci_feed_link(ecc, sizeof ecc, on_link, NULL) == 1 && links == 2 &&
+              le.conn == 0x41 && le.role == 0 && le.peer_addr[0] == 1,
+              "LE Enhanced Connection Complete decoded");
+        /* A failed attempt (status 0x3E) is swallowed, not reported as a link. */
+        const uint8_t bad[] = { 0x04, 0x3E, 0x13, 0x01, 0x3E, 0x40, 0x00, 0x01, 0x01,
+                                0,0,0,0,0,0, 0,0, 0,0, 0,0, 0 };
+        CHECK(tn_hci_feed_link(bad, sizeof bad, on_link, NULL) == 1 && links == 2,
+              "failed connection attempt reports nothing");
+        const uint8_t dc[] = { 0x04, 0x05, 0x04, 0x00, 0x40, 0x00, 0x13 };
+        CHECK(tn_hci_feed_link(dc, sizeof dc, on_link, NULL) == 1 && links == 3 &&
+              !le.connected && le.conn == 0x40 && le.reason == 0x13,
+              "Disconnection Complete decoded with its reason");
+        const uint8_t trunc[] = { 0x04, 0x3E, 0x13, 0x01, 0x00, 0x40 };
+        CHECK(tn_hci_feed_link(trunc, sizeof trunc, on_link, NULL) == -1,
+              "truncated connection event refused");
+        const uint8_t rpt[] = { 0x04, 0x3E, 0x02, 0x0D, 0x00 };
+        CHECK(tn_hci_feed_link(rpt, sizeof rpt, on_link, NULL) == 0,
+              "an advertising report is not a link event");
+
+        n = tn_hci_disconnect(buf, sizeof buf, 0x0040, 0x13);
+        { const uint8_t want[] = { 0x01, 0x06, 0x04, 0x03, 0x40, 0x00, 0x13 };
+          expect("disconnect", buf, n, want, sizeof want); }
+
+        const uint8_t l2[] = { 0x01, 0x00, 0x04, 0x00, 0x13 };
+        n = tn_hci_acl_encode(buf, sizeof buf, 0x0040, TN_ACL_PB_FIRST_NONFLUSH, l2, sizeof l2);
+        { const uint8_t want[] = { 0x02, 0x40, 0x00, 0x05, 0x00, 0x01, 0x00, 0x04, 0x00, 0x13 };
+          expect("acl out", buf, n, want, sizeof want); }
+        uint16_t conn; uint8_t pb; const uint8_t *d;
+        CHECK(tn_hci_acl_decode(buf, n, &conn, &pb, &d) == 5 && conn == 0x40 && pb == 0 && d[4] == 0x13,
+              "acl round-trips");
+        const uint8_t cont[] = { 0x02, 0x40, 0x10, 0x01, 0x00, 0xAA };
+        CHECK(tn_hci_acl_decode(cont, sizeof cont, &conn, &pb, &d) == 1 && pb == TN_ACL_PB_CONT,
+              "continuation flag read from bits 12-13");
+        const uint8_t liar[] = { 0x02, 0x40, 0x00, 0x20, 0x00, 0x13 };
+        CHECK(tn_hci_acl_decode(liar, sizeof liar, &conn, &pb, &d) == -1,
+              "an ACL claiming 32 bytes it does not carry is refused");
+    }
+
     if (fails) { printf("%d check(s) failed\n", fails); return 1; }
     printf("PASS: every HCI command encodes byte-exact, and malformed events are refused\n");
     return 0;

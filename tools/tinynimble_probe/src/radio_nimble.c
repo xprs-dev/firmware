@@ -97,3 +97,9 @@ esp_err_t radio_scan_off(void)
 }
 
 const char *radio_name(void) { return "NimBLE"; }
+
+esp_err_t radio_gatt_serve(radio_gatt_rx_fn rx) { (void)rx; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t radio_gatt_send(const uint8_t *d, int n) { (void)d; (void)n; return ESP_ERR_NOT_SUPPORTED; }
+void      radio_gatt_pump(void) {}
+bool      radio_gatt_connected(void) { return false; }
+int       radio_gatt_mtu(void) { return 0; }

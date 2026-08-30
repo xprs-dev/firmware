@@ -1,0 +1,13 @@
+{
+  "name": "xprs_bearer",
+  "version": "1.0.0",
+  "description": "The queue, the duplicate rings and the relay decision every XPRS bearer shares. Platform-independent; see the ESP_PLATFORM note at the top of xprsbearer.c.",
+  "keywords": "xprs, bearer, relay",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*"},
+  "build": {
+    "srcFilter": ["+<xprsbearer.c>"],
+    "flags": ["-I."]
+  }
+}

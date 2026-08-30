@@ -7,6 +7,7 @@
 #include "esp_log.h"
 
 static radio_rx_fn s_cb;
+static tn_adv_cfg_t s_adv_cfg;
 
 /* CONTROLLER context -- see tinynimble.h. Hand the bytes straight up. */
 static void on_report(const tn_adv_report_t *r, void *ctx)
@@ -34,8 +35,52 @@ esp_err_t radio_start(radio_rx_fn cb)
         .primary_phy = TN_PHY_1M, .secondary_phy = TN_PHY_1M,
         .sid = 0,
     };
+    s_adv_cfg = adv;
     return tn_adv_configure(&adv);
 }
+
+/* ── the mesh channel ───────────────────────────────────────────────────── */
+
+static radio_gatt_rx_fn s_gatt_rx;
+static volatile int s_links;
+
+static void on_connected(void *ctx, uint16_t conn, bool central)
+{
+    (void)ctx; (void)central;
+    s_links++;
+    printf("  link up 0x%04x\n", conn);
+}
+static void on_disconnected(void *ctx, uint16_t conn, uint8_t reason)
+{
+    (void)ctx;
+    printf("  link down 0x%04x, reason 0x%02x\n", conn, reason);
+}
+static void on_rx(void *ctx, const uint8_t *d, int n)
+{
+    (void)ctx;
+    if (s_gatt_rx) s_gatt_rx(d, n);
+}
+
+esp_err_t radio_gatt_serve(radio_gatt_rx_fn rx)
+{
+    s_gatt_rx = rx;
+    /* The ONE set becomes connectable: the beacon is the presence advert,
+     * which is what a chip with a single set has to do (docs/ble5-gatt.md).
+     * Reconfiguring the parameters keeps the set's random address because
+     * the address is set separately and not touched here. */
+    s_adv_cfg.props = TN_ADV_PROP_CONNECTABLE;
+    esp_err_t err = tn_adv_configure(&s_adv_cfg);
+    if (err != ESP_OK) return err;
+    static const tn_gatt_cb_t cb = {
+        .connected = on_connected, .disconnected = on_disconnected, .rx = on_rx,
+    };
+    return tn_gatt_serve(&cb);
+}
+
+esp_err_t radio_gatt_send(const uint8_t *d, int n) { return tn_gatt_send(d, n); }
+void      radio_gatt_pump(void)      { tn_gatt_pump(); }
+bool      radio_gatt_connected(void) { return tn_gatt_connected(); }
+int       radio_gatt_mtu(void)       { return tn_gatt_mtu(); }
 
 esp_err_t radio_stop(void)   { return tn_stop(); }
 bool      radio_is_up(void)  { return tn_is_up(); }

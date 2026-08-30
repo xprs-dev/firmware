@@ -2126,7 +2126,8 @@ static void chat_note_unread(const xprs_t *p)
 
 /* Airs a wire on every bearer and spools it; defined with the HTTP API,
  * which was its first caller. The chat panel is its second. */
-static bool api_send_wire(const char *wire, int len);
+static bool api_send_wire(const char *wire, int len, const char *bearer,
+                          char *took, size_t took_cap);
 
 /* Hand what was typed to whoever has the stack to sign it. Returns false
  * when the slot is still full -- the previous saying has not left yet, and
@@ -3730,7 +3731,7 @@ supers_done:
                               s_call, ts, where, s_outbox.text);
             if (wn > 0 && wn <= XPRS_MAX_WIRE) {
                 wn = sign_wire(wire, wn, sizeof wire);
-                if (wn <= XPRS_MAX_WIRE && api_send_wire(wire, wn))
+                if (wn <= XPRS_MAX_WIRE && api_send_wire(wire, wn, NULL, NULL, 0))
                     ESP_LOGI(TAG, "chat: sent %d bytes", wn);
                 else
                     ESP_LOGW(TAG, "chat: no bearer took it");
@@ -3886,7 +3887,8 @@ static void settings_ok(int row)
 /* Air one already-validated wire on both bearers, and spool it as our own
  * outgoing traffic (section 36.5: the author must be able to replay the
  * author). Cheap: a UDP send and an ESP-NOW enqueue; no flash here. */
-static bool api_send_wire(const char *wire, int len)
+static bool api_send_wire(const char *wire, int len, const char *bearer,
+                          char *took, size_t took_cap)
 {
     /* An identity submitted through the API teaches this station its key
      * exactly as a heard one would -- the hotspot chat's users introduce
@@ -3911,15 +3913,27 @@ static bool api_send_wire(const char *wire, int len)
         xst_chat_note(&p);   /* our hotspot users' messages show on the LCD too */
     }
 
-    bool lan = xprslan_send(wire, len);
-    bool now = xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
-    bool lra = xprslora_is_active() && xprslora_send(wire, len);
-    bool rns = xprsrns_is_up() && xprsrns_send(wire, len);
-    (void)lra; (void)rns;
-    if ((lan || now || lra) && s_index && xcfg_get_bool("index_on", true))
+    /* Every bearer, or exactly the one that was named (xapi_send.h): the
+     * bench needs to put a packet on LoRa and NOWHERE ELSE to prove that
+     * what reaches the LAN got there through two other stations. */
+    #define WANT(name) (!bearer || strcmp(bearer, name) == 0)
+    bool lan = WANT("lan")    && xprslan_send(wire, len);
+    bool now = WANT("espnow") && xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
+    bool lra = WANT("lora")   && xprslora_is_active() && xprslora_send(wire, len);
+    bool ble = WANT("ble")    && xprsble_is_active() && xprsble_send(wire, len);
+    bool rns = WANT("rns")    && xprsrns_is_up() && xprsrns_send(wire, len);
+    #undef WANT
+    if (took && took_cap) {
+        int n = 0;
+        #define TOOK(flag, name) if (flag) n += snprintf(took + n, took_cap - n, "%s%s", n ? "," : "", name)
+        TOOK(lan, "lan"); TOOK(now, "espnow"); TOOK(lra, "lora"); TOOK(ble, "ble"); TOOK(rns, "rns");
+        #undef TOOK
+        if (!n) took[0] = 0;
+    }
+    if ((lan || now || lra || ble) && s_index && xcfg_get_bool("index_on", true))
         xprsindex_add2(s_index, wire, len, 0, true, (uint32_t)time(NULL),
-                       lan ? XI_B_LAN : XI_B_ESPNOW);
-    return lan || now;
+                       lan ? XI_B_LAN : now ? XI_B_ESPNOW : lra ? XI_B_LORA : XI_B_BLE);
+    return lan || now || lra || ble || rns;
 }
 
 static int api_serve_json(char *buf, size_t cap)

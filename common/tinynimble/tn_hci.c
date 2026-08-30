@@ -258,3 +258,82 @@ bool tn_hci_cmd_result(const uint8_t *pkt, size_t len,
     }
     return false;
 }
+
+/* ── Connections ────────────────────────────────────────────────────────── */
+
+#define EVT_DISCONN_COMPLETE      0x05
+#define SUBEVT_CONN_COMPLETE      0x01
+#define SUBEVT_ENH_CONN_COMPLETE  0x0A
+
+int tn_hci_feed_link(const uint8_t *pkt, size_t len, tn_link_cb_t cb, void *ctx)
+{
+    if (!pkt || len < 3 || pkt[0] != TN_H4_EVT) return 0;
+    uint8_t code = pkt[1], plen = pkt[2];
+    if (3 + (size_t)plen > len) return -1;
+    const uint8_t *p = pkt + 3;
+    tn_link_evt_t e;
+    memset(&e, 0, sizeof e);
+
+    if (code == EVT_DISCONN_COMPLETE) {
+        /* Status, Connection_Handle, Reason */
+        if (plen < 4) return -1;
+        if (p[0] != 0x00) return 1;         /* a failed disconnect: nothing changed */
+        e.connected = false;
+        e.conn      = r16(p + 1) & 0x0FFF;
+        e.reason    = p[3];
+        if (cb) cb(&e, ctx);
+        return 1;
+    }
+    if (code != EVT_LE_META || plen < 1) return 0;
+    uint8_t sub = p[0];
+    if (sub != SUBEVT_CONN_COMPLETE && sub != SUBEVT_ENH_CONN_COMPLETE) return 0;
+    /* Subevent, Status, Connection_Handle, Role, Peer_Address_Type,
+     * Peer_Address[6], (enhanced: Local_RPA[6], Peer_RPA[6]), Interval,
+     * Latency, Supervision_Timeout, Master_Clock_Accuracy */
+    size_t need = sub == SUBEVT_ENH_CONN_COMPLETE ? 31 : 19;
+    if (plen < need) return -1;
+    if (p[1] != 0x00) return 1;             /* the attempt failed; no link */
+    e.connected      = true;
+    e.conn           = r16(p + 2) & 0x0FFF;
+    e.role           = p[4];
+    e.peer_addr_type = p[5];
+    memcpy(e.peer_addr, p + 6, 6);
+    if (cb) cb(&e, ctx);
+    return 1;
+}
+
+int tn_hci_disconnect(uint8_t *buf, size_t cap, uint16_t conn, uint8_t reason)
+{
+    if (!buf) return -1;
+    uint8_t *p = begin(buf, cap, 3, TN_OP_DISCONNECT);
+    if (!p) return -1;
+    w16(&p, conn & 0x0FFF);
+    w8(&p, reason);
+    return fin(buf, p);
+}
+
+int tn_hci_acl_encode(uint8_t *buf, size_t cap, uint16_t conn, uint8_t pb,
+                      const uint8_t *data, int len)
+{
+    if (!buf || !data || len < 0 || len > 0xFFFF) return -1;
+    if (cap < (size_t)(5 + len)) return -1;
+    uint8_t *p = buf;
+    w8(&p, TN_H4_ACL);
+    w16(&p, (uint16_t)((conn & 0x0FFF) | ((pb & 0x03) << 12)));
+    w16(&p, (uint16_t)len);
+    memcpy(p, data, len);
+    return 5 + len;
+}
+
+int tn_hci_acl_decode(const uint8_t *pkt, size_t len, uint16_t *conn,
+                      uint8_t *pb, const uint8_t **data)
+{
+    if (!pkt || len < 5 || pkt[0] != TN_H4_ACL) return -1;
+    uint16_t hf = r16(pkt + 1);
+    uint16_t dl = r16(pkt + 3);
+    if (5 + (size_t)dl > len) return -1;    /* claims more than it carries */
+    if (conn) *conn = hf & 0x0FFF;
+    if (pb)   *pb   = (hf >> 12) & 0x03;
+    if (data) *data = pkt + 5;
+    return dl;
+}

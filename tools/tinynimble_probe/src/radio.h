@@ -21,3 +21,13 @@ esp_err_t   radio_advertise(const uint8_t *ad, int len);
 esp_err_t   radio_scan_on(void);
 esp_err_t   radio_scan_off(void);
 const char *radio_name(void);
+
+/* The mesh channel over a connection (docs/ble5-gatt.md). Only tinynimble
+ * implements these; the NimBLE build answers ESP_ERR_NOT_SUPPORTED so the
+ * A/B still compiles. */
+typedef void (*radio_gatt_rx_fn)(const uint8_t *data, int len);
+esp_err_t radio_gatt_serve(radio_gatt_rx_fn rx);   /* makes the set connectable */
+esp_err_t radio_gatt_send(const uint8_t *data, int len);
+void      radio_gatt_pump(void);
+bool      radio_gatt_connected(void);
+int       radio_gatt_mtu(void);

@@ -18,9 +18,20 @@
 #include <string.h>
 #include <stdio.h>
 
-#ifdef XB_HOST_TEST
+/* The only thing in this file that was ever ESP-specific: two log lines.
+ *
+ * ESP_PLATFORM is defined by the IDF build and by nothing else, so a target
+ * that is neither the IDF nor the host harness -- the nRF52840 under
+ * Arduino, say -- lands in the same silent case the host test uses rather
+ * than failing to find esp_log.h. A caller that wants these lines back on
+ * such a target defines XB_LOGI/XB_LOGW itself before including this. */
+#if defined(XB_HOST_TEST) || !defined(ESP_PLATFORM)
+#ifndef XB_LOGI
 #define XB_LOGI(fmt, ...) ((void)0)
+#endif
+#ifndef XB_LOGW
 #define XB_LOGW(fmt, ...) ((void)0)
+#endif
 #else
 #include "esp_log.h"
 static const char *TAG = "xprsbearer";

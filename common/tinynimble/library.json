@@ -1,0 +1,11 @@
+{
+  "name": "tinynimble",
+  "version": "1.0.0",
+  "description": "The BLE5 surface XPRS uses. On PlatformIO/Arduino this is the nRF52840 SoftDevice port; define TN_PORT_SD in the project's build_flags.",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcFilter": ["+<tn_hci.c>", "+<tn_att.c>", "+<tn_port_sd.c>"],
+    "flags": ["-I."]
+  }
+}

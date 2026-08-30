@@ -1,0 +1,65 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+id: m5stack-core
+name: M5Stack Core
+vendor: M5Stack
+sku: null
+product_url: https://docs.m5stack.com/en/core/basic
+summary: >-
+  The second voice on the air. Testing a bearer with one device proves only
+  that loopback works; this is the other end.
+status: shipping
+
+silicon:
+  mcu: ESP32
+  family: esp32
+  core: Xtensa LX6 dual @ 240 MHz
+  ram_kb: 520
+  psram_mb: null
+  flash_mb: 16
+
+bearers:
+  ble5: "no"
+  ble5_note: >-
+    An original ESP32 (D0WDQ6): legacy 31-byte advertising only. An XPRS
+    beacon runs to 112-173 bytes, so this bearer cannot exist here at all --
+    see docs/esp32.md, "Radio capability per chip".
+  lora: "no"
+  lora_note: No radio on this board.
+  lan: "yes"
+  lan_note: null
+  espnow: "yes"
+  espnow_note: "What this board is here for."
+
+io:
+  screen: {controller: ILI9342C, width: 320, height: 240}
+  buttons:
+    - {name: A, pin: GPIO39, note: "short: next panel or OK. held: home"}
+    - {name: B, pin: GPIO38, note: "up"}
+    - {name: C, pin: GPIO37, note: "down"}
+  leds: []
+  gnss: null
+  connectors:
+    - {name: USB-C}
+    - {name: microSD}
+    - {name: Grove}
+  sensors: []
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb+battery
+
+firmware:
+  toolchain: esp-idf
+  project: models/m5stack-core/firmware
+  env: m5stack
+  version: 0.2.0
+  artifact: null
+  flashing: "esptool over the CP210x USB-serial port"
+
+docs:
+  - {title: "Board README", url: "models/m5stack-core/README.md"}
+
+images: []

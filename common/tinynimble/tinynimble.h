@@ -69,6 +69,18 @@ extern "C" {
 #define TN_OP_EXT_ADV_ENABLE    0x2039
 #define TN_OP_EXT_SCAN_PARAMS   0x2041
 #define TN_OP_EXT_SCAN_ENABLE   0x2042
+/* Connections (docs/ble5-gatt.md). The controller opens them by itself when a
+ * peer answers a connectable set; what the host owes it is a way to close
+ * one, and the ACL packet type that carries the ATT PDUs across it. */
+#define TN_OP_DISCONNECT        0x0406
+
+/* ACL Packet_Boundary flags (Vol 4 Part E, 5.4.2). Host -> controller sends
+ * FIRST_NONFLUSH; the controller sends FIRST_FLUSH for the start of an L2CAP
+ * PDU and CONT for the rest when its buffer is smaller than the PDU. */
+#define TN_ACL_PB_FIRST_NONFLUSH 0x00
+#define TN_ACL_PB_CONT           0x01
+#define TN_ACL_PB_FIRST_FLUSH    0x02
+#define TN_HCI_ERR_REMOTE_USER_TERM 0x13
 
 /* PHY selectors. Every parameter block in this firmware hardcodes 1M; 2M and
  * coded are enabled in Kconfig but never selected. */
@@ -180,6 +192,39 @@ int tn_hci_feed_evt(const uint8_t *pkt, size_t len, tn_report_cb_t cb, void *ctx
 bool tn_hci_cmd_result(const uint8_t *pkt, size_t len,
                        uint16_t opcode, uint8_t *status);
 
+/* ── Connections ────────────────────────────────────────────────────────────
+ *
+ * Two events tell the whole story of a link: it opened, it closed. Both
+ * flavours of the first are decoded -- LE Connection Complete (subevent
+ * 0x01, what the default LE event mask delivers) and LE Enhanced Connection
+ * Complete (0x0A, if a port ever enables bit 9) -- so the port does not have
+ * to care which the controller chose. */
+typedef struct {
+    bool     connected;     /* false: disconnected, and `reason` says why */
+    uint16_t conn;          /* 12-bit connection handle */
+    uint8_t  role;          /* 0 central, 1 peripheral */
+    uint8_t  peer_addr_type;
+    uint8_t  peer_addr[6];
+    uint8_t  reason;        /* HCI error code, disconnection only */
+} tn_link_evt_t;
+typedef void (*tn_link_cb_t)(const tn_link_evt_t *e, void *ctx);
+
+/* Returns 1 when the packet was a link event and `cb` was called, 0 when it
+ * was something else, -1 when it claimed to be one and was too short. */
+int tn_hci_feed_link(const uint8_t *pkt, size_t len, tn_link_cb_t cb, void *ctx);
+
+int tn_hci_disconnect(uint8_t *buf, size_t cap, uint16_t conn, uint8_t reason);
+
+/* H4 ACL data packet: indicator, handle | PB<<12 | BC<<14, length, data.
+ * One L2CAP frame per call; ATT_MTU is kept small enough that one is
+ * enough (tn_att.h). */
+int tn_hci_acl_encode(uint8_t *buf, size_t cap, uint16_t conn, uint8_t pb,
+                      const uint8_t *data, int len);
+/* Returns the data length and points `data` into `pkt`, or -1 when the
+ * packet's own length field claims more than it carries. */
+int tn_hci_acl_decode(const uint8_t *pkt, size_t len, uint16_t *conn,
+                      uint8_t *pb, const uint8_t **data);
+
 /* ── The radio, on ESP-IDF (tn_port_esp.c) ──────────────────────────────────
  *
  * Not built on the host; the encoders above are the host-testable half.
@@ -189,22 +234,66 @@ bool tn_hci_cmd_result(const uint8_t *pkt, size_t len,
  * blocks, allocates without bound, or takes a lock another task holds. This is
  * the rule docs/esp32.md states for every receive path here, and it is stricter
  * in this one because the context belongs to the link layer. */
+/* Two ports implement everything below: tn_port_esp.c over the ESP32
+ * controller's VHCI, and tn_port_sd.c over the nRF52840 SoftDevice
+ * (models/sensecap-p1-pro). Same calls, same semantics, so a station's BLE
+ * code is written once. The error type is the port's own; 0 is success on
+ * both and the only value a caller compares against. */
 #ifdef ESP_PLATFORM
 #include "esp_err.h"
+typedef esp_err_t tn_err_t;
+#else
+typedef int tn_err_t;
+#endif
+#define TN_OK 0
 
-esp_err_t tn_start(void);           /* controller up. Call BEFORE WiFi.      */
-esp_err_t tn_stop(void);            /* full teardown; gives the radio back   */
+#if defined(ESP_PLATFORM) || defined(TN_PORT_SD)
+
+tn_err_t tn_start(void);           /* controller up. Call BEFORE WiFi.      */
+tn_err_t tn_stop(void);            /* full teardown; gives the radio back   */
 bool      tn_is_up(void);
 
-esp_err_t tn_set_random_addr(const uint8_t addr[6]);
+tn_err_t tn_set_random_addr(const uint8_t addr[6]);
 
-esp_err_t tn_adv_configure(const tn_adv_cfg_t *cfg);   /* once               */
-esp_err_t tn_adv_set_data(const uint8_t *ad, size_t len); /* stop→set→start  */
-esp_err_t tn_adv_stop(void);
+tn_err_t tn_adv_configure(const tn_adv_cfg_t *cfg);   /* once               */
+tn_err_t tn_adv_set_data(const uint8_t *ad, size_t len); /* stop→set→start  */
+tn_err_t tn_adv_stop(void);
 
-esp_err_t tn_scan_start(const tn_scan_cfg_t *cfg, tn_report_cb_t cb, void *ctx);
-esp_err_t tn_scan_stop(void);
-#endif /* ESP_PLATFORM */
+tn_err_t tn_scan_start(const tn_scan_cfg_t *cfg, tn_report_cb_t cb, void *ctx);
+tn_err_t tn_scan_stop(void);
+
+/* ── The mesh channel over a connection (docs/ble5-gatt.md) ────────────────
+ *
+ * One link at a time, carrying MSP frames on the FFE0 service: FFF1 out,
+ * FFF2 in. A PERIPHERAL serves the table in tn_att.c and is dialled; a
+ * CENTRAL dials (tn_gatt_dial) and, because the handles are fixed, needs no
+ * discovery -- it subscribes to 0x0004 and writes 0x0006. Either side then
+ * calls tn_gatt_send() and gets `rx` for what the other side sent, and
+ * neither has to know which role it holds.
+ *
+ * Nothing here runs on the controller's context. Link and data events are
+ * parked and delivered from tn_gatt_pump(), which the station calls from a
+ * task of its own -- the same shape as the bearers' drain hooks.
+ *
+ * The ESP32 port serves only (its set becomes connectable; TN_ADV_PROP_
+ * CONNECTABLE is the caller's to set). The SoftDevice port dials; serving
+ * there is the SoftDevice's own GATTS and is not written yet. */
+typedef struct {
+    void (*connected)(void *ctx, uint16_t conn, bool as_central);
+    void (*disconnected)(void *ctx, uint16_t conn, uint8_t reason);
+    void (*rx)(void *ctx, const uint8_t *data, int len);
+    void  *ctx;
+} tn_gatt_cb_t;
+
+tn_err_t tn_gatt_serve(const tn_gatt_cb_t *cb);   /* accept inbound links */
+tn_err_t tn_gatt_dial(uint8_t addr_type, const uint8_t addr[6],
+                       const tn_gatt_cb_t *cb);    /* SoftDevice port only */
+void      tn_gatt_pump(void);
+bool      tn_gatt_connected(void);
+int       tn_gatt_mtu(void);                       /* bytes per send, now  */
+tn_err_t tn_gatt_send(const uint8_t *data, int len);
+tn_err_t tn_gatt_disconnect(void);
+#endif /* ESP_PLATFORM || TN_PORT_SD */
 
 #ifdef __cplusplus
 }

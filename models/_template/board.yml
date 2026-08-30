@@ -1,0 +1,58 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# A field nobody has measured is null, never a guess. A blank can be filled;
+# a plausible lie cannot be found.
+
+id:          # models/ folder name, kebab-case
+name:
+vendor:
+sku:
+product_url:
+summary:     # one line: what this board is FOR in the fleet
+status:      # shipping | legacy | planned | unsupported
+
+silicon:
+  mcu:
+  family:    # esp32 | esp32s3 | esp32c3 | nrf52 -- the TOOLCHAIN family
+  core:
+  ram_kb:
+  psram_mb:  # null when there is none
+  flash_mb:
+
+# What this board can do on the XPRS network, and WHY. yes | no | untested.
+bearers:
+  ble5:
+  ble5_note:
+  lora:
+  lora_note:
+  lan:
+  lan_note:
+  espnow:
+  espnow_note:
+
+io:
+  screen:      # {controller, width, height} or null
+  buttons:     []
+  leds:        []
+  gnss:        # module name or null
+  connectors:  []
+  sensors:     []
+
+physical:
+  dimensions_mm:
+  weight_g:
+  ip_rating:
+  temp_c:
+  power:       # how it is fed: usb | battery | solar+battery | ...
+
+firmware:
+  toolchain:   # esp-idf | zephyr | arduino-nrf52 | ...
+  project:     # path to the buildable project, or null
+  env:         # PlatformIO env name, or null
+  version:     # contents of version.txt, or null
+  artifact:    # path to a published binary, or null
+  flashing:    # one line: how an image gets onto it
+
+docs: []       # - {title: ..., url: ...}
+
+images: []     # - {file: hardware/images/x.jpg, caption: ..., credit: ...}

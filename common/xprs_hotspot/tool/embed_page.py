@@ -27,8 +27,12 @@ html = html.replace('/*CRYPTO*/', js)
 
 # The logo font comes verbatim from the old chat page -- one theme, one font.
 import re
-old = open('/home/brito/code/xprs/xprs-esp32/common/xprs_http/'
-           'chat_page.c').read()
+# Found relative to this file, not from an absolute path that names one
+# checkout on one machine -- this script lives four directories under the
+# repo root and the tree it reads is a sibling of its own component.
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+old = open(os.path.join(_ROOT, 'common', 'xprs_http', 'chat_page.c')).read()
 m = re.search(r'"(@font-face\{[^\n]*?format\(\'woff2\'\);'
               r'font-display:swap\})', old)
 if m:

@@ -462,3 +462,52 @@ For production deployments, consider:
 - Adding API authentication
 - Using HTTPS (requires certificate configuration)
 - Restricting CORS origins
+
+---
+
+### Sending a packet
+
+#### `POST /api/xprs/send`
+
+Airs one XPRS packet composed by the caller. The caller owns the packet,
+including the `f:` it wrote; the station validates (XPRS.md section 4) and
+transmits.
+
+**Body:** JSON, or the packet as plain text.
+
+```json
+{"wire": "t:message f:X3GSLC d:X16JK8 ts:2026-08-30_16:00:00 m:hello",
+ "bearer": "lora"}
+```
+
+| field | |
+|---|---|
+| `wire` | the packet, at most 250 bytes |
+| `bearer` | optional. `lan`, `espnow`, `lora`, `ble` or `rns`: put the packet on **that medium and no other**. Absent: every bearer the station has. |
+
+A GET works too, for clients that cannot POST: `?wire=<urlencoded>&bearer=lora`.
+
+**Response:**
+
+```json
+{"ok": true, "id": "3f0a1c", "bearers": "lora", "wire": "t:message ..."}
+```
+
+`bearers` names what actually took it. A `bearer` the station does not
+recognise is a `400 unknown bearer`; one it lacks, or that refused, is a
+`503 that bearer did not take it`.
+
+**Why `bearer` exists.** A station repeats what it hears from one medium onto
+the others, and the only way to prove that a packet reached the LAN *by way
+of* two other stations is to be certain it did not also leave on the LAN.
+Before this the bench did that by switching radios off in the config, or by
+rebuilding a board with a bearer compiled out -- and every such test left a
+board in a state that was not the shipped one. Now:
+
+```sh
+curl -s http://192.168.178.133/api/xprs/send \
+  -d '{"wire":"t:message f:X3GSLC ts:2026-08-30_16:00:00 m:chain test","bearer":"lora"}'
+```
+
+puts the packet on LoRa alone, and what arrives on the LAN carrying
+`via:X54W6W,X3WWAJ` was carried there by the SenseCAP and the T-Dongle.

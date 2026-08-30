@@ -38,8 +38,35 @@ int xapi_jesc(char *out, size_t cap, const char *in, int inlen)
     return (int)o;
 }
 
+/* Pull `"key":"value"` out of a JSON body into @p out. False when absent. */
+static bool json_str(const char *body, const char *key, char *out, size_t cap)
+{
+    char k[24];
+    snprintf(k, sizeof k, "\"%s\"", key);
+    const char *j = strstr(body, k);
+    if (!j) return false;
+    j = strchr(j + strlen(k), '"');
+    if (!j) return false;
+    j++;
+    size_t o = 0;
+    while (*j && *j != '"' && o < cap - 1) {
+        if (*j == '\\' && j[1]) j++;
+        out[o++] = *j++;
+    }
+    out[o] = 0;
+    return true;
+}
+
+static bool bearer_known(const char *b)
+{
+    static const char *const names[] = { XAPI_BEARER_NAMES };
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (strcmp(b, names[i]) == 0) return true;
+    return false;
+}
+
 esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
-                                bool (*send)(const char *wire, int len))
+                                xapi_send_fn send)
 {
     if (!send)
         return xapi_resp_error(req, "404 Not Found", "no transmitter");
@@ -53,6 +80,8 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
     char *wire = buf + 640;               /* 256 */
     char *out  = buf + 896;               /* the rest: 1,152 at the minimum */
     const size_t BODY = 640, WIRE = 256, OUT = cap - 896;
+    char bearer[12] = "";                 /* "" = every bearer */
+    char took[40] = "";
 
     int total = 0;
     if (req->method == HTTP_GET) {
@@ -65,6 +94,7 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
         if (httpd_req_get_url_query_str(req, query, OUT) != ESP_OK ||
             httpd_query_key_value(query, "wire", body, BODY) != ESP_OK)
             return xapi_resp_error(req, "400 Bad Request", "need wire=");
+        httpd_query_key_value(query, "bearer", bearer, sizeof bearer);
         /* httpd_query_key_value leaves %xx and + in place. */
         char *o = body;
         for (const char *c = body; *c; c++) {
@@ -88,21 +118,17 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
         body[total] = 0;
     }
 
-    /* Either JSON {"wire":"..."} or the packet as plain text. */
+    /* Either JSON {"wire":"...","bearer":"..."} or the packet as plain
+     * text (then the bearer, if any, came in the query). */
     const char *w = body;
-    char *j = strstr(body, "\"wire\"");
-    if (j) {
-        j = strchr(j + 6, '"');
-        if (!j) return xapi_resp_error(req, "400 Bad Request", "bad json");
-        j++;
-        size_t o = 0;
-        while (*j && *j != '"' && o < WIRE - 1) {
-            if (*j == '\\' && j[1]) j++;
-            wire[o++] = *j++;
-        }
-        wire[o] = 0;
+    if (strstr(body, "\"wire\"")) {
+        if (!json_str(body, "wire", wire, WIRE))
+            return xapi_resp_error(req, "400 Bad Request", "bad json");
+        json_str(body, "bearer", bearer, sizeof bearer);
         w = wire;
     }
+    if (bearer[0] && !bearer_known(bearer))
+        return xapi_resp_error(req, "400 Bad Request", "unknown bearer");
     int wlen = (int)strlen(w);
     while (wlen > 0 && (w[wlen - 1] == '\n' || w[wlen - 1] == '\r')) wlen--;
 
@@ -119,15 +145,18 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
     if (!xprs_get_str(&pk, "f", from, sizeof from))
         return xapi_resp_error(req, "400 Bad Request", "no f:");
 
-    if (!send(w, wlen))
-        return xapi_resp_error(req, "503 Service Unavailable", "no bearer took it");
+    if (!send(w, wlen, bearer[0] ? bearer : NULL, took, sizeof took))
+        return xapi_resp_error(req, "503 Service Unavailable",
+                               bearer[0] ? "that bearer did not take it"
+                                         : "no bearer took it");
 
     /* Escaped straight into the answer rather than into a slice of its
      * own: one buffer less, and no reading from the object being written,
      * which is what -Wrestrict objects to and is right to. */
     char id[XPRS_ID_LEN];
     xprs_id(&pk, id);
-    int n = snprintf(out, OUT, "{\"ok\":true,\"id\":\"%s\",\"wire\":\"", id);
+    int n = snprintf(out, OUT, "{\"ok\":true,\"id\":\"%s\",\"bearers\":\"%s\",\"wire\":\"",
+                     id, took);
     if (n < 0 || n >= (int)OUT) return xapi_resp_error(req, "500 Internal Server Error", "no scratch");
     n += xapi_jesc(out + n, OUT - (size_t)n, w, wlen);
     if (n + 3 < (int)OUT) { out[n++] = '"'; out[n++] = '}'; out[n] = 0; }

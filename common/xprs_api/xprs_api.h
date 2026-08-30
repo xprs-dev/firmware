@@ -31,9 +31,12 @@ typedef struct {
     const char *callsign;
     struct xprsidx_s *index;      /* may be NULL */
 
-    /** Air one validated wire on the board's bearers. Cheap: called on the
-     *  httpd task. Return true when at least one bearer took it. */
-    bool (*send_wire)(const char *wire, int len);
+    /** Air one validated wire. @p bearer NULL = every bearer the board has;
+     *  a name from XAPI_BEARER_NAMES (xapi_send.h) = that one only. Write the
+     *  names of those that took it into @p took, comma-separated. Cheap:
+     *  called on the httpd task. Return true when at least one took it. */
+    bool (*send_wire)(const char *wire, int len, const char *bearer,
+                      char *took, size_t took_cap);
 
     /** JSON fragments the board owns, written into @p buf: the serve list
      *  (e.g. `"index","history","mailbox"` -- no brackets) and the feature

@@ -20,9 +20,16 @@ docs/         what is true across boards
 ```
 
 **`models/<board>/` is where anything board-specific belongs**: its ESP-IDF
-config, its documentation, its photos, pinouts and 3D-printed cases. Two boards
-carry their own firmware project there as well; the rest are targets of the
-shared `multiboard/` build.
+config, its documentation, its photos, pinouts and 3D-printed cases. Three
+boards carry their own firmware project there as well; the rest are targets
+of the shared `multiboard/` build.
+
+Each board folder also holds a `board.yml` -- the same facts as its README
+but flat, so a program can read them. That is what a download-and-browse
+catalogue page would be built on; [`docs/catalog.md`](docs/catalog.md) is
+the schema and `models/_template/` is the empty shape to copy. The files are
+checked for shape by `tools/scripts/check_board_yml.py`.
+
 
 | Board | Chip | Firmware |
 |---|---|---|
@@ -34,6 +41,7 @@ shared `multiboard/` build.
 | [`esp32c3-mini`](models/esp32c3-mini/) | ESP32-C3 | `multiboard` |
 | [`epaper-1in54`](models/epaper-1in54/) | ESP32-S3 | `multiboard` -- e-paper display |
 | [`generic`](models/generic/) | ESP32 | `multiboard` -- plain devkit |
+| [`sensecap-p1-pro`](models/sensecap-p1-pro/) | **nRF52840** | none yet -- solar outdoor node; LoRa + BLE5, no WiFi, not an ESP32 |
 
 ## Building
 
@@ -56,6 +64,11 @@ cd multiboard
 ```
 
 Each board's own README says which of the two applies and why.
+
+The last row is not an ESP32 at all. The SenseCAP P1-Pro is an nRF52840,
+so nothing in `common/` compiles for it and it has no firmware here yet; it
+is catalogued in `models/` because that is where the fleet's boards live,
+and its README says plainly what a port would take.
 
 ## Shared code
 
@@ -106,4 +119,13 @@ frame; see [`docs/espnow.md`](docs/espnow.md).
 
 This tree was developed inside the Aurora application repository as `aurora/esp32`
 and moved here when the project took the XPRS name. Its earlier history is in
-`xprss/xprs-esp32`.
+`xprss/xprs-esp32`, and it was called `xprs-esp32` here too until the SenseCAP
+P1-Pro arrived and made the name untrue: it is an nRF52840, and the tree now
+builds firmware for two chip families rather than one.
+
+Three strings still say `xprs-esp32` and are deliberately left alone, because
+they are not the repository's name -- they are this software's name ON THE
+AIR and over HTTP: the `app` field of `/api/status` (`xprs_app.c`), the
+`service` field of the BLE hello payload (`xprs_ble.c`), and the comment
+documenting the first. Changing those changes what every station reports to
+clients that already parse it, which is a protocol decision and not a rename.

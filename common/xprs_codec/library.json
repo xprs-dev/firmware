@@ -1,0 +1,12 @@
+{
+  "name": "xprs_codec",
+  "version": "1.0.0",
+  "description": "The XPRS wire format. No platform dependency except xprs_sha256(), which xprs_sha256_sw.c fills in software for targets without mbedtls.",
+  "keywords": "xprs, codec",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcFilter": ["+<xprs.c>", "+<xprs_sha256_sw.c>"],
+    "flags": ["-I."]
+  }
+}

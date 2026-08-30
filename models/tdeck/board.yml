@@ -1,0 +1,62 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+id: tdeck
+name: T-Deck
+vendor: LilyGO
+sku: null
+product_url: https://www.lilygo.cc/products/t-deck
+summary: >-
+  The one you can type on. Screen, trackball and a QWERTY keyboard, so it is
+  the board that earns the interactive chat panel -- and the only one
+  carrying all four bearers at once.
+status: shipping
+
+silicon:
+  mcu: ESP32-S3
+  family: esp32s3
+  core: Xtensa LX7 dual @ 240 MHz
+  ram_kb: 512
+  psram_mb: 8
+  flash_mb: 16
+
+bearers:
+  ble5: "yes"
+  ble5_note: "An S3. Same tinynimble backend as the T-Dongle."
+  lora: "yes"
+  lora_note: "SX1262 at 868 MHz, sharing the panel's SPI bus."
+  lan: "yes"
+  lan_note: null
+  espnow: "yes"
+  espnow_note: null
+
+io:
+  screen: {controller: ST7789, width: 320, height: 240}
+  buttons:
+    - {name: trackball, pin: null, note: "four direction contacts plus a click; rolling makes and breaks several times per turn, so it is counted, not debounced"}
+  leds: []
+  gnss: null
+  connectors:
+    - {name: USB-C, note: "native USB-JTAG CDC"}
+    - {name: microSD, note: "shares the panel's SPI bus"}
+  sensors:
+    - {name: GT911, note: "capacitive touch over the panel"}
+    - {name: keyboard, note: "an ESP32-C3 of its own, answering on I2C; needs half a second to boot before it replies"}
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb+battery
+
+firmware:
+  toolchain: esp-idf
+  project: models/tdeck/firmware
+  env: tdeck
+  version: 0.4.0
+  artifact: null
+  flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
+
+docs:
+  - {title: "Board README", url: "models/tdeck/README.md"}
+
+images: []

@@ -48,7 +48,7 @@ Increment appropriately (e.g., v1.2.0 → v1.3.0).
 
 ```bash
 gh release create vX.Y.Z \
-  --repo xprss/xprs-esp32 \
+  --repo xprs-dev/xprs-firmware \
   --title "vX.Y.Z" \
   --notes "Release notes here"
 ```
@@ -59,19 +59,19 @@ Due to shell compatibility issues with `gh release upload`, use curl:
 
 ```bash
 TOKEN=$(gh auth token)
-RELEASE_ID=$(gh api repos/xprss/xprs-esp32/releases/tags/vX.Y.Z --jq '.id')
+RELEASE_ID=$(gh api repos/xprs-dev/xprs-firmware/releases/tags/vX.Y.Z --jq '.id')
 
 curl -X POST \
   -H "Authorization: token $TOKEN" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @.pio/build/esp32c3_mini/firmware.bin \
-  "https://uploads.github.com/repos/xprss/xprs-esp32/releases/${RELEASE_ID}/assets?name=xprs-esp32c3-mini-firmware.bin"
+  "https://uploads.github.com/repos/xprs-dev/xprs-firmware/releases/${RELEASE_ID}/assets?name=xprs-esp32c3-mini-firmware.bin"
 ```
 
 ### 7. Update release notes (optional)
 
 ```bash
-gh release edit vX.Y.Z --repo xprss/xprs-esp32 --notes "$(cat <<'EOF'
+gh release edit vX.Y.Z --repo xprs-dev/xprs-firmware --notes "$(cat <<'EOF'
 ## Changes
 - Change 1
 - Change 2
@@ -90,7 +90,7 @@ EOF
 ### 8. Verify release
 
 ```bash
-gh release view vX.Y.Z --repo xprss/xprs-esp32
+gh release view vX.Y.Z --repo xprs-dev/xprs-firmware
 ```
 
 ## Notes

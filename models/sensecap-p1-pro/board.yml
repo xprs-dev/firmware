@@ -1,0 +1,131 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# Sources: the Seeed industrial datasheet for SKU 114993633 (linked under
+# docs:), whose block diagram is reproduced in
+# hardware/images/block-diagram.png, and the Nordic nRF52840 product
+# specification. The LoRa bearer below is the exception -- it was measured on
+# this bench against a T-Deck on 2026-08-30. Everything still marked null is
+# a figure nobody has taken.
+
+id: sensecap-p1-pro
+name: SenseCAP Solar Node P1-Pro
+vendor: Seeed Studio
+sku: "114993633"
+product_url: https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html
+summary: >-
+  Solar-powered outdoor node. The first board in the fleet with no WiFi at
+  all, and the first that is not an ESP32.
+status: shipping
+
+silicon:
+  mcu: nRF52840
+  family: nrf52
+  core: ARM Cortex-M4F single @ 64 MHz
+  ram_kb: 256
+  psram_mb: null
+  flash_mb: 1
+  # Beside the 1 MB of program flash the XIAO nRF52840 Plus module carries a
+  # separate 2 MB QSPI part. It is storage, not executable: an archive could
+  # live there, firmware cannot.
+  extra_qspi_flash_mb: 2
+
+# What this board can do on the XPRS network, and why.
+bearers:
+  ble5: "yes"
+  ble5_note: >-
+    Working, measured 2026-08-30 (docs/ble5-nrf52.md). tinynimble's
+    SoftDevice port speaks to S140 v7.3.0 directly -- Bluefruit, the core's
+    own library, is capped at 31 bytes and cannot carry an XPRS beacon --
+    and puts a 255-byte extended advert on the air that a T-Dongle
+    digipeated ("via:X3WWAJ"); what it hears on BLE is bridged onto LoRa.
+    The mesh channel over a CONNECTION is measured too (docs/ble5-gatt.md):
+    this board dials a T-Deck serving tn_att, MTU 247, 244-byte frames
+    both ways, hang-up and re-dial. One advertising set on this chip, so
+    the beacon is silent while a session is up.
+  lora: "yes"
+  lora_note: >-
+    Working, both directions, measured against a T-Deck on 2026-08-30: 6 of 7
+    beacons received there at -30 dBm SNR 12, 29 wires received here in 180 s,
+    none corrupt and none unparsed. A beacon from this station was then
+    digipeated by the T-Deck onto the LAN as "via:X3GSLC,X3WWAJ", so the
+    packets are first-class on the network and not merely audible.
+    Driven by RadioLib rather than a port of common/xprs_sx1262, which is
+    ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which
+    MUST stay equal to xprslora.c or the two radios are deaf to each other.
+  lan: "no"
+  lan_note: >-
+    nRF52840 has no WiFi radio, so there is no LAN and there never will be
+    on this board. xprs_bearer_lan is not portable here, and the LAN
+    bearer's task is also what pumps every other bearer's re-air queue --
+    which is a real structural problem for a port, not just a missing
+    feature. See the note in models/sensecap-p1-pro/README.md.
+  espnow: "no"
+  espnow_note: ESP-NOW is an Espressif WiFi protocol. No WiFi radio, no ESP-NOW.
+
+io:
+  screen: null
+  buttons:
+    - {name: reset, pin: "nRF52840 RESET", note: "hardware reset, not a GPIO"}
+    - {name: user, pin: P1.07}
+    - {name: power, pin: P1.01, note: "power on/off"}
+  leds:
+    - {name: user, pin: P0.15, colour: white}
+    - {name: mesh, pin: P0.19, colour: blue, note: "labelled PWR LED on the board"}
+    - {name: charging, pin: null, colour: red, note: "wired to the CN3165 charger, not to the MCU"}
+    - {name: charge-done, pin: null, colour: green, note: "charger, not MCU"}
+    - {name: solar, pin: null, colour: yellow, note: "charger, not MCU"}
+  gnss: Seeed XIAO L76K (GPS / GLONASS / Galileo / BeiDou)
+  connectors:
+    - {name: USB-C, note: "debug and charge"}
+    - {name: Grove, note: "one, IIC/UART/GPIO, behind an NMOS level shift"}
+    - {name: RP-SMA, note: "LoRa antenna"}
+    - {name: SWD test point, note: "on the PCB, not brought out of the case"}
+  sensors:
+    - {name: NTC 10K B=3950, note: "battery pack temperature, read by the charger"}
+
+physical:
+  dimensions_mm: "191.2 x 201.2 x 42.1"
+  weight_g: null
+  ip_rating: null      # "suitable for long-term outdoor use", no IP figure published
+  temp_c: "discharge -40..60, charge 0..50 (battery limits; no figure published for the electronics)"
+  power: solar+battery
+
+firmware:
+  toolchain: arduino-nrf52
+  project: models/sensecap-p1-pro/firmware
+  env: p1pro
+  version: 0.1.0
+  artifact: null
+  flashing: >-
+    UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader
+    that mounts as a mass-storage volume on a double reset-tap; an image is
+    copied onto it. No esptool, no serial protocol, nothing this tree's
+    tools/ scripts know how to do.
+
+docs:
+  - {title: "Product page", url: "https://www.seeedstudio.com/SenseCAP-Solar-Node-P1-Pro-for-Meshtastic-LoRa-p-6412.html"}
+  - {title: "Industrial datasheet (PDF)", url: "https://files.seeedstudio.com/Bazaar/product_pdf/114993633.pdf"}
+  - {title: "Meshtastic device page", url: "https://meshtastic.org/docs/hardware/devices/seeed-studio/sensecap/solar-node/"}
+
+images:
+  - file: hardware/images/block-diagram.png
+    caption: "Block diagram with the full GPIO map: LoRa, GNSS, LEDs, buttons, Grove, and the solar charging path."
+    credit: "Seeed Studio, industrial datasheet for SKU 114993633"
+  - file: hardware/images/product-front.jpg
+    caption: "The node, panel side."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/product-angle.jpg
+    caption: "Three-quarter view with the antenna fitted."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/product-mounted.jpg
+    caption: "Pole-mounted on its bracket."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/product-internals.jpg
+    caption: "Inside: the four 18650 cells and the carrier board."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/product-ports.jpg
+    caption: "The port and button row on the underside."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/exterior-callouts.png
+    caption: "Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend."
+    credit: "Seeed Studio, industrial datasheet for SKU 114993633"

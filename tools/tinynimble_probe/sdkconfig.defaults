@@ -16,7 +16,11 @@ CONFIG_BT_NIMBLE_ENABLED=n
 
 # BLE5 extended advertising has to be on in the controller or 0x2036 is
 # refused with "unknown command".
-CONFIG_BT_CTRL_BLE_MAX_ACT=2
+# Three, not two. The set, the scan and ONE connection: a connectable extended
+# set will not even ENABLE without a slot for the link it may produce -- the
+# controller answers 0x2039 with 0x07 "Memory Capacity Exceeded", every two
+# seconds, and nothing else looks wrong. The T-Dongle ran GATT at 3.
+CONFIG_BT_CTRL_BLE_MAX_ACT=3
 CONFIG_BT_CTRL_BLE_ADV_REPORT_FLOW_CTRL_SUPP=n
 
 # The controller dedups scan reports BY ADDRESS. Left on, a fixed-address peer

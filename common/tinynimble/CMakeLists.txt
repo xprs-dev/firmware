@@ -13,7 +13,11 @@
 # IDF-free by design and costs nothing: the component still resolves for
 # anything that REQUIRES it, and xprs_bearer_ble stubs itself out under the
 # same condition.
-set(tn_srcs "tn_hci.c")
+# tn_att.c is the ATT server for the mesh channel (docs/ble5-gatt.md). It is
+# IDF-free like tn_hci.c and checked the same way (test/test_tn_att_host.sh);
+# nothing calls it yet, so --gc-sections drops it from every image until the
+# port layer grows ACL data. It is compiled everywhere so it cannot rot.
+set(tn_srcs "tn_hci.c" "tn_att.c")
 if(CONFIG_BT_ENABLED)
     list(APPEND tn_srcs "tn_port_esp.c")
 endif()

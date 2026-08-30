@@ -75,6 +75,33 @@ so **Extended Advertising Report (12)** is off. With both masked the controller
 accepts scan parameters and a scan enable, reports **no error**, and delivers
 nothing at all. That symptom is indistinguishable from a dead antenna.
 
+## Connections: what exists so far
+
+`docs/ble5-gatt.md` makes the case for carrying 1:1 traffic on a connection
+rather than on the three advertising channels everyone shares. The first
+piece of that is here and desk-tested:
+
+- `tn_att.c` -- an ATT server over a compiled-in table (FFE0, FFF1 notify,
+  FFF2 write: the channel the phones already speak) and the four-byte L2CAP
+  fixed-channel frame. Exchange MTU, the four discovery requests, read,
+  write, write command, notification, and an Error Response for everything
+  else. No client, no pairing, no dynamic registration.
+- `test/test_tn_att_host.sh` -- every response asserted byte-for-byte in the
+  order a real client issues them, then truncated and over-claiming input.
+
+- `tn_hci.c` -- connection events (both flavours of Connection Complete,
+  Disconnection Complete), Disconnect, and the H4 ACL packet; `tn_port_esp.c`
+  parks ACL and link events from the controller's context and serves
+  `tn_att` from `tn_gatt_pump()` on the caller's task.
+- `tn_port_sd.c` -- **a second port**, for the nRF52840 SoftDevice
+  (`models/sensecap-p1-pro`). Same `tinynimble.h`, `sd_ble_gap_*` underneath;
+  it dials rather than serves. `docs/ble5-nrf52.md`.
+
+Measured between a T-Deck (this port, serving) and the P1-Pro (SoftDevice
+port, dialling) on 2026-08-30: MTU 247, 244-byte frames both ways, hang-up
+and re-dial -- `docs/ble5-gatt.md`, "Measured". `tools/tinynimble_probe`
+key `g` is the deck side of that test.
+
 ## Layering
 
 - `tn_hci.c` — encode/decode over caller-owned buffers. **No ESP-IDF, no heap,

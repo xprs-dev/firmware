@@ -1,0 +1,64 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+id: tdongle-s3
+name: T-Dongle-S3
+vendor: LilyGO
+sku: null
+product_url: https://www.lilygo.cc/products/t-dongle-s3
+summary: >-
+  The BLE5 bridge. A USB stick that lives beside a router and carries what it
+  hears on Bluetooth onto the LAN, and back.
+status: shipping
+
+silicon:
+  mcu: ESP32-S3
+  family: esp32s3
+  core: Xtensa LX7 dual @ 240 MHz
+  ram_kb: 512
+  psram_mb: null
+  flash_mb: 16
+
+bearers:
+  ble5: "yes"
+  ble5_note: >-
+    An S3, so extended advertising is available and an XPRS packet fits one
+    AD. Runs the tinynimble backend (CONFIG_XPRSBLE_BACKEND_TINYNIMBLE), not
+    the NimBLE host: no PSRAM here, and the host's msys pools, ACL buffers
+    and 5,120-byte task stack were all internal DRAM.
+  lora: "no"
+  lora_note: No radio on this board.
+  lan: "yes"
+  lan_note: WiFi STA. The other half of the bridge, and why the board exists.
+  espnow: "yes"
+  espnow_note: null
+
+io:
+  screen: {controller: ST7735, width: 160, height: 80}
+  buttons:
+    - {name: boot, pin: GPIO0, note: "the strap pin; there is no other button, and it is half under the case in most mountings"}
+  leds: []
+  gnss: null
+  connectors:
+    - {name: USB-A, note: "male, the body of the stick; native USB-JTAG CDC"}
+    - {name: microSD, note: "present, but the archive lives in internal flash since 0.4.0"}
+  sensors: []
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: usb
+
+firmware:
+  toolchain: esp-idf
+  project: models/tdongle-s3/firmware
+  env: tdongle
+  version: 0.4.0
+  artifact: null
+  flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
+
+docs:
+  - {title: "Board README", url: "models/tdongle-s3/README.md"}
+  - {title: "Memory and scheduling, binding on this board", url: "docs/esp32.md"}
+
+images: []

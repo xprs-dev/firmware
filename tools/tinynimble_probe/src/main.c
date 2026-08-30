@@ -14,6 +14,10 @@
  *   a  advertise one frame        s  start scanning
  *   A  advertise every 2 s        S  stop scanning
  *   x  full teardown (tn_stop)    r  bring the controller back up
+ *   g  serve the mesh channel: the set turns connectable, a peer that dials
+ *      in and writes to FFF2 gets the same bytes back on FFF1 with "echo:"
+ *      in front (docs/ble5-gatt.md)
+ *   m  send "hello from <call>" down the link, if one is up
  *   ?  status and counters
  */
 
@@ -120,6 +124,24 @@ static void advertise_once(void)
     else ESP_LOGE(TAG, "advertise failed: %s", esp_err_to_name(err));
 }
 
+/* Runs on the pump, i.e. this task. Answer in kind so the far end can see
+ * its own bytes came back through us -- the whole point of the test. */
+static volatile uint32_t s_gatt_rx, s_gatt_tx;
+static void on_gatt_rx(const uint8_t *d, int n)
+{
+    s_gatt_rx++;
+    printf("  gatt rx %dB: %.*s\n", n, n > 80 ? 80 : n, (const char *)d);
+    uint8_t echo[256];
+    int m = snprintf((char *)echo, sizeof echo, "echo:");
+    /* Cut to what one send carries; the far end sent MTU-3 on purpose. */
+    int room = radio_gatt_mtu() - m;
+    if (n > room) n = room;
+    memcpy(echo + m, d, n);
+    esp_err_t err = radio_gatt_send(echo, m + n);
+    if (err == ESP_OK) s_gatt_tx++;
+    else printf("  echo failed: %s\n", esp_err_to_name(err));
+}
+
 static void status(void)
 {
     printf("\n  callsign     %s\n", s_call);
@@ -132,6 +154,9 @@ static void status(void)
         if (s_peer[i].call[0])
             printf("  heard        %-10s x%-6u  %d dBm\n",
                    s_peer[i].call, (unsigned)s_peer[i].n, s_peer[i].rssi);
+    printf("  link         %s, mtu %d, gatt rx %u tx %u\n",
+           radio_gatt_connected() ? "UP" : "none", radio_gatt_mtu(),
+           (unsigned)s_gatt_rx, (unsigned)s_gatt_tx);
     printf("  internal heap %u free, largest %u, min-ever %u\n\n",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -188,10 +213,18 @@ void app_main(void)
                 break;
             case 'r': printf("  bring-up: %s\n", esp_err_to_name(radio_up()));
                       scan_on(); break;
+            case 'g': printf("  serve: %s\n", esp_err_to_name(radio_gatt_serve(on_gatt_rx)));
+                      advertise_once(); break;
+            case 'm': {
+                char msg[48];
+                int n = snprintf(msg, sizeof msg, "hello from %s", s_call);
+                printf("  send: %s\n", esp_err_to_name(radio_gatt_send((const uint8_t *)msg, n)));
+                break; }
             case '?': status(); break;
             default: break;
             }
         }
+        radio_gatt_pump();
         if (repeat && radio_is_up() && esp_timer_get_time() > next) {
             advertise_once();
             next = esp_timer_get_time() + 2000000;
