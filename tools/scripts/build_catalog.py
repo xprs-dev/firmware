@@ -154,7 +154,8 @@ def prebuilt_block(b, fw):
     rel = f"{b['_rel']}/prebuilt"
     if not os.path.isdir(pre):
         return ""
-    files = sorted(f for f in os.listdir(pre) if not f.startswith("."))
+    files = sorted(f for f in os.listdir(pre)
+                   if not f.startswith(".") and f != "manifest.json")
     if not files:
         return ""
     manifest = os.path.join(pre, "manifest.json")
@@ -172,9 +173,12 @@ def prebuilt_block(b, fw):
         f'<a class="dl mono" href="{esc(rel)}/{esc(f)}" download>{esc(f)}'
         f'<span>{os.path.getsize(os.path.join(pre, f)) // 1024} KB</span></a>'
         for f in files)
-    head = "Prebuilt image" + (f' <span class="mono">v{esc(ver)}</span>' if ver else "")
+    head = "Firmware" + (f' <span class="mono">v{esc(ver)}</span>' if ver else "")
+    sec_id, sec_label = FLASH_SECTION.get((b.get("silicon") or {}).get("family"),
+                                          ("flash-source", "from source"))
     return (f'<div class="prebuilt"><div class="build-head">{head}</div>'
-            f'{button}<div class="dls">{links}</div></div>')
+            f'<div class="pb-row">{button}<div class="dls">{links}</div></div>'
+            f'<p class="flashnote">Flashing: <a href="#{sec_id}">{esc(sec_label)}</a>.</p></div>')
 
 
 def tile(b, embed):
@@ -283,16 +287,17 @@ def card(b, embed):
         for d in (b.get("docs") or []) if d.get("url"))
 
     sec_id, sec_label = FLASH_SECTION.get(sil.get("family"), ("flash-source", "from source"))
+    prebuilt = prebuilt_block(b, fw)
     if fw.get("project"):
         build = (f'<div class="build"><div class="build-head">Build from source</div>'
                  f'<pre class="mono">cd {esc(fw["project"])}\n'
                  f'~/.platformio/penv/bin/pio run{" -e " + esc(fw["env"]) if fw.get("env") else ""}\n'
                  f'~/.platformio/penv/bin/pio run{" -e " + esc(fw["env"]) if fw.get("env") else ""} -t upload</pre>'
-                 f'<p class="flashnote">Flashing: <a href="#{sec_id}">{esc(sec_label)}</a>.</p></div>')
+                 + ("" if prebuilt else f'<p class="flashnote">Flashing: <a href="#{sec_id}">{esc(sec_label)}</a>.</p>')
+                 + '</div>')
     else:
         build = (f'<div class="build build-none"><div class="build-head">No firmware yet</div>'
                  f'<p class="flashnote">Not buildable from this tree.</p></div>')
-    build += prebuilt_block(b, fw)
 
     ver = (f'<span class="ver mono">v{esc(fw["version"])}</span>'
            if fw.get("version") else "")
@@ -312,6 +317,7 @@ def card(b, embed):
     </div>
   </header>
   <p class="summary">{esc(b.get('summary'))}</p>
+  {prebuilt}
   <div class="bearers" aria-label="XPRS bearers">{bearer_cells(b)}</div>
   <dl class="specs">{spec_rows(b)}</dl>
   <div class="roles" aria-label="XPRS roles">{xprs_chips(b)}</div>
@@ -340,7 +346,10 @@ CSS = """
 .tile-line{font-size:14px; line-height:1.4; margin-top:6px; color:var(--ink)}
 .tile-meta{font-size:11px; color:var(--ink-dim); margin-top:8px}
 .card{scroll-margin-top:16px}
-.prebuilt{margin-top:12px; padding:14px 16px; border:1px dashed var(--rule); border-radius:10px}
+.prebuilt{margin:0 0 18px; padding:14px 16px; border:1px solid var(--accent); border-radius:10px;
+  background:var(--accent-soft)}
+.pb-row{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
+.prebuilt .flashnote{margin:10px 0 0}
 .dls{display:flex; flex-wrap:wrap; gap:8px; margin-top:10px}
 .dl{font-size:12px; padding:4px 10px; border:1px solid var(--rule); border-radius:8px;
   background:var(--sunk); text-decoration:none; color:var(--ink)}
@@ -404,6 +413,10 @@ esp-web-install-button{--esp-tools-button-color:var(--accent);
   --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
 }
 *{box-sizing:border-box}
+img{max-width:100%; height:auto}
+pre{max-width:100%; overflow-x:auto}
+.wrap,.gallery,.tile,.build,.prebuilt,.specs,.spec,.bearers{min-width:0}
+.spec dd{overflow-wrap:anywhere; text-align:right}
 body{
   background:var(--ground); color:var(--ink);
   font-family:Newsreader,Georgia,serif; font-size:17px; line-height:1.6;
@@ -448,8 +461,8 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
   color:var(--ground)}
 
 /* ── Cards ────────────────────────────────────────────────────────────── */
-.grid{display:grid; gap:22px; padding-top:22px}
-.card{background:var(--raised); border:1px solid var(--rule); border-radius:14px;
+.grid{display:grid; grid-template-columns:minmax(0,1fr); gap:22px; padding-top:22px}
+.card{min-width:0; overflow:hidden; background:var(--raised); border:1px solid var(--rule); border-radius:14px;
   padding:26px 26px 22px; box-shadow:var(--shadow)}
 .card[hidden]{display:none}
 .card-head{display:flex; flex-wrap:wrap; gap:12px 20px;
@@ -516,8 +529,37 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
 .legend b{font-weight:700; font-style:normal}
 .foot{color:var(--ink-dim); font-size:13px; padding-top:16px; max-width:70ch}
 @media (max-width:640px){
+  body{font-size:16px}
+  .wrap{padding:0 14px 64px}
+  .top-in{padding:28px 14px 22px; gap:16px}
+  h1{font-size:28px}
+  .counts{gap:18px}
+  .gallery{grid-template-columns:repeat(2,1fr); gap:10px; padding-top:18px}
+  .tile-body{padding:10px 11px 12px}
+  .tile-name{font-size:14px; flex-wrap:wrap}
+  .tile-line{font-size:13px}
+  .filters{gap:6px; font-size:11px}
+  .filters .lbl-2{margin-left:0; flex-basis:100%; margin-top:6px}
+  .fbtn{padding:5px 10px}
   .bearers{grid-template-columns:repeat(2,1fr)}
-  .card{padding:20px 18px}
+  .card{padding:18px 14px; border-radius:12px}
+  .card-head{gap:8px 12px}
+  .specs{grid-template-columns:1fr}
+  .shots{grid-template-columns:repeat(2,1fr); gap:10px}
+  .build pre,.flash pre{font-size:12px}
+  .dls{gap:6px}
+  .dl{font-size:11px; padding:4px 8px}
+  .roles{gap:4px}
+  .role{font-size:10px; padding:2px 7px}
+  .lb{padding:12px}
+  .lb img{max-height:62vh; max-width:96vw}
+  .lb button,.lb a.lb-dl{font-size:12px; padding:6px 10px}
+  .lb .lb-prev{left:8px; top:auto; bottom:44px; transform:none}
+  .lb .lb-next{right:8px; top:auto; bottom:44px; transform:none}
+  .lb .lb-close{right:8px; top:8px}
+  .lb a.lb-dl{left:8px; top:8px}
+  .lb .lb-cap{font-size:13px}
+  .flash h2{font-size:20px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 """
@@ -648,7 +690,10 @@ def build(embed):
     filters = (f'<span class="lbl">Bearer</span>{buttons(BEARERS)}'
                f'<span class="lbl lbl-2">Hardware</span>{buttons(HW_TAGS)}')
 
-    return f"""<title>XPRS Board Catalogue</title>
+    return f"""<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XPRS Board Catalogue</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=Newsreader:opsz,wght@6..72,400;6..72,500&family=JetBrains+Mono:wght@400;500&display=swap">
