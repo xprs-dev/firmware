@@ -218,7 +218,7 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("ssid", ""),
         xcfg_get("pass", ""),
         xcfg_get_bool("espnow_on", true) ? "yes" : "no",
-        xcfg_get_bool("digi_on", false) ? "yes" : "no",
+        xcfg_get_bool("digi_on", true) ? "yes" : "no",
         xcfg_get_bool("bridge_on", true) ? "yes" : "no",
         xcfg_get_bool("igate_on", true) ? "yes" : "no",
         xcfg_get_bool("index_on", true) ? "yes" : "no",

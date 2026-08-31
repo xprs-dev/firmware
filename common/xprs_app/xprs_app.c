@@ -1388,6 +1388,55 @@ static char s_ip_str[20];                 /* empty until GOT_IP */
 static volatile bool s_inet_up;           /* last probe verdict */
 static volatile bool s_inet_known;        /* at least one probe finished */
 
+/*
+ * THE BRIDGE, in one place.
+ *
+ * A station with more than one radio exists to join them: what arrives on
+ * any bearer is offered to every OTHER bearer it has, and re-aired on the
+ * one it came from when this station is a digipeater. That is what carries
+ * a phone's beacon from Bluetooth onto LoRa, over a valley, and back onto
+ * Bluetooth beside somebody else's phone -- the leg that was missing until
+ * 2026-08-31, when a packet that had come a kilometre reached the LAN and
+ * ESP-NOW and stopped, one hop short of the phones it was for.
+ *
+ * Nothing here decides whether a packet SHOULD travel: xb_offer() refuses a
+ * packet already in this bearer's heard ring, one that already carries this
+ * station in via:, and one whose hop budget (13.1) is spent, and the
+ * duplicate rings on every station downstream do the rest. The switches
+ * below are the operator's, not the protocol's:
+ *
+ *   bridge_on  (default yes) carry between bearers -- what this is
+ *   igate_on   (default yes) the LAN leg specifically, because that one
+ *              reaches the internet and is the one an operator may want
+ *              shut without going deaf on the radios
+ *   digi_on    (default yes) re-air on the medium it was heard on
+ *   digi_ble_on(default yes) the same for Bluetooth, kept separate because
+ *              BLE is cheap and local where LoRa is duty-cycled
+ */
+typedef enum { FROM_LAN, FROM_NOW, FROM_LORA, FROM_BLE, FROM_RNS } from_t;
+
+static void bridge_out(const char *wire, int len, from_t from)
+{
+    bool bridge = xcfg_get_bool("bridge_on", true);
+    bool igate  = xcfg_get_bool("igate_on", true);
+
+    /* Onto the other bearers. */
+    if (from != FROM_LAN  && igate)  xprslan_offer(wire, len);
+    if (from != FROM_NOW  && bridge) xprsnow_offer(wire, len);
+    if (from != FROM_LORA && bridge) xprslora_offer(wire, len);
+    if (from != FROM_BLE  && bridge) xprsble_offer(wire, len);
+    if (from != FROM_RNS  && bridge) xprsrns_send(wire, len);
+
+    /* And again on the one it came from, for stations past the sender's
+     * reach but inside ours. */
+    if (from == FROM_NOW  && xcfg_get_bool("digi_on", true))
+        xprsnow_digipeat(wire, len);
+    if (from == FROM_LORA && xcfg_get_bool("digi_on", true))
+        xprslora_digipeat(wire, len);
+    if (from == FROM_BLE  && xcfg_get_bool("digi_ble_on", true))
+        xprsble_digipeat(wire, len);
+}
+
 static void on_espnow(const char *wire, int len, const uint8_t mac[6], int rssi)
 {
     s_heard_count++;
@@ -1402,17 +1451,7 @@ static void on_espnow(const char *wire, int len, const uint8_t mac[6], int rssi)
     }
     ESP_LOGI(TAG, "espnow %02x:%02x:%02x:%02x:%02x:%02x %4d dBm %3dB  %s",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], rssi, len, wire);
-    /* iGate: what arrived on the radio goes toward the LAN (and whatever
-     * internet sits behind it), under the ordinary relay rules -- the bearer
-     * refuses when we are already in via: or the hop budget is spent. */
-    if (xcfg_get_bool("igate_on", true)) xprslan_offer(wire, len);
-    /* Digipeater: re-air on the radio itself, for stations past our reach.
-     * xprsnow_digipeat(), not _offer(): the offer path refuses a packet
-     * already in this bearer's heard ring, which for a same-medium repeat is
-     * every packet there is -- so this was a no-op until xb_digipeat(). */
-    if (xcfg_get_bool("digi_on", false)) xprsnow_digipeat(wire, len);
-    /* And toward the long-range radio, which reaches who WiFi cannot. */
-    if (xcfg_get_bool("bridge_on", true)) xprslora_offer(wire, len);
+    bridge_out(wire, len, FROM_NOW);
 }
 
 /* Every hearing on ESP-NOW, duplicates included.
@@ -1449,11 +1488,7 @@ static void on_lan(const char *wire, int len, uint32_t ip)
              (unsigned)(ip & 0xFF), (unsigned)((ip >> 8) & 0xFF),
              (unsigned)((ip >> 16) & 0xFF), (unsigned)((ip >> 24) & 0xFF),
              len, wire);
-    /* Bridge: carry LAN traffic onto the radios. */
-    if (xcfg_get_bool("bridge_on", true)) {
-        xprsnow_offer(wire, len);
-        xprslora_offer(wire, len);
-    }
+    bridge_out(wire, len, FROM_LAN);
 }
 
 /*
@@ -1492,23 +1527,7 @@ static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
      * Without this a Bluetooth-only station is unreachable from anywhere
      * else, because BLE is the one bearer this station hears and never
      * repeats -- see docs/diagrams/relay-gateway-flow.md. */
-    if (xcfg_get_bool("igate_on", true)) xprslan_offer(wire, len);
-    /* And onto the radios, which reach who Bluetooth cannot. */
-    if (xcfg_get_bool("bridge_on", true)) {
-        xprsnow_offer(wire, len);
-        xprslora_offer(wire, len);
-    }
-    /* Digipeater: re-air on Bluetooth itself, for stations past the sender's
-     * reach -- 13.1's "repeats a packet on the medium it heard it".
-     *
-     * On by default, which the other radios' digi_on is not, and the reason is
-     * in 31.1's own table: ESP-NOW and LoRa are bound by a duty cycle or a
-     * shared channel, while "Bluetooth and WiFi Direct | range, so traffic is
-     * naturally local and cheap". It is also the only bearer where refusing to
-     * digipeat leaves stations unable to reach each other at all: two phones
-     * out of range have no other path, whereas anything on a wired bearer can
-     * still be gatewayed. Turn it off with `cfg set digi_ble_on no`. */
-    if (xcfg_get_bool("digi_ble_on", true)) xprsble_digipeat(wire, len);
+    bridge_out(wire, len, FROM_BLE);
 }
 
 /* A wire off the Reticulum uplink (xprsrns.h). Same funnel as every radio;
@@ -1526,6 +1545,8 @@ static void on_rns(const char *wire, int len)
         xprs_type(&rp, rtype, sizeof rtype);
         if (strcmp(rtype, "identity") == 0) identity_heard(&rp);
     }
+    /* An internet byte reaches the radios like any other. */
+    bridge_out(wire, len, FROM_RNS);
 }
 
 /* The last LoRa packet, for the strip's top bar: a board with a radio and
@@ -1548,15 +1569,10 @@ static void on_lora(const char *wire, int len, int rssi)
         if (strcmp(type, "identity") == 0) identity_heard(&p);
     }
     ESP_LOGI(TAG, "lora   %19d dBm %3dB  %s", rssi, len, wire);
-    /* What arrived over kilometres goes toward the LAN and the local radio
-     * under the same iGate rule ESP-NOW uses -- and never back onto LoRa
-     * here: the bearer's own digipeat path owns that decision, with its
-     * jitter and its cancel window. */
-    if (xcfg_get_bool("igate_on", true)) {
-        xprslan_offer(wire, len);
-        xprsnow_offer(wire, len);
-    }
-    if (xcfg_get_bool("digi_on", false)) xprslora_digipeat(wire, len);
+    /* What arrived over kilometres goes to every other bearer this station
+     * has -- the LAN, ESP-NOW, Bluetooth -- and back onto LoRa itself when
+     * this station digipeats. */
+    bridge_out(wire, len, FROM_LORA);
 }
 
 /* ── What we say ────────────────────────────────────────────────────────── */
@@ -2471,7 +2487,7 @@ static void ui_render(void)
         SROWF("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
              "The 2.4 GHz radio link between nearby stations. "
              "%s toggles; applies after restart.", ok_key());
-        SROWF("Digipeater", xcfg_get_bool("digi_on", false) ? "On" : "Off",
+        SROWF("Digipeater", xcfg_get_bool("digi_on", true) ? "On" : "Off",
              "Re-air packets heard on ESP-NOW back onto ESP-NOW, for "
              "stations past our reach. %s toggles; applies at once.", ok_key());
         SROWF("Bridge", xcfg_get_bool("bridge_on", true) ? "On" : "Off",
@@ -3890,7 +3906,7 @@ static void settings_ok(int row)
         xcfg_set_bool("espnow_on", !xcfg_get_bool("espnow_on", true));
         break;
     case 2:
-        xcfg_set_bool("digi_on", !xcfg_get_bool("digi_on", false));
+        xcfg_set_bool("digi_on", !xcfg_get_bool("digi_on", true));
         break;
     case 3:
         xcfg_set_bool("bridge_on", !xcfg_get_bool("bridge_on", true));
@@ -3992,7 +4008,7 @@ static int api_features_json(char *buf, size_t cap)
     return snprintf(buf, cap,
         "\"digipeater\":%s,\"bridge\":%s,\"igate\":%s,\"indexer\":%s,"
         "\"share\":%s,\"hotspot\":%s",
-        xcfg_get_bool("digi_on", false) ? "true" : "false",
+        xcfg_get_bool("digi_on", true) ? "true" : "false",
         xcfg_get_bool("bridge_on", true) ? "true" : "false",
         xcfg_get_bool("igate_on", true) ? "true" : "false",
         xcfg_get_bool("index_on", true) ? "true" : "false",

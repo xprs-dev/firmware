@@ -85,10 +85,16 @@ The mapping is unflattering to the premise. Set each UHR idea against this tree:
 | duplicate suppression | Two 32-entry rings per bearer, 60 s TTL, keyed on the §5 identifier -- which ignores `sig:` and `via:`, so a relayed copy is the same packet (`xprsbearer.h:59-61`, `xprsbearer.c:164`). |
 | contention avoidance | 200--1200 ms random re-air jitter, cancelled by hearing somebody else's copy (§13.2.1) -- `xprsbearer.h:55`, `xb_cancel` at `xprsbearer.c:57`. |
 
-Two gaps are worth stating rather than glossing. **`digi_on` defaults to false**
-(`common/xprs_config/xprs_config.c:34`, read at `xprs_app.c:980`): a stock station
-bridges *between* bearers but does not re-air ESP-NOW back onto ESP-NOW. And the
-long-range PHY, below, is written and unproven.
+One gap is worth stating rather than glossing: the long-range PHY, below, is
+written and unproven.
+
+**`digi_on` defaults to TRUE since 2026-08-31.** It was false, and a stock
+station bridged between bearers but never re-aired a medium onto itself --
+which is half a relay. These boards exist to extend range across terrain, so
+the default now matches the purpose: every bearer offers to every other, and
+re-airs its own. The duplicate rings, the hop budget (13.1) and the cancel
+window (13.2.1) are what keep that from becoming a storm, and they were
+always the parts doing that work.
 
 Ignore [mesh-networking.md](mesh-networking.md) when reading this page. It documents
 `common/xprs_mesh/`, an ESP-WIFI-MESH tree mesh that no other component's

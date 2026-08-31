@@ -527,3 +527,32 @@ station one row of scratch rather than a framebuffer -- but it is still a
 transfer of `width x height x 3` bytes, and a board with only a few kilobytes
 of free heap (the Heltec V3) will often fail to finish it. There the UART
 framedump (`tools/scripts/framedump.py`) is the reliable one.
+
+## What a station does with a packet it hears
+
+One rule, in `bridge_out()` (`common/xprs_app/xprs_app.c`): a packet heard on
+any bearer is offered to **every other bearer this station has**, and re-aired
+on the one it arrived on when this station digipeats.
+
+| switch | default | what it holds |
+|---|---|---|
+| `bridge_on` | yes | carrying between bearers at all |
+| `igate_on` | yes | the LAN leg specifically -- the one that reaches the internet |
+| `digi_on` | **yes** | re-airing on ESP-NOW and LoRa, the media that were heard on |
+| `digi_ble_on` | yes | the same for Bluetooth |
+
+Nothing there decides whether a packet *should* travel: `xb_offer()` refuses one
+already in the bearer's heard ring, one that already carries this station in
+`via:`, and one whose hop budget (13.1) is spent.
+
+Measured on the bench, 2026-08-31, on a Heltec V3 between a T-Deck and a
+SenseCAP P1-Pro:
+
+```
+xprs:    lora  -35 dBm  56B  t:message f:X3GSLC ... m:bridge lora1
+xprsble: aired 67B      ... via:X3H3MZ            m:bridge lora1
+```
+
+A packet that arrived over LoRa, on Bluetooth 850 ms later with this station
+appended -- the leg that did not exist before, and the one that lets a phone
+out of everybody's range be reached across a valley.

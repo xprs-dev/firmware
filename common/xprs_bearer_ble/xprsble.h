@@ -110,6 +110,17 @@ bool xprsble_send(const char *wire, int len);
  */
 void xprsble_digipeat(const char *wire, int len);
 
+/**
+ * Offer a packet heard on ANOTHER bearer to this one: the bridge leg.
+ *
+ * Same queue, jitter and cancel as every other bearer's offer, and the same
+ * refusals -- already in via:, hop budget spent, heard here already. It is
+ * the return half of the BLE<->LoRa bridge: without it a packet that came a
+ * kilometre over LoRa reached the LAN and ESP-NOW but never the phones
+ * standing beside the station.
+ */
+void xprsble_offer(const char *wire, int len);
+
 /** As [xprsble_send], for a caller that owns a subtype of its own. */
 bool xprsble_send_sub(const uint8_t *payload, int len, uint8_t subtype);
 
