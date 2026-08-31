@@ -258,8 +258,14 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
         from_e, to_e, xprsidx_type_name(rec->type), sig,
         own ? "true" : "false");
     if (n < 0 || n >= (int)ROW) return true;
-    n += jesc(row + n, ROW - (size_t)n, rec->wire, rec->len);
-    if (n + 3 < (int)ROW) { row[n++] = '"'; row[n++] = '}'; row[n] = 0; }
+    /* As in log_emit: the closing quote and brace are not optional. A
+     * heavily escaped wire (every byte over 0x7e becomes six characters)
+     * can reach the end of the row, and a row that ends mid-string takes
+     * the whole listing with it. */
+    n += jesc(row + n, ROW - (size_t)n - 2, rec->wire, rec->len);
+    row[n++] = '"';
+    row[n++] = '}';
+    row[n] = 0;
     c->emitted++;
     return httpd_resp_send_chunk(c->req, row, n) == ESP_OK;
 }
@@ -367,8 +373,17 @@ static bool log_emit(httpd_req_t *req, const char *line, int len, bool first)
           ? snprintf(row, ROW, "%s{\"t\":\"%s\",\"m\":\"", first ? "" : ",", tbuf)
           : snprintf(row, ROW, "%s{\"t\":%s,\"m\":\"", first ? "" : ",", tbuf);
     if (n < 0 || n >= (int)ROW) return true;
-    n += jesc(row + n, ROW - (size_t)n, line + i, len - i);
-    if (n + 3 < (int)ROW) { row[n++] = '"'; row[n++] = '}'; row[n] = 0; }
+    /* Two bytes held back for the closing quote and brace, and they are
+     * written unconditionally. The guard here used to be `if (n + 3 < ROW)`,
+     * so a line long enough to fill the row was sent with its string and its
+     * object both left open -- and one such line makes the whole reply
+     * unparseable, which is how a station with plenty to say answered
+     * /api/log with something no JSON reader would take. Truncating the text
+     * is fine; truncating the syntax is not. */
+    n += jesc(row + n, ROW - (size_t)n - 2, line + i, len - i);
+    row[n++] = '"';
+    row[n++] = '}';
+    row[n] = 0;
     return httpd_resp_send_chunk(req, row, n) == ESP_OK;
 }
 
