@@ -246,6 +246,10 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
     lv_disp_flush_ready(drv);
 }
 
+/* The big UI has seven panels to say things in; the strip's one line is
+ * not needed here. */
+void xui_set_note(const char *text) { (void)text; }
+
 void xui_framedump(void)
 {
     s_dump_pending = true;

@@ -76,6 +76,19 @@ holds four list rows under the 13 px top bar, not the T-Dongle's five, and
 that is now the UI's own arithmetic (`rows_fit()` in `xprs_ui_mini.c`)
 rather than a constant: 160x80 still gets five.
 
+### The top bar says what the antenna is doing
+
+The strip has no bottom bar -- the mini UI's three views are all body, and
+the button legends the big UI draws belong to boards with buttons under the
+screen. What this board has instead is one line of chrome, and on a LoRa
+board the uptime is the least useful thing to spend it on: the number
+somebody actually wants while pointing an antenna is the last packet's
+signal, and it is invisible without a laptop.
+
+So the bar reads `Devices  -35dBm  3 dev`, refreshed every two seconds, and
+`LoRa quiet` when nothing has been heard for five minutes. A board without a
+radio (the T-Dongle) sets no note and keeps the uptime it always had.
+
 ### The button
 
 PRG is the strap pin, active low. The T-Dongle's grammar, unchanged: tap =

@@ -273,6 +273,7 @@ esp_err_t xum_init(int width, int height, xum_flush_fn flush, void *ctx)
 
 static uint64_t s_last_tick_us;
 static uint32_t s_uptime_last;
+static char     s_note[16];
 
 void xum_update(void)
 {
@@ -293,10 +294,15 @@ void xum_update(void)
             "Devices", "Stats", "Chat"
         };
         char t[40];
-        snprintf(t, sizeof t, "%s%s  %02lu:%02lu:%02lu",
-                 names[s_view], s_held ? " ||" : "",
-                 (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60),
-                 (unsigned long)(up % 60));
+        if (s_note[0])
+            snprintf(t, sizeof t, "%s%s  %s",
+                     names[s_view], s_held ? " ||" : "", s_note);
+        else
+            snprintf(t, sizeof t, "%s%s  %02lu:%02lu:%02lu",
+                     names[s_view], s_held ? " ||" : "",
+                     (unsigned long)(up / 3600),
+                     (unsigned long)((up / 60) % 60),
+                     (unsigned long)(up % 60));
         lv_label_set_text(s_title_label, t);
 
         /* Once a minute, say how much of the LVGL pool this screen
@@ -416,6 +422,14 @@ void xum_chat(const xum_chat_t *rows, int n)
     }
     if (!n) snprintf(buf, sizeof buf, "no messages yet");
     lv_label_set_text(s_chat_label, buf);
+}
+
+void xum_set_note(const char *text)
+{
+    if (!text) text = "";
+    if (strncmp(s_note, text, sizeof s_note) == 0) return;
+    snprintf(s_note, sizeof s_note, "%s", text);
+    s_uptime_last = 0;               /* redraw the title on the next pass */
 }
 
 void xum_set_count(int devices)

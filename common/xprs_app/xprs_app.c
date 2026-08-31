@@ -1528,9 +1528,18 @@ static void on_rns(const char *wire, int len)
     }
 }
 
+/* The last LoRa packet, for the strip's top bar: a board with a radio and
+ * three lines of screen is one somebody points an antenna with, and the
+ * number that tells them whether they pointed it right is not otherwise
+ * visible without a laptop. */
+static int      s_lora_rssi;
+static uint32_t s_lora_rssi_ms;
+
 static void on_lora(const char *wire, int len, int rssi)
 {
     s_heard_count++;
+    s_lora_rssi = rssi;
+    s_lora_rssi_ms = now_ms();
     seen_note(wire, len, "lora", rssi);
     xprs_t p;
     if (xprs_parse(wire, len, &p)) {
@@ -4420,6 +4429,24 @@ static void ui_task(void *arg)
         }
         battery_tick();
         screen_tick();
+
+        /* The strip's top bar. On a LoRa board it carries the last packet's
+         * signal, and says so plainly when nothing has been heard for five
+         * minutes; on a board without a radio it stays empty and the UI
+         * keeps showing the uptime. The big UI ignores it. */
+        if (s_board->lora) {
+            static uint32_t note_ms;
+            uint32_t t = now_ms();
+            if (t - note_ms > 2000) {
+                note_ms = t;
+                char note[16];
+                if (s_lora_rssi_ms && t - s_lora_rssi_ms < 300000)
+                    snprintf(note, sizeof note, "%ddBm", s_lora_rssi);
+                else
+                    snprintf(note, sizeof note, "LoRa quiet");
+                xui_set_note(note);
+            }
+        }
         static bool s_rendered_once, s_splash_gone;
         if (!s_screen_off && (force || now_us >= next_render_us)) {
             ui_render();

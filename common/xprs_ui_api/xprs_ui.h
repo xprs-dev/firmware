@@ -93,6 +93,14 @@ void xui_set_device_count(int count);
  *  blank a slot. LV_SYMBOL_UP / LV_SYMBOL_DOWN make arrows. UI task only. */
 void xui_set_keys(const char *left, const char *mid, const char *right);
 
+/**
+ * A short line of the board's choosing for the top bar, where a strip has
+ * no room for a panel of its own -- the mini UI shows it in place of the
+ * uptime. Empty or NULL puts the uptime back. No-op on the big UI, which
+ * has the panels to say it properly. UI task only.
+ */
+void xui_set_note(const char *text);
+
 /** Debug: stream the next full frame over the UART as base64 slices
  *  (FRAMEDUMP BEGIN/SLICE/END lines). Any task. */
 void xui_framedump(void);
