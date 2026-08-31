@@ -443,6 +443,135 @@ static esp_err_t h_diag(httpd_req_t *req)
  * mean nothing:
  *   espcoredump.py info_corefile -t elf -c cd.elf xprs-<board>-<ver>.elf
  */
+/*
+ * GET /api/screen -- what the panel is showing, as a BMP.
+ *
+ * A screenshot has to leave this board without a cable: the UART framedump
+ * needs a lead and a script, and half the fleet's consoles do not read
+ * stdin at all. BMP because it is the one format a browser opens and a
+ * microcontroller can write with no library: a 54-byte header and the
+ * pixels, top-down (a negative height), 24-bit BGR.
+ *
+ * It is streamed. The rows are converted a slice at a time as LVGL paints
+ * them and pushed as chunks, so the cost here is one row of scratch, not a
+ * framebuffer -- on the Heltec V3 the whole free heap is 15 KB and its
+ * screen would be 24 KB as 24-bit pixels.
+ */
+typedef struct {
+    httpd_req_t *req;
+    int w;
+    bool failed;
+    /* Rows are staged and sent a segment at a time. One row of a 128-wide
+     * panel is 384 bytes, and a chunk that small costs a round trip each:
+     * the first draft took eight seconds a row on a station whose TCP send
+     * buffer is 1,440 bytes. */
+    uint8_t buf[1440];
+    size_t  n;
+} screen_ctx_t;
+
+static bool screen_push(screen_ctx_t *sc, const uint8_t *p, size_t n)
+{
+    while (n) {
+        size_t room = sizeof sc->buf - sc->n;
+        size_t take = n < room ? n : room;
+        memcpy(sc->buf + sc->n, p, take);
+        sc->n += take;
+        p += take;
+        n -= take;
+        if (sc->n == sizeof sc->buf) {
+            if (httpd_resp_send_chunk(sc->req, (const char *)sc->buf,
+                                      sc->n) != ESP_OK) {
+                sc->failed = true;
+                return false;
+            }
+            sc->n = 0;
+        }
+    }
+    return true;
+}
+
+static void screen_slice(int x1, int y1, int x2, int y2,
+                         const uint16_t *px, void *ctx)
+{
+    screen_ctx_t *sc = (screen_ctx_t *)ctx;
+    if (sc->failed) return;
+    /* Full-width bands only. LVGL draws in horizontal strips with the draw
+     * buffers every board here uses; anything else would need the rows held
+     * out of order, which is the framebuffer this door exists to avoid. */
+    if (x1 != 0 || x2 != sc->w - 1) { sc->failed = true; return; }
+
+    static uint8_t row[320 * 3];
+    if ((size_t)sc->w * 3 > sizeof row) { sc->failed = true; return; }
+
+    for (int y = y1; y <= y2; y++) {
+        uint8_t *o = row;
+        for (int x = 0; x < sc->w; x++) {
+            uint16_t be = *px++;
+            uint16_t c = (uint16_t)((be >> 8) | (be << 8));  /* to native */
+            *o++ = (uint8_t)((c & 0x1f) << 3);               /* B */
+            *o++ = (uint8_t)(((c >> 5) & 0x3f) << 2);        /* G */
+            *o++ = (uint8_t)(((c >> 11) & 0x1f) << 3);       /* R */
+        }
+        static const uint8_t zero[3] = {0, 0, 0};
+        size_t pad = (4 - ((size_t)sc->w * 3) % 4) % 4;   /* rows pad to 4 */
+        if (!screen_push(sc, row, (size_t)sc->w * 3)) return;
+        if (pad && !screen_push(sc, zero, pad)) return;
+    }
+}
+
+static void put32(uint8_t *p, uint32_t v)
+{
+    p[0] = v & 0xff; p[1] = (v >> 8) & 0xff;
+    p[2] = (v >> 16) & 0xff; p[3] = (v >> 24) & 0xff;
+}
+
+static esp_err_t h_screen(httpd_req_t *req)
+{
+    if (!s_cfg->capture_screen)
+        return resp_error(req, "404 Not Found", "this board has no screen");
+
+    /* The size is wanted for the header, and only a capture knows it, so
+     * ask for one with a callback that does nothing but record it. */
+    /* Two calls: the first with no callback is a size query and repaints
+     * nothing, because the BMP header has to carry the dimensions and the
+     * pixels are streamed straight after it. */
+    int w = 0, h = 0;
+    screen_ctx_t sc = { .req = req, .w = 0, .failed = false };
+    esp_err_t err = s_cfg->capture_screen(NULL, NULL, &w, &h);
+    if (err != ESP_OK || w <= 0 || h <= 0)
+        return resp_error(req, "503 Service Unavailable", "no frame");
+
+    size_t row_bytes = ((size_t)w * 3 + 3) & ~(size_t)3;
+    uint32_t data = (uint32_t)(row_bytes * (size_t)h);
+    uint8_t hdr[54] = {0};
+    hdr[0] = 'B'; hdr[1] = 'M';
+    put32(hdr + 2, 54 + data);
+    put32(hdr + 10, 54);
+    put32(hdr + 14, 40);
+    put32(hdr + 18, (uint32_t)w);
+    put32(hdr + 22, (uint32_t)(-h));      /* negative: rows top-down */
+    hdr[26] = 1; hdr[28] = 24;            /* one plane, 24 bits */
+    put32(hdr + 34, data);
+
+    char disp[96];
+    snprintf(disp, sizeof disp, "inline; filename=\"%s-screen.bmp\"",
+             s_cfg->board ? s_cfg->board : "xprs");
+    httpd_resp_set_type(req, "image/bmp");
+    httpd_resp_set_hdr(req, "Content-Disposition", disp);
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    if (httpd_resp_send_chunk(req, (const char *)hdr, sizeof hdr) != ESP_OK)
+        return ESP_FAIL;
+
+    sc.w = w;
+    err = s_cfg->capture_screen(screen_slice, &sc, NULL, NULL);
+    if (!sc.failed && sc.n)
+        httpd_resp_send_chunk(req, (const char *)sc.buf, sc.n);
+    httpd_resp_send_chunk(req, NULL, 0);
+    if (err != ESP_OK || sc.failed)
+        ESP_LOGW(TAG, "screen: capture ended early");
+    return ESP_OK;
+}
+
 static esp_err_t h_coredump(httpd_req_t *req)
 {
     size_t addr = 0, size = 0;
@@ -516,6 +645,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },
         { .uri = "/api/diag", .method = HTTP_GET, .handler = h_diag },
+        { .uri = "/api/screen", .method = HTTP_GET, .handler = h_screen },
         { .uri = "/api/coredump", .method = HTTP_GET, .handler = h_coredump },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)

@@ -511,3 +511,19 @@ curl -s http://192.168.178.133/api/xprs/send \
 
 puts the packet on LoRa alone, and what arrives on the LAN carrying
 `via:X54W6W,X3WWAJ` was carried there by the SenseCAP and the T-Dongle.
+
+## GET /api/screen
+
+What the panel is showing, as a BMP: a 54-byte header and 24-bit pixels,
+top-down. `image/bmp`, so a browser opens it and `curl -o shot.bmp` keeps it.
+
+```sh
+curl -s http://192.168.178.133/api/screen -o shot.bmp
+```
+
+404 on a board with no screen. The frame is captured by the task that owns
+LVGL and streamed by the HTTP task a segment at a time, so it costs the
+station one row of scratch rather than a framebuffer -- but it is still a
+transfer of `width x height x 3` bytes, and a board with only a few kilobytes
+of free heap (the Heltec V3) will often fail to finish it. There the UART
+framedump (`tools/scripts/framedump.py`) is the reliable one.

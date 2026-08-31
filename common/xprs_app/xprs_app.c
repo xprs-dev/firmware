@@ -20,6 +20,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
@@ -4113,6 +4115,82 @@ static void lcd_flush_adapter(int x1, int y1, int x2, int y2,
     s_board->flush(x1, y1, x2, y2, px, ctx);
 }
 
+/*
+ * The screenshot door's board half (xprs_api_cfg_t.capture_screen).
+ *
+ * Two tasks and one row between them. LVGL belongs to the UI task, so it is
+ * the one that repaints; but an httpd response may only be written by the
+ * task that owns the request, so the HTTP task is the one that sends. The
+ * UI task therefore copies each row into a single 640-byte slot, hands it
+ * over, and waits for it back -- a ping-pong that costs one row of memory
+ * on a board whose whole screen would be 24 KB as pixels, and that keeps
+ * each half doing what only it is allowed to do.
+ */
+#define CAP_ROW_MAX 320
+
+static struct {
+    volatile bool     want;       /* a capture has been asked for   */
+    volatile bool     done;       /* the UI task has finished it    */
+    esp_err_t         err;
+    SemaphoreHandle_t ready;      /* UI  -> HTTP: a row is waiting  */
+    SemaphoreHandle_t taken;      /* HTTP -> UI: send it and go on  */
+    uint16_t          row[CAP_ROW_MAX];
+    int               row_y, row_x1, row_x2;
+} s_cap;
+
+/* Runs on the UI task, inside the repaint. */
+static void cap_slice(int x1, int y1, int x2, int y2,
+                      const uint16_t *px, void *ctx)
+{
+    (void)ctx;
+    int w = x2 - x1 + 1;
+    if (w > CAP_ROW_MAX) return;
+    for (int y = y1; y <= y2; y++, px += w) {
+        memcpy(s_cap.row, px, (size_t)w * sizeof *px);
+        s_cap.row_y = y;
+        s_cap.row_x1 = x1;
+        s_cap.row_x2 = x2;
+        xSemaphoreGive(s_cap.ready);
+        /* If the HTTP side has gone away, do not wedge the UI task. */
+        if (xSemaphoreTake(s_cap.taken, pdMS_TO_TICKS(2000)) != pdTRUE) return;
+    }
+}
+
+static esp_err_t app_capture_screen(xapi_slice_fn cb, void *ctx,
+                                    int *w, int *h)
+{
+    if (!s_display_up) return ESP_ERR_INVALID_STATE;
+    if (!cb) return xui_capture(NULL, NULL, w, h);   /* size only */
+    if (s_cap.want) return ESP_ERR_INVALID_STATE;    /* one at a time */
+
+    if (!s_cap.ready) {
+        s_cap.ready = xSemaphoreCreateBinary();
+        s_cap.taken = xSemaphoreCreateBinary();
+        if (!s_cap.ready || !s_cap.taken) return ESP_ERR_NO_MEM;
+    }
+    while (xSemaphoreTake(s_cap.ready, 0) == pdTRUE) { }   /* drain stale */
+    while (xSemaphoreTake(s_cap.taken, 0) == pdTRUE) { }
+
+    s_cap.err = ESP_FAIL;
+    s_cap.done = false;
+    s_cap.want = true;
+
+    /* Pump the rows on THIS task, which is the one httpd will accept. */
+    for (;;) {
+        if (xSemaphoreTake(s_cap.ready, pdMS_TO_TICKS(3000)) == pdTRUE) {
+            cb(s_cap.row_x1, s_cap.row_y, s_cap.row_x2, s_cap.row_y,
+               s_cap.row, ctx);
+            xSemaphoreGive(s_cap.taken);
+            continue;
+        }
+        break;                          /* nothing came: done, or wedged */
+    }
+    esp_err_t err = s_cap.done ? s_cap.err : ESP_ERR_TIMEOUT;
+    s_cap.want = false;
+    if (w || h) xui_capture(NULL, NULL, w, h);
+    return err;
+}
+
 static void ui_task(void *arg)
 {
     (void)arg;
@@ -4360,6 +4438,13 @@ static void ui_task(void *arg)
         if (s_rendered_once && !s_splash_gone)
             s_splash_gone = xui_splash_dismiss();
 
+        /* A screenshot asked for over HTTP: repaint here, where LVGL
+         * lives, and let the waiting HTTP task have the slices. */
+        if (s_cap.want && !s_cap.done) {
+            s_cap.err = xui_capture(cap_slice, NULL, NULL, NULL);
+            s_cap.done = true;
+        }
+
         xui_update();
         esp_task_wdt_reset();
 
@@ -4372,7 +4457,23 @@ static void ui_task(void *arg)
 
 void xapp_run(const xapp_board_t *board)
 {
+    /*
+     * STDIN MUST NOT BLOCK, and on a board whose console is a plain UART it
+     * does. The UI task reads one character a tick -- that is how 'S' takes
+     * a screenshot and how `cfg set ...` reaches a board with nothing but a
+     * cable -- and with the primitive UART VFS (no driver installed) that
+     * read waits for a byte that never comes. The task then never loops:
+     * the screen freezes on whatever frame it had, the buttons stop, and
+     * GET /api/screen times out with nobody to repaint for it. Found on the
+     * Heltec V3, whose console is a CP2102; the boards with native USB
+     * install a driver and were non-blocking by luck.
+     */
+    setvbuf(stdin, NULL, _IONBF, 0);
+    int fl = fcntl(STDIN_FILENO, F_GETFL, 0);
+    if (fl >= 0) fcntl(STDIN_FILENO, F_SETFL, fl | O_NONBLOCK);
+
     s_board = board;
+    s_api_cfg.capture_screen = app_capture_screen;
     s_api_cfg.board = board->board_id;
 
     esp_err_t err = nvs_flash_init();
@@ -4726,13 +4827,40 @@ void xapp_run(const xapp_board_t *board)
     if (s_display_up) {
         if (s_board->touch_read) xui_touch_enable(s_board->touch_read);
         splash_step("ready");
-        /* 8 KB, not 6: the T-Deck's UI task overflowed 6,144 on
-         * 2026-08-30 ("A stack overflow in task ui has been detected", in
-         * the core dump) under the traffic of a fourth station on the
-         * bench. The chat scratch is already static; what is left on this
-         * stack is LVGL's draw path, and it is deeper than it looks. */
-        if (xTaskCreate(ui_task, "ui", 8192, NULL, 4, NULL) != pdPASS)
-            ESP_LOGE(TAG, "UI task failed to start");
+        /*
+         * 8 KB where there is room, 6 KB where there is not.
+         *
+         * The T-Deck's UI task overflowed 6,144 on 2026-08-30 ("A stack
+         * overflow in task ui has been detected", in the core dump) under
+         * the traffic of a fourth station: what lives on this stack is
+         * LVGL's draw path and it is deeper than it looks. But a stack is
+         * one contiguous block, and the Heltec V3 reaches this line with a
+         * largest block of about 7.5 KB -- there 8,192 simply fails, the
+         * task never starts, and a station with a screen and no UI task is
+         * a board that answers nothing and repaints nothing. It cost an
+         * evening to find, so it logs which one it got.
+         */
+        /* PINNED TO CORE 1, and docs/esp32.md is why: "anything that blocks
+         * for milliseconds at a time must be pinned to core 1". A panel
+         * flush is exactly that -- the Heltec V3's is 8,192 pixel writes
+         * and a 1 KB I2C transfer per frame -- and a bare xTaskCreate
+         * leaves the task with NO affinity, which is not the same as core
+         * 1: it lands beside the BLE controller and the WiFi task on core
+         * 0. On the Heltec that showed up as a station that answered HTTP
+         * at 94 bytes a second and then failed to answer ping at all,
+         * which the same page warns reads as a wedged server and is not
+         * one. The T-Dongle and the M5Stack were lucky, not right. */
+        if (xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, 4, NULL, 1)
+            != pdPASS) {
+            if (xTaskCreatePinnedToCore(ui_task, "ui", 6144, NULL, 4, NULL, 1)
+                != pdPASS)
+                ESP_LOGE(TAG, "UI task failed to start");
+            else
+                ESP_LOGW(TAG, "UI task on a 6 KB stack: no room for 8 "
+                              "(largest block %u)",
+                         (unsigned)heap_caps_get_largest_free_block(
+                             MALLOC_CAP_INTERNAL));
+        }
     }
 
     /* The station's LAN face: AFTER the screen, but no longer INSIDE it.

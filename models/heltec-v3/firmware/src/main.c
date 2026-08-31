@@ -240,5 +240,12 @@ static const xapp_board_t k_board = {
 
 void app_main(void)
 {
+    /* NOTE: the console is UART0 behind the CP2102 and IDF leaves stdin on
+     * it unread, so getchar() returns EOF and this board answers none of
+     * the console keys ('S' for a UART framedump, '1'..'8' for a panel) or
+     * `cfg set ...` lines. Installing the UART driver and pointing the VFS
+     * at it was tried on 2026-08-31 and the station stopped reaching WiFi,
+     * so it is left alone: GET /api/screen is the screenshot door here, and
+     * it needs no console at all. */
     xapp_run(&k_board);
 }

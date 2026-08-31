@@ -97,6 +97,21 @@ void xui_set_keys(const char *left, const char *mid, const char *right);
  *  (FRAMEDUMP BEGIN/SLICE/END lines). Any task. */
 void xui_framedump(void);
 
+/** One horizontal band of a captured frame: big-endian RGB565, the same
+ *  pixels the panel is given. Slices arrive top to bottom. */
+typedef void (*xui_slice_fn)(int x1, int y1, int x2, int y2,
+                             const uint16_t *px, void *ctx);
+
+/**
+ * Repaint the whole screen and hand every slice to `cb`, then return.
+ *
+ * Synchronous and re-entrant-hostile: it drives LVGL, so it MUST be called
+ * from the UI task, and xprs_app's HTTP handler asks for a capture by
+ * setting a request the UI task serves on its next pass. Fills *w and *h
+ * with the panel size. ESP_ERR_INVALID_STATE before the display is up.
+ */
+esp_err_t xui_capture(xui_slice_fn cb, void *ctx, int *w, int *h);
+
 /* ---- The home panel: link status + radar ------------------------------- */
 
 #define XUI_HOME_ROWS 4

@@ -25,6 +25,13 @@ extern "C" {
 
 struct xprsidx_s;   /* xprs_index; NULL when the board has no store */
 
+/* How the API asks the board for a screenshot. The HTTP task cannot drive
+ * LVGL, so the board (xprs_app's UI task) serves the request: capture()
+ * repaints and calls `cb` with each slice, from the UI task, and returns
+ * when the frame is done. NULL on a board with no screen. */
+typedef void (*xapi_slice_fn)(int x1, int y1, int x2, int y2,
+                              const uint16_t *px, void *ctx);
+
 typedef struct {
     const char *app;              /* "xprs-esp32" */
     const char *board;            /* "m5stack-core", "tdongle-s3", ... */
@@ -44,6 +51,12 @@ typedef struct {
      *  be NULL. Return bytes written. */
     int (*serve_json)(char *buf, size_t cap);
     int (*features_json)(char *buf, size_t cap);
+
+    /** Repaint the screen and hand every slice to @p cb. Runs the capture
+     *  on whatever task owns LVGL (the board arranges that), fills *w and
+     *  *h, and returns when the frame is complete. NULL on a headless
+     *  board, and then GET /api/screen answers 404. */
+    esp_err_t (*capture_screen)(xapi_slice_fn cb, void *ctx, int *w, int *h);
 
     /** Extra members for /api/status, e.g. `"battery":{...}` -- written
      *  AFTER a leading comma is emitted, so just the members. NULL for

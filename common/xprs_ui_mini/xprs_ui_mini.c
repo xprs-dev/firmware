@@ -2,6 +2,7 @@
  * chart plumbing are the proven blocks from xprs_ui.c, shrunk to one
  * font and 80 pixels of height. */
 #include "xprs_ui_mini.h"
+#include "xprs_ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -15,7 +16,10 @@
 static const char *TAG = "xum";
 
 #define TOP_H     13
-#define BUF_ROWS  20
+/* Rows of the partial draw buffer: w * BUF_ROWS * 2 bytes, taken from the
+ * heap once. Twenty rows is 6.4 KB at 160 wide; ten is 2.6 KB at 128, and
+ * the Heltec V3 needs that difference more than it needs the flushes. */
+#define BUF_ROWS  10
 /* Montserrat 10 with LVGL's default line spacing sits on a 12 px pitch.
  * How many rows fit under the top bar is the panel's business, not the
  * caller's: 160x80 holds five, the Heltec's 128x64 holds four. */
@@ -59,6 +63,11 @@ static int s_view = XUM_VIEW_DEVICES;
 static volatile bool s_dump_pending;
 static bool s_dump_active;
 
+/* A capture in flight: the same repaint as a framedump, but the slices go
+ * to a caller (the HTTP screenshot door) instead of to the UART. */
+static xui_slice_fn s_cap_cb;
+static void        *s_cap_ctx;
+
 static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                          lv_color_t *color_p)
 {
@@ -72,6 +81,9 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
 
     /* Debug frame dump: every slice of this refresh onto the UART as
      * base64, in pieces small enough to never strain the heap. */
+    if (s_cap_cb)
+        s_cap_cb(area->x1, area->y1, area->x2, area->y2, px, s_cap_ctx);
+
     if (s_dump_active) {
         size_t total = size * 2;
         size_t b64_total = ((total + 2) / 3) * 4;
@@ -95,6 +107,21 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
 void xum_framedump(void)
 {
     s_dump_pending = true;
+}
+
+esp_err_t xum_capture(xui_slice_fn cb, void *ctx, int *w, int *h)
+{
+    if (!s_disp) return ESP_ERR_INVALID_STATE;
+    if (w) *w = s_w;
+    if (h) *h = s_h;
+    if (!cb) return ESP_OK;          /* a size query, no repaint */
+    s_cap_cb = cb;
+    s_cap_ctx = ctx;
+    lv_obj_invalidate(lv_scr_act());
+    lv_refr_now(s_disp);
+    s_cap_cb = NULL;
+    s_cap_ctx = NULL;
+    return ESP_OK;
 }
 
 /* ---- build ---------------------------------------------------------------*/

@@ -200,6 +200,11 @@ static uint32_t s_caret_next_ms;
 static volatile bool s_dump_pending;
 static bool s_dump_active;
 
+/* A capture in flight: the same repaint as a framedump, but the slices go
+ * to a caller (the HTTP screenshot door) instead of to the UART. */
+static xui_slice_fn s_cap_cb;
+static void        *s_cap_ctx;
+
 
 static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                          lv_color_t *color_p)
@@ -218,6 +223,9 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
      * chunks (multiples of 3 bytes, so the pieces concatenate into one valid
      * base64 string) -- an earlier draft malloc'd the whole 40 KB slice and
      * died silently the day the free heap shrank below it. */
+    if (s_cap_cb)
+        s_cap_cb(area->x1, area->y1, area->x2, area->y2, px, s_cap_ctx);
+
     if (s_dump_active) {
         size_t total = size * 2;
         size_t b64_total = ((total + 2) / 3) * 4;
@@ -241,6 +249,21 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
 void xui_framedump(void)
 {
     s_dump_pending = true;
+}
+
+esp_err_t xui_capture(xui_slice_fn cb, void *ctx, int *w, int *h)
+{
+    if (!s_disp) return ESP_ERR_INVALID_STATE;
+    if (w) *w = s_w;
+    if (h) *h = s_h;
+    if (!cb) return ESP_OK;          /* a size query, no repaint */
+    s_cap_cb = cb;
+    s_cap_ctx = ctx;
+    lv_obj_invalidate(lv_scr_act());
+    lv_refr_now(s_disp);
+    s_cap_cb = NULL;
+    s_cap_ctx = NULL;
+    return ESP_OK;
 }
 
 /* ---- update ------------------------------------------------------------- */

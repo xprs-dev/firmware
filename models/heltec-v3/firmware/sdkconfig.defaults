@@ -110,13 +110,14 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # single task runs, and on this board the heap is the scarcest thing there
 # is. Sized from lv_mem_monitor(), not from a guess -- this screen is
 # 160x80 with three plain views and reports 26% of 32 KB used (about
-# 8.4 KB) on the T-Dongle; this panel is 128x64, 64% of those pixels, and
-# 12 KB is the same margin. Measure with lv_mem_monitor() before trimming
-# further. The M5Stack learned the other half of this rule the hard way: it
+# 8.4 KB) on the T-Dongle; this panel is 128x64 -- 64% of those pixels and
+# three views of plain labels -- and 8 KB is what is left over once the UI
+# TASK (6 KB of stack) is paid for. With 12 KB here the station reached
+# steady state at 3,780 bytes free and the HTTP server stopped answering. The M5Stack learned the other half of this rule the hard way: it
 # has a 320x240 dashboard using ~20 KB and a 32->24 KB trim there starved
 # the renderer into a 70-second reboot loop. The number is per board and
 # per screen, and it is measured every time.
-CONFIG_LV_MEM_SIZE_KILOBYTES=12
+CONFIG_LV_MEM_SIZE_KILOBYTES=6
 
 # The NimBLE reclaim, restored. docs/esp32.md measured this table ON THIS
 # BOARD and recorded the result: free heap after BLE init 11,432 -> 29,408,
@@ -146,13 +147,17 @@ CONFIG_LWIP_TCP_WND_DEFAULT=2880
 # mesh spool open and read one file at a time -- and it was measured there,
 # where sdcard_init() cost 40,248 bytes with five.
 #
+# Three here, not the T-Dongle's five: this board has a fifth of its free
+# heap and each open file is a 4 KB sector cache. The archive is smaller
+# for it, and that is the right trade on a relay.
+#
 # The archive is now the internal FAT (partitions.csv) and the station is
 # the shared one, which holds five things open at once: the index segment,
 # /idx/log/cur.txt, a gossip bucket, stats.bin and chat.bin. At three it
 # printed "vfs_fat: open: no free file descriptors" every couple of seconds
 # and the sixth thing to ask simply did not get written. Five is the
 # M5Stack's number for the same set of files.
-CONFIG_SDCARD_MAX_FILES=5
+CONFIG_SDCARD_MAX_FILES=3
 
 # ── tinynimble ──────────────────────────────────────────────────────────────
 # This station speaks HCI to the controller directly. The NimBLE host is not
@@ -200,3 +205,11 @@ CONFIG_FATFS_MAX_LFN=255
 # 12,676 bytes -- measured there, and this board finished its first boot
 # with 6,440 free and a min-ever of 16. The T-Deck runs without it too.
 CONFIG_XPRS_BEARER_RNS=n
+
+# Measured here on 2026-08-31, and the reason the two settings above are
+# back at the T-Dongle's numbers: with the TCP windows at 1,440 and ten
+# WiFi buffers this station served 2.7 KB in twenty seconds and answered
+# /api/diag not at all, while the T-Deck on the same network served 8 KB in
+# 0.2 s. A board that is on the LAN but cannot answer is worse than one
+# with less free heap, so the trimming happens in LVGL instead (the pool is
+# 6 KB and the draw buffer ten rows).

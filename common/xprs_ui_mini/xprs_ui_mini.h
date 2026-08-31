@@ -76,6 +76,11 @@ void xum_set_count(int devices);
 /* Mirror the next refresh onto the UART as base64 (host screenshot). */
 void xum_framedump(void);
 
+/* Repaint and hand every slice to cb; see xui_capture in xprs_ui.h. */
+struct xui_slice_fn_fwd;
+esp_err_t xum_capture(void (*cb)(int, int, int, int, const uint16_t *, void *),
+                      void *ctx, int *w, int *h);
+
 #ifdef __cplusplus
 }
 #endif

@@ -83,6 +83,32 @@ next view (and the first tap stops the tour), hold 0.7 s = home, keep holding
 to 2 s = restart the tour. The board asks for the tour at boot
 (`.rotate = true`) for the same reason the T-Dongle does: one button.
 
+### The screenshot door
+
+`GET /api/screen` answers with a BMP of what the panel is showing -- a
+54-byte header and the pixels, streamed a segment at a time so the cost on
+the board is one row of scratch and not a framebuffer. It is board-agnostic
+(`xprs_api`, `xui_capture`): the T-Deck serves its 320x240 in 4.5 s.
+
+**On this board it is unreliable**, and honestly so: at about 10 KB free the
+TCP stack cannot keep a 24 KB transfer moving and the request usually ends
+empty. Here the screenshot to use is the UART framedump, which the console
+fix below finally made possible:
+
+```sh
+python3 ../../tools/scripts/framedump.py --port /dev/ttyUSB0 --cmd S out.png
+```
+
+### The console, and why nothing answered it
+
+`getchar()` on a plain UART console BLOCKS when no driver is installed, and
+IDF installs none. The UI task reads one character a tick, so on this board
+it stopped on the first read and never looped again: the screen froze on its
+first frame, the button did nothing, and any screenshot request waited for a
+repaint that was never going to come. `xapp_run()` now puts stdin in
+non-blocking mode for every board -- the ones with native USB were
+non-blocking by luck, not by design.
+
 ### What this board runs at
 
 No PSRAM, so internal heap is the whole of its room, and this is the
@@ -94,11 +120,23 @@ T-Dongle's config with two changes and the LoRa bearer added:
 - `CONFIG_BT_CTRL_BLE_MAX_ACT=2` (the T-Deck's value) and the LVGL pool at
   12 KB, since 128x64 is 64% of the T-Dongle's pixels.
 
-Measured 2026-08-30: end of boot 6,440 free with the bearers just started
-on a bench of four stations digipeating one another; on a quieter bench
-14-15 KB steady with a min-ever of 9.4 KB. Under the storm it touched 172
-bytes and lost signature checks to `OUT OF MEMORY`. `.heap_floor = 4000`,
-under the transient and over the failure.
+Measured 2026-08-31, with everything running: heap after BLE 109 KB, after
+WiFi 50 KB, after the API 37 KB, and about **10 KB free at steady state**
+once the UI task (6 KB of stack), LVGL's 6 KB pool and its ten-row draw
+buffer are paid for. `.heap_floor = 4000`.
+
+Two figures from the evening before are struck out because they were taken
+on a board that was not doing the work: 14-15 KB free was measured while
+`xTaskCreate(ui_task, 8192)` was silently failing -- there was no UI task at
+all, and a station with a screen and no UI task repaints nothing and answers
+no console key. That is what the fallback and its log line exist to prevent.
+
+**This board is at its limit**, and the limit is TCP: at 10 KB free, `ping`
+is 20 of 20 but a bulk HTTP transfer crawls. Everything on the air -- the
+four bearers, the digipeater, the beacons -- is unaffected, and that is what
+this board is for. If it needs to serve the LAN properly, the archive is the
+thing to turn off (`cfg set index_on 0`): its FAT sector caches are 4 KB
+each.
 
 ## The first evening on the air, and what it broke
 
@@ -119,7 +157,15 @@ are fixed in `common/xprs_app`:
   faster than flash drains it, the pass runs the whole 90 s. It now feeds
   the watchdog per packet.
 - **The UI task overflowed its 6,144-byte stack** (in the core dump: "A
-  stack overflow in task ui has been detected"). It is 8,192 now.
+  stack overflow in task ui has been detected"). It asks for 8,192 now and
+  falls back to 6,144 where there is no contiguous block that size -- which
+  is this board, and where the first version of the fix stopped the UI task
+  from starting at all.
+- **The UI task had no core affinity.** `docs/esp32.md` says anything that
+  blocks for milliseconds belongs on core 1, and a panel flush is exactly
+  that: on this board it is 8,192 pixel writes and a 1 KB I2C transfer. Left
+  unpinned it ran beside the BLE controller and WiFi on core 0, and this
+  station answered ping not at all. Pinned to core 1: 20 of 20.
 
 Neither is about the Heltec. They were there to be found by any fourth
 station, and a fourth station is what this board is for.

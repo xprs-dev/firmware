@@ -97,6 +97,10 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
 void xui_update(void) { xum_update(); }
 
 void xui_framedump(void) { xum_framedump(); }
+esp_err_t xui_capture(xui_slice_fn cb, void *ctx, int *w, int *h)
+{
+    return xum_capture(cb, ctx, w, h);
+}
 
 void xui_flush_enable(bool on)
 {
