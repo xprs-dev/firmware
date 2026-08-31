@@ -68,6 +68,17 @@ extern "C" {
 #define XB_SEEN_RING     32    /* identifiers remembered, per ring */
 #define XB_SEEN_MS       60000u/* how long "already heard" lasts */
 
+/* A queued relay that has waited this long is no longer worth its airtime:
+ * the conversation moved on, and the identifier has aged out of every ring
+ * that would stop it looping. Priority traffic gets ten minutes -- an sos
+ * held by a spent budget is still an sos when the window rolls. */
+#define XB_STALE_MS      120000u
+#define XB_STALE_PRIO_MS 600000u
+
+/* The duty ledger's rolling hour: sixty one-minute buckets. */
+#define XB_DUTY_BUCKETS   60
+#define XB_DUTY_BUCKET_MS 60000u
+
 /**
  * One packet heard.
  *
@@ -110,14 +121,68 @@ typedef struct {
     const char *name;                 /* "lan", "espnow" — for logs only */
 } xb_ops_t;
 
+/* Why a queued packet has not gone out yet, for whoever asks. */
+typedef enum {
+    XB_WAIT_NONE = 0,
+    XB_WAIT_JITTER,   /* its moment has not come (13.2.1) */
+    XB_WAIT_PACE,     /* the bearer owes the inter-packet gap (31.1) */
+    XB_WAIT_DUTY,     /* the hour's airtime budget is spent */
+    XB_WAIT_PRIO,     /* something more urgent went instead this tick */
+} xb_wait_t;
+
 typedef struct {
     char     wire[XB_WIRE_MAX + 1];
     int      len;
     char     id[XB_ID_LEN];
     uint32_t due_ms;
+    uint32_t queued_ms; /* when it entered, for the staleness drop */
     bool     used;
     bool     held;      /* pacing made it wait past due_ms (§31.1) */
+    uint8_t  prio;      /* 1 = t:sos, t:warning or urg:urgent */
+    uint8_t  own;       /* ours, deferred by the budget: never stales */
+    uint8_t  why;       /* xb_wait_t, the last reason it sat */
 } xb_queued_t;
+
+/** How long [len] bytes take on this medium, in ms. NULL is unmetered, and
+ *  that is a real answer, not a missing one -- the same sense as pace 0. */
+typedef uint32_t (*xb_airtime_cb_t)(int len, void *ctx);
+
+/**
+ * The duty ledger: real transmit-milliseconds over a rolling hour.
+ *
+ * Caller-owned, like xb_t itself, and attached by pointer so the bearers
+ * with nothing to meter (the LAN, ESP-NOW, BLE) do not carry 150 bytes of
+ * ring on a board whose whole free heap is ten kilobytes.
+ */
+typedef struct {
+    uint16_t bucket[XB_DUTY_BUCKETS]; /* ms aired in each of the last 60 min */
+    uint32_t head_ms;                 /* now_ms at the start of bucket[head] */
+    uint32_t spent_ms;                /* running sum: the check is O(1) */
+    uint32_t budget_ms;               /* per rolling hour; 0 = ledger off */
+    uint32_t reserve_ms;              /* of that, priority traffic only */
+    uint32_t dwell_ms;                /* longest single transmission; 0 = any.
+                                         The US/AU regime, which caps one
+                                         transmission rather than the hour. */
+    xb_airtime_cb_t airtime;
+    void    *airtime_ctx;
+    uint8_t  head;
+    uint32_t held_now;                /* waiting on the budget right now */
+    uint32_t deferred;                /* own sends that had to queue, ever */
+    uint32_t stale;                   /* dropped as no longer worth airing */
+} xb_duty_t;
+
+/** What the ledger has to say, shaped for a status line or /api/status. */
+typedef struct {
+    uint32_t budget_ms;      /* per hour; 0 when unmetered */
+    uint32_t spent_ms;       /* in the last rolling hour */
+    uint32_t reserve_ms;
+    uint32_t free_ms;        /* what ordinary traffic may still spend */
+    uint32_t free_prio_ms;   /* what an sos may still spend */
+    uint32_t next_free_ms;   /* until the oldest spent minute rolls off */
+    uint32_t held;           /* packets sitting on the budget right now */
+    uint32_t deferred;
+    uint32_t stale;
+} xb_duty_report_t;
 
 typedef struct {
     char     id[XB_ID_LEN];
@@ -158,6 +223,7 @@ typedef struct {
     uint32_t     free_at_ms;    /* not before this may we transmit again */
     uint32_t     paced;         /* packets this held back at least once */
     uint32_t     declined;      /* 13.2.2: relays we sat out, not being named */
+    xb_duty_t   *duty;          /* NULL = unmetered (LAN, ESP-NOW, BLE) */
 } xb_t;
 
 /** Bring a bearer up. @p call is this station, used for `via:` when relaying. */
@@ -197,17 +263,65 @@ void xb_set_beacon(xb_t *b, xb_beacon_cb_t cb, uint32_t interval_sec,
  */
 void xb_set_pace(xb_t *b, uint32_t per_packet_ms);
 
-/** Milliseconds until this bearer may transmit again; 0 when free now. */
+/** Milliseconds until this bearer may transmit again; 0 when free now.
+ *  The larger of the pace debt and the duty wait. */
 uint32_t xb_owed_ms(const xb_t *b);
+
+/**
+ * Meter this bearer against a rolling hour of real airtime.
+ *
+ * [airtime] answers "how long do [len] bytes take here"; only the bearer
+ * knows, and the generic half only counts. [budget_ms] is transmit
+ * milliseconds per rolling hour -- EU band g3 (869.4-869.65 MHz) is 10%,
+ * which is 360000; band g1 is 1%, 36000. [reserve_ms] is the slice of the
+ * budget only t:sos, t:warning and urg:urgent may spend: ordinary traffic
+ * stops at budget - reserve so the emergency still gets out. [dwell_ms]
+ * caps one single transmission instead (the US/AU 400 ms regime); 0 is no
+ * cap, and budget 0 with a dwell is a real configuration.
+ *
+ * This ACCOUNTS. It does not certify: band, region, antenna gain and which
+ * reading of the observation window applies are the operator's, and always
+ * were. [d] is caller-owned and must outlive the bearer.
+ */
+void xb_set_duty(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime, void *ctx,
+                 uint32_t budget_ms, uint32_t reserve_ms, uint32_t dwell_ms);
+
+void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out);
+
+/** One queued packet, for "why is my packet waiting". Returns how many are
+ *  queued in total; [i] indexes them 0..n-1 in no particular order. Any out
+ *  pointer may be NULL. */
+int xb_queue_peek(const xb_t *b, int i, char id[XB_ID_LEN],
+                  uint32_t *due_ms, xb_wait_t *why, bool *prio);
+
+/** Human words for xb_wait_t, one table, so the log, the UI and the JSON
+ *  cannot drift. */
+const char *xb_wait_name(xb_wait_t w);
+
+/** What xb_send_ex says happened. */
+typedef enum {
+    XB_AIRED = 0,   /* on the medium now */
+    XB_QUEUED,      /* the budget is spent -- waiting at the front, will go */
+    XB_REFUSED,     /* the radio said no, or there was no room to wait */
+} xb_send_t;
 
 /**
  * Air one packet of OUR OWN, now, with no jitter and no `via:` — it has taken
  * no hops yet. Use xb_offer() for anything heard elsewhere.
  *
- * Our own traffic is CHARGED against the pacing budget but never blocked by it:
- * a beacon is not free (§31.1), and a station that cannot answer at all is
- * worse than one that answers and then keeps quiet for a while.
+ * Our own traffic is NOT exempt from the duty budget -- a spent hour is
+ * spent whoever is talking, and this header used to promise the opposite
+ * ("charged, never blocked") back when the charge was a flat pace with no
+ * arithmetic behind it. What our traffic keeps is the reserve (an sos of
+ * ours never waits) and the front of the queue: a budget-refused packet is
+ * QUEUED with no jitter, not dropped, and airs when the window rolls.
+ *
+ * The pace, as before, charges our traffic but does not block it.
  */
+xb_send_t xb_send_ex(xb_t *b, const char *wire, int len);
+
+/** As xb_send_ex(), true only for XB_AIRED. Kept so callers that render
+ *  "which bearers took it" keep telling the truth without changing. */
 bool xb_send(xb_t *b, const char *wire, int len);
 
 /**

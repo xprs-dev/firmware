@@ -14,6 +14,7 @@
  */
 
 #include "xprsbearer.h"
+#include "xb_airtime.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -77,39 +78,208 @@ static void xb_cancel(xb_t *b, const char *id)
     }
 }
 
-static int xb_pump(xb_t *b, uint32_t now)
+/*
+ * Is this packet one the emergency reserve exists for?
+ *
+ * A token walk, deliberately not xprs_parse: an xprs_t is 512 bytes and
+ * xb_queue_relay already holds one on this stack -- this tree has stack
+ * scars in exactly that shape. xprs_looks_like has already guaranteed the
+ * wire begins "t:", so the type is the first token.
+ */
+static bool xb_is_priority(const char *wire, int len)
 {
-    int sent = 0;
+    if (len >= 6 && memcmp(wire, "t:sos", 5) == 0 &&
+        (wire[5] == ' ' || len == 5)) return true;
+    if (len >= 10 && memcmp(wire, "t:warning", 9) == 0 &&
+        (wire[9] == ' ' || len == 9)) return true;
+    for (int i = 0; i + 11 <= len; i++) {
+        if (wire[i] == ' ' && memcmp(wire + i, " urg:urgent", 11) == 0 &&
+            (i + 11 == len || wire[i + 11] == ' '))
+            return true;
+    }
+    return false;
+}
+
+/* Roll the ledger's window forward. Bounded: a gap beyond two full windows
+ * (a long sleep, or the 49.7-day millisecond turnover) clears the ring --
+ * losing an hour of accounting once in seven weeks beats inventing spend
+ * that cannot be placed. */
+static void xb_duty_roll(xb_duty_t *d, uint32_t now)
+{
+    uint32_t gap = now - d->head_ms;              /* unsigned: wraps cleanly */
+    if (gap >= XB_DUTY_BUCKET_MS * XB_DUTY_BUCKETS * 2u) {
+        memset(d->bucket, 0, sizeof d->bucket);
+        d->spent_ms = 0;
+        d->head = 0;
+        d->head_ms = now;
+        return;
+    }
+    while (gap >= XB_DUTY_BUCKET_MS) {
+        d->head = (uint8_t)((d->head + 1) % XB_DUTY_BUCKETS);
+        d->spent_ms -= d->bucket[d->head];
+        d->bucket[d->head] = 0;
+        d->head_ms += XB_DUTY_BUCKET_MS;
+        gap -= XB_DUTY_BUCKET_MS;
+    }
+}
+
+static void xb_duty_charge(xb_duty_t *d, uint32_t air_ms)
+{
+    if (!d) return;
+    uint32_t v = (uint32_t)d->bucket[d->head] + air_ms;
+    d->bucket[d->head] = v > 65535u ? 65535u : (uint16_t)v;
+    d->spent_ms += air_ms;
+}
+
+/* May [air_ms] more go out? Ordinary traffic stops where the reserve
+ * begins; priority runs to the whole budget. */
+static bool xb_afford(const xb_duty_t *d, uint32_t air_ms, bool prio)
+{
+    if (!d || !d->budget_ms) return true;
+    uint32_t cap = prio ? d->budget_ms
+                        : (d->budget_ms > d->reserve_ms
+                               ? d->budget_ms - d->reserve_ms : 0);
+    return d->spent_ms + air_ms <= cap;
+}
+
+/* The cost of airing [len] bytes here, and whether it may ever be aired at
+ * all: a dwell-capped region refuses a single transmission longer than the
+ * cap, whatever the hour looks like. */
+static uint32_t xb_air_cost(const xb_t *b, int len)
+{
+    if (!b->duty || !b->duty->airtime) return 0;
+    return b->duty->airtime(len, b->duty->airtime_ctx);
+}
+
+/* Pick the due packet that should go next: earliest due among the wanted
+ * class. Two scans of eight, no sort. */
+static int xb_pick(const xb_t *b, uint32_t now, bool want_prio)
+{
+    int best = -1;
     for (int i = 0; i < XB_QUEUE_MAX; i++) {
         if (!b->queue[i].used) continue;
+        if ((bool)b->queue[i].prio != want_prio) continue;
         if ((int32_t)(now - b->queue[i].due_ms) < 0) continue;
-        /* §31.1, and the reason this is a WAIT and not a refusal: the slot is
-         * cleared before ops.air() below, so a bearer that answered "not now"
-         * would have its packet dropped rather than delayed. The debt is the
-         * bearer's, so everything queued behind it waits too -- which is the
-         * point, a slow radio is not made faster by a busy neighbour. */
+        if (best < 0 ||
+            (int32_t)(b->queue[i].due_ms - b->queue[best].due_ms) < 0)
+            best = i;
+    }
+    return best;
+}
+
+/* Drop what is no longer worth its airtime (see XB_STALE_MS). */
+static void xb_drop_stale(xb_t *b, uint32_t now)
+{
+    for (int i = 0; i < XB_QUEUE_MAX; i++) {
+        if (!b->queue[i].used) continue;
+        /* Our own deferred packet never stales: it is not a relay whose
+         * moment passes, it is this station's word waiting for the window
+         * to roll, which can honestly take most of an hour. */
+        if (b->queue[i].own) continue;
+        uint32_t limit = b->queue[i].prio ? XB_STALE_PRIO_MS : XB_STALE_MS;
+        if (now - b->queue[i].queued_ms < limit) continue;
+        b->queue[i].used = false;
+        if (b->duty) b->duty->stale++;
+        XB_LOGW("%s: %s waited %lus -- no longer worth its airtime, dropped",
+                b->ops.name ? b->ops.name : "?", b->queue[i].id,
+                (unsigned long)((now - b->queue[i].queued_ms) / 1000u));
+    }
+}
+
+static int xb_pump(xb_t *b, uint32_t now)
+{
+    if (b->duty) {
+        xb_duty_roll(b->duty, now);
+        b->duty->held_now = 0;
+    }
+    xb_drop_stale(b, now);
+
+    int sent = 0;
+    for (;;) {
+        /* §31.1, a WAIT and not a refusal: the debt is the bearer's, so
+         * everything due waits with it. */
         if (b->pace_ms && (int32_t)(now - b->free_at_ms) < 0) {
-            if (!b->queue[i].held) {
-                b->queue[i].held = true;
-                b->paced++;
+            for (int i = 0; i < XB_QUEUE_MAX; i++) {
+                if (!b->queue[i].used) continue;
+                if ((int32_t)(now - b->queue[i].due_ms) < 0) continue;
+                b->queue[i].why = XB_WAIT_PACE;
+                if (!b->queue[i].held) { b->queue[i].held = true; b->paced++; }
             }
             break;
         }
+
+        /* Priority first, then ordinary; each class by earliest due. This is
+         * also what finally drains the queue in due order rather than in
+         * whatever slot order the packets happened to land in. */
+        bool prio = true;
+        int i = xb_pick(b, now, true);
+        if (i < 0) { prio = false; i = xb_pick(b, now, false); }
+        if (i < 0) break;
+
+        uint32_t air_ms = xb_air_cost(b, b->queue[i].len);
+        if (b->duty && b->duty->dwell_ms && air_ms > b->duty->dwell_ms) {
+            /* Longer than one transmission may EVER be here: it will never
+             * fit, so holding it would wedge the queue behind it. */
+            b->queue[i].used = false;
+            b->duty->stale++;
+            XB_LOGW("%s: %s is %lums of airtime against a %lums dwell cap"
+                    " -- dropped", b->ops.name ? b->ops.name : "?",
+                    b->queue[i].id, (unsigned long)air_ms,
+                    (unsigned long)b->duty->dwell_ms);
+            continue;
+        }
+        if (b->duty && !xb_afford(b->duty, air_ms, prio)) {
+            /* A refused priority packet means even the reserve is gone;
+             * a refused ordinary packet means the prio pass found nothing.
+             * Either way nothing can go this tick. */
+            for (int j = 0; j < XB_QUEUE_MAX; j++) {
+                if (!b->queue[j].used) continue;
+                if ((int32_t)(now - b->queue[j].due_ms) < 0) continue;
+                b->queue[j].why = XB_WAIT_DUTY;
+                b->duty->held_now++;
+            }
+            static uint32_t s_duty_logs;
+            s_duty_logs++;
+            if (s_duty_logs == 1 || (s_duty_logs % 16) == 0) {
+                XB_LOGW("%s: %s held -- %lu.%lu s of %lu.%lu s spent this "
+                        "hour", b->ops.name ? b->ops.name : "?",
+                        b->queue[i].id,
+                        (unsigned long)(b->duty->spent_ms / 1000u),
+                        (unsigned long)(b->duty->spent_ms % 1000u / 100u),
+                        (unsigned long)(b->duty->budget_ms / 1000u),
+                        (unsigned long)(b->duty->budget_ms % 1000u / 100u));
+            }
+            break;
+        }
+
         b->queue[i].used = false;
         b->queue[i].held = false;
         XB_LOCK(b);
         bool ok = b->ops.air(b->ops.ctx, b->queue[i].wire, b->queue[i].len);
+        /* Charged whether or not the radio said yes: a send that timed out
+         * still keyed the PA up, and a failing radio must not be free. */
+        xb_duty_charge(b->duty, air_ms);
+        uint32_t after = b->ops.now_ms();
         if (ok) {
             xb_ring_add(b->aired, &b->aired_pos, b->queue[i].id, now);
             b->tx_count++;
-            b->last_ms = b->ops.now_ms();
-            b->free_at_ms = now + b->pace_ms;
+            b->last_ms = after;
         }
+        /* The debt starts when the transmission ENDED, not when the tick
+         * began -- ops.air blocks for the whole airtime on a radio. */
+        b->free_at_ms = after + b->pace_ms;
         XB_UNLOCK(b);
         if (ok) sent++;
-        /* One per tick while metered: the debt this airing just incurred is
-         * owed before the next one, and the tick will come back. */
-        if (ok && b->pace_ms) break;
+
+        /* The ones that were due and did not go: say why. */
+        for (int j = 0; j < XB_QUEUE_MAX; j++) {
+            if (!b->queue[j].used) continue;
+            if ((int32_t)(now - b->queue[j].due_ms) < 0) continue;
+            b->queue[j].why = prio && !b->queue[j].prio ? XB_WAIT_PRIO
+                                                        : XB_WAIT_PACE;
+        }
+        /* One per tick while metered, as before. */
+        if (b->pace_ms || b->duty) break;
     }
     return sent;
 }
@@ -151,16 +321,33 @@ static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
     uint32_t due = xb_due_ms(b, now, b->last_rssi_id[0] &&
                              strcmp(b->last_rssi_id, id) == 0
                                  ? b->last_rssi : 0);
+    bool prio = xb_is_priority(wire, len);
 
     int slot = -1;
     for (int i = 0; i < XB_QUEUE_MAX; i++) {
         if (!b->queue[i].used) { slot = i; break; }
     }
-    if (slot < 0) {                     /* full — the one closest to its moment
-                                           has waited longest, so keep it */
-        slot = 0;
-        for (int i = 1; i < XB_QUEUE_MAX; i++) {
-            if ((int32_t)(b->queue[i].due_ms - b->queue[slot].due_ms) > 0) slot = i;
+    if (slot < 0) {
+        /* Full. The old rule -- evict whoever is furthest from their moment
+         * -- inverts under a spent budget: an sos that arrived a second ago
+         * is the furthest out, and the rule would drop the emergency for a
+         * weather report. So: evict the lowest priority first, furthest due
+         * within that, and an ordinary packet NEVER displaces a priority
+         * one -- if only priority packets are waiting, the ordinary
+         * newcomer is the one that loses. */
+        for (int i = 0; i < XB_QUEUE_MAX; i++) {
+            if (slot < 0) { slot = i; continue; }
+            if (b->queue[i].prio != b->queue[slot].prio) {
+                if (b->queue[i].prio < b->queue[slot].prio) slot = i;
+                continue;
+            }
+            if ((int32_t)(b->queue[i].due_ms - b->queue[slot].due_ms) > 0)
+                slot = i;
+        }
+        if (!prio && b->queue[slot].prio) {
+            XB_LOGW("%s: re-air queue full of priority traffic — refusing %s",
+                    b->ops.name ? b->ops.name : "?", id);
+            return;
         }
         XB_LOGW("%s: re-air queue full — dropping %s for %s",
                 b->ops.name ? b->ops.name : "?", b->queue[slot].id, id);
@@ -170,7 +357,12 @@ static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
     b->queue[slot].len = len;
     snprintf(b->queue[slot].id, XB_ID_LEN, "%s", id);
     b->queue[slot].due_ms = due;
+    b->queue[slot].queued_ms = now;
     b->queue[slot].used = true;
+    b->queue[slot].held = false;
+    b->queue[slot].prio = prio ? 1 : 0;
+    b->queue[slot].own = 0;
+    b->queue[slot].why = XB_WAIT_JITTER;
 }
 
 /* ── Offering a packet from another bearer ──────────────────────────────── */
@@ -271,8 +463,13 @@ void xb_echo(xb_t *b, const char *wire, int len)
 
     /* Verbatim, and deliberately without the aired-ring refusal that stops
      * xb_offer(): this packet is one we aired, and saying it again is the
-     * whole point. The wait is the plain one -- an echo is nobody's race. */
+     * whole point. The wait is the plain one -- an echo is nobody's race.
+     * And NEVER priority, whatever the wire says: an echoed sos on a timer
+     * must not draw on the emergency reserve. */
     xb_queue_push(b, wire, len, id, now);
+    for (int i = 0; i < XB_QUEUE_MAX; i++)
+        if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0)
+            b->queue[i].prio = 0;
 }
 
 uint32_t xb_idle_ms(const xb_t *b, uint32_t now_ms)
@@ -358,26 +555,68 @@ void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi)
 
 /* ── Our own packets ────────────────────────────────────────────────────── */
 
-bool xb_send(xb_t *b, const char *wire, int len)
+xb_send_t xb_send_ex(xb_t *b, const char *wire, int len)
 {
-    if (!b || !b->active || !wire || len <= 0 || len > XB_WIRE_MAX) return false;
-    if (!xprs_looks_like((const uint8_t *)wire, len)) return false;
+    if (!b || !b->active || !wire || len <= 0 || len > XB_WIRE_MAX)
+        return XB_REFUSED;
+    if (!xprs_looks_like((const uint8_t *)wire, len)) return XB_REFUSED;
 
     uint32_t now = b->ops.now_ms();
     char id[XB_ID_LEN];
     bool have_id = xprs_id_of(wire, len, id);   /* a SHA-256: outside the lock */
+    bool prio = xb_is_priority(wire, len);
+    uint32_t air_ms = xb_air_cost(b, len);
+
+    if (b->duty) {
+        xb_duty_roll(b->duty, now);
+        if (b->duty->dwell_ms && air_ms > b->duty->dwell_ms)
+            return XB_REFUSED;
+        if (!xb_afford(b->duty, air_ms, prio)) {
+            /* The hour is spent and this is not (or no longer) affordable:
+             * our packet WAITS, at the front -- due immediately, no jitter,
+             * ours has no 13.2.1 race to lose. It goes out unmodified when
+             * the window rolls. */
+            if (!have_id) return XB_REFUSED;
+            for (int i = 0; i < XB_QUEUE_MAX; i++)
+                if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0)
+                    return XB_QUEUED;
+            int free_slot = -1;
+            for (int i = 0; i < XB_QUEUE_MAX; i++)
+                if (!b->queue[i].used) { free_slot = i; break; }
+            if (free_slot < 0 && !prio) return XB_REFUSED;
+            xb_queue_push(b, wire, len, id, now);
+            for (int i = 0; i < XB_QUEUE_MAX; i++)
+                if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0) {
+                    b->queue[i].due_ms = now;
+                    b->queue[i].own = 1;
+                    b->queue[i].why = XB_WAIT_DUTY;
+                }
+            b->duty->deferred++;
+            return XB_QUEUED;
+        }
+    }
 
     XB_LOCK(b);
     if (have_id) xb_ring_add(b->aired, &b->aired_pos, id, now);
     bool ok = b->ops.air(b->ops.ctx, wire, len);
+    xb_duty_charge(b->duty, air_ms);      /* whether or not it said yes */
+    uint32_t after = b->ops.now_ms();
     if (ok) {
         b->tx_count++;
-        b->last_ms = now;
-        /* Charged, never blocked -- see xb_set_pace(). A beacon is not free. */
-        b->free_at_ms = now + b->pace_ms;
+        b->last_ms = after;
     }
+    /* The pace, as ever, charges our traffic without blocking it -- and now
+     * accumulates from the end of the transmission instead of resetting to
+     * a fixed gap, so two quick beacons owe two gaps, not one. */
+    b->free_at_ms = ((int32_t)(b->free_at_ms - after) > 0 ? b->free_at_ms
+                                                          : after) + b->pace_ms;
     XB_UNLOCK(b);
-    return ok;
+    return ok ? XB_AIRED : XB_REFUSED;
+}
+
+bool xb_send(xb_t *b, const char *wire, int len)
+{
+    return xb_send_ex(b, wire, len) == XB_AIRED;
 }
 
 /* ── Beacon and tick ────────────────────────────────────────────────────── */
@@ -387,11 +626,97 @@ void xb_set_pace(xb_t *b, uint32_t per_packet_ms)
     if (b) b->pace_ms = per_packet_ms;
 }
 
+void xb_set_duty(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime, void *ctx,
+                 uint32_t budget_ms, uint32_t reserve_ms, uint32_t dwell_ms)
+{
+    if (!b) return;
+    if (d) {
+        memset(d, 0, sizeof *d);
+        d->airtime = airtime;
+        d->airtime_ctx = ctx;
+        d->budget_ms = budget_ms;
+        d->reserve_ms = reserve_ms < budget_ms ? reserve_ms : budget_ms;
+        d->dwell_ms = dwell_ms;
+        d->head_ms = b->ops.now_ms ? b->ops.now_ms() : 0;
+    }
+    b->duty = d;
+}
+
+void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof *out);
+    if (!b || !b->duty) return;
+    xb_duty_t *d = b->duty;
+    xb_duty_roll(d, now_ms);
+    out->budget_ms = d->budget_ms;
+    out->spent_ms = d->spent_ms;
+    out->reserve_ms = d->reserve_ms;
+    uint32_t ord_cap = d->budget_ms > d->reserve_ms
+                           ? d->budget_ms - d->reserve_ms : 0;
+    out->free_ms = d->spent_ms < ord_cap ? ord_cap - d->spent_ms : 0;
+    out->free_prio_ms = d->spent_ms < d->budget_ms
+                            ? d->budget_ms - d->spent_ms : 0;
+    out->held = d->held_now;
+    out->deferred = d->deferred;
+    out->stale = d->stale;
+    /* When does the oldest spent minute roll off? Walk the ring once --
+     * this runs on a status tick, not in the pump. */
+    if (d->budget_ms && d->spent_ms) {
+        for (int k = 1; k <= XB_DUTY_BUCKETS; k++) {
+            int idx = (d->head + k) % XB_DUTY_BUCKETS;
+            if (!d->bucket[idx]) continue;
+            uint32_t age = now_ms - d->head_ms
+                         + (uint32_t)(XB_DUTY_BUCKETS - k) * XB_DUTY_BUCKET_MS;
+            out->next_free_ms = age < XB_DUTY_BUCKET_MS * XB_DUTY_BUCKETS
+                ? XB_DUTY_BUCKET_MS * XB_DUTY_BUCKETS - age : 0;
+            break;
+        }
+    }
+}
+
+int xb_queue_peek(const xb_t *b, int i, char id[XB_ID_LEN],
+                  uint32_t *due_ms, xb_wait_t *why, bool *prio)
+{
+    if (!b) return 0;
+    int n = 0;
+    for (int k = 0; k < XB_QUEUE_MAX; k++) {
+        if (!b->queue[k].used) continue;
+        if (n == i) {
+            if (id) snprintf(id, XB_ID_LEN, "%s", b->queue[k].id);
+            if (due_ms) *due_ms = b->queue[k].due_ms;
+            if (why) *why = (xb_wait_t)b->queue[k].why;
+            if (prio) *prio = b->queue[k].prio != 0;
+        }
+        n++;
+    }
+    return n;
+}
+
+const char *xb_wait_name(xb_wait_t w)
+{
+    switch (w) {
+    case XB_WAIT_JITTER: return "jitter";
+    case XB_WAIT_PACE:   return "pace";
+    case XB_WAIT_DUTY:   return "duty";
+    case XB_WAIT_PRIO:   return "priority";
+    default:             return "none";
+    }
+}
+
 uint32_t xb_owed_ms(const xb_t *b)
 {
-    if (!b || !b->pace_ms || !b->ops.now_ms) return 0;
+    if (!b || !b->ops.now_ms) return 0;
     uint32_t now = b->ops.now_ms();
-    return (int32_t)(now - b->free_at_ms) < 0 ? b->free_at_ms - now : 0;
+    uint32_t owed = 0;
+    if (b->pace_ms && (int32_t)(now - b->free_at_ms) < 0)
+        owed = b->free_at_ms - now;
+    if (b->duty && b->duty->budget_ms) {
+        xb_duty_report_t r;
+        xb_duty_report(b, now, &r);
+        if (!r.free_ms && r.next_free_ms > owed) owed = r.next_free_ms;
+    }
+    return owed;
 }
 
 void xb_set_rx_cb(xb_t *b, xb_rx_cb_t cb)       { if (b) b->rx_cb = cb; }

@@ -69,6 +69,22 @@ static cfg_entry_t s_cfg[] = {
     { "rns_hub",     {0}, false },
     { "ble_on",      {0}, false },
     { "rns_pace_ms", {0}, false },
+    /* The LoRa radio's manners (docs/API.md, "the hour and the reserve").
+     * lora_pace_ms was read by xprs_app for a year without being in this
+     * table, so xcfg_get() answered NULL and the operator override never
+     * once fired -- a key must exist HERE, in s_ini_map and in the ini
+     * template, or it is dead. Same lesson for the echo and BLE-digipeat
+     * keys below. NVS caps a key at 15 characters. */
+    { "lora_region",  {0}, false },
+    { "lora_freq_hz", {0}, false },
+    { "lora_pace_ms", {0}, false },
+    { "lora_duty_ms", {0}, false },
+    { "lora_resv_ms", {0}, false },
+    { "lora_profile", {0}, false },
+    { "echo_on",       {0}, false },
+    { "echo_quiet_ms", {0}, false },
+    { "echo_gap_ms",   {0}, false },
+    { "digi_ble_on",   {0}, false },
     { "own1",      {0}, false },
     { "own2",      {0}, false },
     { "own3",      {0}, false },
@@ -169,6 +185,16 @@ int xcfg_ini_render(char *buf, size_t cap)
         "; Carry LAN traffic onto the ESP-NOW radio.\n"
         "enabled = %s\n"
         "\n"
+        "[lora]\n"
+        "; Region preset: eu (869.5 MHz, 10%% duty), eu-g1 (868.2, 1%%),\n"
+        "; us, au. Empty keys take the preset's own figures.\n"
+        "region = %s\n"
+        "frequency = %s\n"
+        "duty_ms = %s\n"
+        "reserve_ms = %s\n"
+        "pace_ms = %s\n"
+        "profile = %s\n"
+        "\n"
         "[igate]\n"
         "; Carry ESP-NOW traffic onto the LAN (toward the internet side).\n"
         "enabled = %s\n"
@@ -220,6 +246,12 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("espnow_on", true) ? "yes" : "no",
         xcfg_get_bool("digi_on", true) ? "yes" : "no",
         xcfg_get_bool("bridge_on", true) ? "yes" : "no",
+        xcfg_get("lora_region", "eu"),
+        xcfg_get("lora_freq_hz", ""),
+        xcfg_get("lora_duty_ms", ""),
+        xcfg_get("lora_resv_ms", ""),
+        xcfg_get("lora_pace_ms", ""),
+        xcfg_get("lora_profile", ""),
         xcfg_get_bool("igate_on", true) ? "yes" : "no",
         xcfg_get_bool("index_on", true) ? "yes" : "no",
         xcfg_get_bool("share_on", false) ? "yes" : "no",
@@ -257,6 +289,19 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
      * beside a router does not have a cable to. A super-archiver is never
      * port-forwarded; it dials out, and this is the line that says where. */
     { "rns",     "hub",      "rns_hub" },
+    { "rns",     "pace_ms",  "rns_pace_ms" },
+    /* The radio's region decides the channel, the hourly airtime budget and
+     * the slice held back for sos -- see docs/API.md. */
+    { "lora",    "region",   "lora_region" },
+    { "lora",    "frequency","lora_freq_hz" },
+    { "lora",    "pace_ms",  "lora_pace_ms" },
+    { "lora",    "duty_ms",  "lora_duty_ms" },
+    { "lora",    "reserve_ms","lora_resv_ms" },
+    { "lora",    "profile",  "lora_profile" },
+    { "echo",    "enabled",  "echo_on" },
+    { "echo",    "quiet_ms", "echo_quiet_ms" },
+    { "echo",    "gap_ms",   "echo_gap_ms" },
+    { "digipeater", "ble",   "digi_ble_on" },
     /* Bluetooth. On by default, and the one thing a router-side station
      * turns off: the controller is what pays for the hub socket. */
     { "ble",     "enabled",  "ble_on" },

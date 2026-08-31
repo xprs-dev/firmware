@@ -74,9 +74,10 @@ extern "C" {
  * 868.0 is the EU default and what the T-Deck already uses, so two boards on
  * one bench meet without either being re-flashed.
  *
- * WHAT IS LEGAL IS NOT WHAT IS POSSIBLE. 22 dBm is the module's maximum and
- * is above the EU 868 limit for many duty-cycle classes; the pacing below is
- * a floor, not compliance advice, and the operator owns the final say.
+ * 869.5 MHz is ERC 70-03 band g3 (869.40-869.65): 10% duty and up to
+ * 27 dBm e.r.p., which makes this module's 22 dBm legal where it was over
+ * the old 868.0 channel's g1 limit. The duty ledger below is what holds
+ * the 10%; the operator still owns antenna gain and the final say.
  *
  * EVERY ONE OF THESE MUST MATCH common/xprs_bearer_lora/xprslora.c, or this
  * station is on the air and alone. Two LoRa radios on the same frequency
@@ -86,6 +87,11 @@ extern "C" {
  *
  * The fleet's figures, from xprslora.c's sx1262_lora_config_t:
  *
+#include "xb_airtime.h"
+#include "xprssig.h"
+#include "xprsid.h"
+#include "xprs_auth.h"
+#include "bech32.h"
  *     SF7, BW 125 kHz, CR 4/5, preamble 8, CRC on
  *
  * RadioLib spells the coding rate as its denominator, so 4/5 is 5.
@@ -95,7 +101,7 @@ extern "C" {
  * private-network value, not LoRaWAN's public 0x3444. RadioLib writes that
  * same register from the one-byte shorthand 0x12. Same bytes on the air.
  */
-#define LORA_FREQ_MHZ    868.0
+#define LORA_FREQ_MHZ    869.5
 #define LORA_BW_KHZ      125.0
 #define LORA_SF          7
 #define LORA_CR          5         /* 4/5, as the fleet uses */
@@ -569,3 +575,16 @@ void loop(void)
 
     delay(5);
 }
+    /* The rolling-hour ledger, from the same modem constants the radio was
+     * given ten lines up, so the charge cannot drift from the wire. Band
+     * g3: 360 s of airtime an hour, 6 s of it kept for sos. */
+    static xb_duty_t s_lora_duty;
+    static const xb_lora_air_t k_lora_air = {
+        .bw_hz = (uint32_t)(LORA_BW_KHZ * 1000.0), .sf = LORA_SF,
+        .cr = LORA_CR - 4, .preamble = LORA_PREAMBLE, .crc = true,
+        .implicit_header = false,
+    };
+    struct air_fn { static uint32_t ms(int len, void *ctx) {
+        (void)ctx; return xb_lora_airtime_ms(&k_lora_air, len); } };
+    xb_set_duty(&s_lora, &s_lora_duty, air_fn::ms, NULL,
+                360000u, 6000u, 0u);

@@ -661,12 +661,21 @@ static void kb_light_tick(int kb)
     }
 }
 
+static int api_lora_json(char *buf, size_t cap);
+
 static int api_status_json(char *buf, size_t cap)
 {
-    /* Cached values only -- this runs on the HTTP task. */
-    return snprintf(buf, cap,
+    /* Cached values only -- this runs on the HTTP task; the lora report is
+     * a 60-entry walk with no locks and no radio, which qualifies. */
+    int n = snprintf(buf, cap,
         "\"battery\":{\"mv\":%d,\"state\":\"%s\"},\"screen\":\"%s\"",
         s_bat_mv, bat_state_name(), s_screen_off ? "off" : "on");
+    if (n > 0 && (size_t)n + 2 < cap) {
+        int m = api_lora_json(buf + n + 1, cap - (size_t)n - 1);
+        if (m > 0) { buf[n] = ','; n += 1 + m; }
+        else buf[n] = 0;
+    }
+    return n;
 }
 static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */
 /* Rotate: C on the home panel starts a 30 s tour of Home, Stats, Chat;
@@ -2419,10 +2428,22 @@ static void ui_render(void)
              * radios on different frequencies are simply deaf to each
              * other, and nothing else on the screen would say so. */
             uint32_t hz = s_board->lora->freq_hz ? s_board->lora->freq_hz
-                                                 : 868000000u;
-            snprintf(note, sizeof note, "%u.%u MHz",
-                     (unsigned)(hz / 1000000u),
-                     (unsigned)((hz % 1000000u) / 100000u));
+                                                 : xprslora_region()->freq_hz;
+            xb_duty_report_t dr;
+            xprslora_duty(&dr);
+            if (dr.budget_ms)
+                /* The number an operator wants: how much of the hour is
+                 * left for ordinary traffic. */
+                snprintf(note, sizeof note, "%u.%u MHz %u%%",
+                         (unsigned)(hz / 1000000u),
+                         (unsigned)((hz % 1000000u) / 100000u),
+                         (unsigned)(dr.free_ms * 100u /
+                                    (dr.budget_ms - dr.reserve_ms ?
+                                     dr.budget_ms - dr.reserve_ms : 1u)));
+            else
+                snprintf(note, sizeof note, "%u.%u MHz",
+                         (unsigned)(hz / 1000000u),
+                         (unsigned)((hz % 1000000u) / 100000u));
             xui_home_row(row++, "LoRa", xprslora_is_active(), d,
                          xprslora_is_active() ? note : NULL);
         }
@@ -4114,6 +4135,26 @@ static int api_serve_json(char *buf, size_t cap)
     return snprintf(buf, cap, "\"index\",\"history\",\"mailbox\"");
 }
 
+static int api_lora_json(char *buf, size_t cap)
+{
+    if (!s_board->lora || !xprslora_is_active()) return 0;
+    xb_duty_report_t r;
+    xprslora_duty(&r);
+    const xprslora_region_t *reg = xprslora_region();
+    return snprintf(buf, cap,
+        "\"lora\":{\"region\":\"%s\",\"freq_hz\":%lu,"
+        "\"duty_ms\":%lu,\"spent_ms\":%lu,\"free_ms\":%lu,"
+        "\"reserve_ms\":%lu,\"held\":%lu,\"deferred\":%lu,"
+        "\"stale\":%lu,\"next_free_ms\":%lu}",
+        reg->name,
+        (unsigned long)(s_board->lora->freq_hz ? s_board->lora->freq_hz
+                                               : reg->freq_hz),
+        (unsigned long)r.budget_ms, (unsigned long)r.spent_ms,
+        (unsigned long)r.free_ms, (unsigned long)r.reserve_ms,
+        (unsigned long)r.held, (unsigned long)r.deferred,
+        (unsigned long)r.stale, (unsigned long)r.next_free_ms);
+}
+
 static int api_features_json(char *buf, size_t cap)
 {
     return snprintf(buf, cap,
@@ -4567,7 +4608,14 @@ static void ui_task(void *arg)
             if (t - note_ms > 2000) {
                 note_ms = t;
                 char note[16];
-                if (s_lora_rssi_ms && t - s_lora_rssi_ms < 300000)
+                xb_duty_report_t dr;
+                xprslora_duty(&dr);
+                if (dr.held)
+                    /* Gagged is not quiet: the budget is spent and packets
+                     * are waiting for the window to roll. */
+                    snprintf(note, sizeof note, "held %lus",
+                             (unsigned long)(dr.next_free_ms / 1000u));
+                else if (s_lora_rssi_ms && t - s_lora_rssi_ms < 300000)
                     snprintf(note, sizeof note, "%ddBm", s_lora_rssi);
                 else
                     snprintf(note, sizeof note, "LoRa quiet");
@@ -4939,16 +4987,43 @@ void xapp_run(const xapp_board_t *board)
      * whose task is what pumps this one's queue too. */
     if (board->lora) {
         splash_step("radio");
-        if (xprslora_start(s_call, board->lora) == ESP_OK) {
-            xprslora_set_rx_cb(on_lora);
-            /* 31.1 is a legal figure, and the law differs by band and region,
-             * so the operator gets the last word. The default is already set
-             * inside the bearer; this only lets a station be stricter (or,
-             * knowingly, looser) without a rebuild. */
-            const char *pace = xcfg_get("lora_pace_ms", NULL);
-            if (pace && pace[0]) xprslora_set_pace((uint32_t)atoi(pace));
+        /* The operator's region, frequency and profile, read BEFORE the
+         * radio starts because they are what it starts AS. The defaults
+         * live in the bearer's region table (xprslora_regions); config
+         * only tightens or knowingly loosens. */
+        xprslora_cfg_t lc = *board->lora;
+        {
+            int nreg = 0;
+            const xprslora_region_t *regs = xprslora_regions(&nreg);
+            const xprslora_region_t *reg = &regs[0];
+            const char *rn = xcfg_get("lora_region", NULL);
+            if (rn && rn[0]) {
+                for (int i = 0; i < nreg; i++)
+                    if (strcasecmp(regs[i].name, rn) == 0) { reg = &regs[i]; break; }
+            }
+            if (!lc.freq_hz) lc.freq_hz = reg->freq_hz;
+            const char *fq = xcfg_get("lora_freq_hz", NULL);
+            if (fq && fq[0]) lc.freq_hz = (uint32_t)strtoul(fq, NULL, 10);
+            const char *pf = xcfg_get("lora_profile", NULL);
+            if (pf && strcasecmp(pf, "far") == 0) lc.sf = 9;
+            if (xprslora_start(s_call, &lc) == ESP_OK) {
+                xprslora_set_rx_cb(on_lora);
+                uint32_t duty = reg->duty_ms, resv = reg->reserve_ms,
+                         dwell = reg->dwell_ms;
+                const char *v;
+                if ((v = xcfg_get("lora_duty_ms", NULL)) && v[0])
+                    duty = (uint32_t)strtoul(v, NULL, 10);
+                if ((v = xcfg_get("lora_resv_ms", NULL)) && v[0])
+                    resv = (uint32_t)strtoul(v, NULL, 10);
+                xprslora_set_duty(duty, resv, dwell);
+                /* This override was dead for a year -- the key was read
+                 * here and absent from xprs_config's table, so xcfg_get
+                 * always answered NULL. Registered now. */
+                if ((v = xcfg_get("lora_pace_ms", NULL)) && v[0])
+                    xprslora_set_pace((uint32_t)strtoul(v, NULL, 10));
+            }
         }
-        else
+        if (!xprslora_is_active())
             ESP_LOGE(TAG, "LoRa radio failed to start -- carrying on without");
     }
 

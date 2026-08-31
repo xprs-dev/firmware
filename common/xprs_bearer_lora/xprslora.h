@@ -13,10 +13,13 @@
  * pointers, receiving into a queue from the DIO1 interrupt's wake and airing
  * with the airtime respect a shared band demands.
  *
- * ON AIRTIME. 250 bytes at SF7/125 kHz is ~400 ms on the air, and 868 MHz is
- * a shared band with a duty-cycle obligation (1% in most of its sub-bands).
- * The bearer's own jitter and dupe-cancel already keep chatter down; do not
- * add periodic traffic here without doing the arithmetic.
+ * ON AIRTIME. 250 bytes at SF7/125 kHz is 390 ms on the air, and the band
+ * is shared with a duty-cycle obligation -- 10% in band g3 (869.4-869.65,
+ * where the fleet now sits), 1% in g1. Since 2026-08-31 the arithmetic is
+ * DONE: a duty ledger (xb_set_duty) charges every transmission its real
+ * time-on-air against a rolling hour, holds ordinary traffic when the
+ * budget is spent, and keeps a reserve so an sos still leaves. Periodic
+ * traffic is still not free -- it spends the same hour.
  */
 #ifndef XPRS_BEARER_LORA_H
 #define XPRS_BEARER_LORA_H
@@ -24,6 +27,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "xprsbearer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,11 +38,35 @@ extern "C" {
 typedef struct {
     int sck_pin, mosi_pin, miso_pin;
     int cs_pin, rst_pin, busy_pin, dio1_pin;
-    uint32_t freq_hz;        /* 0 = 868 MHz */
-    int8_t tx_power_dbm;     /* 0 = a polite 14 dBm (the EU limit for g1) */
+    uint32_t freq_hz;        /* 0 = the region preset's channel */
+    int8_t tx_power_dbm;     /* 0 = a polite 14 dBm */
     bool use_tcxo;           /* module has a TCXO on DIO3 (the T-Deck does) */
     bool use_dio2_rf_switch; /* DIO2 drives the RF switch (the T-Deck too) */
+    uint8_t sf;              /* 0 = SF7 (the fleet); 9 = the `far` profile */
 } xprslora_cfg_t;
+
+/**
+ * Where in the spectrum this station is allowed to be, and what it owes.
+ *
+ * The band moved on 2026-08-31: 868.000 MHz put half of a 125 kHz channel
+ * BELOW band g1's floor while paying g1's price -- 1% duty and 14 dBm.
+ * ERC 70-03 band g3 (869.40-869.65 MHz) allows 10% and up to 27 dBm
+ * e.r.p., ten times the airtime and twice the range, so `eu` centres at
+ * 869.5 MHz where the whole channel fits with margin. `eu-g1` remains for
+ * an operator who must stay in the old sub-band. The US and AU 900 MHz
+ * regimes cap the length of one transmission (dwell) rather than the hour.
+ */
+typedef struct {
+    const char *name;        /* what lora_region selects */
+    uint32_t freq_hz;
+    uint32_t duty_ms;        /* transmit ms per rolling hour; 0 = none */
+    uint32_t reserve_ms;     /* of that, sos/warning/urgent only */
+    uint32_t dwell_ms;       /* longest single transmission; 0 = any */
+    int8_t   max_dbm;        /* the region's e.r.p. ceiling, for the log */
+} xprslora_region_t;
+
+/** The table `lora_region` picks from; entry 0 (`eu`) is the default. */
+const xprslora_region_t *xprslora_regions(int *count);
 
 /** Bring the radio up and join the bearer fleet. Needs another bearer's task
  *  already pumping xb_tick_all() -- the LAN bearer owns that job. */
@@ -90,8 +118,25 @@ uint32_t xprslora_owed_ms(void);
  * at SF9 -- strict enough that a busy LAN cannot pour traffic onto the radio,
  * loose enough that a bench stays usable. The same figure the Flutter station
  * uses for its LoRa bearer, so the two implementations agree.
+ *
+ * The pace is a collision spacer; the ledger below is the accountant. Both
+ * apply, and they are deliberately not one number.
  */
 #define XPRSLORA_PACE_DEFAULT_MS 6000u
+
+/** This radio's airtime for [len] bytes at the SF/BW/CR xprslora_start()
+ *  set -- the number the duty ledger charges. 0 before start. */
+uint32_t xprslora_airtime_ms(int len);
+
+/** Re-point the ledger, e.g. from config. 0 budget with 0 dwell = off. */
+void xprslora_set_duty(uint32_t budget_ms, uint32_t reserve_ms,
+                       uint32_t dwell_ms);
+
+/** The ledger's report; zeroed when the radio is down or unmetered. */
+void xprslora_duty(xb_duty_report_t *out);
+
+/** The region the radio was started with (never NULL after start). */
+const xprslora_region_t *xprslora_region(void);
 
 /** RX/TX/cancelled/dupes counters, any may be NULL. */
 void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,

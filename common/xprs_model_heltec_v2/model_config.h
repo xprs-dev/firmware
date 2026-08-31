@@ -21,7 +21,7 @@
 #define LORA_PIN_DIO0           GPIO_NUM_26
 
 // LoRa default frequency (868 MHz EU band)
-#define LORA_DEFAULT_FREQ_HZ    868000000
+#define LORA_DEFAULT_FREQ_HZ    869500000  /* ERC 70-03 band g3: 10%% duty, 27 dBm e.r.p. */
 
 // ============================================================================
 // I2C Configuration - SSD1306 OLED

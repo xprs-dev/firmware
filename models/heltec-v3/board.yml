@@ -31,7 +31,7 @@ silicon:
 radios:
   bluetooth: {version: "5.0 LE", extended_advertising: true, note: "the chip can; the legacy build does not enable BT"}
   wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
-  lora: {chip: SX1262, band_mhz: "868 (as configured; 433/915 sold)"}
+  lora: {chip: SX1262, band_mhz: "869.5 (band g3; 433/915 hardware sold)"}
   other: []
 
 bearers:

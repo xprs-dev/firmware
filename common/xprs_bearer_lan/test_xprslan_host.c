@@ -118,10 +118,12 @@ static void test_own_hop_is_not_relayed(void)
     xprslan_offer(w, (int)strlen(w));
     CHECK(xl_test_queue_len() == 0, "queued a packet we had already relayed");
 
-    /* And a spent budget: a message may take 3 hops (§13.1). */
+    /* And a spent budget: nine hops for every type since 2026-08-31
+     * (§13.1, and the note in xprs_relay_limit). */
     setup();
     snprintf(w, sizeof w,
-             "t:message f:X1QZ3N d:X1RD89 ts:" TS " via:X1AAAAA,X1BBBBB,X1CCCCC m:hello");
+             "t:message f:X1QZ3N d:X1RD89 ts:" TS
+             " via:A1,B2,C3,D4,E5,F6,G7,H8,I9 m:hello");
     xprslan_offer(w, (int)strlen(w));
     CHECK(xl_test_queue_len() == 0, "queued a packet whose relay budget was spent");
 }

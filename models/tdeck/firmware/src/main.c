@@ -451,7 +451,9 @@ static const xprslora_cfg_t k_tdeck_lora = {
     .rst_pin = TDECK_RADIO_RST,
     .busy_pin = TDECK_RADIO_BUSY,
     .dio1_pin = TDECK_RADIO_DIO1,
-    .freq_hz = 868000000u,
+    .freq_hz = 0,   /* 0 = the region preset's channel (869.5 MHz for eu --
+                       band g3, 10%% duty, where 868.0 straddled g1's floor
+                       at 1%%). Override with `cfg set lora_freq_hz ...`. */
     .tx_power_dbm = 14,
     .use_tcxo = true,
     .use_dio2_rf_switch = true,

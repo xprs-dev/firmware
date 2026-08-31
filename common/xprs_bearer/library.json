@@ -7,7 +7,7 @@
   "platforms": "*",
   "dependencies": {"xprs_codec": "*"},
   "build": {
-    "srcFilter": ["+<xprsbearer.c>"],
+    "srcFilter": ["+<xprsbearer.c>", "+<xb_airtime.c>"],
     "flags": ["-I."]
   }
 }

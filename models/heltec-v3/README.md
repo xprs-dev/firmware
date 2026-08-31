@@ -1,6 +1,6 @@
 # Heltec WiFi LoRa 32 V3
 
-An ESP32-S3 with an SX1262 on 868 MHz and a 0.96" 128x64 OLED, the size of
+An ESP32-S3 with an SX1262 on 869.5 MHz and a 0.96" 128x64 OLED, the size of
 a matchbox, with one button. Its job in the fleet is to be the **shelf
 digipeater**: it carries the T-Deck's whole radio set -- LoRa, BLE5
 extended advertising, WiFi for the LAN and ESP-NOW -- without the keyboard,
@@ -192,11 +192,22 @@ Heltec's own CP2102, which does not reset it.
 
 | | |
 |---|---|
+All of the 2026-08-30 figures below were taken at 868.0 MHz; the fleet moved
+to 869.5 MHz (band g3) on 2026-08-31 and the link was re-measured there.
+
+| 868.0, 2026-08-30 | |
+|---|---|
 | Heltec → P1-Pro, LoRa only | **19 of 20** messages sent with `bearer=lora` (two runs of ten, 8-9 s apart), every one at −21 dBm on the P1-Pro |
 | P1-Pro → Heltec, LoRa | every P1-Pro packet in a 15-minute window arrived direct: 5 of 5, all −16 dBm SNR 12 |
 | Heltec → T-Deck, LoRa only | **10 of 10** messages sent with `bearer=lora`, −35/−36 dBm on the T-Deck |
 | T-Deck → Heltec, LoRa only | **10 of 10**, −34/−35 dBm SNR 12 here |
-| Heltec digipeating | 9 of the T-Deck's 10 LoRa sends re-aired by this station with `via:...,X3H3MZ` appended (`digi_on` set); the P1-Pro also received its own beacon back at −21 dBm relayed by this station |
+| Heltec digipeating | 9 of the T-Deck's 10 LoRa sends re-aired by this station with `via:...,X3H3MZ` appended |
+
+| 869.5, 2026-08-31 | |
+|---|---|
+| T-Deck → Heltec, LoRa only | **10 of 10** distinct messages, all −36 dBm SNR 12 |
+| Heltec → T-Deck, LoRa | five of this station's relays received at −35..−37 dBm (`via:X3H3MZ`); the counted origin run was blocked by this board's HTTP intake, not its radio -- the send door stopped answering under bench load, a known limit of its ~10 KB heap |
+| The governor, tripped on purpose | with `lora_duty_ms 4000` / `lora_resv_ms 1000`: held exactly at the 3.0 s ordinary cap ("held -- 2.9 s of 4.0 s spent this hour", 123 times), while a T-Deck sos was relayed the same second on LAN, BLE and ESP-NOW (`via:X3H3MZ`); its LoRa reserve copy was 13.2.1-cancelled because the P1-Pro relayed it first, which is the mesh working, not the governor failing |
 
 Two things about counting LoRa on this bench. Beacons cannot be counted:
 every station here also hears every other on BLE5, the BLE copy lands
@@ -220,3 +231,15 @@ Over the network, with no serial port open (`docs/esp32.md` is binding):
 `/api/status` for the callsign and `uptime_s`, `/api/xprs/history` for what
 it heard on which bearer, and the T-Deck's history for what it heard from
 this board on LoRa.
+
+## The radio's manners
+
+Since 2026-08-31 the fleet sits at **869.5 MHz** -- ERC 70-03 band g3
+(869.40-869.65), 10% duty cycle and up to 27 dBm e.r.p. -- where 868.0 had a
+125 kHz channel straddling band g1's floor while paying g1's 1%. The bearer
+carries a duty ledger: real airtime per packet (390 ms full-size at SF7)
+charged against a rolling hour, ordinary traffic held when the budget is
+spent, 6 s reserved so an sos still leaves, priority first out of the queue.
+`/api/status` shows the ledger; the top bar reads `held 41s` when the budget
+rather than the band is what is silent. `cfg set lora_region eu-g1` moves a
+station back to the old sub-band; docs/API.md has the whole table.

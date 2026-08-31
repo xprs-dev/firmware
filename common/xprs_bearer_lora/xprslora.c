@@ -15,6 +15,7 @@
 #include "sx1262.h"
 #include "xprs.h"
 #include "xprsbearer.h"
+#include "xb_airtime.h"
 
 static const char *TAG = "xprslora";
 
@@ -26,6 +27,46 @@ static const char *TAG = "xprslora";
  * was the difference between an HTTP server that starts and one that
  * answers ESP_ERR_HTTPD_TASK. */
 static xb_t *s_lora;
+static xb_duty_t s_duty;               /* the ledger; ~150 B of BSS */
+static xb_lora_air_t s_air;            /* what one byte costs here */
+static const xprslora_region_t *s_region;
+
+/*
+ * The regions. Figures from ERC 70-03 / EN 300 220 for the EU rows (g3:
+ * 869.4-869.65 MHz, 10%, 500 mW e.r.p.; g1: 868.0-868.6 MHz, 1%, 25 mW)
+ * and FCC 15.247 / AU LIPD for the 900 MHz rows, where the constraint is
+ * a 400 ms dwell rather than an hourly budget. The reserve is about
+ * fifteen full packets at SF7 -- enough that an emergency is never what a
+ * spent budget silences, small enough that it cannot BE the budget.
+ */
+static const xprslora_region_t k_regions[] = {
+    { "eu",    869500000u, 360000u, 6000u,      0, 27 },
+    { "eu-g1", 868200000u,  36000u, 6000u,      0, 14 },
+    { "us",    903900000u,       0,     0,   400u, 30 },
+    { "au",    917000000u,       0,     0,   400u, 30 },
+};
+
+const xprslora_region_t *xprslora_regions(int *count)
+{
+    if (count) *count = (int)(sizeof k_regions / sizeof k_regions[0]);
+    return k_regions;
+}
+
+const xprslora_region_t *xprslora_region(void)
+{
+    return s_region ? s_region : &k_regions[0];
+}
+
+static uint32_t lr_airtime(int len, void *ctx)
+{
+    (void)ctx;
+    return xb_lora_airtime_ms(&s_air, len);
+}
+
+uint32_t xprslora_airtime_ms(int len)
+{
+    return s_air.bw_hz ? xb_lora_airtime_ms(&s_air, len) : 0;
+}
 static sx1262_handle_t s_radio;
 static SemaphoreHandle_t s_mutex;      /* several tasks air on one radio */
 static xprslora_rx_cb_t s_rx_cb;
@@ -143,11 +184,15 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
         return err;
     }
 
-    /* SF7/125k: ~400 ms for a full packet, and the two ends of a bench test
-     * agree on it by construction because both run this line. */
+    /* SF7/125k: 389 ms for a full packet, and the two ends of a bench test
+     * agree on it by construction because both run this line. cfg->sf = 9
+     * is the `far` profile: +5 dB a hop for 4x the airtime, a deployment
+     * decision because every station on a link must share it. */
+    s_region = &k_regions[0];
+    uint8_t sf = cfg->sf == 9 ? 9 : 7;
     sx1262_lora_config_t lora = {
-        .frequency_hz = cfg->freq_hz ? cfg->freq_hz : 868000000u,
-        .sf = SX1262_SF7,
+        .frequency_hz = cfg->freq_hz ? cfg->freq_hz : s_region->freq_hz,
+        .sf = sf == 9 ? SX1262_SF9 : SX1262_SF7,
         .bw = SX1262_BW_125,
         .cr = SX1262_CR_4_5,
         .tx_power_dbm = cfg->tx_power_dbm ? cfg->tx_power_dbm : 14,
@@ -156,6 +201,11 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
         .use_tcxo = cfg->use_tcxo,
         .use_dio2_rf_switch = cfg->use_dio2_rf_switch,
     };
+    /* The airtime table is built from the SAME values the radio was just
+     * given, so the ledger cannot drift from the modem. */
+    s_air = (xb_lora_air_t){ .bw_hz = 125000u, .sf = sf, .cr = 1,
+                             .preamble = 8, .crc = true,
+                             .implicit_header = false };
     err = sx1262_init(s_radio, &lora);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "radio init failed: %s", esp_err_to_name(err));
@@ -166,8 +216,11 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
 
     xb_init(s_lora, &k_lora_ops, callsign);
     /* section 31.1. Set before anything can be offered, so the radio is never
-     * unmetered even for the first packet after boot. */
+     * unmetered even for the first packet after boot -- the pace as the
+     * collision spacer, the ledger as the accountant. */
     xb_set_pace(s_lora, XPRSLORA_PACE_DEFAULT_MS);
+    xb_set_duty(s_lora, &s_duty, lr_airtime, NULL,
+                s_region->duty_ms, s_region->reserve_ms, s_region->dwell_ms);
     xb_register_ticked(s_lora);
     if (!xb_has_driver())
         ESP_LOGE(TAG, "no bearer task is pumping -- start the LAN bearer "
@@ -179,8 +232,16 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
         return err;
     }
 
-    ESP_LOGI(TAG, "up: %lu Hz SF7/125k %d dBm as %s",
-             (unsigned long)lora.frequency_hz, lora.tx_power_dbm, callsign);
+    ESP_LOGI(TAG, "up: %lu Hz SF%d/125k %d dBm as %s -- %s: %lus of airtime"
+             " an hour, %lus reserved for sos",
+             (unsigned long)lora.frequency_hz, (int)sf, lora.tx_power_dbm,
+             callsign, s_region->name,
+             (unsigned long)(s_region->duty_ms / 1000u),
+             (unsigned long)(s_region->reserve_ms / 1000u));
+    if (lora.tx_power_dbm > s_region->max_dbm)
+        ESP_LOGW(TAG, "%d dBm exceeds the %s region's %d dBm e.r.p. ceiling"
+                 " -- the operator owns that call", lora.tx_power_dbm,
+                 s_region->name, s_region->max_dbm);
     return ESP_OK;
 }
 
@@ -220,6 +281,21 @@ void xprslora_set_pace(uint32_t per_packet_ms)
 uint32_t xprslora_owed_ms(void)
 {
     return s_lora ? xb_owed_ms(s_lora) : 0;
+}
+
+void xprslora_set_duty(uint32_t budget_ms, uint32_t reserve_ms,
+                       uint32_t dwell_ms)
+{
+    if (s_lora)
+        xb_set_duty(s_lora, &s_duty, lr_airtime, NULL,
+                    budget_ms, reserve_ms, dwell_ms);
+}
+
+void xprslora_duty(xb_duty_report_t *out)
+{
+    if (!out) return;
+    if (s_lora) xb_duty_report(s_lora, lr_now_ms(), out);
+    else memset(out, 0, sizeof *out);
 }
 
 bool xprslora_is_active(void)

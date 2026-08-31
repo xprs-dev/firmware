@@ -40,7 +40,7 @@ silicon:
 radios:
   bluetooth: {version: "5.0 LE", extended_advertising: true, note: "nRF52840 with SoftDevice S140 v7.3.0; one advertising set"}
   wifi: null
-  lora: {chip: SX1262, band_mhz: "862-930"}
+  lora: {chip: SX1262, band_mhz: "869.5 as configured (module covers 862-930)"}
   other: []
 
 bearers:
