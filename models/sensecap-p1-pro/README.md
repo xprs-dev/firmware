@@ -74,9 +74,14 @@ task of its own. It would tidy the ESP32 boards too.
 
 ## What it does today
 
-A headless LoRa + BLE5 station, bridging between the two. On LoRa it listens on 868 MHz, keeps what it hears out of
-its own duplicate rings, digipeats within the hop budget with itself
-appended to `via:`, and beacons every five minutes.
+A headless LoRa + BLE5 station, bridging between the two and digipeating
+on each. On LoRa it listens on 868 MHz, keeps what it hears out of its own
+duplicate rings, repeats within the hop budget with itself appended to
+`via:` (section 13), and every five minutes beacons a signed
+`t:observation` naming who it hears directly (`hears:`, 10.6.3). It has a
+key: an `X3` callsign derived from it (section 3), a signed `t:identity`
+30 s after boot and every 30 minutes (9.3), and `epoch:` dating from a boot
+counter (10.7) since it has no clock.
 
 **Measured on this bench, 2026-08-30, against a T-Deck:**
 
@@ -85,6 +90,11 @@ appended to `via:`, and beacons every five minutes.
 | P1-Pro → T-Deck | 6 of 7 beacons, −30 dBm, SNR 12, byte-exact |
 | T-Deck → P1-Pro | 29 wires in 180 s at −31..−33 dBm, none corrupt, none unparsed |
 | and onward | `xprs: lan 192.168.178.102 58B t:observation f:X54W6W link:lora peers:0 via:X3GSLC,X3WWAJ` |
+| **LoRa digipeat** | T-Deck `t:message f:X3GSLC` on LoRa alone → repeated by this station on LoRa **and** BLE as `via:X33ESX`; T-Deck heard both back (`xprslora: RX 70 bytes at -45 dBm ... via:X33ESX`, `ble -73 dBm ... via:X33ESX`) |
+| **Signature** | `t:identity f:X33ESX epoch:1.67 k:npub13esx… sig:…` aired here verifies on the host through the OpenSSL branch of the same `xprssig.c`; a one-character tamper fails. T-Deck's own beacon then lists `hears:X33ESX,X1VCVM` |
+
+(Earlier rows say `X54W6W`: that was the FICR-derived `X5` callsign this
+board wore before it had a key. `X5` is a group prefix, not a station's.)
 
 That last line is the one worth having. A packet this chip composed went out
 on LoRa, was picked up by an ESP32, digipeated with two callsigns appended
@@ -112,6 +122,19 @@ fix is one line and it is commented where it sits.
 
 ## What is not here yet
 
+- ~~Remote firmware update~~ **Done**: the ESP32's own scheme (two keys, the
+  `xprs_auth` gate, XPRS 25.8), delivered as XPRS packets over LoRa or BLE
+  instead of HTTP, with a staged image, a RAM copier, and probation +
+  rollback on a chip with no second app slot. `firmware/README.md`,
+  `firmware/src/update.cpp`, `tools/push_firmware_p1.py`. Bench-validated
+  end to end bar the full over-air image transfer, which the bench gateway
+  (a T-Deck) could not stay up long enough to finish.
+
+- ~~Signing~~ **Done**: `lib/mbedtls_ecp` is a cut-down mbedtls, and
+  `common/xprs_sig` runs on it unchanged bar an `ESP_PLATFORM` seam for the
+  hash, the entropy and the log. Key on the internal LittleFS, callsign
+  from it, beacons and identity signed. `firmware/README.md` records the
+  two things it cost (flash before the SoftDevice; a task of its own).
 - ~~BLE5~~ **Done**: `common/tinynimble/tn_port_sd.c` drives the
   SoftDevice directly (Bluefruit is capped at 31 bytes); the beacon goes out
   as an extended advert, is digipeated by the T-Dongle, and BLE<->LoRa

@@ -6,7 +6,7 @@
 #
 # The gateway is any station on the LAN with a radio -- the bench dongle, a
 # deck -- reached over HTTP. The command is signed here with the owner's key
-# (tool/sign_command.dart in xprs-flutter), handed to the gateway's
+# (tool/sign_command.dart in the app repo), handed to the gateway's
 # /api/xprs/send, which airs it on every bearer it has, and the results come
 # back the same way: the gateway hears them and archives them, and this
 # script polls its history for rows that carry the command's id.
@@ -19,7 +19,7 @@
 #
 # Exit 0 on a terminal code (200/4xx/5xx), 1 on timeout.
 set -u
-GW= TO= CMD= FROM= NSEC= TIMEOUT=180 FLUTTER=${XPRS_FLUTTER:-$HOME/code/xprs/xprs-flutter}
+GW= TO= CMD= FROM= NSEC= TIMEOUT=180 FLUTTER=${XPRS_FLUTTER:-$HOME/code/xprs/app}
 EXTRA=()
 while [ $# -gt 0 ]; do
   case $1 in

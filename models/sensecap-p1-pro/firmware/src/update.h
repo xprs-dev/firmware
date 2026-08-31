@@ -48,8 +48,20 @@ void xfw_init(const xfw_cfg_t *cfg, uint32_t boot_epoch);
 /* A t:command addressed to us, heard directly on [b]. True when consumed. */
 bool xfw_handle(xb_t *b, const xprs_t *p);
 
+/* The same handler, reached over a 1:1 GATT link instead of the broadcast
+ * plane (docs/ble5-gatt.md): the private, connection-speed path a bulk image
+ * belongs on. [reply] sends one answer wire back over the link. The command
+ * is the same t:command, verified the same way -- a connection is private,
+ * not authentic (ble5-gatt.md), so the signature still decides. */
+typedef void (*xfw_reply_fn)(const char *wire, int len);
+void xfw_gatt_rx(const char *wire, int len, xfw_reply_fn reply);
+
 /* From the station loop: probation proving, session expiry. */
 void xfw_tick(uint32_t now_ms, bool radio_up);
+
+/* The console self-test: exercise the whole flash path with the same
+ * image as payload, then reboot into it on probation. Non-destructive. */
+void xfw_selftest(void);
 
 const char *xfw_version(void);
 bool        xfw_probation(void);

@@ -27,11 +27,13 @@
  *          extended set, or whether this wants raw sd_ble_gap_adv_set_configure
  *          underneath it, is an open question and not one to guess at.
  *
- *   Signing.  common/xprs_sig already has two backends chosen by
- *          preprocessor -- OpenSSL for the host harness, mbedtls on the
- *          ESP32s -- so the shape for a third is already there. It needs a
- *          secp256k1 for this chip. Until then this station's packets go out
- *          unsigned, which the spec allows and which every receiver can see.
+ *   ~~Signing~~  Done. common/xprs_sig's device branch is mbedtls, and a
+ *          cut-down mbedtls (bignum + ecp, secp256k1 only) now lives in
+ *          lib/mbedtls_ecp, so the same xprssig.c runs here. The key is
+ *          made once and kept in the internal LittleFS; the callsign is
+ *          X3 + the first four characters of the key's npub, exactly as
+ *          nostr_keys.c derives it on the ESP32s (XPRS 3), so a receiver
+ *          can re-derive it. Beacons and t:identity go out signed.
  *
  *   GNSS.  Wired, powered through a load switch, and left OFF. It is a
  *          receiver, not a bearer, and on a solar node an unused one that is
@@ -50,6 +52,26 @@
  * by an ESP32, digipeated with two callsigns appended to via:, and put on the
  * LAN. The shared codec and the shared bearer produced a wire the rest of the
  * fleet treats as one of its own, which is the whole claim being tested.
+ *
+ * AND THE DIGIPEATER ITSELF, same bench, later the same day. The T-Deck put
+ * "t:message f:X3GSLC m:digipeat test 1" on LoRa alone (POST /api/xprs/send,
+ * bearer=lora), and this station said it again on both media, us in via:
+ *
+ *   lora   rx  -47 dBm  59B t:message f:X3GSLC ts:... m:digipeat test 1
+ *   ble:   aired 70B       t:message f:X3GSLC ts:... via:X54W6W m:digip
+ *   lora:  aired 70B       t:message f:X3GSLC ts:... via:X54W6W m:digip
+ *
+ * and the T-Deck heard both copies back: "xprslora: RX 70 bytes at -45 dBm
+ * ... via:X54W6W" and "xprs: ble -73 dBm 70B ... via:X54W6W". f: untouched,
+ * one callsign appended, the identifier (41bc2d) unchanged, as section 13
+ * requires. (X54W6W was this board's callsign before it had a key; it is
+ * X33ESX now, and the same test repeated under it reads via:X33ESX.)
+ *
+ * AND THE SIGNATURE. The t:identity this chip aired -- "t:identity f:X33ESX
+ * epoch:1.67 k:npub13esx... sig:..." as the T-Deck logged it -- verifies on
+ * the host through the OpenSSL branch of the same xprssig.c, and fails with
+ * one character of the epoch changed. The callsign is X3 + "3esx", the
+ * first four characters of that npub after "npub1", as section 3 asks.
  */
 
 #include <Arduino.h>
@@ -58,14 +80,24 @@
 
 #include "board.h"
 
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
+
 extern "C" {
 #include "xprs.h"
 #include "xprsbearer.h"
+#include "xb_airtime.h"
+#include "xprssig.h"
+#include "xprsid.h"
+#include "xprs_auth.h"
+#include "bech32.h"
 #include "tinynimble.h"
 #include "tn_att.h"
 #include "nrf_sdm.h"
 #include "nrf_soc.h"
 }
+#include "update.h"
+using namespace Adafruit_LittleFS_Namespace;
 
 /* ── What this radio is set to ───────────────────────────────────────────
  *
@@ -87,11 +119,6 @@ extern "C" {
  *
  * The fleet's figures, from xprslora.c's sx1262_lora_config_t:
  *
-#include "xb_airtime.h"
-#include "xprssig.h"
-#include "xprsid.h"
-#include "xprs_auth.h"
-#include "bech32.h"
  *     SF7, BW 125 kHz, CR 4/5, preamble 8, CRC on
  *
  * RadioLib spells the coding rate as its denominator, so 4/5 is 5.
@@ -153,26 +180,347 @@ static volatile bool   s_rx_pending;
 static bool            s_radio_up;
 static uint32_t        s_heard;
 
-/* ── The callsign ────────────────────────────────────────────────────────
+/* ── The key, and the callsign that follows from it ──────────────────────
  *
- * Same shape and same alphabet as every other board's (xprs_app.c,
- * derive_callsign): X5 plus four characters from a 30-letter set with B, I,
- * O and 1 left out, so it cannot be misread aloud or off a screen.
+ * XPRS 3: an X3 callsign is a station's and is derived from its public key,
+ * so anybody who hears the t:identity can re-derive the callsign and check
+ * that the two belong together. The derivation is the ESP32 boards'
+ * (common/xprs_nostr/nostr_keys.c, nostr_keys_derive_callsign): the key's
+ * bech32 npub, and the four characters after "npub1", uppercased.
  *
- * The source differs because the source has to. On an ESP32 this comes from
- * the WiFi MAC, and this chip has no WiFi. FICR.DEVICEID is the nRF52840's
- * factory-programmed 64-bit device id: unique, readable without a radio, and
- * stable across reflashes -- which is the whole requirement. An X3 callsign
- * would be better still because a receiver can re-derive it from the signing
- * key, and that is waiting on signing. */
+ * The private scalar is generated once from the SoftDevice's RNG and kept
+ * in the internal LittleFS the Adafruit core provides -- the nRF52 has no
+ * NVS, and a file in a filesystem the bootloader also leaves alone is the
+ * same promise. Reflashing the application keeps it; a chip erase does not,
+ * which is what 'K' (print the nsec) is for.
+ *
+ * Earlier images derived an X5 callsign from FICR.DEVICEID. X5 is a GROUP
+ * (XPRS 3, section 26), not a station, and the suffix came from nothing a
+ * receiver could check; that was wrong on both counts and is gone. */
+#define KEY_PATH   "/xprs/key"
+#define BOOT_PATH  "/xprs/boot"
+
+static uint8_t  s_priv[XPRSSIG_KEY_LEN];
+static uint8_t  s_pub[XPRSSIG_KEY_LEN];
+static char     s_npub[80];
+static bool     s_have_key;
+static uint32_t s_boot_epoch;
+
+/* Entropy for the signer (xprssig.h). With the SoftDevice up, NRF_RNG is
+ * its and the application asks it; before that the peripheral is ours.
+ * sd_rand_application_vector_get() returns NOT_ENOUGH_VALUES while its pool
+ * refills, so the loop simply waits -- a few hundred microseconds a byte. */
+extern "C" void xprssig_platform_random(uint8_t *out, size_t len)
+{
+    uint8_t sd_on = 0;
+    sd_softdevice_is_enabled(&sd_on);
+    size_t done = 0;
+    while (done < len) {
+        if (sd_on) {
+            uint8_t avail = 0;
+            sd_rand_application_bytes_available_get(&avail);
+            uint8_t take = avail;
+            if (take > len - done) take = (uint8_t)(len - done);
+            if (take == 0) { delay(1); continue; }
+            if (sd_rand_application_vector_get(out + done, take) == NRF_SUCCESS) done += take;
+        } else {
+            NRF_RNG->TASKS_START = 1;
+            while (!NRF_RNG->EVENTS_VALRDY) { }
+            NRF_RNG->EVENTS_VALRDY = 0;
+            out[done++] = (uint8_t)NRF_RNG->VALUE;
+            NRF_RNG->TASKS_STOP = 1;
+        }
+    }
+}
+
+static bool file_read(const char *path, uint8_t *buf, size_t n)
+{
+    File f(InternalFS);
+    if (!f.open(path, FILE_O_READ)) return false;
+    size_t got = f.read(buf, n);
+    f.close();
+    return got == n;
+}
+
+static bool file_write(const char *path, const uint8_t *buf, size_t n)
+{
+    InternalFS.remove(path);
+    File f(InternalFS);
+    if (!f.open(path, FILE_O_WRITE)) return false;
+    size_t put = f.write(buf, n);
+    f.close();
+    return put == n;
+}
+
 static void derive_callsign(void)
 {
-    static const char *b32 = "ACDEFGHJKLMNPQRSTUVWXYZ23456789";
-    uint32_t v = NRF_FICR->DEVICEID[0] ^ NRF_FICR->DEVICEID[1];
-    v &= 0x00FFFFFF;
-    s_call[0] = 'X'; s_call[1] = '5';
-    for (int i = 0; i < 4; i++) { s_call[2 + i] = b32[v % 30]; v /= 30; }
+    if (!s_have_key) { snprintf(s_call, sizeof s_call, "X3????"); return; }
+    s_call[0] = 'X'; s_call[1] = '3';
+    for (int i = 0; i < 4; i++) s_call[2 + i] = (char)toupper((unsigned char)s_npub[5 + i]);
     s_call[6] = 0;
+}
+
+/* Public half, npub and callsign from whatever scalar is in s_priv. */
+static bool key_adopt(void)
+{
+    if (!xprssig_public_key(s_priv, s_pub)) return false;
+    if (bech32_encode("npub", s_pub, sizeof s_pub, s_npub, sizeof s_npub) != ESP_OK) return false;
+    s_have_key = true;
+    derive_callsign();
+    return true;
+}
+
+static void keys_init(void)
+{
+    InternalFS.begin();
+    InternalFS.mkdir("/xprs");
+
+    /* 10.7: the boots ordinal, so a clockless station's packets can still
+     * be ordered by a receiver. Same thing the ESP32s keep in NVS. */
+    uint8_t b[4] = {0};
+    if (file_read(BOOT_PATH, b, 4)) s_boot_epoch = (uint32_t)b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24);
+    s_boot_epoch++;
+    b[0] = s_boot_epoch; b[1] = s_boot_epoch >> 8; b[2] = s_boot_epoch >> 16; b[3] = s_boot_epoch >> 24;
+    file_write(BOOT_PATH, b, 4);
+
+    if (file_read(KEY_PATH, s_priv, sizeof s_priv) && key_adopt()) {
+        Serial.printf("key: loaded, callsign %s\n", s_call);
+        return;
+    }
+    if (!xprssig_generate(s_priv) || !key_adopt()) {
+        Serial.println("key: could not generate -- this station will not sign");
+        s_have_key = false;
+        derive_callsign();
+        return;
+    }
+    bool kept = file_write(KEY_PATH, s_priv, sizeof s_priv);
+    Serial.printf("key: generated, callsign %s -- %s\n", s_call, kept ? "kept" : "NOT SAVED");
+}
+
+/* 'I' on the console, followed by an nsec and a newline: adopt somebody
+ * else's key -- the way a replaced board keeps the callsign the pole is
+ * known by. Same as the ESP32 boards' nostr import. */
+static void key_import(const char *nsec)
+{
+    char hrp[8]; uint8_t priv[64]; size_t n = sizeof priv;
+    if (bech32_decode(nsec, hrp, priv, &n) != ESP_OK || n != 32 || strcmp(hrp, "nsec") != 0) {
+        Serial.println("import: not an nsec"); return;
+    }
+    uint8_t keep[32]; memcpy(keep, s_priv, 32);
+    memcpy(s_priv, priv, 32);
+    if (!key_adopt()) { memcpy(s_priv, keep, 32); key_adopt(); Serial.println("import: not a valid key"); return; }
+    /* Flash is only writable without a deadlock while the SoftDevice is
+     * down (see station_setup), and a station whose callsign just changed
+     * has to come up again under it anyway. */
+    Serial.printf("import: now %s -- writing and rebooting\n", s_call);
+    Serial.flush(); delay(50);
+    sd_softdevice_disable();
+    file_write(KEY_PATH, s_priv, sizeof s_priv);
+    NVIC_SystemReset();
+}
+
+/* sig: on our own packets (9.1). Unsigned when there is no key or no room,
+ * both of which the spec permits and a receiver can see. */
+static int sign_wire(char *wire, int len, int cap)
+{
+    if (!s_have_key) return len;
+    return xprsid_sign(wire, len, cap, s_priv);
+}
+
+/* ts: under a synced clock, epoch:<boots>.<uptime> otherwise (10.7). This
+ * board has no clock source at all yet, so it is always the second. */
+static int time_field(char *out, int cap)
+{
+    return snprintf(out, (size_t)cap, "epoch:%lu.%lu",
+                    (unsigned long)s_boot_epoch, (unsigned long)(millis() / 1000));
+}
+
+/* ── Config: the allow-list and the firmware key ─────────────────────────
+ *
+ * The ESP32 boards keep `fwkey` and `own1..own4` in NVS (docs/device.md);
+ * here they are lines of `key=value` in /xprs/cfg, read once before the
+ * SoftDevice starts and served to xprs_auth and the updater through the
+ * same xcfg_get() they call on an ESP32. `cfg set` on the console writes
+ * the file with the SoftDevice down and reboots, for the reason
+ * station_setup() gives. Re-writable with a cable, deliberately: a lost
+ * key is a ladder, never a brick. */
+#define CFG_PATH "/xprs/cfg"
+#define CFG_MAX  8
+static struct { char key[12]; char val[96]; } s_cfg_kv[CFG_MAX];
+
+static void cfg_load(void)
+{
+    File f(InternalFS);
+    if (!f.open(CFG_PATH, FILE_O_READ)) return;
+    static char buf[CFG_MAX * 110];
+    int n = f.read((uint8_t *)buf, sizeof buf - 1);
+    f.close();
+    if (n <= 0) return;
+    buf[n] = 0;
+    int k = 0;
+    for (char *line = strtok(buf, "\n"); line && k < CFG_MAX; line = strtok(NULL, "\n")) {
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        snprintf(s_cfg_kv[k].key, sizeof s_cfg_kv[k].key, "%s", line);
+        snprintf(s_cfg_kv[k].val, sizeof s_cfg_kv[k].val, "%s", eq + 1);
+        k++;
+    }
+}
+
+extern "C" const char *xcfg_get(const char *key, const char *def)
+{
+    for (int i = 0; i < CFG_MAX; i++)
+        if (s_cfg_kv[i].key[0] && strcmp(s_cfg_kv[i].key, key) == 0) return s_cfg_kv[i].val;
+    return def;
+}
+
+/* `cfg set <key> <value>` / `cfg get <key>` / `cfg list`. A set writes and
+ * reboots -- see station_setup() for why flash only moves before the
+ * SoftDevice. */
+static void cfg_console(char *line)
+{
+    char *cmd = strtok(line, " "), *key = strtok(NULL, " "), *val = strtok(NULL, "");
+    if (!cmd) return;
+    if (strcmp(cmd, "list") == 0) {
+        for (int i = 0; i < CFG_MAX; i++)
+            if (s_cfg_kv[i].key[0]) Serial.printf("%s=%s\n", s_cfg_kv[i].key, s_cfg_kv[i].val);
+        return;
+    }
+    if (!key) { Serial.println("cfg: set <key> <value> | get <key> | list"); return; }
+    if (strcmp(cmd, "get") == 0) { Serial.printf("%s=%s\n", key, xcfg_get(key, "")); return; }
+    if (strcmp(cmd, "set") != 0) return;
+    int slot = -1;
+    for (int i = 0; i < CFG_MAX; i++) {
+        if (strcmp(s_cfg_kv[i].key, key) == 0) { slot = i; break; }
+        if (slot < 0 && !s_cfg_kv[i].key[0]) slot = i;
+    }
+    if (slot < 0) { Serial.println("cfg: full"); return; }
+    snprintf(s_cfg_kv[slot].key, sizeof s_cfg_kv[slot].key, "%s", key);
+    snprintf(s_cfg_kv[slot].val, sizeof s_cfg_kv[slot].val, "%s", val ? val : "");
+    char out[CFG_MAX * 110]; int n = 0;
+    for (int i = 0; i < CFG_MAX; i++)
+        if (s_cfg_kv[i].key[0] && s_cfg_kv[i].val[0])
+            n += snprintf(out + n, sizeof out - n, "%s=%s\n", s_cfg_kv[i].key, s_cfg_kv[i].val);
+    Serial.printf("cfg: %s set -- writing and rebooting\n", key);
+    Serial.flush(); delay(50);
+    sd_softdevice_disable();
+    file_write(CFG_PATH, (const uint8_t *)out, (size_t)n);
+    NVIC_SystemReset();
+}
+
+/* What xprs_auth takes from the ESP32 stack, supplied here (xprs_auth.c). */
+extern "C" esp_err_t nostr_keys_derive_callsign(const char *npub, char *callsign)
+{
+    if (!npub || !callsign || strlen(npub) < 9 || strncmp(npub, "npub1", 5) != 0) return ESP_ERR_INVALID_ARG;
+    callsign[0] = 'X'; callsign[1] = '3';
+    for (int i = 0; i < 4; i++) callsign[2 + i] = (char)toupper((unsigned char)npub[5 + i]);
+    callsign[6] = 0;
+    return ESP_OK;
+}
+
+/* ── The clock, such as it is ────────────────────────────────────────────
+ *
+ * No RTC, no NTP, GNSS off. What this station has is the owner: a packet
+ * signed by an allow-listed key carries a ts: that the owner's clock set,
+ * and that is trusted once -- the first such packet after boot sets the
+ * clock, and millis() carries it from there. Until then xauth refuses
+ * every command with 408, as 25.4 says a clockless station must.
+ *
+ * WHAT THIS DOES NOT DEFEND: a signed command recorded from the air and
+ * replayed at this station after a reboot sets the clock to the moment it
+ * was signed and then passes its own freshness check. The damage is
+ * bounded -- it is the owner's own command, so at worst an install of an
+ * image the owner once approved -- and a real clock closes it; until
+ * then, within one boot, accepted timestamps must only move forward. */
+static uint32_t s_clock_epoch, s_clock_set_ms, s_clock_last_accepted;
+
+extern "C" uint32_t xauth_platform_now(void)
+{
+    return s_clock_epoch ? s_clock_epoch + (millis() - s_clock_set_ms) / 1000 : 0;
+}
+
+static uint32_t ts_to_epoch(const char *ts)
+{
+    int y, mo, d, h, mi, se;
+    if (sscanf(ts, "%4d-%2d-%2d_%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &se) != 6) return 0;
+    int yy = y - (mo <= 2);
+    int era = (yy >= 0 ? yy : yy - 399) / 400;
+    unsigned yoe = (unsigned)(yy - era * 400);
+    unsigned doy = (unsigned)((153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = (long)era * 146097 + (long)doe - 719468;
+    return (uint32_t)(days * 86400L + h * 3600 + mi * 60 + se);
+}
+
+/* No RTC here, so the clock is whatever the newest signed owner command says
+ * (25.4). MONOTONIC FORWARD: each valid owner ts that is later than what we
+ * hold advances the clock and never moves it back, so a replayed older
+ * command cannot rewind us and then pass its own freshness check. Runs on
+ * every owner command, not just the first, so the clock tracks the sender
+ * instead of drifting from a single early sample. */
+static void clock_learn(const xprs_t *p)
+{
+    char from[16] = "", ts[24] = "";
+    if (!xprs_get_str(p, "f", from, sizeof from) || !xprs_get_str(p, "ts", ts, sizeof ts)) return;
+    if (xprs_get(p, "sig", NULL) == NULL || xprs_get(p, "via", NULL) != NULL) return;
+    uint8_t pub[32];
+    if (!xauth_owner_key_of(from, pub) || !xprsid_verify(p, pub)) return;
+    uint32_t t = ts_to_epoch(ts);
+    if (!t || t <= xauth_platform_now()) return;   /* never backward */
+    s_clock_epoch = t; s_clock_set_ms = millis(); s_clock_last_accepted = t;
+    Serial.printf("clock: %s from %s\n", ts, from);
+}
+
+/* ── Who we hear directly (10.6.3) ──────────────────────────────────────
+ *
+ * The hears: list on the beacon names stations heard with no via: -- a
+ * neighbour a packet can reach in one hop. The ESP32 boards keep this in
+ * xprs_station, which leans on FreeRTOS and is not ported; this is the
+ * eight-row version of the same fact. A peer id for the bearer's own table
+ * is derived from the callsign too, so peers: stops reading zero. */
+#define HEARS_MAX     8
+#define HEARS_FRESH_MS 600000UL
+static struct { char call[10]; uint32_t t_ms; } s_hears[HEARS_MAX];
+
+static uint64_t peer_of(const char *wire, int len, bool *direct)
+{
+    xprs_t p; char from[10] = "";
+    if (direct) *direct = false;
+    if (!xprs_parse(wire, len, &p) || !xprs_get_str(&p, "f", from, sizeof from) || !from[0]) return 0;
+    if (direct) *direct = xprs_via_count(&p) == 0;
+    uint64_t h = 1469598103934665603ULL;               /* FNV-1a, never zero */
+    for (const char *c = from; *c; c++) { h ^= (uint8_t)*c; h *= 1099511628211ULL; }
+    return h ? h : 1;
+}
+
+static void hears_touch(const char *wire, int len)
+{
+    xprs_t p; char from[10] = "";
+    if (!xprs_parse(wire, len, &p) || xprs_via_count(&p) != 0) return;
+    if (!xprs_get_str(&p, "f", from, sizeof from) || !from[0] || strcmp(from, s_call) == 0) return;
+    uint32_t now = millis();
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < HEARS_MAX; i++) {
+        if (strcmp(s_hears[i].call, from) == 0 || !s_hears[i].call[0]) { slot = i; break; }
+        if ((int32_t)(s_hears[i].t_ms - s_hears[oldest].t_ms) < 0) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    snprintf(s_hears[slot].call, sizeof s_hears[slot].call, "%s", from);
+    s_hears[slot].t_ms = now;
+}
+
+static int hears_render(char *out, int cap)
+{
+    uint32_t now = millis();
+    int n = 0;
+    for (int i = 0; i < HEARS_MAX; i++) {
+        if (!s_hears[i].call[0] || now - s_hears[i].t_ms > HEARS_FRESH_MS) continue;
+        int w = snprintf(out + n, (size_t)(cap - n), "%s%s", n ? "," : " hears:", s_hears[i].call);
+        if (w <= 0 || n + w >= cap) { out[n] = 0; break; }
+        n += w;
+    }
+    return n;
 }
 
 /* ── The LEDs ────────────────────────────────────────────────────────────
@@ -268,10 +616,37 @@ static void heard(const char *link, const char *wire, int len, int rssi)
 /* THE BRIDGE. What one bearer hears is offered to the other, and xprs_bearer
  * decides -- duplicate rings, hop budget, the random wait -- whether it goes
  * out there. Same rule as the T-Dongle between Bluetooth and the LAN. */
+/* A t:command addressed to us: the updater's, and never carried further
+ * (25.4: a command is acted on where it arrives; a thousand image chunks
+ * digipeated three hops would be the channel gone for an afternoon). */
+static bool command_for_us(xb_t *b, const char *wire, int len)
+{
+    xprs_t p; char t[12] = "", d[16] = "";
+    if (!xprs_parse(wire, len, &p) || !xprs_get_str(&p, "t", t, sizeof t) || strcmp(t, "command") != 0) return false;
+    if (!xprs_get_str(&p, "d", d, sizeof d) || strcmp(d, s_call) != 0) return false;
+    clock_learn(&p);
+    xfw_handle(b, &p);
+    return true;
+}
+
 static void on_lora(const char *wire, int len, uint64_t peer, int rssi)
 {
     (void)peer;
     heard("lora", wire, len, rssi);
+    hears_touch(wire, len);
+    if (command_for_us(&s_lora, wire, len)) return;
+    /* THE DIGIPEATER. This station's whole reason to be on a pole: what it
+     * hears on LoRa it says again on LoRa, so a small device at the edge of
+     * its own range is heard beyond it (XPRS 13, "repeats a packet on the
+     * medium it heard it"). xb_digipeat, not xb_offer: the same-medium
+     * door, which treats hearing it here as the reason to repeat rather
+     * than a reason not to. The hop budget, the own-callsign loop check,
+     * the random wait and the cancel when another relay speaks first are
+     * all the bearer's, as is appending us to via:. The ESP32 LoRa bearer
+     * does exactly this (common/xprs_bearer_lora/xprslora.c); this line was
+     * missing here, and the station bridged to BLE while repeating nothing
+     * on the air. */
+    xb_digipeat(&s_lora, wire, len);
     if (s_ble_up) xb_offer(&s_ble, wire, len);
 }
 
@@ -279,25 +654,42 @@ static void on_ble(const char *wire, int len, uint64_t peer, int rssi)
 {
     (void)peer;
     heard("ble", wire, len, rssi);
+    hears_touch(wire, len);
+    if (command_for_us(&s_ble, wire, len)) return;
     xb_offer(&s_lora, wire, len);
 }
 
 /* ── What we say ─────────────────────────────────────────────────────────
  *
- * The observation beacon of XPRS 10.6.1, minus the `hears:` list. That list
- * comes from xprs_station, which is not ported here yet; a beacon without it
- * is still a valid observation and still tells the network this station
- * exists, which is the part that matters from a pole. */
-static int lora_beacon(char *out, int cap)
+ * The observation beacon of XPRS 10.6.1 with the hears: list of 10.6.3, and
+ * signed (9.1) so a receiver can hold the callsign to the key it learned
+ * from our t:identity. The signature is 65 bytes; an observation with eight
+ * neighbours is still well inside a wire. */
+static int beacon(char *out, int cap, const char *link, int peers)
 {
-    return snprintf(out, (size_t)cap, "t:observation f:%s link:lora peers:%d",
-                    s_call, xb_peer_count(&s_lora, 600));
+    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d", s_call, link, peers);
+    if (n <= 0 || n >= cap) return n;
+    n += hears_render(out + n, cap - n - (5 + XPRSSIG_B85_LEN));
+    return sign_wire(out, n, cap);
 }
 
-static int ble_beacon(char *out, int cap)
+static int lora_beacon(char *out, int cap) { return beacon(out, cap, "lora", xb_peer_count(&s_lora, 600)); }
+static int ble_beacon(char *out, int cap)  { return beacon(out, cap, "ble",  xb_peer_count(&s_ble, 600)); }
+
+/* t:identity (9.3): the key behind the callsign, so a neighbour can verify
+ * every signature after it. Once at 30 s so a station that just came up is
+ * findable, then every 30 minutes (18.1) -- a binding that never changes is
+ * not worth a fresh archive record a minute. Same cadence as xprs_app.c. */
+static void air_identity(void)
 {
-    return snprintf(out, (size_t)cap, "t:observation f:%s link:ble peers:%d",
-                    s_call, xb_peer_count(&s_ble, 600));
+    if (!s_have_key) return;
+    char wire[XPRS_MAX_WIRE + 1], tf[32];
+    time_field(tf, sizeof tf);
+    int n = snprintf(wire, sizeof wire, "t:identity f:%s %s k:%s", s_call, tf, s_npub);
+    if (n <= 0 || n > XPRS_MAX_WIRE) return;
+    n = sign_wire(wire, n, (int)sizeof wire);
+    if (s_radio_up) xb_send(&s_lora, wire, n);
+    if (s_ble_up)   xb_send(&s_ble, wire, n);
 }
 
 static bool ble_air(void *ctx, const char *wire, int len)
@@ -342,7 +734,7 @@ static void ble_report(const tn_adv_report_t *r, void *ctx)
                     xprs_t x;
                     if (xprs_parse(wire, len, &x)) xprs_get_str(&x, "f", s_peer_call, sizeof s_peer_call);
                 }
-                xb_on_wire(&s_ble, wire, len, 0, r->rssi);
+                xb_on_wire(&s_ble, wire, len, peer_of(wire, len, NULL), r->rssi);
             } else if ((r->evt_type & 0x0001) && p[5] == 0x41 && len > 0 && len <= 9) {
                 /* The probe's APRS-subtype advert: connectable, callsign only. */
                 s_peer_addr_type = r->addr_type;
@@ -364,8 +756,32 @@ static void gatt_connected(void *c, uint16_t conn, bool central)
                           conn, central ? "we dialled" : "dialled in", tn_gatt_mtu()); }
 static void gatt_disconnected(void *c, uint16_t conn, uint8_t reason)
 { (void)c; Serial.printf("gatt: link 0x%04x closed (0x%02x)\n", conn, reason); }
+/* One answer wire, back over the same 1:1 link the command arrived on. */
+static void gatt_reply(const char *wire, int len)
+{
+    tn_gatt_send((const uint8_t *)wire, len);
+    s_gatt_tx++;
+}
+
+/* Bytes off the GATT link (docs/ble5-gatt.md). A t:command addressed to us is
+ * the OTA path on its private, connection-speed transport -- the image rides
+ * here, 128-byte chunks at the link interval, not on the broadcast plane and
+ * not through a gateway's re-air. Verified the same way: a connection is
+ * private, not authentic, so the signature still decides. Anything else is
+ * printed, as before. */
 static void gatt_rx(void *c, const uint8_t *d, int n)
-{ (void)c; s_gatt_rx++; Serial.printf("gatt rx %dB: %.*s\n", n, n, (const char *)d); }
+{
+    (void)c; s_gatt_rx++;
+    xprs_t p; char t[12] = "", dst[16] = "";
+    if (xprs_parse((const char *)d, n, &p) &&
+        xprs_get_str(&p, "t", t, sizeof t) && strcmp(t, "command") == 0 &&
+        xprs_get_str(&p, "d", dst, sizeof dst) && strcmp(dst, s_call) == 0) {
+        clock_learn(&p);
+        xfw_gatt_rx((const char *)d, n, gatt_reply);
+        return;
+    }
+    Serial.printf("gatt rx %dB: %.*s\n", n, n > 60 ? 60 : n, (const char *)d);
+}
 static const tn_gatt_cb_t k_gatt_cb = { gatt_connected, gatt_disconnected, gatt_rx, NULL };
 
 static int s_ble_err;     /* the last bring-up verdict, for '?' */
@@ -417,6 +833,40 @@ static void console(int c)
         break; }
     case 'x': Serial.printf("hangup: %d\n", tn_gatt_disconnect()); break;
     case 'b': ble_begin(); break;                /* bring-up, watched live */
+    case 'k':                                    /* who we are, publicly */
+        Serial.printf("call=%s npub=%s boots=%lu\n", s_call, s_have_key ? s_npub : "-",
+                      (unsigned long)s_boot_epoch);
+        break;
+    case 'K': {                                  /* the private half -- a backup, on request only */
+        char nsec[80] = "-";
+        if (s_have_key) bech32_encode("nsec", s_priv, sizeof s_priv, nsec, sizeof nsec);
+        Serial.printf("nsec=%s\n", nsec);
+        break; }
+    case 'I': {                                  /* I<nsec>\n: adopt a key */
+        char line[96]; int n = 0;
+        for (uint32_t t0 = millis(); millis() - t0 < 5000 && n < (int)sizeof line - 1; ) {
+            int ch = Serial.read();
+            if (ch < 0) { delay(2); continue; }
+            if (ch == '\r' || ch == '\n') break;
+            line[n++] = (char)ch;
+        }
+        line[n] = 0;
+        key_import(line);
+        break; }
+    case 'i': air_identity(); break;             /* say who we are, now */
+    case 'U': xfw_selftest(); break;             /* prove the flash path, non-destructively */
+    case 'c': {                                  /* cfg set|get|list ... */
+        char line[128]; int n = 0;
+        for (uint32_t t0 = millis(); millis() - t0 < 10000 && n < (int)sizeof line - 1; ) {
+            int ch = Serial.read();
+            if (ch < 0) { delay(2); continue; }
+            if (ch == '\r' || ch == '\n') break;
+            line[n++] = (char)ch;
+        }
+        line[n] = 0;
+        if (strncmp(line, "fg ", 3) == 0) cfg_console(line + 3);
+        else Serial.println("cfg set <key> <value> | cfg get <key> | cfg list");
+        break; }
     case 'D':                                    /* into the bootloader, cleanly */
         Serial.println("rebooting into DFU");
         Serial.flush(); delay(50);
@@ -425,8 +875,10 @@ static void console(int c)
         NVIC_SystemReset();
         break;
     case '?':
-        Serial.printf("call=%s lora=%d ble=%d(err %d) link=%s peer=%s gatt rx=%lu tx=%lu\n",
-                      s_call, (int)s_radio_up, (int)s_ble_up, s_ble_err,
+        Serial.printf("call=%s fw=%s%s clock=%lu key=%d lora=%d ble=%d(err %d) link=%s peer=%s gatt rx=%lu tx=%lu\n",
+                      s_call, xfw_version(), xfw_probation() ? "(probation)" : "",
+                      (unsigned long)xauth_platform_now(),
+                      (int)s_have_key, (int)s_radio_up, (int)s_ble_up, s_ble_err,
                       tn_gatt_connected() ? "UP" : "none",
                       s_peer_known ? s_peer_call : "-",
                       (unsigned long)s_gatt_rx, (unsigned long)s_gatt_tx);
@@ -480,7 +932,44 @@ static void gnss_off(void)
     digitalWrite(P1_GNSS_POWER_EN, LOW);
 }
 
+/* Keep the bearers moving for [ms]: what the updater calls so its last
+ * answer is on the air before it takes the SoftDevice down. */
+static void bearers_flush(uint32_t ms)
+{
+    for (uint32_t t0 = millis(); millis() - t0 < ms; ) {
+        xb_tick(&s_lora, millis());
+        if (s_ble_up) { tn_gatt_pump(); xb_tick(&s_ble, millis()); }
+        delay(5);
+    }
+}
+
+/* ── The station's task ──────────────────────────────────────────────────
+ *
+ * The Arduino core runs setup() and loop() on a task with a 4 KB stack
+ * (cores/nRF5/main.cpp, LOOP_STACK_SZ) and does not let a sketch ask for
+ * more. A signature is mbedtls scalar multiplication over secp256k1 plus
+ * three wire-sized buffers on the way in and out, and that overflowed it:
+ * the board fell silent between "ble: up" and the first key line, with
+ * nothing on the port to say so. So the station is its own task with a
+ * stack sized for the work, and the core's loop() only parks. */
+#define STATION_STACK_WORDS 3072     /* 12 KB */
+static void station_setup(void);
+static void station_loop(void);
+static void station_task(void *arg)
+{
+    (void)arg;
+    station_setup();
+    for (;;) station_loop();
+}
+
 void setup(void)
+{
+    xTaskCreate(station_task, "station", STATION_STACK_WORDS, NULL, TASK_PRIO_LOW, NULL);
+}
+
+void loop(void) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+
+static void station_setup(void)
 {
     Serial.begin(115200);
     /* A BOUNDED wait for the USB host, so a monitor attached at boot sees the
@@ -496,10 +985,38 @@ void setup(void)
     led(P1_LED_MESH, false);
 
     gnss_off();
-    derive_callsign();
 
-    Serial.printf("\nXPRS station %s -- SenseCAP Solar Node P1-Pro\n", s_call);
-    Serial.println("headless, one bearer: LoRa. No WiFi on this chip.");
+    /* THE FILESYSTEM BEFORE THE SOFTDEVICE, and not the other way round.
+     * With the SoftDevice up, the core's flash layer (flash_nrf5x.c) goes
+     * through sd_flash_* and then blocks on a semaphore that only the SoC
+     * event NRF_EVT_FLASH_OPERATION_SUCCESS gives -- and on this firmware
+     * those events are pumped by tn_gatt_pump(), on this very task. The
+     * first write deadlocked the station between "ble: up" and the first
+     * key line. Before the SoftDevice the same layer writes NVMC directly
+     * and returns; so the key, the boot counter, everything on flash, is
+     * done here, and the one write that can happen later (a key import)
+     * takes the SoftDevice down first and reboots. The RNG works the same
+     * way round: before the SoftDevice NRF_RNG is the application's, and
+     * xprssig_platform_random() reads it directly. */
+    keys_init();
+    cfg_load();
+    static const xfw_cfg_t k_xfw = {
+        .board = "sensecap-p1-pro", .call = s_call, .sign = sign_wire, .flush = bearers_flush,
+    };
+    xfw_init(&k_xfw, s_boot_epoch);
+    ble_begin();
+
+    /* The watchdog: a station that hangs on a pole reboots itself, and a
+     * new image that hangs three times is put back (update.cpp). 60 s,
+     * fed from the station loop and from inside the copier. */
+    NRF_WDT->CONFIG = WDT_CONFIG_SLEEP_Msk;
+    NRF_WDT->CRV = 60 * 32768;
+    NRF_WDT->RREN = 1;
+    NRF_WDT->TASKS_START = 1;
+
+    Serial.printf("\nXPRS station %s -- SenseCAP Solar Node P1-Pro (boot %lu)\n",
+                  s_call, (unsigned long)s_boot_epoch);
+    Serial.println("headless: LoRa + BLE5, signing. No WiFi on this chip.");
 
     randomSeed(NRF_FICR->DEVICEID[0]);
 
@@ -509,9 +1026,21 @@ void setup(void)
     xb_set_rx_cb(&s_lora, on_lora);
     xb_set_beacon(&s_lora, lora_beacon, BEACON_EVERY_SEC, BEACON_JITTER_SEC);
     xb_set_pace(&s_lora, LORA_PACE_MS);
+    /* The rolling-hour ledger, from the same modem constants the radio was
+     * given ten lines up, so the charge cannot drift from the wire. Band
+     * g3: 360 s of airtime an hour, 6 s of it kept for sos. */
+    static xb_duty_t s_lora_duty;
+    static const xb_lora_air_t k_lora_air = {
+        .bw_hz = (uint32_t)(LORA_BW_KHZ * 1000.0), .sf = LORA_SF,
+        .cr = LORA_CR - 4, .preamble = LORA_PREAMBLE, .crc = true,
+        .implicit_header = false,
+    };
+    struct air_fn { static uint32_t ms(int len, void *ctx) {
+        (void)ctx; return xb_lora_airtime_ms(&k_lora_air, len); } };
+    xb_set_duty(&s_lora, &s_lora_duty, air_fn::ms, NULL,
+                360000u, 6000u, 0u);
     xb_set_driver(s_radio_up);
 
-    ble_begin();
     xb_init(&s_ble, &k_ble_ops, s_call);
     xb_set_rx_cb(&s_ble, on_ble);
     xb_set_beacon(&s_ble, ble_beacon, BEACON_EVERY_SEC, BEACON_JITTER_SEC);
@@ -521,7 +1050,7 @@ void setup(void)
     for (int i = 0; i < 3 && s_radio_up; i++) { led_blip(P1_LED_MESH, 120); delay(120); }
 }
 
-void loop(void)
+static void station_loop(void)
 {
     if (s_rx_pending) {
         s_rx_pending = false;
@@ -537,7 +1066,8 @@ void loop(void)
                  * is paid on loop() where it belongs and no drain hook is
                  * needed (xprsbearer.h). */
                 xb_on_wire(&s_lora, (const char *)buf, (int)n,
-                           0, (int)s_radio.getRSSI());
+                           peer_of((const char *)buf, (int)n, NULL),
+                           (int)s_radio.getRSSI());
             } else {
                 Serial.printf("lora: readData failed (%d)\n", st);
             }
@@ -550,9 +1080,20 @@ void loop(void)
 
     xb_tick(&s_lora, millis());
     if (s_ble_up) { tn_gatt_pump(); xb_tick(&s_ble, millis()); }
+    xfw_tick(millis(), s_radio_up);
+    NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 
     int c = Serial.read();
     if (c > 0) console(c);
+
+    /* 30 s once, then every 30 minutes (9.3, 18.1). */
+    static uint32_t next_identity = 30000;
+    static bool     said_once;
+    if ((int32_t)(millis() - next_identity) >= 0) {
+        air_identity();
+        said_once = true;
+        next_identity = millis() + (said_once ? 1800000UL : 30000UL);
+    }
 
     /* Once a minute, the same shape of line the other boards print, so one
      * habit reads every station in the fleet. */
@@ -564,27 +1105,17 @@ void loop(void)
         xb_stats(&s_lora, &rx, &tx, &cancelled);
         uint32_t brx = 0, btx = 0, bcan = 0;
         xb_stats(&s_ble, &brx, &btx, &bcan);
-        Serial.printf("alive %lus call=%s lora rx=%lu tx=%lu cancel=%lu peers=%d | "
-                      "ble rx=%lu tx=%lu peers=%d | heard=%lu radio=%d\n",
-                      (unsigned long)(now / 1000), s_call,
+        uint32_t sgot, sof; xfw_progress(&sgot, &sof);
+        Serial.printf("alive %lus call=%s fw=%s%s lora rx=%lu tx=%lu cancel=%lu peers=%d | "
+                      "ble rx=%lu tx=%lu peers=%d | heard=%lu radio=%d",
+                      (unsigned long)(now / 1000), s_call, xfw_version(), xfw_probation() ? "?" : "",
                       (unsigned long)rx, (unsigned long)tx, (unsigned long)cancelled,
                       xb_peer_count(&s_lora, 600),
                       (unsigned long)brx, (unsigned long)btx, xb_peer_count(&s_ble, 600),
                       (unsigned long)s_heard, (int)s_radio_up);
+        if (sof) Serial.printf(" | update %lu/%lu", (unsigned long)sgot, (unsigned long)sof);
+        Serial.println();
     }
 
     delay(5);
 }
-    /* The rolling-hour ledger, from the same modem constants the radio was
-     * given ten lines up, so the charge cannot drift from the wire. Band
-     * g3: 360 s of airtime an hour, 6 s of it kept for sos. */
-    static xb_duty_t s_lora_duty;
-    static const xb_lora_air_t k_lora_air = {
-        .bw_hz = (uint32_t)(LORA_BW_KHZ * 1000.0), .sf = LORA_SF,
-        .cr = LORA_CR - 4, .preamble = LORA_PREAMBLE, .crc = true,
-        .implicit_header = false,
-    };
-    struct air_fn { static uint32_t ms(int len, void *ctx) {
-        (void)ctx; return xb_lora_airtime_ms(&k_lora_air, len); } };
-    xb_set_duty(&s_lora, &s_lora_duty, air_fn::ms, NULL,
-                360000u, 6000u, 0u);

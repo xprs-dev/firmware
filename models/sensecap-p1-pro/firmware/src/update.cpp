@@ -68,15 +68,22 @@ extern "C" uint32_t xauth_platform_now(void);
 #define XFW_PAGE     4096u
 #define XFW_SETTINGS 0xFF000u
 
-#define XFW_CHUNK    160          /* bytes a packet carries: 200 base85 characters */
+#define XFW_CHUNK    128          /* bytes a packet carries: 160 base85 chars, so the
+                                  * wire fits one 244-byte GATT frame (ble5-gatt.md) */
 #define XFW_MAX_CHUNKS (XFW_SLOT / XFW_CHUNK + 1)
 #define XFW_IDLE_MS  (30u * 60u * 1000u)
+#ifdef XFW_TEST_ROLLBACK
+#define XFW_PROVE_MS (4000u * 1000u)     /* test: never proves in the window */
+#define XFW_BOOTS_TO_GIVE_UP 2
+#else
 #define XFW_PROVE_MS (120u * 1000u)
 #define XFW_BOOTS_TO_GIVE_UP 3
+#endif
 #define PROBATION_PATH "/xprs/probation"
 #define GPREGRET2_PROVED 0x50      /* "this image ran two minutes with a radio" */
 
 static xfw_cfg_t s_cfg;
+static xfw_reply_fn s_reply;   /* set for the length of one GATT-delivered command */
 static uint32_t  s_boot;
 static bool      s_probation;
 static bool      s_proved;
@@ -91,6 +98,7 @@ static struct {
     char     sig85[XPRSSIG_B85_LEN + 1];
     uint32_t nchunks, got;
     uint8_t  have[(XFW_MAX_CHUNKS + 7) / 8];
+    uint8_t  erased[(XFW_SLOT / XFW_PAGE + 7) / 8];   /* staging pages wiped so far */
     uint32_t last_ms;
     char     from[16], id[8];
     xb_t    *bearer;
@@ -115,8 +123,12 @@ static bool sd_on(void)
 
 static bool flash_wait(void)
 {
+    /* SoC events only: the flash-done event we are waiting for arrives here,
+     * and draining the BLE queue instead (tn_gatt_pump) would reenter gatt_rx
+     * from inside the chunk we are still writing -- the hang that a fast image
+     * push produced (docs/ble5-gatt.md, tn_soc_pump). */
     for (uint32_t t0 = millis(); millis() - t0 < 3000; ) {
-        tn_gatt_pump();
+        tn_soc_pump();
         if (s_flash_evt) return s_flash_evt > 0;
         delay(1);
     }
@@ -135,7 +147,7 @@ static bool page_erase(uint32_t addr)
     }
     s_flash_evt = 0;
     uint32_t err;
-    while ((err = sd_flash_page_erase(addr / XFW_PAGE)) == NRF_ERROR_BUSY) { tn_gatt_pump(); delay(1); }
+    while ((err = sd_flash_page_erase(addr / XFW_PAGE)) == NRF_ERROR_BUSY) { tn_soc_pump(); delay(1); }
     return err == NRF_SUCCESS && flash_wait();
 }
 
@@ -152,7 +164,7 @@ static bool words_write(uint32_t addr, const uint32_t *src, uint32_t n)
     }
     s_flash_evt = 0;
     uint32_t err;
-    while ((err = sd_flash_write((uint32_t *)addr, src, n)) == NRF_ERROR_BUSY) { tn_gatt_pump(); delay(1); }
+    while ((err = sd_flash_write((uint32_t *)addr, src, n)) == NRF_ERROR_BUSY) { tn_soc_pump(); delay(1); }
     return err == NRF_SUCCESS && flash_wait();
 }
 
@@ -177,19 +189,18 @@ static void xfw_copier(uint32_t dst_a, uint32_t src_a, uint32_t len_a,
     volatile uint32_t *nvmc_ready = (volatile uint32_t *)0x4001E400;
     volatile uint32_t *nvmc_erase = (volatile uint32_t *)0x4001E508;
     volatile uint32_t *wdt_rr0    = (volatile uint32_t *)0x40010600;
-    for (int pass = 0; pass < 3; pass++) {
-        uint32_t dst = pass == 0 ? dst_a : pass == 1 ? dst_b : XFW_SETTINGS;
+    for (int pass = 0; pass < 2; pass++) {
+        uint32_t dst = pass == 0 ? dst_a : dst_b;
         uint32_t src = pass == 0 ? src_a : src_b;
-        uint32_t len = pass == 0 ? len_a : pass == 1 ? len_b : 0;
-        if (pass < 2 && len == 0) continue;
-        uint32_t pages = pass == 2 ? 1 : (len + XFW_PAGE - 1) / XFW_PAGE;
+        uint32_t len = pass == 0 ? len_a : len_b;
+        if (len == 0) continue;
+        uint32_t pages = (len + XFW_PAGE - 1) / XFW_PAGE;
         for (uint32_t pg = 0; pg < pages; pg++) {
             *wdt_rr0 = 0x6E524635;                  /* keep the watchdog fed */
             *nvmc_cfg = 2;  while (!*nvmc_ready) { }
             *nvmc_erase = dst + pg * XFW_PAGE;
             while (!*nvmc_ready) { }
             *nvmc_cfg = 0;  while (!*nvmc_ready) { }
-            if (pass == 2) break;
             *nvmc_cfg = 1;  while (!*nvmc_ready) { }
             volatile uint32_t *d = (volatile uint32_t *)(dst + pg * XFW_PAGE);
             const uint32_t    *s = (const uint32_t *)(src + pg * XFW_PAGE);
@@ -290,7 +301,8 @@ static void answer(xb_t *b, const char *to, const char *id, int code, const char
     w[n] = 0;
     n = s_cfg.sign(w, n, (int)sizeof w);
     Serial.printf("update: -> %s\n", w);
-    xb_send(b, w, n);
+    if (s_reply) s_reply(w, n);   /* over the 1:1 link */
+    else         xb_send(b, w, n);
 }
 
 /* ── The session ─────────────────────────────────────────────────────── */
@@ -316,13 +328,16 @@ static void mark_chunk(uint32_t i)  { s_ses.have[i >> 3] |= (uint8_t)(1u << (i &
 
 static void session_close(void) { memset(&s_ses, 0, sizeof s_ses); }
 
-/* Erase the staging pages the image will need. A few seconds for a full
- * slot, spent before answering 202, so the first chunk finds room. */
-static bool stage_prepare(uint32_t size)
+/* One staging page, erased the first time a chunk needs it. Erasing the whole
+ * slot up front (~40 pages, ~3.5 s of back-to-back flash ops) starved the
+ * SoftDevice's radio and dropped the BLE link mid-install; spread one 85 ms
+ * erase between chunk receptions and the link keeps its connection events. */
+static bool stage_page_ready(uint32_t off)
 {
-    uint32_t pages = (size + XFW_PAGE - 1) / XFW_PAGE;
-    for (uint32_t p = 0; p < pages; p++)
-        if (!page_erase(XFW_STAGE + p * XFW_PAGE)) return false;
+    uint32_t pg = off / XFW_PAGE;
+    if (s_ses.erased[pg >> 3] & (1u << (pg & 7))) return true;
+    if (!page_erase(XFW_STAGE + pg * XFW_PAGE)) return false;
+    s_ses.erased[pg >> 3] |= (uint8_t)(1u << (pg & 7));
     return true;
 }
 
@@ -340,8 +355,7 @@ static int cmd_update(xb_t *b, const xprs_t *p, const char *from, const char *id
     if (size > XFW_SLOT)       { snprintf(m, mcap, "%lu bytes does not fit a %lu slot", (unsigned long)size, (unsigned long)XFW_SLOT); return 413; }
     if (s_ses.open && strcmp(s_ses.ver, ver) != 0) session_close();
     if (!s_ses.open) {
-        memset(&s_ses, 0, sizeof s_ses);
-        if (!stage_prepare(size)) { snprintf(m, mcap, "could not erase staging"); return 500; }
+        memset(&s_ses, 0, sizeof s_ses);   /* clears have[] and erased[] */
         s_ses.open = true;
         snprintf(s_ses.ver, sizeof s_ses.ver, "%s", ver);
         s_ses.size = size;
@@ -413,6 +427,7 @@ static bool cmd_zfw(xb_t *b, const xprs_t *p)
     memset(buf, 0xFF, sizeof buf);
     int got = xprssig_b85_decode(m, len, (uint8_t *)buf, sizeof buf);
     if (got <= 0) return true;
+    if (!stage_page_ready(i * XFW_CHUNK)) { Serial.println("update: staging erase failed"); return true; }
     if (!words_write(XFW_STAGE + i * XFW_CHUNK, buf, (uint32_t)(got + 3) / 4)) {
         Serial.printf("update: flash write failed at chunk %lu\n", (unsigned long)i);
         return true;
@@ -455,7 +470,7 @@ static bool cmd_zfwq(xb_t *b, const xprs_t *p)
         return true;
     }
     char m[160]; int n = 0;
-    for (uint32_t i = 0; i < s_ses.nchunks && n < (int)sizeof m - 16; ) {
+    for (uint32_t i = 0; i < s_ses.nchunks && n < 120; ) {
         if (have_chunk(i)) { i++; continue; }
         uint32_t j = i;
         while (j + 1 < s_ses.nchunks && !have_chunk(j + 1)) j++;
@@ -478,6 +493,15 @@ static int cmd_zdiag(char *m, int mcap)
     return 200;
 }
 
+void xfw_gatt_rx(const char *wire, int len, xfw_reply_fn reply)
+{
+    xprs_t p;
+    if (!xprs_parse(wire, len, &p)) return;
+    s_reply = reply;
+    xfw_handle(NULL, &p);   /* answers route through s_reply, not the bearer */
+    s_reply = NULL;
+}
+
 bool xfw_handle(xb_t *b, const xprs_t *p)
 {
     char cmd[16] = "";
@@ -493,10 +517,20 @@ bool xfw_handle(xb_t *b, const xprs_t *p)
     char id[8], from[16];
     int prev = 0;
     xauth_verdict_t v = xauth_check(p, s_cfg.call, id, from, &prev);
+    if (!id[0]) xprs_id(p, id);    /* a refusal still names what it refused */
     switch (v) {
     case XAUTH_SILENT: return true;
     case XAUTH_403:    answer(b, from, id, 403, "not on this station's allow-list"); return true;
-    case XAUTH_408:    answer(b, from, id, 408, xauth_platform_now() ? "stale" : "this station has no clock yet"); return true;
+    case XAUTH_408: {
+        /* Say what the two clocks read: from the ground that is the
+         * difference between "set your clock" and "set mine". */
+        char ts[24] = "", m[80];
+        xprs_get_str(p, "ts", ts, sizeof ts);
+        uint32_t now = xauth_platform_now();
+        snprintf(m, sizeof m, now ? "stale: mine %lu, yours %s" : "this station has no clock yet",
+                 (unsigned long)now, ts);
+        answer(b, from, id, 408, m);
+        return true; }
     case XAUTH_429:    answer(b, from, id, 429, "busy"); return true;
     case XAUTH_REPEAT: answer(b, from, id, prev, "repeat"); return true;
     case XAUTH_OK:     break;
@@ -525,6 +559,51 @@ void xfw_tick(uint32_t now_ms, bool radio_up)
         Serial.println("update: session idle for 30 min -- dropped");
         session_close();
     }
+}
+
+/* ── A self-test of the dangerous path, non-destructively ────────────────
+ *
+ * The console 'U'. Everything an install does to flash, with the SAME image
+ * as its payload, so the board that reboots is byte-identical to the one
+ * that started -- and proves the write path, the copier, the backup and the
+ * probation/prove cycle without a chance of a brick.
+ *
+ *   1. copy the running image APP -> STAGE through words_write (the
+ *      SoftDevice-up flash path an over-the-air chunk uses), and read it
+ *      back: if STAGE != APP the write path is wrong and we stop here,
+ *      having touched nothing that boots.
+ *   2. write the probation note and run the copier BACKUP<-APP, APP<-STAGE,
+ *      exactly as a real install does. The image is identical, so the board
+ *      comes up, proves itself in two minutes, and xfw_init keeps it.
+ *
+ * What it does NOT exercise is the restore-the-backup branch, which would
+ * need a deliberately broken image and a real risk; that branch is the same
+ * copier this proves, pointed the other way. */
+void xfw_selftest(void)
+{
+    uint32_t len = running_image_size();
+    Serial.printf("selftest: running image is %lu bytes; copying to staging\n", (unsigned long)len);
+    uint32_t pages = (len + XFW_PAGE - 1) / XFW_PAGE;
+    for (uint32_t pg = 0; pg < pages; pg++) {
+        if (!page_erase(XFW_STAGE + pg * XFW_PAGE)) { Serial.println("selftest: erase failed"); return; }
+    }
+    for (uint32_t off = 0; off < len; off += 256) {
+        uint32_t n = len - off < 256 ? len - off : 256;
+        if (!words_write(XFW_STAGE + off, (const uint32_t *)(XFW_APP + off), (n + 3) / 4)) {
+            Serial.printf("selftest: write failed at +%lu\n", (unsigned long)off); return;
+        }
+        if ((off % 32768) == 0) { Serial.printf("selftest: %lu/%lu\n", (unsigned long)off, (unsigned long)len); Serial.flush(); }
+    }
+    if (memcmp((const void *)XFW_APP, (const void *)XFW_STAGE, len) != 0) {
+        Serial.println("selftest: STAGE != APP after write -- the flash write path is WRONG");
+        return;
+    }
+    Serial.println("selftest: staging verified byte-for-byte. Reinstalling the same image through the copier -- back in a moment on probation.");
+    Serial.flush(); delay(50);
+    sd_softdevice_disable();
+    probation_write(s_boot, "selftest", len);
+    __disable_irq();
+    xfw_copier(XFW_BACKUP, XFW_APP, len, XFW_APP, XFW_STAGE, len);
 }
 
 const char *xfw_version(void) { return XPRS_FW_VERSION; }

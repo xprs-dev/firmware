@@ -30,7 +30,7 @@ import argparse, hashlib, json, os, re, subprocess, sys, time, urllib.request, u
 
 B85 = ("0123456789abcdefghijklmnopqrstuvwxyz"
        "ABCDEFGHIJKLMNOPQRSTUVWXYZ.-+=^!/*?&<>()[]%$#@,;_")
-CHUNK = 160
+CHUNK = 128
 
 
 def b85(data: bytes) -> str:
@@ -53,9 +53,13 @@ def http(url, data=None, timeout=15):
 
 
 def send(gw, wire, bearer):
-    """One packet through the gateway. A gateway that is rebooting (a
-    T-Deck does, now and then) is waited for, up to two minutes: the
-    station's session survives far longer than that."""
+    """One packet to the station. Over --gatt: a line into the probe's pipe,
+    which forwards it as one GATT frame on the private 1:1 link
+    (docs/ble5-gatt.md) -- no gateway, no broadcast plane. Otherwise the LAN
+    gateway's /api/xprs/send; a rebooting gateway is waited for."""
+    if GATT is not None:
+        GATT.write((wire + "\n").encode()); GATT.flush()
+        return None
     deadline = time.time() + 120
     while True:
         try:
@@ -74,6 +78,8 @@ def send(gw, wire, bearer):
 
 LISTEN = None      # a serial.Serial on a station's console, or None
 LISTEN_BUF = ""
+GATT = None        # a serial.Serial on the probe's pipe (docs/ble5-gatt.md), or None
+GATT_BUF = ""
 
 
 def results(gw, station, rid, since_wires):
@@ -82,8 +88,22 @@ def results(gw, station, rid, since_wires):
     From the gateway's history, or -- with --listen -- off the console of a
     station on USB (a T-Dongle under the pole): every wire it hears is a
     log line, and the answer is in there."""
-    global LISTEN_BUF
+    global LISTEN_BUF, GATT_BUF
     rows = []
+    if GATT is not None:
+        try: GATT_BUF += GATT.read(65536).decode("utf-8", "replace")
+        except Exception: pass
+        GATT_BUF = GATT_BUF[-200000:]
+        parts = GATT_BUF.split("\n"); GATT_BUF = parts.pop()
+        for ln in parts:
+            ln = ln.strip()
+            if ln.startswith("RX>"): rows.append(ln[3:].strip())
+        out = []
+        for w in rows:
+            if w in since_wires: continue
+            if rid is None or f" r:{rid} " in w + " ":
+                since_wires.add(w); out.append(w)
+        return out
     if LISTEN is not None:
         try:
             LISTEN_BUF += LISTEN.read(65536).decode("utf-8", "replace")
@@ -99,7 +119,7 @@ def results(gw, station, rid, since_wires):
                 if f" r:{rid} " in w + " " and w not in since_wires:
                     since_wires.add(w); out.append(w)
             return out
-    if LISTEN is None:
+    if LISTEN is None and GATT is None and gw:
         for url in (f"http://{gw}/api/xprs/history?only=result&call={station}&limit=40",
                     f"http://{gw}/api/xprs?type=result&from={station}&limit=40&recent=1"):
             try:
@@ -129,7 +149,7 @@ def wait_result(gw, station, rid, timeout, seen):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gateway", required=True)
+    ap.add_argument("--gateway", help="LAN gateway station (omit when using --gatt)")
     ap.add_argument("--to", required=True)
     ap.add_argument("--version", required=True)
     ap.add_argument("--hex", help="firmware.hex from the PlatformIO build")
@@ -140,15 +160,20 @@ def main():
     ap.add_argument("--bearer", default="ble")
     ap.add_argument("--rate", type=float, default=4.0, help="packets per second")
     ap.add_argument("--flutter", default=os.environ.get("XPRS_FLUTTER",
-                    os.path.join(os.path.dirname(__file__), "..", "..", "xprs-flutter")))
+                    os.path.join(os.path.dirname(__file__), "..", "..", "app")))
     ap.add_argument("--board", default="sensecap-p1-pro")
-    ap.add_argument("--listen", help="serial port of a station on USB whose console shows what it hears; "
-                                     "answers are read there instead of the gateway's history")
+    ap.add_argument("--listen", help="serial port of a station on USB whose console shows what it hears")
+    ap.add_argument("--gatt", help="serial port of a tinynimble_probe in pipe mode: the image goes over a private "
+                                   "1:1 GATT link to a station that has dialled the probe, not the broadcast plane")
     a = ap.parse_args()
-    global LISTEN
+    global LISTEN, GATT
     if a.listen:
         import serial
         LISTEN = serial.Serial(a.listen, 115200, timeout=0)
+    if a.gatt:
+        import serial
+        GATT = serial.Serial(a.gatt, 115200, timeout=0)
+        GATT.write(b"P\n"); GATT.flush(); time.sleep(0.3)
 
     if a.bin:
         image = open(a.bin, "rb").read()

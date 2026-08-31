@@ -13,7 +13,7 @@
 #                    zsha = sha256(approval)[0:16], so the header cannot be
 #                    replayed to install a different image.
 # Both tools live in the flutter checkout (they share its crypto); point
-# XPRS_FLUTTER at it (default ../xprs-flutter).
+# XPRS_FLUTTER at it (default ../app).
 #
 # The version MUST equal the string the image embeds (esp_app_desc.version:
 # version.txt, or `git describe` when there is none). A mismatch is not a
@@ -21,7 +21,7 @@
 # The script reads it out of the binary and refuses to continue if they differ.
 set -euo pipefail
 HOST= BOARD= VERSION= BIN= FWNSEC= OWNNSEC= FROM= ELF=
-FLUTTER=${XPRS_FLUTTER:-"$(dirname "$0")/../../xprs-flutter"}
+FLUTTER=${XPRS_FLUTTER:-"$(dirname "$0")/../../app"}
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST=$2; shift 2;;        --board) BOARD=$2; shift 2;;

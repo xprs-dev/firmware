@@ -31,6 +31,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 
+#include "esp_ota_ops.h"
 #include "radio.h"
 
 static const char *TAG = "probe";
@@ -127,13 +128,22 @@ static void advertise_once(void)
 /* Runs on the pump, i.e. this task. Answer in kind so the far end can see
  * its own bytes came back through us -- the whole point of the test. */
 static volatile uint32_t s_gatt_rx, s_gatt_tx;
+static bool s_pipe;    /* transparent serial<->GATT bridge, for OTA-over-GATT */
+
 static void on_gatt_rx(const uint8_t *d, int n)
 {
     s_gatt_rx++;
+    if (s_pipe) {
+        /* A frame from the far end, verbatim, one line. The pusher on the
+         * other end of this UART reads "RX>" lines as the station's answers
+         * (tools/push_firmware_p1.py --gatt). XPRS wires are printable and
+         * carry no newline, so a line is a frame. */
+        printf("RX>%.*s\n", n, (const char *)d);
+        return;
+    }
     printf("  gatt rx %dB: %.*s\n", n, n > 80 ? 80 : n, (const char *)d);
     uint8_t echo[256];
     int m = snprintf((char *)echo, sizeof echo, "echo:");
-    /* Cut to what one send carries; the far end sent MTU-3 on purpose. */
     int room = radio_gatt_mtu() - m;
     if (n > room) n = room;
     memcpy(echo + m, d, n);
@@ -176,6 +186,14 @@ static void scan_on(void)
 
 void app_main(void)
 {
+    /* Confirm this image so the T-Deck's OTA does not roll it back to its
+     * normal firmware on the first reboot -- the probe has no health check of
+     * its own and would otherwise be reverted, taking the GATT server with it. */
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t ost;
+    if (run && esp_ota_get_state_partition(run, &ost) == ESP_OK && ost == ESP_OTA_IMG_PENDING_VERIFY)
+        esp_ota_mark_app_valid_cancel_rollback();
+
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_BT);
     snprintf(s_call, sizeof s_call, "X%02X%02X", mac[4], mac[5]);
@@ -199,8 +217,29 @@ void app_main(void)
     int64_t next = 0;
     for (;;) {
         int c = getchar();
+        if (c > 0 && s_pipe) {
+            /* Pipe mode: every line the pusher writes becomes one GATT frame.
+             * '.' alone on a line leaves pipe mode. */
+            static char line[256];
+            static int  ln;
+            if (c == '\r' || c == '\n') {        /* CR or LF ends a line */
+                if (ln == 1 && line[0] == '.') { s_pipe = false; printf("  pipe off\n"); }
+                else if (ln > 0) {
+                    /* radio_gatt_send blocks up to 500 ms for the controller
+                     * to take the packet (tn_port_esp gatt_send_l2cap), so
+                     * one call is the flow control; a failure is real. */
+                    esp_err_t e = radio_gatt_send((const uint8_t *)line, ln);
+                    if (e == ESP_OK) { s_gatt_tx++; printf("K\n"); }   /* ACK: sent, send the next */
+                    else printf("  send failed: %s\n", esp_err_to_name(e));
+                }
+                ln = 0;
+            } else if (ln < (int)sizeof line) line[ln++] = (char)c;
+            radio_gatt_pump();
+            continue;
+        }
         if (c > 0) {
             switch (c) {
+            case 'P': s_pipe = true; printf("  pipe on -- lines -> GATT, RX> lines <- GATT; '.' to exit\n"); break;
             case 'a': advertise_once(); printf("  sent one\n"); break;
             case 'A': repeat = !repeat; printf("  repeat %s\n", repeat ? "on" : "off"); break;
             case 's': scan_on(); break;
