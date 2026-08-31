@@ -1,138 +1,95 @@
-# Chat System
+# The hotspot chat page
 
-This document describes the Wi-Fi AP chat page, the HTTP API, and how messages are stored and signed.
+The board runs an open access point and serves one page on it. A visitor
+joins the AP, the captive portal opens the page, and they can talk to the
+mesh without installing anything and without an account.
 
-## Overview
+The page lives in `common/xprs_hotspot/`: `chat_page.html` plus
+`xprs_crypto.js`, merged and gzipped into `chat_page.c` by
+`tool/embed_page.py`. Edit the sources, run the tool, rebuild. It is served
+straight out of flash with `Content-Encoding: gzip` (50,370 bytes of page,
+21,809 in flash).
 
-- The ESP32 runs a softAP and serves a single-page chat UI at `/`.
-- Clients connect to the AP and load the chat UI from the ESP32.
-- The ESP32 keeps a rolling history of the last 100 messages in RAM.
-- Messages are stored in arrival order and returned by ID.
+`common/xprs_http/` is an older, larger implementation of the same idea --
+WebSocket, nostr-tools, its own captive URIs. Nothing calls
+`http_server_start()`; it is not built into any image.
 
-## HTTP Endpoints
+## What the page shows
 
-- `GET /`
-  - Serves the chat HTML page.
-  - Injects a bundled `nostr-tools` build into the page.
+Five tabs, taking the same material the board puts on its own screen:
 
-- `GET /api/chat/messages?since=<id>`
-  - Returns a JSON payload with messages newer than `since`.
-  - Also returns `latest_id`, `count`, `max_len`, and `my_callsign`.
-  - Message order is by arrival ID, not by timestamp.
+| Tab | Content | Endpoint |
+|---|---|---|
+| Chat | rooms, messages, replies, reactions | `GET /api/xprs/history`, `POST /api/xprs/send` |
+| Traffic | every packet filed, with bearer, RSSI and signature state | `GET /api/xprs/history?limit=60` |
+| Devices | who is in reach: link, signal, estimated distance, age | `GET /api/xprs/devices` |
+| Stats | devices heard, packets in, packets out | `GET /api/stats?view=0\|1\|2` |
+| Station | callsign, uptime, memory, battery, address, LoRa airtime, roles, screenshot | `GET /api/status`, `/api/services`, `/api/screen` |
 
-- `POST /api/chat/send`
-  - Form fields:
-    - `text` (required): message text.
-    - `callsign` (optional): sender callsign.
-    - `client_ts` (optional): Unix timestamp (seconds) from the browser.
-    - `event` (optional): JSON string of a signed Nostr event (kind 1).
-  - Stores the message locally with the provided callsign.
-  - Uses `client_ts` if provided; otherwise falls back to device time.
+Only the visible tab polls: chat and traffic every 3-5 s, devices 5 s,
+station 10 s, stats 60 s. The station has one HTTP worker and one 2 KB
+buffer for every reply, and four clients may be connected.
 
-- `POST /api/chat/client`
-  - Form fields:
-    - `callsign`, `npub`, `mode`, `error`.
-  - Used by the browser to report key status for logging on the ESP32.
+## Endpoints
 
-## Browser Key Handling
+`spec/API-HTTP.md` documents the interface. Two exist for the panels above
+and are not yet in that document:
 
-- The page prefers a Nostr extension if present (`window.nostr`).
-  - It calls `window.nostr.getPublicKey()`.
-  - It derives `npub` and `callsign` from the returned hex pubkey.
-- If no extension is available, the page generates local keys.
-  - The keys are stored in `localStorage` under `geogram_nostr_keys` -- a name
-    kept deliberately through the xprs rename, because it lives in the
-    visitor's browser and renaming it would orphan their keys rather than
-    move them.
-- Callsign format: `X1` + first 4 chars of `npub` (uppercased).
+- `GET /api/xprs/devices` -> `{ok, heard, count, devices:[{call, bearer,
+  rssi, dist_m, hops, age_s}]}` -- the list `xst_devices()` keeps, the same
+  one the Reachable panel prints and the radar plots, 300-second window.
+  `dist_m` is `xst_est_distance_m()`: RSSI through a log-distance model,
+  an estimate and no better than the room.
+- `GET /api/stats?view=` -> `{ok, view, bucket_s, points, devices[], rx[],
+  tx[]}` -- the three series of the Stats panel. `view` 0 ten-minute,
+  1 hourly, 2 daily. `points` is 0 until NTP has spoken.
 
-## Nostr Signed Notes
+Both are board-supplied bodies (`devices_json`, `stats_json` in
+`xprs_api_cfg_t`), like `status_json` and `peers_json` before them.
 
-- Messages can be signed as Nostr kind-1 events.
-- The browser uses its own time (`created_at`) in seconds.
-- A `client_time` tag is added with ISO time (`YYYY-MM-DDTHH:MM:SSZ`).
-- The signed event is sent in the `event` field of `/api/chat/send`.
+## Keys and signing
 
-## Message Storage
+The browser holds the key and does the signing; the firmware never sees a
+private key and does not sign for the visitor.
 
-- Chat history is stored in a fixed-size ring buffer on the ESP32.
-- Maximum history: 100 messages.
-- Each message includes:
-  - `id`: incrementing arrival ID.
-  - `timestamp`: Unix time (device or client).
-  - `callsign`: sender callsign.
-  - `text`: message text (max 200 chars).
+- A key is generated on first load and kept in `localStorage` under
+  `xprs_nsec`, falling back to a cookie and then to memory -- captive
+  WebViews block storage, and a visitor with no key can still talk.
+- The callsign is derived from the public key as section 3 says.
+- `xprs_crypto.js` implements the short Schnorr of XPRS.md 9.1.2 in BigInt
+  and base85, checked against the worked example by `tool/test_crypto.sh`.
+- The page composes the wire, signs it, and posts it; `xapi_send.c`
+  validates length, leading `t:` and `f:` and airs it on every bearer.
+  A packet over 250 bytes is refused by both ends.
 
-## UI Behavior
+## Where messages live
 
-- Portrait mode: local messages on the right, remote messages on the left.
-- Landscape mode: all messages aligned left.
-- Timestamps are rendered as `YYYY-MM-DD HH:MM` using browser time.
-- The footer shows: `Connected to station <CALLSIGN>` when known.
-- The hamburger menu includes “Reset local data,” which clears local keys, clears the message list, and skips previously stored history when the next poll runs.
+Nothing is kept in a chat ring. Every packet the station hears or sends goes
+to the index (`xprs_index`, on the SD card or flash), and the page reads it
+back through `/api/xprs/history` -- so what the visitor sees is what the
+station actually filed, dedupe, signature verdict and all. A packet is
+identified by its section 5 derived id, not by an arrival number.
+
+The page keeps only view state in the browser: which room is selected, the
+`seen` set that stops a re-poll re-rendering a message, and the "cleared
+before" mark behind **Clear chat view** (local only -- it hides nothing on
+the station and deletes nothing).
+
+## Rooms
+
+`Local`, `Global` and `Social` plus one room per callsign heard, matching
+the rail on the board's own Chat panel. A row lands in a room by its
+`scope:` and `d:` fields, not by anything the page invents.
 
 ## Logging
 
-The ESP32 logs key and chat actions to the serial console, including:
+The station's log is the rotating file pair `/idx/log/cur.txt` and
+`prev.txt`, readable at `GET /api/log?limit=` (default 50, max 500). The
+page does not write to it: a visitor's browser is not a source of log lines.
 
-- Client key status and npub (from `/api/chat/client`).
-- Chat message posts.
-- Signed event receipts (size and client timestamp when provided).
+## Files
 
-## Attachments (metadata-only)
-
-Goal: allow users to attach files while the station stores only metadata (no binary). Files are shared client-to-client.
-
-### Metadata message
-
-Attachment messages are a special chat message type that contain:
-
-- `sha1` (20-byte hash, hex in UI)
-- `size` (bytes)
-- `mime_type` (e.g., `image/png`)
-- `filename` (optional)
-- `text` (caption/description)
-
-These metadata messages are stored in the same 100-message ring buffer and expire like any other message.
-
-### Client flow (browser)
-
-1) User selects a file (max 20MB).  
-2) Browser computes SHA1 and collects metadata.  
-3) Browser sends metadata to the station, which stores a file-type message.  
-4) Browser retains the binary locally (memory/IndexedDB) for later sharing.  
-
-### Station/API plan
-
-- HTTP endpoint: `POST /api/chat/send-file` (metadata only).
-- Server calls a file-message helper (local-only or mesh-broadcast) to insert metadata into history.
-- No binary is stored on the ESP32.
-
-### Discovery + transfer
-
-WebSocket signaling already exists in `ws_server`:
-
-- `file_request`: broadcast “who has sha1?”
-- `file_available`: response from a client who has the file
-- `file_fetch`: request a peer to start transfer
-- `file_chunk`: chunked data relay
-- `file_complete`: transfer finished metadata
-- `rtc_offer/answer/ice`: optional (unused in this flow)
-
-The chat UI will:
-
-- Show a “Request file” action for file messages.
-- Send a `file_request` with `sha1` and client ID.
-- Listen for `file_available` and initiate transfer.
-
-### Transfer
-
-- WebSocket relay by client ID (`file_fetch`, `file_chunk`, `file_complete`).
-- Sender streams chunks to the recipient via the station as a relay.
-- Station still does not store binaries; it only forwards frames.
-
-### Limits and lifecycle
-
-- File size limit: 20MB per file.
-- Metadata messages expire after 100 total messages.
-- Binary data lives only on clients and can be evicted by the browser.
+Files are XPRS section 6.7 -- content-addressed, described by `file:` and
+fetched with `cmd:file`. The page does not offer attachments; a 250-byte
+packet does not carry one, and the station is not a file server unless it
+announces `serve:files`.

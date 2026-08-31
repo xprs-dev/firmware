@@ -74,6 +74,20 @@ typedef struct {
      *  watched. NULL on a board that keeps none of this. */
     int (*peers_json)(char *buf, size_t cap);
 
+    /** The whole body of /api/xprs/devices: every station heard lately --
+     *  the list the Reachable panel lists and the radar plots. Written
+     *  WITHOUT the enclosing braces, like status_json.
+     *
+     *  A visitor on the hotspot can read the screen only while holding the
+     *  board; this is the same list for the phone in their hand. */
+    int (*devices_json)(char *buf, size_t cap);
+
+    /** The whole body of /api/stats: the three series behind the Stats
+     *  panel (devices heard, packets in, packets out). @p view picks the
+     *  bucket width the panel's arrows pick -- 0 ten-minute, 1 hourly,
+     *  2 daily. Braces excluded, as above. */
+    int (*stats_json)(char *buf, size_t cap, int view);
+
     /** The rotating log files (newest lines at the END of cur). NULL when
      *  the board keeps no log. */
     const char *log_cur, *log_prev;

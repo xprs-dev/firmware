@@ -661,22 +661,6 @@ static void kb_light_tick(int kb)
     }
 }
 
-static int api_lora_json(char *buf, size_t cap);
-
-static int api_status_json(char *buf, size_t cap)
-{
-    /* Cached values only -- this runs on the HTTP task; the lora report is
-     * a 60-entry walk with no locks and no radio, which qualifies. */
-    int n = snprintf(buf, cap,
-        "\"battery\":{\"mv\":%d,\"state\":\"%s\"},\"screen\":\"%s\"",
-        s_bat_mv, bat_state_name(), s_screen_off ? "off" : "on");
-    if (n > 0 && (size_t)n + 2 < cap) {
-        int m = api_lora_json(buf + n + 1, cap - (size_t)n - 1);
-        if (m > 0) { buf[n] = ','; n += 1 + m; }
-        else buf[n] = 0;
-    }
-    return n;
-}
 static int s_stats_view;  /* Stats panel: 0 = 10 min, 1 = hour, 2 = day */
 /* Rotate: C on the home panel starts a 30 s tour of Home, Stats, Chat;
  * any button ends it and hands the wheel back. */
@@ -4180,6 +4164,85 @@ static int api_features_json(char *buf, size_t cap)
  *
  * Runs on the HTTP task and must not block: everything here is a RAM read.
  */
+static int api_status_json(char *buf, size_t cap)
+{
+    /* Cached values only -- this runs on the HTTP task; the lora report is
+     * a 60-entry walk with no locks and no radio, which qualifies. */
+    int n = snprintf(buf, cap,
+        "\"battery\":{\"mv\":%d,\"state\":\"%s\"},\"screen\":\"%s\","
+        "\"heard\":%lu,\"in_reach\":%d,"
+        "\"net\":{\"ip\":\"%s\",\"internet\":%s}",
+        s_bat_mv, bat_state_name(), s_screen_off ? "off" : "on",
+        (unsigned long)s_heard_count,
+        xst_devices_in_range(UI_INRANGE_SEC),
+        s_ip_str[0] ? s_ip_str : "",
+        !s_inet_known ? "null" : (s_inet_up ? "true" : "false"));
+    if (n > 0 && (size_t)n + 2 < cap) {
+        int m = api_lora_json(buf + n + 1, cap - (size_t)n - 1);
+        if (m > 0) { buf[n] = ','; n += 1 + m; }
+        else buf[n] = 0;
+    }
+    return n;
+}
+
+/*
+ * /api/xprs/devices -- everyone in reach.
+ *
+ * The Reachable panel and the radar are drawn from xst_devices(); so is this,
+ * with the same 300-second window, so the phone on the hotspot and the screen
+ * on the board never disagree about who is out there. Distance is the same
+ * estimate the panel prints, and is an estimate: RSSI through a log-distance
+ * model, no better than the room it is measured in.
+ */
+static int api_devices_json(char *buf, size_t cap)
+{
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    xst_dev_t devs[XST_SEEN_MAX];
+    int nr = xst_devices(devs, XST_SEEN_MAX, UI_INRANGE_SEC);
+    int n = snprintf(buf, cap, ",\"heard\":%lu,\"devices\":[",
+                     (unsigned long)s_heard_count);
+    for (int i = 0; i < nr && n > 0 && n < (int)cap; i++) {
+        const xst_dev_t *d = &devs[i];
+        int dist = d->rssi ? (int)xst_est_distance_m(d->rssi) : -1;
+        n += snprintf(buf + n, cap - n,
+            "%s{\"call\":\"%s\",\"bearer\":\"%s\",\"rssi\":%d,"
+            "\"dist_m\":%d,\"hops\":%u,\"age_s\":%lu}",
+            i ? "," : "", d->call, d->bearer, d->rssi, dist,
+            (unsigned)d->hops,
+            (unsigned long)((now - d->last_ms) / 1000));
+    }
+    if (n > 0 && n < (int)cap)
+        n += snprintf(buf + n, cap - n, "],\"count\":%d", nr);
+    return (n > 0 && n < (int)cap) ? n : (int)cap - 1;
+}
+
+/*
+ * /api/stats -- the three series the Stats panel charts.
+ *
+ * Plain integer arrays: a browser can draw them however it likes, and the
+ * points are small enough that all three fit one response. Empty before NTP
+ * has spoken, which is what the panel says too.
+ */
+static int api_stats_json(char *buf, size_t cap, int view)
+{
+    uint16_t dev[XST_SBDAY_N], rxv[XST_SBDAY_N], txv[XST_SBDAY_N];
+    int np = xst_stats_series(view, dev, rxv, txv, XST_SBDAY_N);
+    const int bucket_s = view == 0 ? 600 : view == 1 ? 3600 : 86400;
+    int n = snprintf(buf, cap, ",\"bucket_s\":%d,\"points\":%d",
+                     bucket_s, np);
+    static const char *const names[3] = { "devices", "rx", "tx" };
+    const uint16_t *series[3] = { dev, rxv, txv };
+    for (int k = 0; k < 3 && n > 0 && n < (int)cap; k++) {
+        n += snprintf(buf + n, cap - n, ",\"%s\":[", names[k]);
+        for (int i = 0; i < np && n > 0 && n < (int)cap; i++)
+            n += snprintf(buf + n, cap - n, "%s%u",
+                          i ? "," : "", (unsigned)series[k][i]);
+        if (n > 0 && n < (int)cap)
+            n += snprintf(buf + n, cap - n, "]");
+    }
+    return (n > 0 && n < (int)cap) ? n : (int)cap - 1;
+}
+
 static int api_peers_json(char *buf, size_t cap)
 {
     const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -4278,6 +4341,8 @@ static xprs_api_cfg_t s_api_cfg = {
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,
+    .devices_json = api_devices_json,
+    .stats_json = api_stats_json,
     .peers_json = api_peers_json,
     .log_cur = "/idx/log/cur.txt",
     .log_prev = "/idx/log/prev.txt",

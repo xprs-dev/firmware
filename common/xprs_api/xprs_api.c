@@ -92,11 +92,16 @@ static esp_err_t h_status(httpd_req_t *req)
         time_synced() ? "true" : "false",
         time_synced() ? (unsigned long)time(NULL) : 0,
         s_cfg->tz ? s_cfg->tz : "+00:00");
-    if (s_cfg->status_json) {
+    /* snprintf returns what it WOULD have written, so n can run past cap and
+     * cap-n then underflows into a huge size_t. Guarded at every step, as
+     * the diag handler already guards: the fields below grow with each
+     * bearer a board gains, and the buffer does not. */
+    if (s_cfg->status_json && n > 0 && n < (int)cap) {
         n += snprintf(buf + n, cap - n, ",");
-        n += s_cfg->status_json(buf + n, cap - n);
+        if (n > 0 && n < (int)cap)
+            n += s_cfg->status_json(buf + n, cap - n);
     }
-    if (s_cfg->index) {
+    if (s_cfg->index && n > 0 && n < (int)cap) {
         xprsidx_stats_t st;
         xprsindex_stats(s_cfg->index, &st);
         n += snprintf(buf + n, cap - n,
@@ -104,8 +109,64 @@ static esp_err_t h_status(httpd_req_t *req)
                       "\"epoch\":\"%c\"}",
                       (unsigned long)st.count, st.epoch);
     }
-    n += snprintf(buf + n, cap - n, "}");
+    if (n > 0 && n < (int)cap)
+        n += snprintf(buf + n, cap - n, "}");
+    if (n < 0) return httpd_resp_send_500(req);
+    if (n > (int)cap - 1) n = (int)cap - 1;   /* truncated, never overrun */
     resp_json(req);
+    return httpd_resp_send(req, buf, n);
+}
+
+/* ---- /api/xprs/devices --------------------------------------------------- */
+/*
+ * Who is in reach: the rows the Reachable panel lists and the radar plots.
+ * The board owns the list; this wraps it and nothing more.
+ */
+static esp_err_t h_devices(httpd_req_t *req)
+{
+    char *buf = s_api_buf;
+    const size_t cap = API_BUF_SIZE;
+    resp_json(req);
+    if (!s_cfg->devices_json)
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no station\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    int n = snprintf(buf, cap, "{\"ok\":true");
+    if (n > 0 && n < (int)cap)
+        n += s_cfg->devices_json(buf + n, cap - n);
+    if (n > 0 && n < (int)cap)
+        n += snprintf(buf + n, cap - n, "}");
+    if (n < 0) return httpd_resp_send_500(req);
+    if (n > (int)cap - 1) n = (int)cap - 1;
+    return httpd_resp_send(req, buf, n);
+}
+
+/* ---- /api/stats ---------------------------------------------------------- */
+/*
+ * The three series behind the Stats panel. `view` picks the bucket width the
+ * panel's own arrows pick: 0 ten-minute, 1 hourly, 2 daily.
+ */
+static esp_err_t h_stats(httpd_req_t *req)
+{
+    char *buf = s_api_buf;
+    const size_t cap = API_BUF_SIZE;
+    resp_json(req);
+    if (!s_cfg->stats_json)
+        return httpd_resp_send(req, "{\"ok\":false,\"error\":\"no station\"}",
+                               HTTPD_RESP_USE_STRLEN);
+    int view = 0;
+    char q[32], v[8];
+    if (httpd_req_get_url_query_str(req, q, sizeof q) == ESP_OK &&
+        httpd_query_key_value(q, "view", v, sizeof v) == ESP_OK) {
+        view = atoi(v);
+        if (view < 0 || view > 2) view = 0;
+    }
+    int n = snprintf(buf, cap, "{\"ok\":true,\"view\":%d", view);
+    if (n > 0 && n < (int)cap)
+        n += s_cfg->stats_json(buf + n, cap - n, view);
+    if (n > 0 && n < (int)cap)
+        n += snprintf(buf + n, cap - n, "}");
+    if (n < 0) return httpd_resp_send_500(req);
+    if (n > (int)cap - 1) n = (int)cap - 1;
     return httpd_resp_send(req, buf, n);
 }
 
@@ -141,6 +202,7 @@ static esp_err_t h_services(httpd_req_t *req)
     if (n < (int)cap)
         n += snprintf(buf + n, cap - n,
             "},\"api\":[\"status\",\"services\",\"history\",\"mail\","
+            "\"peers\",\"devices\",\"stats\",\"diag\","
             "\"send\",\"log\"]}");
     resp_json(req);
     return httpd_resp_send(req, buf, n);
@@ -617,7 +679,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
      * before this was raised. Thirty seconds still reaps a dead client. */
     hc.recv_wait_timeout = 30;
     hc.send_wait_timeout = 30;
-    hc.max_uri_handlers = 16;
+    hc.max_uri_handlers = 20;   /* 13 here + OTA + 4 from the config share */
     hc.lru_purge_enable = true;
     /* Claimed here, while the heap is still one large block, and never
      * released. A server that cannot answer is worse than one that never
@@ -640,6 +702,8 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/services", .method = HTTP_GET, .handler = h_services },
         { .uri = "/api/xprs/history", .method = HTTP_GET, .handler = h_history },
         { .uri = "/api/xprs/peers", .method = HTTP_GET, .handler = h_peers },
+        { .uri = "/api/xprs/devices", .method = HTTP_GET, .handler = h_devices },
+        { .uri = "/api/stats", .method = HTTP_GET, .handler = h_stats },
         { .uri = "/api/xprs/mail", .method = HTTP_GET, .handler = h_mail },
         { .uri = "/api/xprs/send", .method = HTTP_POST, .handler = h_send },
         { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },

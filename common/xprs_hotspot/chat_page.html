@@ -115,6 +115,46 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
         z-index:10;left:50%;bottom:60px;transform:translateX(-50%);
         font-size:14px}
 .snackbar.show{visibility:visible;animation:fadein .3s,fadeout .3s 2.7s}
+/* Tabs. The station shows seven panels on its own screen; the phone on the
+   hotspot gets the same material in five, chat first because that is what
+   somebody who just joined an open AP came for. */
+.tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto}
+.tabs button{flex:1 0 auto;background:none;border:0;color:var(--muted);
+  font:inherit;font-size:12px;padding:7px 12px;cursor:pointer;
+  border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button.on{color:var(--accent);border-bottom-color:var(--accent)}
+.view{flex:1;overflow-y:auto;overflow-x:hidden;padding:10px 12px;
+  font-size:13px;overflow-wrap:break-word;-webkit-overflow-scrolling:touch}
+.view.hide,#chatwrap.hide{display:none}
+#chatwrap{flex:1;display:flex;min-height:0}
+.tbl{width:100%;border-collapse:collapse;font-size:12px}
+.tbl th{text-align:left;color:#555;font-weight:normal;font-size:10px;
+  text-transform:uppercase;padding:3px 8px 3px 0;border-bottom:1px solid var(--border)}
+.tbl td{padding:4px 8px 4px 0;border-bottom:1px solid #1c1c1c;
+  vertical-align:top;word-break:break-word}
+.tbl td.n{white-space:nowrap;color:var(--muted)}
+.kv{width:100%;border-collapse:collapse;font-size:13px}
+.kv td{padding:3px 8px 3px 0;border-bottom:1px solid #1c1c1c}
+.kv td:first-child{color:var(--muted);white-space:nowrap;width:42%}
+h3{font-size:11px;color:#555;text-transform:uppercase;font-weight:normal;
+  margin:14px 0 5px}
+h3:first-child{margin-top:0}
+.bar{height:9px;background:var(--accent);min-width:1px}
+.bars{display:flex;align-items:flex-end;gap:1px;height:52px;margin:3px 0 2px}
+.bars div{flex:1 1 0;background:var(--accent);min-height:1px}
+.dim{color:var(--muted)}
+.sig-verified{color:#3a3}.sig-unverified{color:#a83}.sig-none{color:#555}
+.wire{font-family:monospace;font-size:10px;color:#666;
+  overflow-wrap:anywhere;margin-top:2px}
+.pkt{border-bottom:1px solid #1c1c1c;padding:6px 0}
+.pkt .l1{display:flex;align-items:baseline;gap:4px;font-size:13px}
+.pkt .l1 .when{margin-left:auto;color:var(--muted);font-size:11px;
+  white-space:nowrap;padding-left:6px}
+.pkt .l2{font-size:11px;color:var(--muted)}
+.viewbtns button{background:none;border:1px solid var(--border);color:var(--muted);
+  font:inherit;font-size:11px;padding:2px 7px;margin-right:4px;cursor:pointer}
+.viewbtns button.on{color:var(--accent);border-color:var(--accent)}
+img.shot{max-width:100%;image-rendering:pixelated;border:1px solid var(--border)}
 @keyframes fadein{from{bottom:0;opacity:0}to{bottom:60px;opacity:1}}
 @keyframes fadeout{from{bottom:60px;opacity:1}to{bottom:0;opacity:0}}
 </style></head><body>
@@ -133,7 +173,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
     </div>
   </div>
 </div>
+<div class="tabs" id="tabs">
+  <button data-tab="chat" class="on" onclick="showTab('chat')">Chat</button>
+  <button data-tab="traffic" onclick="showTab('traffic')">Traffic</button>
+  <button data-tab="devices" onclick="showTab('devices')">Devices</button>
+  <button data-tab="stats" onclick="showTab('stats')">Stats</button>
+  <button data-tab="station" onclick="showTab('station')">Station</button>
+</div>
 <div id="content">
+  <div id="chatwrap">
   <div id="side"></div>
   <div id="chatcol">
     <div class="messages" id="msgs"></div>
@@ -149,6 +197,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
       <button onclick="sendMsg()">&gt;</button>
     </div>
   </div>
+  </div>
+  <div class="view hide" id="v-traffic">loading&hellip;</div>
+  <div class="view hide" id="v-devices">loading&hellip;</div>
+  <div class="view hide" id="v-stats">loading&hellip;</div>
+  <div class="view hide" id="v-station">loading&hellip;</div>
 </div>
 <div class="snackbar" id="snack"></div>
 <div id="msgmenu"></div>
@@ -554,6 +607,212 @@ function load(){
   }catch(e){}
 }
 
+// ---- the other four tabs -------------------------------------------------
+//
+// Everything here is read-only and comes from the endpoints the station
+// already answers, so the phone on the hotspot sees what the board's own
+// screen shows: who is in reach (the Reachable panel), what went past
+// (Traffic), the three series (Stats), and the device itself.
+//
+// Only the visible tab polls, and each at the rate its data actually
+// changes. The station has one HTTP worker and one 2 KB buffer for every
+// reply; four phones polling five endpoints each would be the whole budget
+// spent on nobody looking.
+var tab='chat', tabTimer=null;
+var TAB_MS={chat:3000,traffic:5000,devices:5000,stats:60000,station:10000};
+
+function el(id){return document.getElementById(id);}
+function esc(t){return String(t==null?'':t)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function ago(sec){
+  sec=Math.max(0,Math.round(sec));
+  if(sec<60)return sec+'s';
+  if(sec<3600)return Math.round(sec/60)+'m';
+  if(sec<86400)return Math.round(sec/3600)+'h';
+  return Math.round(sec/86400)+'d';
+}
+function hms(sec){
+  var d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),
+      m=Math.floor(sec%3600/60);
+  return d?d+'d '+h+'h':h?h+'h '+m+'m':m+'m';
+}
+function kb(n){
+  if(n==null)return '-';
+  return n>=1048576?(n/1048576).toFixed(1)+' MB':Math.round(n/1024)+' KB';
+}
+function getJSON(url,cb){
+  try{
+    var x=new XMLHttpRequest();
+    x.open('GET',url,true);
+    x.timeout=6000;
+    x.onload=function(){try{cb(JSON.parse(x.responseText));}catch(e){cb(null);}};
+    x.onerror=x.ontimeout=function(){cb(null);};
+    x.send();
+  }catch(e){cb(null);}
+}
+function fail(id,what){
+  el(id).innerHTML='<p class="dim">'+esc(what)+' unavailable on this station.</p>';
+}
+
+function showTab(t){
+  tab=t;
+  var bs=el('tabs').getElementsByTagName('button');
+  for(var i=0;i<bs.length;i++)
+    bs[i].className=bs[i].getAttribute('data-tab')===t?'on':'';
+  el('chatwrap').className=t==='chat'?'':'hide';
+  var views=['traffic','devices','stats','station'];
+  for(var j=0;j<views.length;j++)
+    el('v-'+views[j]).className='view'+(views[j]===t?'':' hide');
+  if(tabTimer)clearInterval(tabTimer);
+  tick();
+  tabTimer=setInterval(tick,TAB_MS[t]||10000);
+}
+function tick(){
+  if(tab==='chat')load();
+  else if(tab==='traffic')loadTraffic();
+  else if(tab==='devices')loadDevices();
+  else if(tab==='stats')loadStats();
+  else if(tab==='station')loadStation();
+}
+
+// Traffic: every packet the station filed, not only the ones chat shows.
+//
+// Stacked rows rather than a table: six columns and a raw wire do not fit
+// 390 px, and a page that scrolls sideways on a phone is the wrong answer.
+function loadTraffic(){
+  getJSON('/api/xprs/history?limit=60',function(d){
+    if(!d||!d.rows)return fail('v-traffic','History');
+    var h='',now=Math.floor(Date.now()/1000);
+    for(var i=0;i<d.rows.length;i++){
+      var r=d.rows[i];
+      h+='<div class="pkt"><div class="l1">'+
+         '<b>'+esc(r.from||'?')+'</b>'+
+         (r.own?' <span class="dim">(us)</span>':'')+
+         ' <span class="dim">&rarr;</span> '+esc(r.to||'all')+
+         '<span class="when">'+(r.ts?esc(ago(now-r.ts)):'-')+'</span></div>'+
+         '<div class="l2">'+esc(r.type||'')+
+         ' &middot; '+esc(r.bearer||'')+
+         (r.rssi?' '+esc(r.rssi)+' dBm':'')+
+         ' &middot; <span class="sig-'+esc(r.sig||'none')+'">'+
+         esc(r.sig||'none')+'</span></div>'+
+         '<div class="wire">'+esc(r.wire||'')+'</div></div>';
+    }
+    el('v-traffic').innerHTML=(d.held!==undefined?
+      '<p class="dim">'+d.held+' packets held on this station</p>':'')+h;
+  });
+}
+
+// Devices: the Reachable panel, same list, same five-minute window.
+function loadDevices(){
+  getJSON('/api/xprs/devices',function(d){
+    if(!d||!d.devices)return fail('v-devices','The heard-station list');
+    if(!d.devices.length){
+      el('v-devices').innerHTML='<p class="dim">Nobody in range. '+
+        'Heard '+(d.heard||0)+' packets since boot.</p>';
+      return;
+    }
+    var h='<table class="tbl"><tr><th>Call</th><th>Link</th><th>Signal</th>'+
+          '<th>Distance</th><th>Heard</th></tr>';
+    for(var i=0;i<d.devices.length;i++){
+      var v=d.devices[i];
+      h+='<tr><td>'+esc(v.call)+(v.hops?' <span class="dim">+'+v.hops+
+         ' hop'+(v.hops>1?'s':'')+'</span>':'')+'</td>'+
+         '<td class="n">'+esc(v.bearer)+'</td>'+
+         '<td class="n">'+(v.rssi?esc(v.rssi)+' dBm':'-')+'</td>'+
+         '<td class="n">'+(v.dist_m>=0?'~'+esc(v.dist_m)+' m':'-')+'</td>'+
+         '<td class="n">'+esc(ago(v.age_s))+' ago</td></tr>';
+    }
+    h+='</table><p class="dim">Distance is estimated from signal strength '+
+       'and is only as good as the room. '+(d.heard||0)+' packets heard '+
+       'since boot.</p>';
+    el('v-devices').innerHTML=h;
+  });
+}
+
+// Stats: the same three series the Stats panel charts.
+var statsView=0;
+function setStatsView(v){statsView=v;loadStats();}
+function bars(vals){
+  var max=1;
+  for(var i=0;i<vals.length;i++)if(vals[i]>max)max=vals[i];
+  var h='<div class="bars">';
+  for(var j=0;j<vals.length;j++)
+    h+='<div style="height:'+Math.max(1,Math.round(vals[j]/max*100))+'%" '+
+       'title="'+vals[j]+'"></div>';
+  return h+'</div><p class="dim">peak '+max+'</p>';
+}
+function loadStats(){
+  getJSON('/api/stats?view='+statsView,function(d){
+    if(!d||!d.devices)return fail('v-stats','Statistics');
+    var names=['10 minutes','hour','day'];
+    var h='<div class="viewbtns">';
+    for(var i=0;i<3;i++)
+      h+='<button class="'+(i===statsView?'on':'')+'" '+
+         'onclick="setStatsView('+i+')">per '+names[i]+'</button>';
+    h+='</div>';
+    if(!d.points){
+      h+='<p class="dim">Nothing banked yet &mdash; the station buckets by '+
+         'wall clock and has no time yet.</p>';
+    }else{
+      h+='<h3>Devices heard</h3>'+bars(d.devices)+
+         '<h3>Packets received</h3>'+bars(d.rx)+
+         '<h3>Packets sent</h3>'+bars(d.tx)+
+         '<p class="dim">'+d.points+' buckets of '+
+         (d.bucket_s>=86400?'a day':d.bucket_s>=3600?'an hour':'ten minutes')+
+         ', oldest first.</p>';
+    }
+    el('v-stats').innerHTML=h;
+  });
+}
+
+// Station: what the This-device and Settings panels say, plus the screen.
+function row(k,v){return '<tr><td>'+esc(k)+'</td><td>'+v+'</td></tr>';}
+function loadStation(){
+  getJSON('/api/status',function(d){
+    if(!d)return fail('v-station','Station status');
+    var h='<h3>Station</h3><table class="kv">'+
+      row('Callsign',esc(d.callsign||''))+
+      row('Board',esc(d.board||''))+
+      row('Uptime',esc(hms(d.uptime_s||0)))+
+      row('Free memory',esc(kb(d.heap_free)))+
+      row('Clock',d.time&&d.time.synced?
+          esc(new Date(d.time.epoch*1000).toISOString().slice(0,19)
+              .replace('T',' '))+' UTC':'<span class="dim">not synced</span>');
+    if(d.battery&&d.battery.mv>0)
+      h+=row('Battery',esc(d.battery.mv)+' mV, '+esc(d.battery.state));
+    if(d.net)
+      h+=row('Address',d.net.ip?esc(d.net.ip):'<span class="dim">hotspot only</span>')+
+         row('Internet',d.net.internet==null?'<span class="dim">unknown</span>':
+             (d.net.internet?'reachable':'no'));
+    if(d.heard!==undefined)
+      h+=row('Heard',esc(d.heard)+' packets, '+esc(d.in_reach||0)+' in reach now');
+    if(d.indexer)
+      h+=row('Archive',esc(d.indexer.count)+' packets held');
+    h+='</table>';
+    if(d.lora){
+      h+='<h3>LoRa</h3><table class="kv">'+
+        row('Region',esc(d.lora.region||''))+
+        row('Frequency',(d.lora.freq_hz/1e6).toFixed(3)+' MHz')+
+        row('Airtime left',Math.round(d.lora.free_ms/1000)+' s of '+
+            Math.round(d.lora.duty_ms/1000)+' s this hour')+
+        row('Waiting',esc(d.lora.held)+' packets')+'</table>';
+    }
+    el('v-station').innerHTML=h+'<div id="st-more"></div>';
+    getJSON('/api/services',function(sv){
+      if(!sv||!sv.features)return;
+      var f=sv.features,k,h2='<h3>Roles</h3><table class="kv">';
+      for(k in f)h2+=row(k,f[k]?'on':'<span class="dim">off</span>');
+      h2+='</table>';
+      if(sv.serve&&sv.serve.length)
+        h2+='<p class="dim">Announced to others: '+esc(sv.serve.join(', '))+'</p>';
+      h2+='<h3>Screen</h3><img class="shot" alt="the station screen" '+
+          'src="/api/screen?t='+Date.now()+'" '+
+          'onerror="this.parentNode.removeChild(this)">';
+      var m=el('st-more'); if(m)m.innerHTML=h2;
+    });
+  });
+}
+
 // ---- boot: an identity exists before the first keystroke ----
 (function(){
   var saved=stGet('xprs_nsec');
@@ -562,6 +821,6 @@ function load(){
   renderSide();
   switchRoom(curRoom);
   load();
-  setInterval(load,3000);
+  tabTimer=setInterval(tick,TAB_MS.chat);
 })();
 </script></body></html>
