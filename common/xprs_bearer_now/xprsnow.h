@@ -146,6 +146,13 @@ void xprsnow_offer(const char *wire, int len);
  *  xprsnow_offer(), having heard the packet here is the reason to repeat it. */
 void xprsnow_digipeat(const char *wire, int len);
 
+/* Air a packet we already aired, verbatim: the idle-channel echo
+ * (xb_echo). */
+void xprsnow_echo(const char *wire, int len);
+
+/* Milliseconds since anything was heard or aired here. */
+uint32_t xprsnow_idle_ms(uint32_t now_ms);
+
 /** Stations heard within [max_age_sec]. */
 int xprsnow_peer_count(uint32_t max_age_sec);
 

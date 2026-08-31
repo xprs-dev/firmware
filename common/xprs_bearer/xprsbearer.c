@@ -102,6 +102,7 @@ static int xb_pump(xb_t *b, uint32_t now)
         if (ok) {
             xb_ring_add(b->aired, &b->aired_pos, b->queue[i].id, now);
             b->tx_count++;
+            b->last_ms = b->ops.now_ms();
             b->free_at_ms = now + b->pace_ms;
         }
         XB_UNLOCK(b);
@@ -113,11 +114,43 @@ static int xb_pump(xb_t *b, uint32_t now)
     return sent;
 }
 
+/*
+ * When to say it again.
+ *
+ * The random part of 13.2.1 is there so that a room full of relays does not
+ * answer in chorus: the first to speak cancels the rest. Which one speaks
+ * first was pure chance, and chance picks the station standing next to the
+ * sender as often as the one at the edge of its range -- and only the far
+ * one extends anything. A packet heard at -95 dBm came from the edge of
+ * this station's reach, so repeating it covers ground the sender could not;
+ * one heard at -35 dBm came from across the table.
+ *
+ * So the wait slides with the signal: faint goes first, loud goes last, and
+ * a quarter of the span stays random so that two stations at the same
+ * distance still do not collide. Where the bearer reports no signal at all
+ * (the LAN), it is the old uniform draw.
+ */
+static uint32_t xb_due_ms(xb_t *b, uint32_t now, int rssi)
+{
+    uint32_t span = XB_JITTER_MAX_MS - XB_JITTER_MIN_MS;
+    if (rssi >= 0) return now + XB_JITTER_MIN_MS + (b->ops.random() % (span + 1));
+
+    if (rssi > XB_RSSI_CLOSE) rssi = XB_RSSI_CLOSE;
+    if (rssi < XB_RSSI_EDGE)  rssi = XB_RSSI_EDGE;
+    /* 0 at the edge, 1000 next to the sender. */
+    uint32_t near = (uint32_t)((rssi - XB_RSSI_EDGE) * 1000 /
+                               (XB_RSSI_CLOSE - XB_RSSI_EDGE));
+    uint32_t graded = span * 3 / 4 * near / 1000;
+    uint32_t jitter = b->ops.random() % (span / 4 + 1);
+    return now + XB_JITTER_MIN_MS + graded + jitter;
+}
+
 static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
                           uint32_t now)
 {
-    uint32_t span = XB_JITTER_MAX_MS - XB_JITTER_MIN_MS;
-    uint32_t due = now + XB_JITTER_MIN_MS + (b->ops.random() % (span + 1));
+    uint32_t due = xb_due_ms(b, now, b->last_rssi_id[0] &&
+                             strcmp(b->last_rssi_id, id) == 0
+                                 ? b->last_rssi : 0);
 
     int slot = -1;
     for (int i = 0; i < XB_QUEUE_MAX; i++) {
@@ -223,6 +256,31 @@ void xb_digipeat(xb_t *b, const char *wire, int len)
     xb_queue_relay(b, wire, len, true);
 }
 
+void xb_echo(xb_t *b, const char *wire, int len)
+{
+    if (!b || !b->active || !wire || len <= 0 || len > XB_WIRE_MAX) return;
+    if (!xprs_looks_like((const uint8_t *)wire, len)) return;
+
+    char id[XB_ID_LEN];
+    if (!xprs_id_of(wire, len, id)) return;
+    uint32_t now = b->ops.now_ms();
+
+    /* Already waiting to go out: leave it, an echo is the lower priority. */
+    for (int i = 0; i < XB_QUEUE_MAX; i++)
+        if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0) return;
+
+    /* Verbatim, and deliberately without the aired-ring refusal that stops
+     * xb_offer(): this packet is one we aired, and saying it again is the
+     * whole point. The wait is the plain one -- an echo is nobody's race. */
+    xb_queue_push(b, wire, len, id, now);
+}
+
+uint32_t xb_idle_ms(const xb_t *b, uint32_t now_ms)
+{
+    if (!b || !b->active || !b->last_ms) return 0xFFFFFFFFu;
+    return now_ms - b->last_ms;
+}
+
 /* ── Receiving ──────────────────────────────────────────────────────────── */
 
 static void xb_peer_touch(xb_t *b, uint64_t peer, uint32_t now)
@@ -250,6 +308,11 @@ void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi)
     uint32_t now = b->ops.now_ms();
     if (peer) xb_peer_touch(b, peer, now);
     b->rx_count++;
+    b->last_ms = now;
+    /* Kept for the re-air wait, which is decided a few calls further down
+     * this same stack (xb_queue_push) and has no other way to know it. */
+    b->last_rssi = rssi;
+    snprintf(b->last_rssi_id, sizeof b->last_rssi_id, "%s", id);
 
     /* Only a copy that has ALREADY been relayed cancels ours. The origin
      * repeating itself is the opposite signal — it means nobody has carried the
@@ -309,6 +372,7 @@ bool xb_send(xb_t *b, const char *wire, int len)
     bool ok = b->ops.air(b->ops.ctx, wire, len);
     if (ok) {
         b->tx_count++;
+        b->last_ms = now;
         /* Charged, never blocked -- see xb_set_pace(). A beacon is not free. */
         b->free_at_ms = now + b->pace_ms;
     }

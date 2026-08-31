@@ -540,6 +540,36 @@ on the one it arrived on when this station digipeats.
 | `igate_on` | yes | the LAN leg specifically -- the one that reaches the internet |
 | `digi_on` | **yes** | re-airing on ESP-NOW and LoRa, the media that were heard on |
 | `digi_ble_on` | yes | the same for Bluetooth |
+| `echo_on` | yes | the carousel below |
+| `echo_quiet_ms` | 12000 | how silent a bearer must be before an echo |
+| `echo_gap_ms` | 20000 | how long between this station's echoes on one bearer |
+
+### Reaching whoever was not listening
+
+A relay only helps the stations that were in range at the time, and on
+Bluetooth people walk. Each station keeps the **last ten messages** (only
+`message`, `sos` and `warning` -- beacons repeat themselves) and, whenever a
+bearer has heard and said nothing for `echo_quiet_ms`, airs one of them
+again, verbatim: the same wire it relayed, `via:` and all, so a station that
+already carried it is still in its own path and stays quiet while a new
+arrival hears it for the first time.
+
+Live traffic always goes first. An echo is only considered on a bearer that
+is idle, it is refused outright when the packet is already queued, and the
+re-air queue is drained before the carousel is looked at. A new packet is
+relayed immediately and then joins the ring.
+
+### Which station repeats
+
+On a bearer where several stations hear the same packet, 13.2.1 leaves one
+standing: they all wait a random moment and the first to speak cancels the
+rest. That wait is now graded by signal -- a station that heard the packet
+faintly is at the edge of the sender's reach and its repeat covers new
+ground, so it goes first; one that heard it loudly is standing beside the
+sender and waits. Three quarters of the span is the grade and a quarter
+stays random, so two stations at the same distance still do not collide.
+The hop budget is **9** for every type (13.1): three was a corridor on a
+bearer that carries tens of metres.
 
 Nothing there decides whether a packet *should* travel: `xb_offer()` refuses one
 already in the bearer's heard ring, one that already carries this station in

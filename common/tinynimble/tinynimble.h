@@ -293,6 +293,10 @@ void tn_soc_event(uint32_t evt);
 tn_err_t tn_gatt_dial(uint8_t addr_type, const uint8_t addr[6],
                        const tn_gatt_cb_t *cb);    /* SoftDevice port only */
 void      tn_gatt_pump(void);
+/* SoftDevice port only: drain SoC events (flash completion, USB power)
+ * WITHOUT delivering BLE events. For a flash wait on the caller task, so
+ * it does not reenter the GATT rx callback (docs/ble5-gatt.md). */
+void      tn_soc_pump(void);
 bool      tn_gatt_connected(void);
 int       tn_gatt_mtu(void);                       /* bytes per send, now  */
 tn_err_t tn_gatt_send(const uint8_t *data, int len);

@@ -500,10 +500,21 @@ void tn_gatt_pump(void)
         if (err) { printf("tn: evt_get %lu\n", (unsigned long)err); break; }
         on_ble_evt((const ble_evt_t *)evt);
     }
+    tn_soc_pump();
+}
+
+/* SoC events only -- flash completion and USB power -- and NOT the BLE event
+ * queue. A flash write on the station task waits for its completion event
+ * here (update.cpp flash_wait); draining BLE events there instead would call
+ * the GATT rx callback reentrantly, from inside whatever GATT frame is
+ * already on the stack, and clobber tn_gatt_pump's own static event buffer.
+ * So the two are split: BLE events only from tn_gatt_pump, at the top of the
+ * loop; SoC events from either, safely, because they touch no shared buffer
+ * and reach no reentrant callback. */
+void tn_soc_pump(void)
+{
     uint32_t soc;
     while (sd_evt_get(&soc) == NRF_SUCCESS) {
-        /* Flash completion and the like: the application's, if it wants
-         * them. sd_flash_write() reports through here and nowhere else. */
         tn_soc_event(soc);
         int32_t usb = soc == NRF_EVT_POWER_USB_DETECTED    ? NRFX_POWER_USB_EVT_DETECTED :
                       soc == NRF_EVT_POWER_USB_POWER_READY ? NRFX_POWER_USB_EVT_READY :

@@ -141,11 +141,16 @@ int main(void)
           "the author must not relay its own packet");
     CHECK(xprs_append_via(hop1, l1, "x1qz3n-7", tmp, sizeof tmp) == -1,
           "nor under an SSID");
-    CHECK(xprs_append_via(hop3, l3, "X1AAAA", tmp, sizeof tmp) == -1,
-          "3-hop message budget not refused");
+    /* The budget is nine for every type now (13.1, and the note in
+     * xprs_relay_limit): three hops of BLE5 is a corridor. */
+    CHECK(xprs_append_via(hop3, l3, "X1AAAA", tmp, sizeof tmp) > 0,
+          "a message must still relay at three hops");
+    const char *spent = "t:message f:X1QZ3N via:A1,B2,C3,D4,E5,F6,G7,H8,I9 m:x";
+    CHECK(xprs_append_via(spent, (int)strlen(spent), "J1", tmp, sizeof tmp) == -1,
+          "nine-hop budget not refused");
     const char *sos = "t:sos f:X1QZ3N pos:38.7,-9.1 via:A1,B2,C3 m:need water";
     CHECK(xprs_append_via(sos, (int)strlen(sos), "D4", tmp, sizeof tmp) > 0,
-          "sos budget must be 9, refused at 3");
+          "sos budget must be 9");
 
     /* 4. Vocabulary. */
     xprs_t p;

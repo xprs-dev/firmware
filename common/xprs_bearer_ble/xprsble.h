@@ -110,6 +110,13 @@ bool xprsble_send(const char *wire, int len);
  */
 void xprsble_digipeat(const char *wire, int len);
 
+/* Air a packet we already aired, verbatim: the idle-channel echo
+ * (xb_echo). */
+void xprsble_echo(const char *wire, int len);
+
+/* Milliseconds since anything was heard or aired here. */
+uint32_t xprsble_idle_ms(uint32_t now_ms);
+
 /**
  * Offer a packet heard on ANOTHER bearer to this one: the bridge leg.
  *

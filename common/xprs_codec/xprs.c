@@ -217,11 +217,22 @@ int xprs_urg(const xprs_t *p)
 
 int xprs_relay_limit(const xprs_t *p)
 {
-    const xprs_field_t *t = &p->f[0];
-    if ((t->vlen == 3 && memcmp(t->val, "sos", 3) == 0) ||
-        (t->vlen == 7 && memcmp(t->val, "warning", 7) == 0))
-        return 9;
-    return 3;
+    /* NINE FOR EVERYTHING since 2026-08-31, where it used to be three for
+     * anything but sos and warning.
+     *
+     * Three hops was a sensible number for a network whose bearers reach
+     * kilometres. It is the wrong one for the bearer these stations
+     * actually run on: BLE5 carries tens of metres through a building, so
+     * three hops is a corridor, and the whole point of a room full of
+     * relays is that a packet crosses terrain nobody's radio spans alone.
+     * Nine is what sos already had, and what the field length allows before
+     * via: crowds out the message.
+     *
+     * The budget was never what kept a flood bounded -- 13.2's own-callsign
+     * check is, and it is absolute: a station in via: never relays again,
+     * whatever the count says. */
+    (void)p;
+    return 9;
 }
 
 int xprs_via_count(const xprs_t *p)

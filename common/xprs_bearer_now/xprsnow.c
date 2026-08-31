@@ -192,6 +192,16 @@ static const xb_ops_t k_now_ops = {
 
 void xprsnow_offer(const char *wire, int len) { xb_offer(&s_now, wire, len); }
 void xprsnow_digipeat(const char *wire, int len) { xb_digipeat(&s_now, wire, len); }
+void xprsnow_echo(const char *wire, int len)
+{
+    xb_echo(&s_now, wire, len);
+}
+
+uint32_t xprsnow_idle_ms(uint32_t now_ms)
+{
+    return xb_idle_ms(&s_now, now_ms);
+}
+
 bool xprsnow_send(const char *wire, int len)  { return xb_send(&s_now, wire, len); }
 bool xprsnow_is_active(void)                  { return xb_is_active(&s_now); }
 

@@ -121,6 +121,12 @@ bool xprslan_send(const char *wire, int len);
  */
 void xprslan_offer(const char *wire, int len);
 
+/* Air a packet we already aired, verbatim: the idle-channel echo. */
+void xprslan_echo(const char *wire, int len);
+
+/* Milliseconds since anything was heard or aired here. */
+uint32_t xprslan_idle_ms(uint32_t now_ms);
+
 /**
  * @brief Build this station's periodic beacon into @p out (docs/XPRS.md §10.6).
  * @return its length, or 0 to say nothing this time.

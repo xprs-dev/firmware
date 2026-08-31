@@ -53,6 +53,9 @@ bool xprsble_send_sub(const uint8_t *payload, int len, uint8_t subtype)
 }
 
 void xprsble_digipeat(const char *wire, int len) { (void)wire; (void)len; }
+void xprsble_echo(const char *wire, int len) { (void)wire; (void)len; }
+uint32_t xprsble_idle_ms(uint32_t now_ms) { (void)now_ms; return 0xFFFFFFFFu; }
+
 void xprsble_offer(const char *wire, int len) { (void)wire; (void)len; }
 
 uint32_t xprsble_scan_results(void) { return 0; }
@@ -563,6 +566,16 @@ void xprsble_digipeat(const char *wire, int len)
 void xprsble_offer(const char *wire, int len)
 {
     xb_offer(&s_xb, wire, len);
+}
+
+void xprsble_echo(const char *wire, int len)
+{
+    xb_echo(&s_xb, wire, len);
+}
+
+uint32_t xprsble_idle_ms(uint32_t now_ms)
+{
+    return xb_idle_ms(&s_xb, now_ms);
 }
 
 bool xprsble_is_active(void) { return s_ble_up; }

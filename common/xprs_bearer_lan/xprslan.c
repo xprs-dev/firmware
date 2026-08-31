@@ -132,6 +132,8 @@ static const xb_ops_t k_lan_ops = {
 };
 
 void xprslan_offer(const char *wire, int len) { xb_offer(&s_lan, wire, len); }
+void xprslan_echo(const char *wire, int len)  { xb_echo(&s_lan, wire, len); }
+uint32_t xprslan_idle_ms(uint32_t now_ms) { return xb_idle_ms(&s_lan, now_ms); }
 bool xprslan_send(const char *wire, int len)  { return xb_send(&s_lan, wire, len); }
 bool xprslan_is_active(void)                  { return xb_is_active(&s_lan); }
 

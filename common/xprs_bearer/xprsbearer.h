@@ -57,6 +57,14 @@ extern "C" {
 
 #define XB_QUEUE_MAX     8     /* packets waiting to be re-aired */
 #define XB_PEERS_MAX     16    /* distinct stations remembered */
+/* Signal that counts as "close" and as "at the edge", for the re-air wait.
+ * A station that heard a packet faintly is the one whose repeat extends the
+ * network; a station that heard it loudly is standing next to the sender
+ * and adds nothing. So the faint one waits the least and wins 13.2.1's
+ * race. Between these two the wait slides linearly. */
+#define XB_RSSI_CLOSE   (-35)
+#define XB_RSSI_EDGE    (-100)
+
 #define XB_SEEN_RING     32    /* identifiers remembered, per ring */
 #define XB_SEEN_MS       60000u/* how long "already heard" lasts */
 
@@ -131,6 +139,9 @@ typedef struct {
     char         call[16];
     bool         active;
     xb_queued_t  queue[XB_QUEUE_MAX];
+    uint32_t     last_ms;               /* last rx or tx, for xb_idle_ms  */
+    int          last_rssi;             /* signal of the packet below     */
+    char         last_rssi_id[XB_ID_LEN];
     xb_seen_t    heard[XB_SEEN_RING];   /* seen on this bearer */
     int          heard_pos;
     xb_seen_t    aired[XB_SEEN_RING];   /* put on this bearer by us */
@@ -219,6 +230,24 @@ void xb_offer(xb_t *b, const char *wire, int len);
  * DIFFERENT bearer.
  */
 void xb_digipeat(xb_t *b, const char *wire, int len);
+
+/**
+ * Air a packet again, verbatim, as a second chance for whoever was not
+ * listening the first time.
+ *
+ * Unlike xb_offer() and xb_digipeat() this does NOT append anything and is
+ * NOT refused by the aired ring -- the wire handed here is one this station
+ * already put on the air, via: and all, so a neighbour that relayed it is
+ * still in its own path and will not relay it twice. It is for the caller
+ * that keeps a short list of what matters and repeats it while the channel
+ * is otherwise quiet. Everything else -- pacing, the queue, the cancel
+ * window -- is unchanged.
+ */
+void xb_echo(xb_t *b, const char *wire, int len);
+
+/** Milliseconds since anything was heard or aired on this bearer, or a very
+ *  large number when nothing ever has. What "the channel is quiet" means. */
+uint32_t xb_idle_ms(const xb_t *b, uint32_t now_ms);
 
 /** One packet arrived on the medium. Called by the bearer's receive path. */
 void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi);

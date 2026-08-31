@@ -1389,6 +1389,113 @@ static volatile bool s_inet_up;           /* last probe verdict */
 static volatile bool s_inet_known;        /* at least one probe finished */
 
 /*
+ * THE CAROUSEL: the last ten messages, said again while nobody is talking.
+ *
+ * A relay only helps whoever was listening at the time. Bluetooth is tens
+ * of metres and a phone walks; the packet that crossed the room two minutes
+ * ago never reached the person who has just come within range, and nothing
+ * in a flood asks for it again. So this station keeps the ten most recent
+ * packets worth hearing and repeats one whenever a bearer has been quiet
+ * for a while -- verbatim, via: and all, so a station that already relayed
+ * it is in its own path and stays silent while a new arrival hears it for
+ * the first time.
+ *
+ * PRIORITY IS THE POINT. Live traffic is never delayed by this: an echo
+ * only goes out on a bearer that has heard and said nothing for
+ * ECHO_QUIET_MS, xb_echo() refuses when the packet is already queued, and
+ * the re-air queue is drained before anything here is considered. New
+ * packets go out first and then join the ring, at the front.
+ *
+ * What is worth repeating is what a person would miss: messages, and the
+ * two shouts. Beacons, observations and identities are said again by their
+ * authors on a timer anyway, and repeating those would be a station talking
+ * about itself instead of carrying somebody else's words.
+ */
+#define ECHO_N          10
+#define ECHO_QUIET_MS   12000u   /* a bearer this silent has room     */
+#define ECHO_GAP_MS     20000u   /* and this long between our echoes  */
+
+static XPRS_PSRAM_BSS struct {
+    char     wire[XPRS_MAX_WIRE + 1];
+    int      len;
+    char     id[XPRS_ID_LEN];
+} s_echo[ECHO_N];
+static int s_echo_n;             /* how many slots are filled   */
+static int s_echo_w;             /* next slot to overwrite      */
+static int s_echo_cursor;        /* where the carousel is       */
+
+static bool echo_worth_repeating(const char *wire, int len)
+{
+    xprs_t p;
+    if (!xprs_parse(wire, len, &p)) return false;
+    char t[16] = "";
+    xprs_type(&p, t, sizeof t);
+    return strcmp(t, "message") == 0 || strcmp(t, "sos") == 0 ||
+           strcmp(t, "warning") == 0;
+}
+
+static void echo_keep(const char *wire, int len)
+{
+    if (len <= 0 || len > XPRS_MAX_WIRE) return;
+    if (!echo_worth_repeating(wire, len)) return;
+
+    char id[XPRS_ID_LEN];
+    if (!xprs_id_of(wire, len, id)) return;
+    for (int i = 0; i < s_echo_n; i++)
+        if (strcmp(s_echo[i].id, id) == 0) return;      /* already held */
+
+    memcpy(s_echo[s_echo_w].wire, wire, (size_t)len);
+    s_echo[s_echo_w].wire[len] = 0;
+    s_echo[s_echo_w].len = len;
+    snprintf(s_echo[s_echo_w].id, sizeof s_echo[s_echo_w].id, "%s", id);
+    s_echo_w = (s_echo_w + 1) % ECHO_N;
+    if (s_echo_n < ECHO_N) s_echo_n++;
+}
+
+/* One step of the carousel, called about once a second from status_task. */
+static void echo_tick(void)
+{
+    if (!s_echo_n || !xcfg_get_bool("echo_on", true)) return;
+
+    /* Both thresholds are the operator's: a bench with four stations on it
+     * is never quiet for twelve seconds and the carousel correctly never
+     * speaks, which is also how you prove it works -- `cfg set
+     * echo_quiet_ms 2000` and it does. */
+    const char *q = xcfg_get("echo_quiet_ms", NULL);
+    const char *g = xcfg_get("echo_gap_ms", NULL);
+    uint32_t quiet = q && q[0] ? (uint32_t)atoi(q) : ECHO_QUIET_MS;
+    uint32_t gap   = g && g[0] ? (uint32_t)atoi(g) : ECHO_GAP_MS;
+
+    uint32_t now = now_ms();
+    static uint32_t next_ms[4];          /* lan, espnow, lora, ble */
+    struct {
+        uint32_t (*idle)(uint32_t);
+        void     (*echo)(const char *, int);
+    } bearers[4] = {
+        { xprslan_idle_ms,  xprslan_echo  },
+        { xprsnow_idle_ms,  xprsnow_echo  },
+        { xprslora_idle_ms, xprslora_echo },
+        { xprsble_idle_ms,  xprsble_echo  },
+    };
+
+    for (int i = 0; i < 4; i++) {
+        if ((int32_t)(now - next_ms[i]) < 0) continue;
+        if (bearers[i].idle(now) < quiet) continue;
+
+        /* Oldest first, so the ring is walked rather than the newest
+         * repeated forever; the newest is also the one most likely to have
+         * just been heard by everybody present. */
+        int slot = s_echo_cursor % s_echo_n;
+        s_echo_cursor = (s_echo_cursor + 1) % s_echo_n;
+        static const char *const names[4] = { "lan", "espnow", "lora", "ble" };
+        ESP_LOGI(TAG, "echo   %6s %3dB  %s", names[i], s_echo[slot].len,
+                 s_echo[slot].wire);
+        bearers[i].echo(s_echo[slot].wire, s_echo[slot].len);
+        next_ms[i] = now + gap;
+    }
+}
+
+/*
  * THE BRIDGE, in one place.
  *
  * A station with more than one radio exists to join them: what arrives on
@@ -1417,6 +1524,8 @@ typedef enum { FROM_LAN, FROM_NOW, FROM_LORA, FROM_BLE, FROM_RNS } from_t;
 
 static void bridge_out(const char *wire, int len, from_t from)
 {
+    echo_keep(wire, len);
+
     bool bridge = xcfg_get_bool("bridge_on", true);
     bool igate  = xcfg_get_bool("igate_on", true);
 
@@ -1846,6 +1955,8 @@ static void status_task(void *arg)
         /* §23.7's deadline: the one thing that guarantees a station that moved
          * comes back. Cheap, so it runs on the fast tick, not the log's. */
         xprschan_tick();
+        /* And the carousel, which only ever speaks into a silence. */
+        echo_tick();
         /*
          * Section 18.1: "every 30 minutes is a reasonable interval on a quiet
          * channel". This was every 60 s, and because each announcement carries

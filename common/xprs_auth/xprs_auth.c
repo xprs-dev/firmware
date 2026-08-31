@@ -248,7 +248,12 @@ xauth_verdict_t xauth_check(const xprs_t *p, const char *self_call,
     uint32_t when = ts_epoch(ts);
     if (!when) return XAUTH_408;
     if (when > t + 60) return XAUTH_408;              /* from the future */
-    if (t - when > XAUTH_WINDOW_SEC) return XAUTH_408;
+    /* t and when are unsigned: a command 1..60 s AHEAD of our clock passes the
+     * future test above, and `t - when` would then underflow to a huge value
+     * and read as ancient. A clockless station whose clock is learned from
+     * owner traffic (the P1-Pro) sits behind real time and hits this on every
+     * command. Only subtract when we are actually the later of the two. */
+    if (t > when && t - when > XAUTH_WINDOW_SEC) return XAUTH_408;
 
     /* 6. Idempotent. The identifier is derived, so a repeat is the same
      *    command and gets the same answer without doing the work twice. */

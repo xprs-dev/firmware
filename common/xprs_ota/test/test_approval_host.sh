@@ -2,7 +2,7 @@
 # Does the DEVICE's verifier accept an approval the SIGNING TOOL produced?
 #
 # The two implementations are independent -- Dart in
-# xprs-flutter/tool/sign_firmware.dart, C in common/xprs_sig -- and
+# the app repo's tool/sign_firmware.dart, C in common/xprs_sig -- and
 # they only have to agree about one thing in the world: the digest of the
 # xprsfw1 line. If they ever disagree, every station refuses every update
 # and the fleet is unreachable, so this is checked on the desk.

@@ -202,6 +202,16 @@ void xprslora_digipeat(const char *wire, int len)
 {
     if (s_lora) xb_digipeat(s_lora, wire, len);
 }
+void xprslora_echo(const char *wire, int len)
+{
+    if (s_lora) xb_echo(s_lora, wire, len);
+}
+
+uint32_t xprslora_idle_ms(uint32_t now_ms)
+{
+    return s_lora ? xb_idle_ms(s_lora, now_ms) : 0xFFFFFFFFu;
+}
+
 void xprslora_set_pace(uint32_t per_packet_ms)
 {
     if (s_lora) xb_set_pace(s_lora, per_packet_ms);

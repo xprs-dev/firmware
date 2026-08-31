@@ -83,7 +83,7 @@ The mapping is unflattering to the premise. Set each UHR idea against this tree:
 | link-state advertisement | Signed `t:observation f:X link:espnow peers:N hears:A,B`, fanned over every transmit lane -- `air_signed_observations()` (`xprs_app.c:1136`). Intake into a 32-slot gossip ring: `goss_note` (`:702`), `goss_try` (`:718`). |
 | store and forward | Release-on-hearing, §36.8.1 (`xprs_app.c:856`): hear a station directly and its parked mail goes out on the bearer it was heard on. |
 | duplicate suppression | Two 32-entry rings per bearer, 60 s TTL, keyed on the §5 identifier -- which ignores `sig:` and `via:`, so a relayed copy is the same packet (`xprsbearer.h:59-61`, `xprsbearer.c:164`). |
-| contention avoidance | 200--1200 ms random re-air jitter, cancelled by hearing somebody else's copy (§13.2.1) -- `xprsbearer.h:55`, `xb_cancel` at `xprsbearer.c:57`. |
+| contention avoidance | 200--1200 ms re-air wait, GRADED BY SIGNAL since 2026-08-31 (faint first, three quarters graded and a quarter random), cancelled by hearing somebody else's copy (§13.2.1) -- `xprsbearer.h:55`, `xb_cancel` at `xprsbearer.c:57`. |
 
 One gap is worth stating rather than glossing: the long-range PHY, below, is
 written and unproven.

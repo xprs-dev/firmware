@@ -57,6 +57,13 @@ void xprslora_offer(const char *wire, int len);
  *  xprslora_offer(), having heard the packet here is the reason to repeat it. */
 void xprslora_digipeat(const char *wire, int len);
 
+/* Air a packet we already aired, verbatim: the idle-channel echo
+ * (xb_echo). */
+void xprslora_echo(const char *wire, int len);
+
+/* Milliseconds since anything was heard or aired here. */
+uint32_t xprslora_idle_ms(uint32_t now_ms);
+
 bool xprslora_is_active(void);
 
 /**
