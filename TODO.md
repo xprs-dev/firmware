@@ -175,3 +175,43 @@ Fixed the same day:
   in 0.2 s.
 - The desktop app's LAN socket died silently and stayed "up"; it reopens
   now (xprs-flutter).
+
+## Flash the P1-Pro once by cable, then prove the no-cable update
+
+**Status: everything is built and half of it is proven; one physical action
+blocks the rest.**
+
+The remote-update feature (`models/sensecap-p1-pro/firmware/src/update.{h,cpp}`,
+`tools/push_firmware_p1.py`, commit bc960b6) was tested over the air on
+2026-08-31 and every leg up to the station's door works: both signatures
+(publisher approval + owner cmd:update, test keys in `~/.xprs`), the gateway
+send (`"bearers":"ble"` from the T-Deck), and the station hearing it
+("hears:...,X38364" in its own beacons). It never answers, because the image
+running on the battery predates the broadcast intake (`xfw_handle` in
+main.cpp) -- and the GATT fallback needs a console keypress ('d' to dial),
+which a pole unit does not have.
+
+### The steps
+
+1. Plug the P1-Pro into USB-C (or double-tap reset for the UF2 volume) and
+   flash the already-built 0.2.0: `cd models/sensecap-p1-pro/firmware &&
+   pio run -t upload`. This one image carries the broadcast intake, the
+   869.5 MHz move (the unit is currently deaf to the fleet's LoRa, still on
+   868.0) and the duty ledger.
+2. Bump `version.txt` to 0.2.1, `pio run`, then the real test with no cable
+   anywhere:
+   `tools/push_firmware_p1.py --gateway <tdeck-ip> --to <callsign>
+    --version 0.2.1 --hex .pio/build/p1pro/firmware.hex
+    --fw-nsec ~/.xprs/fw.nsec --owner-nsec ~/.xprs/owner.nsec
+    --from X38364 --bearer ble`
+   Expect ~1,300 chunks at 4/s (~6 min), zfwq resend rounds, then the
+   probation boot and prove/keep. Watch for the answer wires in the
+   gateway's history; the P1's beacons name the running version.
+3. If the broadcast plane disappoints, the GATT road is one flash away:
+   `tools/tinynimble_probe` env `deckB` onto the T-Deck, 'g' to serve,
+   the station dials, then `--gatt /dev/ttyACM0` instead of a gateway --
+   and remember to reflash the T-Deck back to the station afterwards.
+
+Auto-dial (the station dialling a heard probe without a console) is the
+follow-up worth considering while in there: it would make the GATT road
+remote too.
