@@ -45,11 +45,30 @@ static const char *TAG = "xprsbearer";
 
 /* ── Identifier rings ───────────────────────────────────────────────────── */
 
+/*
+ * Elapsed milliseconds, SIGNED.
+ *
+ * Two clocks reach this file. A packet is stamped with `ops.now_ms()` sampled
+ * inside the enqueue call; the pump is driven by `xb_tick(b, now_ms)` with a
+ * `now` the CALLER sampled, which can be a few milliseconds older. So
+ * `now - queued_ms` is occasionally negative, and unsigned that is 4.29
+ * billion -- past every limit in this file at once.
+ *
+ * Measured on a T-Deck: `espnow: 33bb4e waited 4294967s -- no longer worth
+ * its airtime, dropped`. 4294967 is 2^32/1000, and the packet had been in the
+ * queue for under a millisecond. Every age test here goes through this, and
+ * every DEADLINE test already casts the same way ((int32_t)(now - due) < 0).
+ */
+static inline int32_t xb_since(uint32_t now, uint32_t then)
+{
+    return (int32_t)(now - then);
+}
+
 static bool xb_ring_has(const xb_seen_t *ring, const char *id, uint32_t now)
 {
     for (int i = 0; i < XB_SEEN_RING; i++) {
         if (!ring[i].id[0]) continue;
-        if (now - ring[i].t_ms >= XB_SEEN_MS) continue;
+        if (xb_since(now, ring[i].t_ms) >= (int32_t)XB_SEEN_MS) continue;
         if (strcmp(ring[i].id, id) == 0) return true;
     }
     return false;
@@ -106,7 +125,12 @@ static bool xb_is_priority(const char *wire, int len)
  * that cannot be placed. */
 static void xb_duty_roll(xb_duty_t *d, uint32_t now)
 {
-    uint32_t gap = now - d->head_ms;              /* unsigned: wraps cleanly */
+    /* Signed, then clamped: a head_ms a few milliseconds AHEAD of now (the two
+     * clocks of xb_since) read as a 49-day gap unsigned, and the branch below
+     * would clear the whole ledger -- an hour of airtime accounting thrown
+     * away because two samples arrived out of order. */
+    int32_t since = xb_since(now, d->head_ms);
+    uint32_t gap = since > 0 ? (uint32_t)since : 0u;
     if (gap >= XB_DUTY_BUCKET_MS * XB_DUTY_BUCKETS * 2u) {
         memset(d->bucket, 0, sizeof d->bucket);
         d->spent_ms = 0;
@@ -177,12 +201,12 @@ static void xb_drop_stale(xb_t *b, uint32_t now)
          * to roll, which can honestly take most of an hour. */
         if (b->queue[i].own) continue;
         uint32_t limit = b->queue[i].prio ? XB_STALE_PRIO_MS : XB_STALE_MS;
-        if (now - b->queue[i].queued_ms < limit) continue;
+        if (xb_since(now, b->queue[i].queued_ms) < (int32_t)limit) continue;
         b->queue[i].used = false;
         if (b->duty) b->duty->stale++;
-        XB_LOGW("%s: %s waited %lus -- no longer worth its airtime, dropped",
+        XB_LOGW("%s: %s waited %lds -- no longer worth its airtime, dropped",
                 b->ops.name ? b->ops.name : "?", b->queue[i].id,
-                (unsigned long)((now - b->queue[i].queued_ms) / 1000u));
+                (long)(xb_since(now, b->queue[i].queued_ms) / 1000));
     }
 }
 
@@ -814,7 +838,9 @@ int xb_peer_count(const xb_t *b, uint32_t max_age_sec)
     int n = 0;
     for (int i = 0; i < XB_PEERS_MAX; i++) {
         if (!b->peers[i].peer) continue;
-        if (max_age_sec && (now - b->peers[i].t_ms) >= max_age_sec * 1000u) continue;
+        if (max_age_sec &&
+            xb_since(now, b->peers[i].t_ms) >= (int32_t)max_age_sec * 1000)
+            continue;
         n++;
     }
     return n;

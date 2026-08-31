@@ -285,6 +285,44 @@ static void test_stale_is_dropped(void)
     CHECK(g_d.stale >= 1, "stale counter %u", g_d.stale);
 }
 
+/*
+ * 13b. A packet stamped a millisecond AHEAD of the pump's clock is not
+ * instantly stale.
+ *
+ * Two clocks reach the bearer: a packet is stamped with ops.now_ms() inside
+ * the enqueue call, while the pump runs on the `now` its caller sampled,
+ * which can be slightly older. Unsigned, that difference is 4.29 billion
+ * milliseconds -- past every limit at once. A T-Deck logged exactly that:
+ * "espnow: 33bb4e waited 4294967s -- no longer worth its airtime, dropped",
+ * for a packet queued a moment earlier.
+ */
+static void test_a_packet_from_the_future_is_not_stale(void)
+{
+    setup();
+    xb_set_duty(&g_b, &g_d, f_airtime, NULL, 400, 0, 0);
+    char big[XB_WIRE_MAX + 1];
+    int n = snprintf(big, sizeof big, "t:message f:X1QZ3N d:LISBOA " TS " m:");
+    while (n < 250) big[n++] = 'x';
+    big[n] = 0;
+    xb_send_ex(&g_b, big, n);                    /* budget spent: it queues */
+
+    /* Queue it a tick ahead of where the pump believes it is. */
+    g_now += 5;
+    xb_offer(&g_b, W_ORD, (int)strlen(W_ORD));
+    g_now -= 5;
+
+    xb_tick(&g_b, g_now);
+    CHECK(xb_queue_peek(&g_b, 0, NULL, NULL, NULL, NULL) == 1,
+          "a packet queued 5 ms ahead of the pump was dropped as stale");
+    CHECK(g_d.stale == 0, "stale counter rose on a fresh packet (%u)",
+          g_d.stale);
+
+    /* And it still stales when it really is old. */
+    advance(XB_STALE_MS + 5000);
+    CHECK(xb_queue_peek(&g_b, 0, NULL, NULL, NULL, NULL) == 0,
+          "a genuinely stale relay stayed queued");
+}
+
 /* 14. A failing radio is charged all the same. */
 static void test_charged_when_the_radio_fails(void)
 {
@@ -361,6 +399,7 @@ int main(void)
     test_echo_is_never_priority();
     test_queue_evicts_the_ordinary_first();
     test_stale_is_dropped();
+    test_a_packet_from_the_future_is_not_stale();
     test_charged_when_the_radio_fails();
     test_clock_wrap();
     test_pace_and_duty_are_independent();
