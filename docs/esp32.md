@@ -373,6 +373,40 @@ Two consequences worth building around:
   super-archiver's DEPTH -- 28k records against the dongle's card -- and the
   board with the card is the one to put beside a router.
 
+## What a station can actually hold
+
+A record is **320 bytes**, fixed, and a segment file holds **4096** of them.
+The archive budget is a hardcoded **10 MiB** base (`xprs_app.c`,
+`xprsindex_budget`), so an ordinary archiver keeps **~28-32k records** --
+eviction retires a whole segment, so occupancy swings 28,672 to 32,768.
+
+No board in this firmware stores to an SD card. Everything mounts the
+internal wear-levelled FAT partition at `/idx`; the T-Dongle's card was
+demoted at 0.4.0 (`models/tdongle-s3/firmware/partitions.csv` says why).
+
+| Board | `storage` partition | Note |
+|---|---|---|
+| T-Dongle-S3 | 11.375 MiB | card present, deliberately unused |
+| T-Deck | 11.375 MiB | SPI-SD shares the bus with the SX1262, so also unused |
+| M5Stack Core | 11.625 MiB | |
+| Heltec V3 | **3.81 MiB** | smaller than the 10 MiB budget, so eviction never fires and FAT free space is the real bound (~12k records) |
+
+**A super-archiver needs 64 MiB** (`SUPER_MIN_BYTES`), so no ESP32 board here
+can honestly claim the word, and `idx_is_super()` declines it out loud. That
+is a statement about these boards, not about the role.
+
+Eviction follows XPRS.md 36.11 and nothing else: class first (declared mail,
+then other mail, then the spool), age second, and no packet outlives its
+`until:`. It used to filter the spool by `urg:` as well, which read section
+13.5 -- what a CARRIER drops -- as if it governed what an ARCHIVER keeps.
+
+Two counters that do not mean what their names suggest:
+
+- `xprsidx_stats_t.count` is **cumulative** -- records ever accepted, not
+  records on disk. Eviction never decrements it. `segments` is what shrinks.
+- `mail:` on the service beacon and in `q:mail` is a **bounded** count (99):
+  the field is a hint by 10.6.5, and counting further costs card reads.
+
 ## Heap is the binding constraint -- check it first
 
 Every mysterious failure on this board so far has been heap. The symptoms do not

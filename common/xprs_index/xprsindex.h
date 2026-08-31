@@ -236,6 +236,23 @@ typedef struct xprsidx_s xprsidx_t;
 xprsidx_t *xprsindex_open(const char *dir);
 
 /**
+ * @brief How much mail this station holds for @p call (XPRS.md 13.12.3).
+ *
+ * The answer to `q:mail`: how many `t:message` records carry `d:` naming
+ * that callsign and would be handed over if asked. Counting stops at
+ * @p cap, because the question is "is there any, roughly how much" and a
+ * station with two hundred waiting does not need them counted exactly --
+ * the beacon field this feeds (10.6.5) is a hint, not a promise.
+ *
+ * Costs a query, so it belongs on the task that owns the card.
+ *
+ * @param call  the recipient; NULL or empty counts mail for everybody.
+ * @return records found, at most @p cap.
+ */
+int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap);
+
+
+/**
  * Install the verifier. NULL (the default) means every signed record is stored
  * unverified, which is what a station with no keys can honestly say.
  */

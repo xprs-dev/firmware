@@ -77,6 +77,7 @@ static uint64_t xi_card_free(const char *d);
  * that reports 11 kB free.
  */
 #define XPRSIDX_REG_MAX   16
+#define XI_ANCHOR_MAX     16   /* 10.7 epoch anchors */
 /*
  * How many recent presence announcements are remembered well enough to know
  * one is a repeat. Small: it only has to span the neighbours in earshot, and
@@ -205,6 +206,13 @@ struct xprsidx_s {
     uint32_t q_dropped;
     /* XPRS.md 36.11: the retention classes. own[] is this station's base
      * callsign; decl[] the callsigns whose t:mailbox hold: named it. */
+    /* 10.7 epoch anchors: when each (station, boot) was first heard. */
+    struct {
+        char     call[XPRSIDX_CALL_LEN];
+        uint32_t boot;
+        uint32_t started;        /* wall clock at which that boot began */
+    } anchor[XI_ANCHOR_MAX];
+
     char     own[XPRSIDX_CALL_LEN];
     char     decl[XPRSIDX_DECL_MAX][XPRSIDX_CALL_LEN];
     int      decl_n;
@@ -1071,15 +1079,66 @@ static void xi_reg_note(xprsidx_t *st, const char *call, uint32_t now)
     }
 }
 
-static bool xi_regular(const xprsidx_t *st, const char *call)
+/*
+ * XPRS.md 10.7: dating a station that has no clock.
+ *
+ * A station with persistent storage but no wall clock stamps `epoch:B.S` --
+ * boot ordinal B, seconds S into that boot. The section says what a receiver
+ * that HAS a clock does with it: "a receiver holding a clock records the
+ * wall-clock time at which it first heard a given epoch, and can then date
+ * every packet of that epoch, including packets delivered days later".
+ *
+ * So: remember when each (station, boot ordinal) was first heard, and the
+ * arithmetic follows -- the packet was written S seconds into that boot, and
+ * the boot began (first_heard - S_of_that_first_packet) ago. Without this a
+ * clockless station's packets are stored with ts 0, and a record with ts 0 is
+ * invisible to every since:/until: window (xi_matches), so a station that
+ * cannot say the time cannot be caught up with either.
+ *
+ * Sixteen slots, oldest evicted: this dates the neighbours a station hears,
+ * and one that hears more than sixteen clockless stations in a session is
+ * dating the ones it still hears.
+ */
+static uint32_t xi_epoch_anchor(xprsidx_t *st, const char *call,
+                                uint32_t boot, uint32_t secs, uint32_t now)
 {
-    if (!call || !*call) return false;
-    for (int i = 0; i < st->reg_n; i++) {
-        if (xi_base_eq(st->reg[i].call, call)) return st->reg[i].days >= 2;
+    if (!call || !*call || !now) return 0;      /* no clock here either */
+    int oldest = 0;
+    for (int i = 0; i < XI_ANCHOR_MAX; i++) {
+        if (st->anchor[i].call[0] && xi_base_eq(st->anchor[i].call, call) &&
+            st->anchor[i].boot == boot) {
+            return st->anchor[i].started + secs;
+        }
+        if (!st->anchor[i].call[0]) { oldest = i; break; }
+        if (st->anchor[i].started < st->anchor[oldest].started) oldest = i;
     }
-    return false;
+    /* First packet of this epoch: it fixes when the epoch began. */
+    xi_copy(st->anchor[oldest].call, XPRSIDX_CALL_LEN, call, -1);
+    st->anchor[oldest].boot = boot;
+    st->anchor[oldest].started = (now > secs) ? now - secs : 0;
+    return st->anchor[oldest].started + secs;
 }
 
+/* `epoch:B.S` as its two numbers. False when the field is absent or malformed,
+ * in which case nothing is anchored and the record keeps the ts it had. */
+static bool xi_epoch_of(const xprs_t *p, uint32_t *boot, uint32_t *secs)
+{
+    int vlen = 0;
+    const char *v = xprs_get(p, "epoch", &vlen);
+    if (!v || vlen <= 0) return false;
+    uint32_t b = 0, sec = 0;
+    int i = 0;
+    for (; i < vlen && v[i] >= '0' && v[i] <= '9'; i++) b = b * 10 + (uint32_t)(v[i] - '0');
+    if (i == 0 || i >= vlen || v[i] != '.') return false;
+    i++;
+    int digits = 0;
+    for (; i < vlen && v[i] >= '0' && v[i] <= '9'; i++, digits++)
+        sec = sec * 10 + (uint32_t)(v[i] - '0');
+    if (!digits) return false;
+    *boot = b;
+    *secs = sec;
+    return true;
+}
 
 static bool xi_declared(const xprsidx_t *st, const char *call)
 {
@@ -1091,9 +1150,15 @@ static bool xi_declared(const xprsidx_t *st, const char *call)
 /*
  * XPRS.md 36.11, as a number: 3 kept longest, 1 discarded first.
  *
- * Class 3 is mail for somebody who chose this station -- by declaring it with
- * t:mailbox hold:, or by simply being here most days (xi_regular). Class 2 is
- * anybody else's mail, carried as a favour. Class 1 is the spool.
+ * The classes read straight off the packet, as the section says they do:
+ * `d:` plus a `hold:` declaration naming this station is 3, `d:` without one
+ * is 2, everything else is 1.
+ *
+ * Being here most days used to earn class 3 as well (xi_regular). The
+ * section does not say that, and it let a chatty stranger outrank a
+ * recipient who deliberately named this station as their mailbox -- the one
+ * thing 36.11 says an archiver may not drop. The regulars table is still
+ * kept; it no longer decides this.
  *
  * This used to be computed and thrown away: xi_evict_locked called
  * xi_declared() and discarded the result with a (void) cast, so every record
@@ -1103,8 +1168,7 @@ static bool xi_declared(const xprsidx_t *st, const char *call)
 static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
 {
     if (!(r->flags & XI_F_MAIL)) return 1;
-    if (xi_declared(st, r->to) || xi_regular(st, r->to)) return 3;
-    return 2;
+    return xi_declared(st, r->to) ? 3 : 2;
 }
 
 /* A t:mailbox whose hold: names this station: remember the declarer.
@@ -1138,21 +1202,6 @@ static void xi_decl_note(xprsidx_t *st, const xprs_t *p, const char *from)
     XI_LOGI("mailbox declaration: holding for %s", from);
 }
 
-/* The record's urg: as a rank, 0..3 (section 13.5). Absent means normal --
- * the level the format itself calls ordinary. Parsed from the stored wire,
- * so records written before this existed rank correctly too. */
-static int xi_rec_urg(const xi_rec_t *r)
-{
-    xprs_t p;
-    if (!xprs_parse(r->wire, r->len, &p)) return 1;
-    int vlen = 0;
-    const char *v = xprs_get(&p, "urg", &vlen);
-    if (!v) return 1;
-    if (vlen == 3 && memcmp(v, "low", 3) == 0) return 0;
-    if (vlen == 4 && memcmp(v, "high", 4) == 0) return 2;
-    if (vlen == 6 && memcmp(v, "urgent", 6) == 0) return 3;
-    return 1;
-}
 
 /* The record's own until:, or 0. Parsed from the stored wire. */
 static uint32_t xi_rec_until(const xi_rec_t *r)
@@ -1232,26 +1281,22 @@ static bool xi_evict_locked(xprsidx_t *st)
             if (pass == 0 && cls == 2) continue;   /* class 2 waits for pass 2 */
             if (pass == 1 && cls != 2) continue;   /* already carried */
 
-            /* What survives a full store, in the order section 13.5 asks
-             * for: mail is carried because somebody is waiting for it, and
-             * of the rest only what its sender marked as mattering. `low`
-             * is the first thing dropped and `urgent` the last -- a
-             * carrier choosing by arrival order alone is what urg: exists
-             * to prevent. A station is free to distrust the marking; this
-             * one trusts it, and the airtime budget elsewhere is what
-             * stops everybody marking everything urgent. */
-            bool keep = (r.flags & XI_F_MAIL) != 0;
-            if (!keep) {
-                int urg = xi_rec_urg(&r);
-                keep = urg >= 2;                              /* high, urgent */
-                /* A human saying, kept a rung lower than the machine
-                 * chatter around it: an observation repeats every minute,
-                 * a message was said once. */
-                if (!keep && urg >= 1 &&
-                    (r.type == XI_T_MESSAGE || r.type == XI_T_STATUS))
-                    keep = true;
-            }
-            if (!keep) continue;
+            /* What survives a full store: XPRS.md 36.11, which decides by
+             * class first and age second, and within a class the oldest
+             * goes first. The segment being retired IS the oldest, so the
+             * age half is answered by which segment this is; what is left
+             * is to carry the classes the section says to carry, and the
+             * spool is the class it says goes first.
+             *
+             * The spool used to be filtered by `urg:` here instead --
+             * `high` and `urgent` kept, the rest dropped. Section 13.5 is
+             * about what a CARRIER drops when its store is full of things
+             * to deliver; 36.11 is what an ARCHIVER drops from what it
+             * heard. Reading the first as the second ranked a segment's
+             * spool by a field almost nothing on the air sets, so what
+             * actually happened was that the whole spool went and the
+             * ranking never chose anything. */
+            if (!(r.flags & XI_F_MAIL)) continue;
 
             r.index = st->next_index++;
             st->count++;
@@ -1496,6 +1541,14 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     int vlen = 0;
     const char *ts = xprs_get(&p, "ts", &vlen);
     r.ts = ts ? xi_ts_to_epoch(ts, vlen) : 0;
+    if (!r.ts) {
+        /* 10.7: no ts:, but perhaps an epoch this station can anchor. Tried
+         * before the arrival-time fallback, because a carried packet arrives
+         * long after it was written and the anchor knows the difference. */
+        uint32_t boot = 0, secs = 0;
+        if (xi_epoch_of(&p, &boot, &secs))
+            r.ts = xi_epoch_anchor(st, r.from, boot, secs, ts_now);
+    }
     if (!r.ts) r.ts = ts_now;
 
     r.index = st->next_index;
@@ -1930,6 +1983,49 @@ const char *xprsidx_bearer_name(int code)
     case XI_B_TCP:    return "tcp";
     default:          return "";
     }
+}
+
+static bool xi_mail_tally(const xprsidx_rec_t *rec, void *ctx)
+{
+    (void)rec;
+    (*(int *)ctx)++;
+    return true;
+}
+
+int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap)
+{
+    if (!st || cap <= 0) return 0;
+    /* On the BASE callsign: section 3.1 says a station answers to its bare
+     * callsign and to its own suffixed forms, so X1BOA3-7 asking after mail
+     * is asking after X1BOA3's. Without this a device that numbers itself
+     * is told there is nothing waiting for it. */
+    char base[XPRSIDX_CALL_LEN] = "";
+    if (call && *call) {
+        size_t i = 0;
+        while (i + 1 < sizeof base && call[i] && call[i] != '-') {
+            base[i] = call[i];
+            i++;
+        }
+        base[i] = 0;
+    }
+    call = base[0] ? base : NULL;
+    int n = 0;
+    xprsidx_query_t q = {
+        .type = -1,
+        .types = xprsidx_type_mask("message"),
+        .only = call,
+        /* The asker is the recipient, so 36's mail rule lets their own mail
+         * be counted; with no callsign this is the station's own total and
+         * is trusted for the same reason /api/xprs/mail is. */
+        .asker = call,
+        .trusted = (call == NULL),
+        .limit = (uint32_t)cap,
+        .newest_first = true,
+    };
+    XI_LOCK(st);
+    xi_query_locked(st, &q, xi_mail_tally, &n);
+    XI_UNLOCK(st);
+    return n;
 }
 
 size_t xprsindex_query(xprsidx_t *st, const xprsidx_query_t *q,

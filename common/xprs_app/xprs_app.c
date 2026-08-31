@@ -868,6 +868,18 @@ static struct {
  * hears: observations its gossip runs on. */
 static volatile bool s_qid_pending;
 
+/* A q:mail we owe an answer to (XPRS.md 13.12.3). Parked for idx_task like
+ * every other job that reads the card: counting mail is a query, and the
+ * radio task must not wait on the store. One slot -- the answer is a hint,
+ * so a second asker inside the same tick is answered on their next ask
+ * rather than queued. */
+static struct {
+    char call[10];       /* whose mail was asked about, empty = the total */
+    char to[10];         /* who asked */
+    char bearer[8];
+    volatile bool pending;
+} s_qmail;
+
 /* A recipient just heard directly, whose held mail idx_task should try to
  * deliver (XPRS.md 36.8.1). Parked like every other job that costs storage
  * or curve time: the radio task decides WHETHER, idx_task does the work. */
@@ -1132,6 +1144,26 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         /* Recorded AFTER the test, so the first message establishes the pair
          * and the second is the first one acknowledged. */
         exchanged_note(call);
+    } while (0);
+
+    /* q:mail (13.12.3): how much mail is held, for the callsign in only:.
+     * One packet, where cmd:history only:X would replay the mail itself. */
+    do {
+        char type[16], q[12], dst[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "request") != 0 && strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "q", q, sizeof q) || strcmp(q, "mail") != 0)
+            break;
+        if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
+            strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        if (s_qmail.pending) break;              /* one at a time */
+        char asker[10] = "";
+        if (!xprs_get_str(&sp, "f", asker, sizeof asker) || !asker[0]) break;
+        snprintf((char *)s_qmail.to, sizeof s_qmail.to, "%s", asker);
+        snprintf((char *)s_qmail.bearer, sizeof s_qmail.bearer, "%s", bearer);
+        s_qmail.call[0] = 0;
+        xprs_get_str(&sp, "only", (char *)s_qmail.call, sizeof s_qmail.call);
+        s_qmail.pending = true;                  /* published last */
     } while (0);
 
     /* q:identity (18.1): publish the key binding on request. */
@@ -3497,10 +3529,17 @@ static void idx_task(void *arg)
             xprsidx_stats_t st;
             xprsindex_stats(s_index, &st);
             char w[XPRSIDX_WIRE_MAX + 1];
+            /* `mail:` (10.6.5) says there is something to collect, so a
+             * station in earshot learns mail exists without asking. Bounded
+             * count: the field is a hint, and 99 is as much as a hint needs
+             * to carry. Omitted when there is nothing, as the section says. */
+            int held = xprsindex_mail_count(s_index, NULL, 99);
             int n = snprintf(w, sizeof w,
                              "t:service f:%s serve:archive%s count:%lu fw:%s",
                              s_call, idx_is_super() ? ",super" : "",
                              (unsigned long)st.count, xota_version());
+            if (held > 0 && n > 0 && n < (int)sizeof w)
+                n += snprintf(w + n, sizeof w - (size_t)n, " mail:%d", held);
             /* uptime, health word, last crash: a few bytes on a packet that
              * goes out anyway, so a sick node is visible without an ask. */
             if (n > 0 && n < (int)sizeof w)
@@ -3519,6 +3558,31 @@ static void idx_task(void *arg)
         if (s_qid_pending) {
             s_qid_pending = false;
             air_identity();
+        }
+
+        /* The q:mail answer (13.12.3): one observation, signed, saying how
+         * much is held. Zero is answered rather than met with silence --
+         * "nothing for you" and "did not hear you" are different facts. */
+        if (s_qmail.pending) {
+            char call[10], to[10], bearer[8];
+            snprintf(call, sizeof call, "%s", (const char *)s_qmail.call);
+            snprintf(to, sizeof to, "%s", (const char *)s_qmail.to);
+            snprintf(bearer, sizeof bearer, "%s", (const char *)s_qmail.bearer);
+            s_qmail.pending = false;
+            int held = (s_index && xcfg_get_bool("index_on", true))
+                     ? xprsindex_mail_count(s_index, call, 99) : 0;
+            char w[XPRSIDX_WIRE_MAX + 1];
+            char ts[32];
+            time_field(ts, sizeof ts);   /* ts:, or epoch: with no clock */
+            int n = snprintf(w, sizeof w,
+                             "t:observation f:%s d:%s %s s:mail mail:%d",
+                             s_call, to, ts, held);
+            if (call[0] && n > 0 && n < (int)sizeof w)
+                n += snprintf(w + n, sizeof w - (size_t)n, " only:%s", call);
+            if (n > 0 && n < (int)sizeof w) {
+                n = sign_wire(w, n, sizeof w);
+                idx_air(bearer, w, n);
+            }
         }
 
         /* 13.7: a receipt we heard. The signature is what makes it mean

@@ -623,39 +623,144 @@ static void test_evicts_on_real_bytes(const char *dir)
 }
 
 
-/* XPRS.md 36.11: over budget, the spool goes first, custody mail carries
- * forward, and mail for a declared callsign survives everything. */
 /*
- * A callsign nobody declared, but who is here every day, gets its mail kept
- * like a declarant's. That is the whole point: somebody present daily has
- * chosen this station just as surely as one that said so in a t:mailbox, and
- * before this the only way to matter was to declare.
+ * XPRS.md 10.7: a station with no clock stamps epoch:B.S, and a receiver that
+ * HAS a clock "records the wall-clock time at which it first heard a given
+ * epoch, and can then date every packet of that epoch, including packets
+ * delivered days later".
+ *
+ * Before this, such a record was stored with the arrival time or with nothing,
+ * and a record with ts 0 is invisible to every since:/until: window -- so a
+ * station that could not say the time could not be caught up with either.
  */
-static void test_regulars_earn_class3(const char *dir)
+static void test_epoch_is_anchored(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    const uint32_t now = 1787000000u;      /* what OUR clock says */
+    char w[300];
+
+    /* X3WX01 has no clock. Its first packet is 3600 s into boot 7, heard now:
+     * boot 7 therefore began at now - 3600. */
+    snprintf(w, sizeof w,
+             "t:observation f:X3WX01 link:ble peers:2 epoch:7.3600");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), -60, false, now), "first epoch packet");
+
+    /* A second packet of the same boot, 4210 s in, but CARRIED to us two days
+     * later. Its date is the epoch's, not the day it arrived. */
+    snprintf(w, sizeof w,
+             "t:observation f:X3WX01 link:ble peers:3 epoch:7.4210");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), -60, false, now + 172800u),
+          "carried epoch packet");
+
+    collect_t c = { 0 };
+    xprsidx_query_t q = { .type = -1, .limit = 10, .newest_first = false,
+                          .trusted = true };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 2, "both packets stored");
+    const uint32_t started = now - 3600u;
+    CHECK(c.first.ts == started + 3600u, "first packet dated %u, wanted %u",
+          (unsigned)c.first.ts, (unsigned)(started + 3600u));
+    CHECK(c.last.ts == started + 4210u,
+          "a carried packet was dated by its arrival (%u), not its epoch (%u)",
+          (unsigned)c.last.ts, (unsigned)(started + 4210u));
+
+    /* And now it can be paged, which is the whole point. */
+    collect_t c2 = { 0 };
+    xprsidx_query_t q2 = { .type = -1, .limit = 10, .trusted = true,
+                           .since_ts = started + 4000u };
+    CHECK(xprsindex_query(st, &q2, collect, &c2) == 1,
+          "since: over an anchored epoch returned %d", c2.n);
+
+    /* A different boot of the same station is a different epoch. */
+    snprintf(w, sizeof w, "t:observation f:X3WX01 link:ble peers:1 epoch:8.10");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), -60, false, now + 200000u),
+          "next boot stored");
+    collect_t c3 = { 0 };
+    xprsidx_query_t q3 = { .type = -1, .limit = 10, .trusted = true,
+                           .since_ts = now + 190000u };
+    CHECK(xprsindex_query(st, &q3, collect, &c3) == 1,
+          "the new boot was not dated from its own anchor");
+    xprsindex_close(st);
+}
+
+/*
+ * XPRS.md 13.12.3: `q:mail` asks how much mail a station holds, `only:`
+ * names whose. One packet answers a question whose usual answer is nothing,
+ * where the alternative -- cmd:history only:X -- replays the mail itself.
+ */
+static void test_mail_count(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+
+    char w[300];
+    for (int i = 0; i < 3; i++) {
+        snprintf(w, sizeof w,
+                 "t:message f:X1QZ3N d:X1BOA3 ts:" TS_2026 " m:waiting %d", i);
+        CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "mail %d", i);
+    }
+    snprintf(w, sizeof w,
+             "t:message f:X1QZ3N d:X1OTHR ts:" TS_2026 " m:for somebody else");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    /* Not mail: no d:, so it is the spool and must not be counted. */
+    snprintf(w, sizeof w, "t:status f:X1QZ3N ts:" TS_2026 " m:just talking");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 3,
+          "wanted 3 for X1BOA3, got %d", xprsindex_mail_count(st, "X1BOA3", 99));
+    CHECK(xprsindex_mail_count(st, "X1NONE", 99) == 0,
+          "a callsign with no mail was told there is some");
+    CHECK(xprsindex_mail_count(st, NULL, 99) == 4,
+          "the station's own total is wrong (%d)",
+          xprsindex_mail_count(st, NULL, 99));
+    /* The cap is a cap: the question is whether there is any. */
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 2) == 2, "cap not honoured");
+    /* A suffixed device of the same operator is the same recipient (3.1). */
+    CHECK(xprsindex_mail_count(st, "X1BOA3-7", 99) == 3,
+          "a suffixed callsign did not find its own mail");
+    xprsindex_close(st);
+}
+
+/*
+ * XPRS.md 36.11, in the order it states: the spool goes first, then mail for
+ * callsigns that did not name this station, and mail for a callsign whose
+ * t:mailbox hold: names it is the last thing an archiver may drop.
+ *
+ * Being present every day used to earn that last class too. It does not:
+ * the section says the classes read off the packet, and a station somebody
+ * declared is not outranked by a station that merely talks a lot. X1HERE is
+ * here daily and declares nothing; X1DECL declares. Only X1DECL's mail is
+ * promised.
+ */
+static void test_declared_mail_is_the_last_to_go(const char *dir)
 {
     rm_rf(dir);
     xprsidx_t *st = xprsindex_open(dir);
     CHECK(xprsindex_ready(st), "store did not open");
     xprsindex_set_own(st, "X3ARC1");
 
-    /* X1HERE turns up on several distinct days; X1GONE only ever once. */
     char w[300];
     const uint32_t day0 = 1787000000u;
+
+    /* X1HERE turns up every day and never declares. */
     for (int d = 0; d < 5; d++) {
         snprintf(w, sizeof w,
                  "t:status f:X1HERE ts:" TS_2026 " m:morning %d", d);
         xprsindex_add(st, w, (int)strlen(w), 0, false, day0 + (uint32_t)d * 86400u);
     }
-    snprintf(w, sizeof w, "t:status f:X1GONE ts:" TS_2026 " m:passing through");
-    xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    /* X1DECL names this station as where to leave its mail (13.12). */
+    snprintf(w, sizeof w,
+             "t:mailbox f:X1DECL ts:" TS_2026 " hold:X3ARC1,X32DVA");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "declaration");
 
     /* Mail for each, then fill past the cap so eviction has to choose. */
     snprintf(w, sizeof w,
-             "t:message f:X1QZ3N d:X1HERE ts:" TS_2025 " m:for the regular");
-    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "regular mail");
+             "t:message f:X1QZ3N d:X1DECL ts:" TS_2025 " m:for the declarer");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "declared mail");
     snprintf(w, sizeof w,
-             "t:message f:X1QZ3N d:X1GONE ts:" TS_2025 " m:for the stranger");
-    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "stranger mail");
+             "t:message f:X1QZ3N d:X1HERE ts:" TS_2025 " m:for the regular");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "undeclared mail");
     for (int i = 0; i < 9000; i++) {
         snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:filler %d",
                  i % 90, i);
@@ -665,11 +770,20 @@ static void test_regulars_earn_class3(const char *dir)
     snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
 
-    xprsidx_query_t q = { .type = -1, .from = "X1QZ3N", .asker = "X1HERE",
+    xprsidx_query_t q = { .type = -1, .from = "X1QZ3N", .asker = "X1DECL",
                           .limit = 5 };
     collect_t c = { 0 };
     CHECK(xprsindex_query(st, &q, collect, &c) >= 1,
-          "a regular's mail was evicted");
+          "the declarer's mail was evicted -- 36.11 keeps it longest");
+
+    /* Eviction really ran, so the choice above was a choice: the 9000 filler
+     * records filled three segments and at least one was retired. (`count`
+     * is cumulative -- records ever accepted -- so segments is what says a
+     * segment went.) */
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    CHECK(s.segments < 3, "nothing was evicted (%u segments)",
+          (unsigned)s.segments);
     xprsindex_close(st);
 }
 
@@ -882,7 +996,9 @@ int main(void)
     test_evicts_on_real_bytes(dir);
     test_verifies_what_it_stores(dir);
     test_retention_priorities(dir);
-    test_regulars_earn_class3(dir);
+    test_declared_mail_is_the_last_to_go(dir);
+    test_mail_count(dir);
+    test_epoch_is_anchored(dir);
     test_only_is_a_callsign(dir);
     test_kind_takes_a_list(dir);
     rm_rf(dir);
