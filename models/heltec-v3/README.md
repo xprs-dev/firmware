@@ -135,8 +135,9 @@ Heltec's own CP2102, which does not reset it.
 |---|---|
 | Heltec → P1-Pro, LoRa only | **19 of 20** messages sent with `bearer=lora` (two runs of ten, 8-9 s apart), every one at −21 dBm on the P1-Pro |
 | P1-Pro → Heltec, LoRa | every P1-Pro packet in a 15-minute window arrived direct: 5 of 5, all −16 dBm SNR 12 |
-| Heltec → T-Deck | the T-Deck heard the Heltec's first beacons on LoRa and digipeated them back onto LoRa as `via:X3GSLC`, and the Heltec heard those at −29 dBm; T-Deck packets arrived at −13 to −16 dBm SNR 12-13. Counted runs against the T-Deck are still owed -- it was reflashed with a probe partway through the evening |
-| Heltec digipeating on LoRa | the P1-Pro received its own beacon back at −21 dBm relayed by this station (`digi_on` set) |
+| Heltec → T-Deck, LoRa only | **10 of 10** messages sent with `bearer=lora`, −35/−36 dBm on the T-Deck |
+| T-Deck → Heltec, LoRa only | **10 of 10**, −34/−35 dBm SNR 12 here |
+| Heltec digipeating | 9 of the T-Deck's 10 LoRa sends re-aired by this station with `via:...,X3H3MZ` appended (`digi_on` set); the P1-Pro also received its own beacon back at −21 dBm relayed by this station |
 
 Two things about counting LoRa on this bench. Beacons cannot be counted:
 every station here also hears every other on BLE5, the BLE copy lands
