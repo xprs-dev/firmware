@@ -41,6 +41,23 @@ reuses them via **symlinks in `rns_ble5/components/`** (PlatformIO fails on
 Component CMake gates by **IDF_TARGET, not CONFIG_** (early-expansion gotcha,
 see `xprs_msgstore/CMakeLists.txt`).
 
+**Each board under `models/` is a PlatformIO project, and `idf.py` does not
+build it.** There is no `main` component -- PlatformIO registers `src/` as the
+app -- so an `idf.py build` compiles every file, links, and dies on
+`undefined reference to app_main` with nothing wrong in the tree. Build with
+`~/.platformio/penv/bin/pio run` from the board's `firmware/` directory, and
+flash with `pio run -t upload`, which knows the by-id port. `idf.py` is still
+useful for one thing: compiling a single translation unit
+(`ninja -C build .../file.c.obj`) to check a change without a full link.
+
+**Two IDF versions are in play, so API drift has to be guarded.** PlatformIO
+pins espressif32@6.7.0 (IDF 5.2) for the boards; a workstation's own
+`~/esp/esp-idf` is newer. IDF 5.5 changed the ESP-NOW send callback's first
+argument from the peer MAC to an `esp_now_send_info_t`, so a full image built
+against a current IDF stopped compiling while every object still built alone.
+`#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)` around the two
+signatures keeps both toolchains working -- see `xprsnow.c`.
+
 ## Radio capability per chip (mesh implications)
 
 - **Original ESP32** (Heltec v1/v2, KV4P): **no BLE5 extended advertising** --
@@ -278,6 +295,40 @@ Two consequences worth building around:
   - nothing closes that handle when the power goes, so without an `fsync()` the
     whole active file is invisible after a reboot. 2000 records were lost to a
     reset exactly this way.
+- **`ftell()` after `SEEK_END` returns -1 on this mount. Use `stat()`.** The
+  index sized its segments with `fseek(f,0,SEEK_END); end = ftell(f);` and then
+  `end / 320`. With `end` at -1 that is 0, so the newest segment scanned as
+  empty on every board with a card, `next_index` fell back to the segment's
+  base number, and the station rewrote that segment from the front on every
+  reboot -- over records already in it. A T-Deck holding 739 records reported
+  `open /idx/xprs: 0 records, 1 segments` and started again at slot 0. `stat()`
+  on the same file, same boot, reported 236,480 bytes. Nothing warns you: -1 is
+  a valid `long`, and the division hides it.
+- **Do not probe for the end by reading past it.** The obvious repair for the
+  above -- bisect for the highest readable slot -- is worse. Once a read fails,
+  this VFS keeps the handle in error, `clearerr()` does not bring it back, and
+  every later read through that handle fails too. The scan that followed the
+  probe then found nothing at all, which looks exactly like the bug being
+  fixed. Ask the filesystem for the size; do not interrogate the stream.
+- **A slot that was never written is not zeroes.** Seeking past the end and
+  writing extends the file, and the skipped bytes are whatever the newly
+  allocated cluster held before it was freed -- on a station that rotates its
+  log into the same directory, that is old log text. So `len != 0` is not a
+  test for "this slot holds a record": `W (241788) health: station up:` passes
+  it. Records that state their own index can be asked whether they are the one
+  being read (`xi_rec_is`), and that is the test that holds.
+- **But do not use the strict test to find the END of a file.** A slot that
+  fails validation was still written into, and treating it as end-of-file puts
+  `next_index` back over live records, which the next packet then overwrites.
+  Finding the end takes the weak test (`xi_slot_used`: a length in range);
+  reading a record takes the strict one. Getting this backwards cost 739
+  archived records on the bench T-Deck, in the commit that was meant to protect
+  them.
+- **Never spend an index before the record is accepted.** The store numbered a
+  record, then handed it to the write queue, which drops the newest when the
+  card is slower than the air. The number was gone either way, so the next
+  write seeked past a slot nothing ever filled -- and made exactly the hole the
+  reader then had to survive. Queue first, number after.
 - **`CONFIG_FATFS_LFN` defaults to OFF, and 8.3 is smaller than you think.**
   The index names its segments `seg_<10 digits>.bin` -- fourteen characters --
   so on a build without long-filename support every segment `fopen()` fails.
@@ -1351,6 +1402,27 @@ claim-the-stack-early-then-block-on-a-flag shape as `relay_task`), and
 `scriptkey` was added to `xprs_config`'s INI-name map but not to the `s_cfg[]`
 known-key array that `xcfg_get`/`xcfg_set` actually use, so it could never be
 read or written. **`xprs_config` has two tables; a new key needs both.**
+
+## What the HTTP API prints
+
+The API is read by browsers and by `JSON.parse`, which rejects a whole reply
+over one byte. Two rules, both learned from replies that a page silently threw
+away:
+
+- **Escape the bytes, all of them.** Control characters below 0x20 AND anything
+  above 0x7e: JSON is UTF-8, and a lone 0xb7 out of a record makes the reply
+  undecodable. `xapi_jesc()` does both. A wire is text by XPRS.md section 4, but
+  a record recovered from a card need not be, and neither need a callsign field
+  that a corrupt packet filled.
+- **Never print a fixed-size field with a bare `%s`.** `rec->from` is
+  `char[16]`; if a record is damaged the field has no terminator and `%s` walks
+  into whatever follows it -- a history reply once carried a fragment of an ESP
+  log line as a callsign. Escape it, bounded by its own array size.
+- **A page that parses inside a `try/catch` hides all of this.** The chat page
+  did, so a single bad record emptied the whole view with no error anywhere,
+  and it read as "the station has no messages". When a page shows nothing,
+  `curl` the endpoint and pipe it through `python3 -m json.tool` before
+  believing the page.
 
 ## Validating on the device
 
