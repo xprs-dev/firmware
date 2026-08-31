@@ -230,6 +230,21 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     const char *sig = !(rec->flags & XI_F_SIGNED)   ? "none"
                       : (rec->flags & XI_F_VERIFIED) ? "verified"
                                                       : "unverified";
+    /* A callsign field is escaped and bounded by its own array, never
+     * printed with a bare %s.
+     *
+     * Measured on a T-Deck: one record in the store held a newline and an
+     * ESP log fragment where the callsign belongs, so `%s` walked off the
+     * end of rec->from into whatever followed it and the reply carried a
+     * raw control character. Browsers reject the whole batch for that, and
+     * the chat page's JSON.parse is inside a try/catch, so every message in
+     * the page vanished with no error anywhere. Whatever wrote that record
+     * is a separate fault; a reader that can be broken by one bad row is
+     * this one. */
+    char from_e[XPRSIDX_CALL_LEN * 6 + 1], to_e[XPRSIDX_CALL_LEN * 6 + 1];
+    jesc(from_e, sizeof from_e, rec->from, (int)sizeof rec->from);
+    jesc(to_e, sizeof to_e, rec->to, (int)sizeof rec->to);
+
     /* One record at a time out of the shared buffer: the escaped packet in
      * the head, the row built after it. */
     char *row = s_api_buf;
@@ -240,7 +255,7 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
         "\"wire\":\"",
         c->emitted ? "," : "", (unsigned long)rec->ts,
         xprsidx_bearer_name(rec->bearer), (int)rec->rssi,
-        rec->from, rec->to, xprsidx_type_name(rec->type), sig,
+        from_e, to_e, xprsidx_type_name(rec->type), sig,
         own ? "true" : "false");
     if (n < 0 || n >= (int)ROW) return true;
     n += jesc(row + n, ROW - (size_t)n, rec->wire, rec->len);

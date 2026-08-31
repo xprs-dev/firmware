@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_random.h"
+#include "esp_idf_version.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
 
@@ -78,10 +79,25 @@ static bool nw_air(void *ctx, const char *wire, int len)
     return false;
 }
 
-/* Also the WiFi task. Two counters and nothing else. */
+/*
+ * Also the WiFi task. Two counters and nothing else.
+ *
+ * IDF 5.5 changed the argument: the peer's MAC became an esp_now_send_info_t
+ * carrying it. Both spellings are kept because both toolchains are in use --
+ * PlatformIO pins espressif32@6.7.0 (IDF 5.2) for the boards, and the
+ * standalone IDF on a workstation is newer. Nothing here reads the argument,
+ * so the two bodies are the same body.
+ */
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+static void nw_send_cb(const esp_now_send_info_t *info,
+                       esp_now_send_status_t status)
+{
+    (void)info;
+#else
 static void nw_send_cb(const uint8_t *mac, esp_now_send_status_t status)
 {
     (void)mac;
+#endif
     if (status != ESP_NOW_SEND_SUCCESS) s_tx_failed++;
     s_tx_done++;
 }
