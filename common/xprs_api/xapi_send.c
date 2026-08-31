@@ -31,7 +31,14 @@ int xapi_jesc(char *out, size_t cap, const char *in, int inlen)
         if (o + 7 >= cap) break;
         if (c == '"' || c == '\\') { out[o++] = '\\'; out[o++] = c; }
         else if (c == '\n') { out[o++] = '\\'; out[o++] = 'n'; }
-        else if (c < 0x20) o += snprintf(out + o, cap - o, "\\u%04x", c);
+        /* JSON is UTF-8, and a byte over 0x7f on its own is not valid UTF-8.
+         * A wire is text (XPRS.md section 4) but a record recovered from a
+         * card need not be, and one stray 0xb7 made the whole reply
+         * undecodable -- the same failure the raw control character caused,
+         * one layer up. Escaped as its code point, which is valid JSON and
+         * keeps the byte visible. */
+        else if (c < 0x20 || c > 0x7e)
+            o += snprintf(out + o, cap - o, "\\u%04x", c);
         else out[o++] = (char)c;
     }
     out[o] = 0;

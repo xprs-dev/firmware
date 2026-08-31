@@ -324,6 +324,72 @@ static void test_torn_tail_still_answers(const char *dir)
     xprsindex_close(st);
 }
 
+/*
+ * A hole is not a record, whatever the bytes in it say.
+ *
+ * A segment slot that was never written holds whatever the cluster held
+ * before it was freed. On the bench that was the rotated log file, so a
+ * store served records whose from: was a piece of an ESP log line and whose
+ * ts: was a log timestamp -- and the JSON they were rendered into carried a
+ * raw newline, which emptied the page reading it.
+ *
+ * Written here the way the card writes it: a real record, then a slot filled
+ * with log text, then a real record after the hole. Both real records must
+ * come back and the hole must not.
+ */
+static void test_a_hole_is_not_a_record(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    const char *a = "t:status f:X1AAAA ts:2026-08-17_10:00:00 m:first";
+    const char *b = "t:status f:X1CCCC ts:2026-08-17_10:05:00 m:third";
+    CHECK(xprsindex_add(st, a, (int)strlen(a), -50, false, 1786000000),
+          "first record not stored");
+    xprsindex_close(st);
+
+    /* Slot 1: never written, and holding what the card had. */
+    char path[256];
+    snprintf(path, sizeof path, "%s/seg_%010u.bin", dir, 0u);
+    FILE *f = fopen(path, "r+b");
+    CHECK(f != NULL, "no segment to punch");
+    if (f) {
+        static const char junk[] =
+            "xprs: ble -79 dBm 131B t:observation f:X3H3MZ link:ble peers:2\n"
+            "I (239679) wifi:state: run -> init (0)\n"
+            "W (241788) health: station up: http api+ lan bearer+\n";
+        char slot[320];
+        memset(slot, 0, sizeof slot);
+        memcpy(slot, junk, sizeof junk - 1);
+        /* Stale bytes that pass for a written slot: a length in range and an
+         * index that is somebody else's. This is the shape that got served --
+         * `len != 0` was the whole test, and old log text satisfies it. */
+        uint32_t stale_index = 4242;
+        uint16_t plausible_len = 131;
+        memcpy(slot + 0,  &stale_index,   sizeof stale_index);
+        memcpy(slot + 12, &plausible_len, sizeof plausible_len);
+        fseek(f, 320L, SEEK_SET);
+        fwrite(slot, sizeof slot, 1, f);
+        fclose(f);
+    }
+
+    /* Reopened, the store keeps its place: the hole is a slot something was
+     * written into as far as the file is concerned, so the next record goes
+     * after it rather than on top of the records already there. */
+    st = xprsindex_open(dir);
+
+    /* And a record written after it is still reachable. */
+    CHECK(xprsindex_add(st, b, (int)strlen(b), -50, false, 1786000300),
+          "record after the hole not stored");
+    collect_t c = {0};
+    xprsidx_query_t q = { .type = -1, .limit = 50, .newest_first = false };
+    size_t n = xprsindex_query(st, &q, collect, &c);
+    CHECK(n == 2, "expected the two real records and not the hole, got %zu", n);
+    CHECK(strstr(c.first.from, "xprs") == NULL &&
+          strchr(c.first.from, '\n') == NULL,
+          "log text was served as a callsign: %s", c.first.from);
+    xprsindex_close(st);
+}
+
 /* ── authorship (XPRS.md §9.1) ───────────────────────────────────────────── */
 
 /* A verifier the test drives: X1GOOD signs for itself, X1EVIL does not, and
@@ -810,6 +876,7 @@ int main(void)
     test_survives_a_lost_index(dir);
     test_wire_is_kept_verbatim(dir);
     test_torn_tail_still_answers(dir);
+    test_a_hole_is_not_a_record(dir);
     test_directory(dir);
     test_directory_tracks_the_store(dir);
     test_evicts_on_real_bytes(dir);

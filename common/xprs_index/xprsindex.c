@@ -563,6 +563,42 @@ static bool xi_write_rec_fwd(xprsidx_t *st, const xi_rec_t *r)
 
 /* ── Records ────────────────────────────────────────────────────────────── */
 
+static bool xi_slot_used(const xi_rec_t *r);
+
+/*
+ * Is this slot the record it should be, or is it a hole?
+ *
+ * A slot that was never written is not zeroes. Seeking past the end of a
+ * segment and writing extends the file, and the skipped bytes are whatever
+ * the newly allocated cluster held before it was freed -- on this card, most
+ * often the rotated log file. `len != 0` was the whole test, and old log text
+ * satisfies it: a T-Deck on the bench served records whose from: was a piece
+ * of an ESP log line, which is how this was found.
+ *
+ * A record states its own index, so the slot can be asked whether it is the
+ * one being read. Stale bytes do not answer to that, and a hole is skipped
+ * by every caller here -- they all `continue` on a false.
+ */
+static bool xi_rec_is(const xi_rec_t *r, uint32_t index)
+{
+    return xi_slot_used(r) && r->index == index;
+}
+
+/*
+ * Does this slot hold anything at all?
+ *
+ * Weaker than xi_rec_is on purpose, and used for one thing: finding where a
+ * segment ends. A slot that fails the strict test is still a slot something
+ * was written into, and treating it as the end of the file would put
+ * next_index back over records that are really there -- the next packet
+ * would then overwrite them. Measured: a card holding 739 records reopened
+ * as 0 and started again from the front.
+ */
+static bool xi_slot_used(const xi_rec_t *r)
+{
+    return r->len > 0 && r->len <= XPRSIDX_WIRE_MAX;
+}
+
 static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
 {
     long off = (long)(index % XI_RECS_PER_SEG) * (long)sizeof(xi_rec_t);
@@ -578,7 +614,7 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
         fflush(st->active_fp);
         bool ok = fseek(st->active_fp, off, SEEK_SET) == 0 &&
                   fread(out, sizeof *out, 1, st->active_fp) == 1;
-        return ok && out->len > 0;
+        return ok && xi_rec_is(out, index);
     }
 
     /* Anything older is read through a cursor that stays open on the segment
@@ -596,7 +632,7 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
     }
     bool ok = fseek(st->read_fp, off, SEEK_SET) == 0 &&
               fread(out, sizeof *out, 1, st->read_fp) == 1;
-    return ok && out->len > 0;
+    return ok && xi_rec_is(out, index);
 }
 
 /* Drop the scan cursor — before a segment it might hold becomes the one being
@@ -760,17 +796,37 @@ static uint32_t xi_scan_tail(xprsidx_t *st, uint32_t first)
     xi_seg_path(st, path, sizeof path, first);
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
-    fseek(f, 0, SEEK_END);
-    long end = ftell(f);
-    uint32_t slots = (uint32_t)(end / (long)sizeof(xi_rec_t));
-    if (slots > XI_RECS_PER_SEG) slots = XI_RECS_PER_SEG;
+
+    /* How many slots the file has.
+     *
+     * stat(), not ftell(): ftell() after SEEK_END returns -1 on this FatFs
+     * mount, `end / 320` was then 0, and this scan returned 0 on every board
+     * with a card. next_index fell back to the segment's base number and the
+     * station rewrote that segment from its front on every reboot, over the
+     * records already in it. Measured on a T-Deck: stat() reports 236,480
+     * bytes -- 739 records -- where ftell() reported -1.
+     *
+     * Probing for the end by reading past it is not the way round either:
+     * once a read fails, this VFS keeps the handle in error and every later
+     * read fails with it, so the scan that followed found nothing at all. */
+    struct stat sb;
+    uint32_t slots = 0;
+    if (stat(path, &sb) == 0 && sb.st_size > 0) {
+        slots = (uint32_t)((size_t)sb.st_size / sizeof(xi_rec_t));
+        if (slots > XI_RECS_PER_SEG) slots = XI_RECS_PER_SEG;
+    }
+
+    /* The LAST slot anything was written into, not the first gap: a dropped
+     * write leaves a hole with real records after it, and stopping at the
+     * hole both hid them and pointed the next write at them. The weak test,
+     * deliberately -- see xi_slot_used. */
+    (void)first;
     uint32_t n = 0;
     xi_rec_t r;
     for (uint32_t i = 0; i < slots; i++) {
         if (fseek(f, (long)i * (long)sizeof(xi_rec_t), SEEK_SET) != 0) break;
         if (fread(&r, sizeof r, 1, f) != 1) break;
-        if (r.len == 0) break;
-        n = i + 1;
+        if (xi_slot_used(&r)) n = i + 1;
     }
     fclose(f);
     return n;
@@ -1347,7 +1403,6 @@ static bool xi_judge_rec(xprsidx_t *st, xi_rec_t *r)
     }
     if (v < 0) {
         st->forged++;
-        st->count--;                 /* it was counted when it was accepted */
         XI_LOGW("refused a forged packet in the name of %s", r->from);
         return false;
     }
@@ -1460,7 +1515,19 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
      * presence is observed rather than declared -- see xi_reg_note. */
     xi_reg_note(st, r.from, ts_now);
 
-    /* Decided. The card work is somebody else's problem now. */
+    /* Hand it to the card BEFORE spending the index on it. A full queue
+     * drops the newest record on purpose (the card is slower than the air),
+     * and advancing next_index first meant the next record was written a
+     * slot further on -- leaving 320 bytes that no write ever covered and
+     * that the reader then had to be lied to by. Nothing is spent on a
+     * record that was not taken.
+     *
+     * A record the writer task later refuses (a forged signature, judged off
+     * this task) still leaves its slot empty. That hole is the reader's to
+     * survive, and xi_rec_is() is how. */
+    if (!xi_queue_rec(st, &r)) return false;
+
+    /* Decided, and accepted. */
     st->dedup[st->dedup_pos] = h;
     st->dedup_pos = (st->dedup_pos + 1) % XI_DEDUP_RING;
     if (ph) {
@@ -1469,7 +1536,7 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     }
     st->next_index++;
     st->count++;
-    return xi_queue_rec(st, &r);
+    return true;
 }
 
 /* The half that touches the card. Runs on the writer task (or, on the host,
@@ -1811,6 +1878,12 @@ static void xi_writer_task(void *arg)
             if (xi_judge_rec(st, &rec)) {
                 xi_write_rec(st, &rec);
                 n++;
+            } else {
+                /* Counted when it was accepted, on the task that heard it;
+                 * the judgement happens here, so the correction does too.
+                 * (The host judges inside the accept instead, where the
+                 * record is never counted in the first place.) */
+                if (st->count) st->count--;
             }
             XI_UNLOCK(st);
         }
