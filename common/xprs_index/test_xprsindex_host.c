@@ -212,6 +212,15 @@ static void test_reopen(const char *dir)
     const char *more = "t:place f:X1PLNEW ts:" TS_2026 " m:after reboot";
     CHECK(xprsindex_add(re, more, (int)strlen(more), 0, false, 0), "append after reopen failed");
     CHECK(xprsindex_latest_index(re) == latest + 1, "did not continue the sequence");
+
+    /* And every record is READABLE afterwards -- the old ones the scan
+     * recovered and the new one written after it. A store that accepts
+     * records and then answers nothing is the failure that looks like an
+     * empty archive while the count keeps climbing. */
+    collect_t c = { 0 };
+    xprsidx_query_t q = { .type = -1, .limit = 50, .trusted = true };
+    size_t n = xprsindex_query(re, &q, collect, &c);
+    CHECK(n == 13, "reopened store served %zu of 13 records", n);
     xprsindex_close(re);
 }
 

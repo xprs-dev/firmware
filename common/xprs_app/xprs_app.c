@@ -916,6 +916,54 @@ static struct {
 } s_acked[ACKED_MAX];
 static uint8_t s_acked_pos;
 
+/*
+ * The ring outlives a reboot, because the mail does.
+ *
+ * The archive is on the card and a receipt is not: an acknowledged message
+ * stayed acknowledged only until the power blinked, and the station then
+ * re-aired mail its recipient had already taken -- at the next sighting, and
+ * at every sighting after that. 48 six-character ids is 336 bytes of NVS,
+ * written when a receipt is accepted (which is rare) and read once at boot.
+ *
+ * Ids only. The timestamps are boot-relative (esp_timer) and mean nothing
+ * across a restart, so a restored entry starts its life at zero and ages
+ * from there; nothing here expires by age today.
+ */
+static void acked_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprscfg", NVS_READWRITE, &h) != ESP_OK) return;
+    char blob[ACKED_MAX * XPRS_ID_LEN];
+    for (int i = 0; i < ACKED_MAX; i++)
+        snprintf(blob + i * XPRS_ID_LEN, XPRS_ID_LEN, "%s", s_acked[i].id);
+    nvs_set_blob(h, "acked", blob, sizeof blob);
+    nvs_set_u8(h, "ackedpos", s_acked_pos);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void acked_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprscfg", NVS_READONLY, &h) != ESP_OK) return;
+    char blob[ACKED_MAX * XPRS_ID_LEN];
+    size_t len = sizeof blob;
+    if (nvs_get_blob(h, "acked", blob, &len) == ESP_OK && len == sizeof blob) {
+        int n = 0;
+        for (int i = 0; i < ACKED_MAX; i++) {
+            const char *id = blob + i * XPRS_ID_LEN;
+            if (!id[0]) continue;
+            snprintf(s_acked[i].id, XPRS_ID_LEN, "%s", id);
+            n++;
+        }
+        uint8_t pos = 0;
+        if (nvs_get_u8(h, "ackedpos", &pos) == ESP_OK && pos < ACKED_MAX)
+            s_acked_pos = pos;
+        if (n) ESP_LOGI(TAG, "%d acknowledged message(s) remembered", n);
+    }
+    nvs_close(h);
+}
+
 static void acked_note(const char *id)
 {
     for (int i = 0; i < ACKED_MAX; i++)
@@ -923,6 +971,7 @@ static void acked_note(const char *id)
     snprintf(s_acked[s_acked_pos].id, XPRS_ID_LEN, "%s", id);
     s_acked[s_acked_pos].t_ms = (uint32_t)(esp_timer_get_time() / 1000);
     s_acked_pos = (uint8_t)((s_acked_pos + 1) % ACKED_MAX);
+    acked_save();
 }
 
 static bool acked_has(const char *id)
@@ -964,10 +1013,54 @@ static struct {
     volatile bool pending;
 } s_rcpt_in, s_rcpt_out;
 
-/* One delivery attempt per recipient per period, however chatty their
- * beacons: the trigger is cheap, the replay is airtime. */
+/*
+ * One delivery attempt per recipient per period, however chatty their
+ * beacons: the trigger is cheap, the replay is airtime.
+ *
+ * A backlog needs two periods, not one. A sighting delivers a PAGE (36.8.1
+ * is a release, not a flood), so a station with thirty messages waiting used
+ * to collect four every ten minutes and get the same four each time -- the
+ * query asked for the newest and nothing remembered which newest. Two fields
+ * fix that:
+ *
+ *   until_s  where the next page resumes: mail older than this. Cleared when
+ *            a page comes back short, so the round starts again at the newest
+ *            and picks up whatever arrived meanwhile.
+ *   wait_s   how long before the next attempt: the full period when there is
+ *            nothing more to send, a short one while a backlog is draining.
+ *
+ * Written by the radio task (the sighting) and by idx_task (the result of the
+ * page). A torn update costs one early or late attempt, which is the same
+ * cost as a missed beacon, so no lock: the alternative is the radio task
+ * waiting on the card.
+ */
 #define REL_THROTTLE_SEC 600
-static struct { char call[10]; uint32_t at_s; } s_rel_seen[16];
+#define REL_MORE_SEC      45     /* while there is more to hand over */
+#define REL_PAGE           4     /* messages per sighting */
+static struct {
+    char     call[10];
+    uint32_t at_s;
+    uint32_t until_s;
+    uint32_t wait_s;
+} s_rel_seen[16];
+
+/* The resume mark for a recipient, and where idx_task writes it back. */
+static uint32_t rel_resume_of(const char *call)
+{
+    for (int i = 0; i < 16; i++)
+        if (strcasecmp(s_rel_seen[i].call, call) == 0) return s_rel_seen[i].until_s;
+    return 0;
+}
+
+static void rel_resume_set(const char *call, uint32_t until_s, uint32_t wait_s)
+{
+    for (int i = 0; i < 16; i++) {
+        if (strcasecmp(s_rel_seen[i].call, call) != 0) continue;
+        s_rel_seen[i].until_s = until_s;
+        s_rel_seen[i].wait_s = wait_s;
+        return;
+    }
+}
 
 /*
  * Gossip (36.9.4): who else heard whom. The store is xprs_gossip, on the same
@@ -1199,15 +1292,22 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         bool throttled = false;
         for (int i = 0; i < 16; i++) {
             if (strcasecmp(s_rel_seen[i].call, from) == 0) {
-                throttled = now_s - s_rel_seen[i].at_s < REL_THROTTLE_SEC;
+                uint32_t wait = s_rel_seen[i].wait_s ? s_rel_seen[i].wait_s
+                                                     : REL_THROTTLE_SEC;
+                throttled = now_s - s_rel_seen[i].at_s < wait;
                 free_slot = i;
                 break;
             }
             if (s_rel_seen[i].at_s <= s_rel_seen[free_slot].at_s) free_slot = i;
         }
         if (throttled || s_rel.pending) break;
-        snprintf(s_rel_seen[free_slot].call, sizeof s_rel_seen[free_slot].call,
-                 "%s", from);
+        if (strcasecmp(s_rel_seen[free_slot].call, from) != 0) {
+            /* A slot taken over by somebody else starts its own round. */
+            snprintf(s_rel_seen[free_slot].call,
+                     sizeof s_rel_seen[free_slot].call, "%s", from);
+            s_rel_seen[free_slot].until_s = 0;
+            s_rel_seen[free_slot].wait_s = REL_THROTTLE_SEC;
+        }
         s_rel_seen[free_slot].at_s = now_s;
         snprintf(s_rel.call, sizeof s_rel.call, "%s", from);
         snprintf(s_rel.bearer, sizeof s_rel.bearer, "%s", bearer);
@@ -3656,13 +3756,18 @@ static void idx_task(void *arg)
                 .types = xprsidx_type_mask("message"),
                 .only = rcall,
                 .asker = rcall,          /* xi_may_serve: their own mail */
-                .limit = 4,
+                /* Where the last page stopped: mail older than the oldest
+                 * we handed over. Zero on the first sighting of a round. */
+                .until_ts = rel_resume_of(rcall),
+                .limit = REL_PAGE,
                 .newest_first = true,
             };
+            if (q.until_ts) q.until_ts--;      /* strictly older */
             s_page.n = 0;
             s_page.more = false;
             xprsindex_query(s_index, &q, hist_collect, NULL);
             int aired = 0;
+            uint32_t oldest = 0;               /* of what actually went out */
             for (int i = 0; i < s_page.n; i++) {
                 /* only: matched from OR to; mail is what carries d:THEM.
                  * Their own sayings are not deliveries. */
@@ -3712,10 +3817,28 @@ static void idx_task(void *arg)
                          rel + (rn > 80 ? rn - 80 : 0));
                 idx_air(rbearer, rel, rn);
                 aired++;
+                /* Where the next page resumes. Read from the wire because
+                 * that is what was handed over; a record with no ts: cannot
+                 * anchor a page, so it does not move the mark. */
+                char mts[24] = "";
+                if (xprs_get_str(&mp, "ts", mts, sizeof mts)) {
+                    uint32_t t = xprsindex_ts_to_epoch(mts, (int)strlen(mts));
+                    if (t && (!oldest || t < oldest)) oldest = t;
+                }
             }
+            /* A full page means there is more behind it: resume there, and
+             * come back sooner than the idle period. A short one is the end
+             * of the round -- forget the mark so the next sighting starts at
+             * the newest again, which is also how mail that arrived while
+             * this drained gets its turn. */
+            if (s_page.n >= REL_PAGE && oldest)
+                rel_resume_set(rcall, oldest, REL_MORE_SEC);
+            else
+                rel_resume_set(rcall, 0, REL_THROTTLE_SEC);
             if (aired)
-                ESP_LOGI(TAG, "released %d held for %s on %s (36.8.1)",
-                         aired, rcall, rbearer);
+                ESP_LOGI(TAG, "released %d held for %s on %s%s (36.8.1)",
+                         aired, rcall, rbearer,
+                         (s_page.n >= REL_PAGE && oldest) ? ", more to come" : "");
         } else if (s_rel.pending) {
             s_rel.pending = false;   /* index down: the slot must not latch */
         }
@@ -4818,6 +4941,7 @@ void xapp_run(const xapp_board_t *board)
     /* Before anything airs: a packet sent with the ordinal still zero is a
      * packet no receiver can order against the last boot (10.7). */
     boot_epoch_init();
+    acked_load();   /* what was acknowledged before the reboot */
     snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", board->wifi_ssid));
     snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", board->wifi_pass));
 
