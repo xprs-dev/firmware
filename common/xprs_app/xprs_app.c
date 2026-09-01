@@ -3918,6 +3918,7 @@ static void idx_task(void *arg)
     esp_task_wdt_add(NULL);   /* a wedged storage task becomes a logged reboot */
 
     uint32_t last_announce_s = 0;
+    uint32_t last_claimask_s = 0;
     uint32_t last_logflush_s = 0;
     uint32_t last_stats_save_s = 0;
     for (;;) {
@@ -3941,6 +3942,37 @@ static void idx_task(void *arg)
 
         /* Say what this station serves, every ten minutes (section 36). */
         uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        /*
+         * 25.9: a station with no owner says so, and waits to be claimed.
+         *
+         * `scope:local` because a claim is made by somebody standing next to
+         * the box, and on the local bearers only for the same reason -- an
+         * unclaimed station announced over LoRa or through a hub is offering
+         * itself to whoever answers first, from anywhere. Signed, so the
+         * claim that comes back is answering THIS station rather than a
+         * forgery of it.
+         *
+         * Metered like any other unasked traffic (31): every two minutes
+         * while nobody owns it, and never again once somebody does. A board
+         * flashed on a bench is claimed in the first minutes of its life;
+         * one left unclaimed for a year should not still be shouting every
+         * ten seconds.
+         */
+        if (!pol_owned() && now_s - last_claimask_s >= 120) {
+            last_claimask_s = now_s;
+            char w[XPRS_MAX_WIRE + 1], ts[32];
+            time_field(ts, sizeof ts);
+            int n = snprintf(w, sizeof w, "t:request f:%s %s q:owner scope:local",
+                             s_call, ts);
+            if (n > 0 && n < (int)sizeof w) {
+                n = sign_wire(w, n, sizeof w);
+                xprslan_send(w, n);
+                if (xcfg_get_bool("espnow_on", true)) xprsnow_send(w, n);
+                if (xprsble_is_active()) xprsble_send(w, n);
+                ESP_LOGW(TAG, "unowned: asking to be claimed (25.9)");
+            }
+        }
+
         if (s_index && xcfg_get_bool("index_on", true) &&
             now_s - last_announce_s >= 600) {
             last_announce_s = now_s;
