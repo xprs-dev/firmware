@@ -162,10 +162,12 @@ tn_err_t tn_start(void)
     err = sd_ble_cfg_set(BLE_CONN_CFG_GAP, &cfg, ram_start);
     if (err) { printf("tn: gap cfg %lu\n", (unsigned long)err); return (int)err; }
 
-    /* Nothing is registered in the SoftDevice's own attribute table; make
-     * its allocation as small as it will go. */
+    /* Room for the one service tn_gatt_serve() may register (FFE0 with two
+     * characteristics and a CCCD). The default table size covers it with
+     * margin, and the linker's app RAM origin leaves ~11 KB of headroom over
+     * what the SoftDevice asked for at the MIN size. */
     memset(&cfg, 0, sizeof cfg);
-    cfg.gatts_cfg.attr_tab_size.attr_tab_size = BLE_GATTS_ATTR_TAB_SIZE_MIN;
+    cfg.gatts_cfg.attr_tab_size.attr_tab_size = BLE_GATTS_ATTR_TAB_SIZE_DEFAULT;
     sd_ble_cfg_set(BLE_GATTS_CFG_ATTR_TAB_SIZE, &cfg, ram_start);
 
     uint32_t need = ram_start;
@@ -222,9 +224,11 @@ tn_err_t tn_adv_configure(const tn_adv_cfg_t *cfg)
     return TN_OK;      /* the SoftDevice takes params and data together, below */
 }
 
+static size_t s_adv_len;
 static uint32_t adv_apply(const uint8_t *ad, size_t len)
 {
     memcpy(s_adv_buf, ad, len);
+    s_adv_len = len;
     ble_gap_adv_data_t data = {
         .adv_data = { .p_data = s_adv_buf, .len = (uint16_t)len },
     };
@@ -316,14 +320,75 @@ static tn_gatt_cb_t s_gatt;
 static volatile uint16_t s_conn = BLE_CONN_HANDLE_INVALID;
 static uint16_t s_mtu = TN_ATT_MTU_DEFAULT;
 static bool     s_dialling, s_subscribed;
+static bool     s_is_central;          /* role on the current link */
+static bool     s_serving;             /* tn_gatt_serve() registered the table */
+static uint16_t s_srv_notify_h, s_srv_notify_cccd_h, s_srv_write_h;
 static uint32_t s_dial_started_ms;
 
 tn_err_t tn_gatt_serve(const tn_gatt_cb_t *cb)
 {
-    /* Serving on this port is the SoftDevice's GATTS with tn_att's table,
-     * and it is not written. Say so rather than pretend. */
-    (void)cb;
-    return NRF_ERROR_NOT_SUPPORTED;
+    /* The mesh channel, served: the SoftDevice's GATTS carries the same
+     * FFE0 service tn_att.c hard-codes on the ESP32 -- FFF1 notify (us ->
+     * peer, gated on its CCCD) and FFF2 write | write-without-response
+     * (peer -> us). This is what lets a phone dial a station instead of
+     * the station having to dial the phone (docs/ble5-gatt.md). The caller
+     * should also have made its advertising set connectable
+     * (TN_ADV_PROP_CONNECTABLE), or nobody can reach the table. */
+    if (!s_up || !cb) return TN_ERR_STATE;
+    if (s_serving) { s_gatt = *cb; return TN_OK; }
+    s_gatt = *cb;
+
+    uint16_t svc;
+    ble_uuid_t u = { .uuid = 0xFFE0, .type = BLE_UUID_TYPE_BLE };
+    uint32_t err = sd_ble_gatts_service_add(BLE_GATTS_SRVC_TYPE_PRIMARY, &u, &svc);
+    if (err) { printf("tn: gatts service %lu\n", (unsigned long)err); return (int)err; }
+
+    ble_gatts_attr_md_t cccd_md;
+    memset(&cccd_md, 0, sizeof cccd_md);
+    BLE_GAP_CONN_SEC_MODE_SET_OPEN(&cccd_md.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_OPEN(&cccd_md.write_perm);   /* PLAIN: no bonding */
+    cccd_md.vloc = BLE_GATTS_VLOC_STACK;
+
+    ble_gatts_attr_md_t val_md;
+    memset(&val_md, 0, sizeof val_md);
+    BLE_GAP_CONN_SEC_MODE_SET_OPEN(&val_md.read_perm);
+    BLE_GAP_CONN_SEC_MODE_SET_OPEN(&val_md.write_perm);
+    val_md.vloc = BLE_GATTS_VLOC_STACK;
+
+    ble_gatts_char_md_t ch;
+    ble_gatts_attr_t    attr;
+    ble_gatts_char_handles_t h;
+    ble_uuid_t cu = { .type = BLE_UUID_TYPE_BLE };
+
+    /* FFF1: notify. */
+    memset(&ch, 0, sizeof ch);
+    ch.char_props.notify = 1;
+    ch.p_cccd_md = &cccd_md;
+    cu.uuid = 0xFFF1;
+    memset(&attr, 0, sizeof attr);
+    attr.p_uuid = &cu; attr.p_attr_md = &val_md;
+    attr.init_len = 0; attr.max_len = TN_ATT_MTU_MAX - 3;
+    err = sd_ble_gatts_characteristic_add(svc, &ch, &attr, &h);
+    if (err) { printf("tn: gatts fff1 %lu\n", (unsigned long)err); return (int)err; }
+    s_srv_notify_h = h.value_handle;
+    s_srv_notify_cccd_h = h.cccd_handle;
+
+    /* FFF2: write, both kinds. */
+    memset(&ch, 0, sizeof ch);
+    ch.char_props.write = 1;
+    ch.char_props.write_wo_resp = 1;
+    cu.uuid = 0xFFF2;
+    memset(&attr, 0, sizeof attr);
+    attr.p_uuid = &cu; attr.p_attr_md = &val_md;
+    attr.init_len = 0; attr.max_len = TN_ATT_MTU_MAX - 3;
+    err = sd_ble_gatts_characteristic_add(svc, &ch, &attr, &h);
+    if (err) { printf("tn: gatts fff2 %lu\n", (unsigned long)err); return (int)err; }
+    s_srv_write_h = h.value_handle;
+
+    s_serving = true;
+    printf("tn: serving FFE0 (notify 0x%04x, write 0x%04x)\n",
+           s_srv_notify_h, s_srv_write_h);
+    return TN_OK;
 }
 
 tn_err_t tn_gatt_dial(uint8_t addr_type, const uint8_t addr[6], const tn_gatt_cb_t *cb)
@@ -367,6 +432,16 @@ static void link_down(uint16_t conn, uint8_t reason)
     s_mtu = TN_ATT_MTU_DEFAULT;
     if (was && s_gatt.disconnected) s_gatt.disconnected(s_gatt.ctx, conn, reason);
     if (s_scan_want) scan_go();
+    /* A connectable set stops the moment it is answered (Vol 6 Part B,
+     * 4.4.2.4), and nothing here restarted it -- so after the first caller
+     * hung up the station was undialable until its next beacon happened to
+     * rewrite the advert (minutes). Put the door back now. */
+    if (s_adv_configured && !s_adv_on && s_adv_len > 0 &&
+        (s_adv.props & TN_ADV_PROP_CONNECTABLE)) {
+        if (adv_apply(s_adv_buf, s_adv_len) == 0 &&
+            sd_ble_gap_adv_start(s_adv_handle, CONN_CFG_TAG) == 0)
+            s_adv_on = true;
+    }
 }
 
 static void gattc_write(uint8_t op, uint16_t handle, const uint8_t *v, uint16_t len)
@@ -412,6 +487,15 @@ static void on_ble_evt(const ble_evt_t *e)
         s_dialling = false;
         printf("tn: link 0x%04x up as %s\n", s_conn,
                gap->params.connected.role == BLE_GAP_ROLE_CENTRAL ? "central" : "peripheral");
+        s_is_central = gap->params.connected.role == BLE_GAP_ROLE_CENTRAL;
+        if (!s_is_central) {
+            s_adv_on = false;    /* the connectable set stopped to take this link */
+            /* Somebody dialled US. Notifies wait on their CCCD write; the
+             * link is otherwise ready now. */
+            s_subscribed = false;
+            s_mtu = TN_ATT_MTU_DEFAULT;
+            if (s_gatt.connected) s_gatt.connected(s_gatt.ctx, s_conn, false);
+        }
         if (gap->params.connected.role == BLE_GAP_ROLE_CENTRAL) {
             /* Step 1 of 3: the MTU. Then the CCCD, then the caller hears.
              * The fast-lane procedures (2M PHY, 251-byte DLE) are NOT fired
@@ -473,9 +557,26 @@ static void on_ble_evt(const ble_evt_t *e)
         sd_ble_gap_sec_params_reply(gap->conn_handle,
             BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
         break;
-    case BLE_GATTS_EVT_EXCHANGE_MTU_REQUEST:
+    case BLE_GATTS_EVT_EXCHANGE_MTU_REQUEST: {
+        uint16_t theirs = e->evt.gatts_evt.params.exchange_mtu_request.client_rx_mtu;
+        s_mtu = theirs < TN_ATT_MTU_MAX ? theirs : TN_ATT_MTU_MAX;
+        if (s_mtu < TN_ATT_MTU_DEFAULT) s_mtu = TN_ATT_MTU_DEFAULT;
         sd_ble_gatts_exchange_mtu_reply(e->evt.gatts_evt.conn_handle, TN_ATT_MTU_MAX);
         break;
+    }
+    case BLE_GATTS_EVT_SYS_ATTR_MISSING:
+        sd_ble_gatts_sys_attr_set(e->evt.gatts_evt.conn_handle, NULL, 0, 0);
+        break;
+    case BLE_GATTS_EVT_WRITE: {
+        const ble_gatts_evt_write_t *w = &e->evt.gatts_evt.params.write;
+        if (w->handle == s_srv_write_h) {
+            if (s_gatt.rx) s_gatt.rx(s_gatt.ctx, w->data, w->len);
+        } else if (w->handle == s_srv_notify_cccd_h && w->len >= 1) {
+            s_subscribed = (w->data[0] & 1) != 0;
+            printf("tn: peer %ssubscribed\n", s_subscribed ? "" : "un");
+        }
+        break;
+    }
 
     case BLE_GATTC_EVT_EXCHANGE_MTU_RSP: {
         uint16_t theirs = gc->params.exchange_mtu_rsp.server_rx_mtu;
@@ -558,13 +659,28 @@ void tn_soc_pump(void)
     }
 }
 
-bool tn_gatt_connected(void) { return s_conn != BLE_CONN_HANDLE_INVALID && s_subscribed; }
+bool tn_gatt_connected(void)
+{
+    if (s_conn == BLE_CONN_HANDLE_INVALID) return false;
+    return s_is_central ? s_subscribed : true;
+}
 int  tn_gatt_mtu(void)       { return s_mtu - 3; }
 
 tn_err_t tn_gatt_send(const uint8_t *data, int len)
 {
     if (!tn_gatt_connected()) return TN_ERR_STATE;
     if (len < 1 || len > s_mtu - 3) return TN_ERR_PARAM;
+    if (!s_is_central) {
+        /* Served side: a notification on FFF1. NRF_ERROR_RESOURCES = the
+         * HVN queue is full -- the caller's retry, exactly like the write
+         * queue below. */
+        uint16_t l = (uint16_t)len;
+        ble_gatts_hvx_params_t hvx = {
+            .handle = s_srv_notify_h, .type = BLE_GATT_HVX_NOTIFICATION,
+            .offset = 0, .p_len = &l, .p_data = data,
+        };
+        return (int)sd_ble_gatts_hvx(s_conn, &hvx);
+    }
     ble_gattc_write_params_t w = {
         .write_op = BLE_GATT_OP_WRITE_CMD, .flags = 0,
         .handle = TN_H_WRITE_VAL, .offset = 0,

@@ -762,7 +762,8 @@ static void gatt_disconnected(void *c, uint16_t conn, uint8_t reason)
 /* One answer wire, back over the same 1:1 link the command arrived on. */
 static void gatt_reply(const char *wire, int len)
 {
-    tn_gatt_send((const uint8_t *)wire, len);
+    int rc = tn_gatt_send((const uint8_t *)wire, len);
+    if (rc != 0) Serial.printf("gatt_reply: rc=%d len=%d\n", rc, len);
     s_gatt_tx++;
 }
 
@@ -789,6 +790,8 @@ static int blob_send(void *c, const uint8_t *f, int n)
     if (!tn_gatt_connected()) return -1;
     int rc = tn_gatt_send((const uint8_t *)f, n);
     if (rc == 0) { s_gatt_tx++; return XBLOB_SEND_OK; }
+    static uint32_t fails;
+    if ((fails++ % 8) == 0) Serial.printf("blob: send rc=%d len=%d\n", rc, n);
     return XBLOB_SEND_BUSY;   /* NRF_ERROR_RESOURCES: retry (rare on the small control frames we send) */
 }
 static int blob_write(void *c, uint32_t off, const uint8_t *src, int len)
@@ -832,6 +835,13 @@ static void gatt_rx(void *c, const uint8_t *d, int n)
         blob_maybe_start();   /* a cmd:update just opened the session -> pull it fast */
         return;
     }
+    if (xprs_parse((const char *)d, n, &p)) {
+        char from[16] = "";
+        xprs_get_str(&p, "f", from, sizeof from);
+        Serial.printf("gatt 1:1 rx %dB from %s: %.*s\n", n, from,
+                      n > 90 ? 90 : n, (const char *)d);
+        return;
+    }
     Serial.printf("gatt rx %dB: %.*s\n", n, n > 60 ? 60 : n, (const char *)d);
 }
 static const tn_gatt_cb_t k_gatt_cb = { gatt_connected, gatt_disconnected, gatt_rx, NULL };
@@ -855,8 +865,13 @@ static void ble_begin(void)
     addr[0] = a; addr[1] = a >> 8; addr[2] = a >> 16; addr[3] = a >> 24;
     addr[4] = b; addr[5] = (b >> 8) | 0xC0;                /* static random */
     tn_set_random_addr(addr);
+    Serial.printf("ble: our address %02X:%02X:%02X:%02X:%02X:%02X (static random)\n",
+                  addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
     tn_adv_cfg_t adv = {
-        .handle = 0, .props = 0, .itvl_min = 0x100, .itvl_max = 0x100,
+        /* CONNECTABLE: the beacon set is also this station's door. A phone
+         * that hears us can dial in and push a firmware image over XBLOB or
+         * hand us a 1:1 -- the serve below is what answers (ble5-gatt.md). */
+        .handle = 0, .props = TN_ADV_PROP_CONNECTABLE, .itvl_min = 0x100, .itvl_max = 0x100,
         .chan_map = 0x07, .own_addr_type = 0x01, .tx_power = 127,
         .primary_phy = TN_PHY_1M, .secondary_phy = TN_PHY_1M, .sid = 0,
     };
@@ -864,7 +879,8 @@ static void ble_begin(void)
     s_ble_err = p1_scan_on();
     if (s_ble_err != TN_OK) return;
     s_ble_up = true;
-    Serial.println("ble: up -- BLE5 extended advertising, scanning");
+    int sv = tn_gatt_serve(&k_gatt_cb);
+    Serial.printf("ble: up -- BLE5 extended advertising (connectable), scanning, serve=%d\n", sv);
 }
 
 static void console(int c)
