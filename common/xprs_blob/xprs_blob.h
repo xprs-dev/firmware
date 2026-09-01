@@ -82,10 +82,15 @@ extern "C" {
 #define XBLOB_STALL_MS     750    /* no block in this long -> ask for what's missing */
 #define XBLOB_MAX_ROUNDS   12     /* NEED passes before giving up (app then falls back) */
 
-/* True when [d] is an XBLOB frame -- the GATT rx demux test. */
+/* True when [d] is an XBLOB frame -- the GATT rx demux test. BOTH bytes
+ * decide: the magic alone (0x42 = 'B') collides with the phone's legacy
+ * parcel lane, whose frames begin with a two-ASCII-LETTER message id. Type
+ * bytes stop at 0x0C, far below 'A' (0x41), so the second byte separates the
+ * two wires unambiguously. Keep in lockstep with xprs_blob.dart. */
 static inline bool xblob_is_frame(const uint8_t *d, int len)
 {
-    return len >= 2 && d[0] == XBLOB_MAGIC;
+    return len >= 2 && d[0] == XBLOB_MAGIC &&
+           d[1] >= XBLOB_T_MANIFEST && d[1] <= XBLOB_T_READY;
 }
 /* The START sha, for a server whose app must look the image up before it can
  * bind a session. Returns true and fills sha[32] when [d] is a START frame. */
