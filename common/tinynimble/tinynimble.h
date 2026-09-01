@@ -62,6 +62,7 @@ extern "C" {
 #define TN_OP_RESET             0x0C03
 #define TN_OP_SET_EVENT_MASK    0x0C01
 #define TN_OP_LE_SET_EVENT_MASK 0x2001
+#define TN_OP_LE_WRITE_DEFAULT_DATA_LEN 0x2024
 #define TN_OP_SET_RANDOM_ADDR   0x2005
 #define TN_OP_ADV_SET_RAND_ADDR 0x2035
 #define TN_OP_EXT_ADV_PARAMS    0x2036
@@ -151,6 +152,10 @@ typedef void (*tn_report_cb_t)(const tn_adv_report_t *r, void *ctx);
 int tn_hci_reset(uint8_t *buf, size_t cap);
 int tn_hci_set_event_mask(uint8_t *buf, size_t cap, uint64_t mask);
 int tn_hci_le_set_event_mask(uint8_t *buf, size_t cap, uint64_t mask);
+/* LE Write Suggested Default Data Length: without it this controller offers
+ * 27-byte LL packets and a 244-byte frame fragments ~10 ways (measured:
+ * 14 frames/s on the bench). 251/2120us is the 4.2 maximum. */
+int tn_hci_le_write_default_data_len(uint8_t *buf, size_t cap, uint16_t octets, uint16_t us);
 
 /* Defaults, plus the bit each mask is missing. */
 #define TN_EVENT_MASK_DEFAULT     0x00001FFFFFFFFFFFULL
@@ -297,6 +302,8 @@ void      tn_gatt_pump(void);
  * WITHOUT delivering BLE events. For a flash wait on the caller task, so
  * it does not reenter the GATT rx callback (docs/ble5-gatt.md). */
 void      tn_soc_pump(void);
+/* ESP port diagnostics: NOCP credit flow and dropped inbound frames. */
+void      tn_acl_stats(uint32_t *nocp_events, uint32_t *nocp_packets, int *credits, uint32_t *in_dropped);
 bool      tn_gatt_connected(void);
 int       tn_gatt_mtu(void);                       /* bytes per send, now  */
 tn_err_t tn_gatt_send(const uint8_t *data, int len);

@@ -127,8 +127,9 @@ fix is one line and it is commented where it sits.
   instead of HTTP, with a staged image, a RAM copier, and probation +
   rollback on a chip with no second app slot. `firmware/README.md`,
   `firmware/src/update.cpp`, `tools/push_firmware_p1.py`. Bench-validated
-  end to end bar the full over-air image transfer, which the bench gateway
-  (a T-Deck) could not stay up long enough to finish.
+  end to end 2026-08-31: a new image pushed to the pole node over a private
+  1:1 BLE GATT connection (not the broadcast plane), installed, booted, and
+  kept -- callsign and keys intact across the update.
 
 - ~~Signing~~ **Done**: `lib/mbedtls_ecp` is a cut-down mbedtls, and
   `common/xprs_sig` runs on it unchanged bar an `ESP_PLATFORM` seam for the

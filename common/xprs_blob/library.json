@@ -1,0 +1,13 @@
+{
+  "name": "xprs_blob",
+  "version": "1.0.0",
+  "description": "XBLOB: a lean 1:1 BLE GATT bulk-transfer protocol (manifest + hashed parcels + NEED-bitmap selective repeat). Transport-agnostic; binds to tinynimble's tn_gatt. Depends on xprs_codec for sha256.",
+  "keywords": "xprs, ble, gatt, ota, bulk",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*"},
+  "build": {
+    "srcFilter": ["+<xprs_blob.c>"],
+    "flags": ["-I."]
+  }
+}

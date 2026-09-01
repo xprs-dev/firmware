@@ -90,6 +90,7 @@ extern "C" {
 #include "xprssig.h"
 #include "xprsid.h"
 #include "xprs_auth.h"
+#include "xprs_blob.h"
 #include "bech32.h"
 #include "tinynimble.h"
 #include "tn_att.h"
@@ -751,9 +752,11 @@ static void ble_report(const tn_adv_report_t *r, void *ctx)
 /* ── The mesh channel test: dial a deck, get our bytes echoed back ──── */
 
 static uint32_t s_gatt_rx, s_gatt_tx;
+static void blob_maybe_start(void);
 static void gatt_connected(void *c, uint16_t conn, bool central)
 { (void)c; Serial.printf("gatt: link 0x%04x ready (%s), %d bytes per send\n",
-                          conn, central ? "we dialled" : "dialled in", tn_gatt_mtu()); }
+                          conn, central ? "we dialled" : "dialled in", tn_gatt_mtu());
+  if (central) blob_maybe_start(); }
 static void gatt_disconnected(void *c, uint16_t conn, uint8_t reason)
 { (void)c; Serial.printf("gatt: link 0x%04x closed (0x%02x)\n", conn, reason); }
 /* One answer wire, back over the same 1:1 link the command arrived on. */
@@ -769,20 +772,77 @@ static void gatt_reply(const char *wire, int len)
  * not through a gateway's re-air. Verified the same way: a connection is
  * private, not authentic, so the signature still decides. Anything else is
  * printed, as before. */
+/* ── XBLOB: the fast 1:1 GATT image transfer (docs/ble5-gatt.md) ─────────
+ *
+ * We are the RECEIVER (central): we dial the station that holds the image and
+ * pull it as raw parcels, verifying and re-requesting through xprs_blob. The
+ * signed cmd:update has already opened the authenticated session in update.cpp
+ * (xfw_pending gives us its sha/size); XBLOB just fills STAGE far faster than
+ * the base85 cmd:zfw text lane, which stays as the fallback. */
+static int p1_scan_on(void);
+static xblob_t s_blob;
+static bool    s_blob_active;
+
+static int blob_send(void *c, const uint8_t *f, int n)
+{
+    (void)c;
+    if (!tn_gatt_connected()) return -1;
+    int rc = tn_gatt_send((const uint8_t *)f, n);
+    if (rc == 0) { s_gatt_tx++; return XBLOB_SEND_OK; }
+    return XBLOB_SEND_BUSY;   /* NRF_ERROR_RESOURCES: retry (rare on the small control frames we send) */
+}
+static int blob_write(void *c, uint32_t off, const uint8_t *src, int len)
+{ (void)c; return xfw_blob_write(off, src, len); }
+static void blob_done(void *c, bool ok)
+{
+    (void)c;
+    s_blob_active = false;
+    p1_scan_on();                          /* the beacon plane comes back */
+    if (ok) { Serial.println("xblob: complete -- installing"); xfw_blob_finish(s_blob.sig85); }
+    else    Serial.println("xblob: gave up -- cmd:zfw fallback remains");
+}
+static const xblob_ops_t k_blob_ops = { NULL, blob_send, NULL, blob_write, blob_done };
+
+/* Start pulling the pending image over the link we just dialled. */
+static void blob_maybe_start(void)
+{
+    uint8_t sha[32]; uint32_t size;
+    if (s_blob_active || !tn_gatt_connected()) return;
+    if (!xfw_pending(sha, &size)) return;
+    Serial.printf("xblob: dialling done, requesting %lu-byte image\n", (unsigned long)size);
+    /* The scanner runs at 83%% duty and starves the connection's events on
+     * BOTH radios; a bulk transfer gets the leftovers -- measured at ~3
+     * frames a second. Silence it for the transfer; blob_done puts it back. */
+    tn_scan_stop();
+    xfw_blob_reset();                      /* fresh pages for a fresh attempt */
+    xblob_recv_start(&s_blob, &k_blob_ops, sha, size, millis());
+    s_blob_active = true;
+}
+
 static void gatt_rx(void *c, const uint8_t *d, int n)
 {
     (void)c; s_gatt_rx++;
+    if (xblob_is_frame(d, n)) { xblob_rx(&s_blob, d, n, millis()); return; }
     xprs_t p; char t[12] = "", dst[16] = "";
     if (xprs_parse((const char *)d, n, &p) &&
         xprs_get_str(&p, "t", t, sizeof t) && strcmp(t, "command") == 0 &&
         xprs_get_str(&p, "d", dst, sizeof dst) && strcmp(dst, s_call) == 0) {
         clock_learn(&p);
         xfw_gatt_rx((const char *)d, n, gatt_reply);
+        blob_maybe_start();   /* a cmd:update just opened the session -> pull it fast */
         return;
     }
     Serial.printf("gatt rx %dB: %.*s\n", n, n > 60 ? 60 : n, (const char *)d);
 }
 static const tn_gatt_cb_t k_gatt_cb = { gatt_connected, gatt_disconnected, gatt_rx, NULL };
+
+/* The scan bring-up, callable again after a bulk transfer paused it. */
+static int p1_scan_on(void)
+{
+    tn_scan_cfg_t scan = { .own_addr_type = 0x01, .passive = 1,
+                           .itvl = 0x0060, .window = 0x0050, .phy = TN_PHY_1M };
+    return tn_scan_start(&scan, ble_report, NULL);
+}
 
 static int s_ble_err;     /* the last bring-up verdict, for '?' */
 static void ble_begin(void)
@@ -801,9 +861,7 @@ static void ble_begin(void)
         .primary_phy = TN_PHY_1M, .secondary_phy = TN_PHY_1M, .sid = 0,
     };
     tn_adv_configure(&adv);
-    tn_scan_cfg_t scan = { .own_addr_type = 0x01, .passive = 1,
-                           .itvl = 0x0060, .window = 0x0050, .phy = TN_PHY_1M };
-    s_ble_err = tn_scan_start(&scan, ble_report, NULL);
+    s_ble_err = p1_scan_on();
     if (s_ble_err != TN_OK) return;
     s_ble_up = true;
     Serial.println("ble: up -- BLE5 extended advertising, scanning");
@@ -1080,6 +1138,17 @@ static void station_loop(void)
 
     xb_tick(&s_lora, millis());
     if (s_ble_up) { tn_gatt_pump(); xb_tick(&s_ble, millis()); }
+    if (s_blob_active) {
+        xblob_tick(&s_blob, millis());
+        static uint32_t next_bp;
+        if ((int32_t)(millis() - next_bp) >= 0) {
+            next_bp = millis() + 2000;
+            Serial.printf("xblob: st=%u hashes=%u/%u blocks=%u/%u rounds=%u consumed=%lu\n",
+                          s_blob.state, s_blob.hashes_got, s_blob.nblocks,
+                          s_blob.got, s_blob.nblocks, s_blob.rounds,
+                          (unsigned long)s_blob.consumed);
+        }
+    }
     xfw_tick(millis(), s_radio_up);
     NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 

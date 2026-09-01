@@ -30,9 +30,20 @@
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "driver/usb_serial_jtag.h"
+#include "esp_vfs_dev.h"
+#include "esp_vfs_usb_serial_jtag.h"
 
 #include "esp_ota_ops.h"
 #include "radio.h"
+#include "esp_heap_caps.h"
+#include "driver/usb_serial_jtag.h"
+#include "esp_vfs_dev.h"
+#include "esp_vfs_usb_serial_jtag.h"
+
+/* tn_port_esp diagnostics (weak elsewhere); see tinynimble.h. */
+void tn_acl_stats(uint32_t *nocp_events, uint32_t *nocp_packets, int *credits, uint32_t *in_dropped);
+#include "xprs_blob.h"
 
 static const char *TAG = "probe";
 
@@ -127,12 +138,72 @@ static void advertise_once(void)
 
 /* Runs on the pump, i.e. this task. Answer in kind so the far end can see
  * its own bytes came back through us -- the whole point of the test. */
+/* ── XBLOB server (docs/ble5-gatt.md) ───────────────────────────────────
+ * The bench stand-in for a station that holds a firmware image and streams it
+ * to the P1 over the 1:1 GATT link. The laptop loads the image + sha + approval
+ * over serial ('I'), forwards the signed cmd:update to the P1 over GATT ('F'),
+ * and the P1 then dials in and START-s; we blast. */
+static xblob_t   s_srv;
+static uint8_t  *s_img;
+static uint32_t  s_img_size;
+static uint8_t   s_img_sha[32];
+static char      s_img_sig[64];
+static bool      s_have_img, s_serving;
+
+static uint32_t s_srv_ok, s_srv_busy;
+static int srv_send(void *c, const uint8_t *f, int n)
+{
+    (void)c;
+    if (!radio_gatt_connected()) return -1;
+    esp_err_t e = radio_gatt_send(f, n);
+    if (e == 0) { s_srv_ok++; return XBLOB_SEND_OK; }
+    s_srv_busy++;
+    return XBLOB_SEND_BUSY;
+}
+static int srv_read(void *c, uint32_t off, uint8_t *dst, int cap)
+{
+    (void)c;
+    if (!s_have_img || off >= s_img_size) return 0;
+    int n = cap; if (off + (uint32_t)n > s_img_size) n = (int)(s_img_size - off);
+    memcpy(dst, s_img + off, n); return n;
+}
+static void srv_done(void *c, bool ok)
+{
+    (void)c; s_serving = false;
+    radio_scan_on();
+    printf("xblob-srv: transfer %s\n", ok ? "OK" : "gave up");
+}
+static const xblob_ops_t SRV_OPS = { NULL, srv_send, srv_read, NULL, srv_done };
+
+/* blocking read of exactly [n] bytes from the console, ~20 s guard. */
+static int read_n(uint8_t *buf, int n)
+{
+    int got = 0; int64_t t0 = esp_timer_get_time();
+    while (got < n) {
+        int c = getchar();
+        if (c == EOF) { if (esp_timer_get_time() - t0 > 20000000) return got; continue; }
+        buf[got++] = (uint8_t)c; t0 = esp_timer_get_time();
+    }
+    return got;
+}
+
 static volatile uint32_t s_gatt_rx, s_gatt_tx;
 static bool s_pipe;    /* transparent serial<->GATT bridge, for OTA-over-GATT */
 
 static void on_gatt_rx(const uint8_t *d, int n)
 {
     s_gatt_rx++;
+    uint8_t sha[32];
+    if (xblob_is_start(d, n, sha)) {
+        if (s_have_img && memcmp(sha, s_img_sha, 32) == 0) {
+            printf("xblob-srv: START -> serving %lu bytes\n", (unsigned long)s_img_size);
+            radio_scan_off();     /* the 83%%-duty scanner starves the link; serve first */
+            xblob_server_start(&s_srv, &SRV_OPS, s_img_sha, s_img_size, 240, s_img_sig, 0);
+            s_serving = true;
+        } else printf("xblob-srv: START for an image we do not hold\n");
+        return;
+    }
+    if (xblob_is_frame(d, n)) { xblob_rx(&s_srv, d, n, 0); return; }
     if (s_pipe) {
         /* A frame from the far end, verbatim, one line. The pusher on the
          * other end of this UART reads "RX>" lines as the station's answers
@@ -164,6 +235,12 @@ static void status(void)
         if (s_peer[i].call[0])
             printf("  heard        %-10s x%-6u  %d dBm\n",
                    s_peer[i].call, (unsigned)s_peer[i].n, s_peer[i].rssi);
+    printf("  xblob srv ok=%u busy=%u serving=%d have=%d nb=%u state=%u sent=%u ack=%u cur=%u\n",
+           (unsigned)s_srv_ok,(unsigned)s_srv_busy,(int)s_serving,(int)s_have_img,
+           (unsigned)s_srv.nblocks,(unsigned)s_srv.state,
+           (unsigned)s_srv.frames_sent,(unsigned)s_srv.ack,(unsigned)s_srv.cursor);
+    { uint32_t ne,np,dr; int cr; tn_acl_stats(&ne,&np,&cr,&dr);
+      printf("  acl nocp_evts=%u nocp_pkts=%u credits=%d in_dropped=%u\n",(unsigned)ne,(unsigned)np,cr,(unsigned)dr); }
     printf("  link         %s, mtu %d, gatt rx %u tx %u\n",
            radio_gatt_connected() ? "UP" : "none", radio_gatt_mtu(),
            (unsigned)s_gatt_rx, (unsigned)s_gatt_tx);
@@ -239,6 +316,51 @@ void app_main(void)
         }
         if (c > 0) {
             switch (c) {
+            case 'I': {   /* load image: u32 size, 32 sha, u8 siglen, sig, then size raw bytes */
+                uint8_t hdr[37];
+                if (read_n(hdr, 37) != 37) { printf("I: short header\n"); break; }
+                uint32_t sz = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
+                memcpy(s_img_sha, hdr + 4, 32);
+                int sl = hdr[36];
+                if (sl > 63) sl = 63;
+                if (read_n((uint8_t *)s_img_sig, sl) != sl) { printf("I: short sig\n"); break; }
+                s_img_sig[sl] = 0;
+                if (s_img) { free(s_img); s_img = NULL; }
+                s_img = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+                if (!s_img) s_img = malloc(sz);
+                if (!s_img) { printf("I: no memory for %lu\n", (unsigned long)sz); break; }
+                printf("I: loading %lu bytes...\n", (unsigned long)sz);
+                /* BINARY-SAFE: the console VFS translates CR/LF on input by
+                 * default, which silently rewrites bytes of a raw image --
+                 * same length, different content, and the manifest hashes are
+                 * then computed over the corruption, so the receiver verifies
+                 * every block and the whole-file sha still fails. */
+                esp_vfs_dev_usb_serial_jtag_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
+                int got = read_n(s_img, (int)sz);
+                esp_vfs_dev_usb_serial_jtag_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
+                s_img_size = sz;
+                s_have_img = (got == (int)sz);
+                if (s_have_img) {
+                    /* prove the copy before serving it */
+                    extern void xprs_sha256(const uint8_t *in, size_t len, uint8_t out[32]);
+                    uint8_t h[32];
+                    xprs_sha256(s_img, sz, h);
+                    if (memcmp(h, s_img_sha, 32) != 0) {
+                        printf("I: sha MISMATCH after load -- serial not binary-safe\n");
+                        s_have_img = false;
+                    }
+                }
+                printf("I: %s (%d/%lu)\n", s_have_img ? "loaded, sha ok" : "FAILED", got, (unsigned long)sz);
+                break; }
+            case 'F': {   /* forward a text wire over GATT: u16 len, then len bytes */
+                uint8_t lh[2];
+                if (read_n(lh, 2) != 2) break;
+                int wl = lh[0] | (lh[1] << 8);
+                if (wl <= 0 || wl > 250) { printf("F: bad len %d\n", wl); break; }
+                uint8_t w[256];
+                if (read_n(w, wl) != wl) break;
+                printf("F: forward %dB -> %s\n", wl, esp_err_to_name(radio_gatt_send(w, wl)));
+                break; }
             case 'P': s_pipe = true; printf("  pipe on -- lines -> GATT, RX> lines <- GATT; '.' to exit\n"); break;
             case 'a': advertise_once(); printf("  sent one\n"); break;
             case 'A': repeat = !repeat; printf("  repeat %s\n", repeat ? "on" : "off"); break;
@@ -264,7 +386,8 @@ void app_main(void)
             }
         }
         radio_gatt_pump();
-        if (repeat && radio_is_up() && esp_timer_get_time() > next) {
+        if (s_serving) xblob_tx_ready(&s_srv);
+        if (repeat && !s_serving && radio_is_up() && esp_timer_get_time() > next) {
             advertise_once();
             next = esp_timer_get_time() + 2000000;
         }

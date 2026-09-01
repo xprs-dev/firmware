@@ -128,12 +128,13 @@ tools/push_firmware_p1.py --gateway <ip> --to <callsign> --version <v>     --hex
 Bench-validated 2026-08-30/31: the flash write path byte-exact; the copier
 install + reboot + probation + **prove/keep**; and the **fail-to-prove →
 restore the previous image** path; the `fwkey`/`own1` allow-list survives a
-reflash (a lost key is a ladder, never a brick). Over the 1:1 GATT link: the
-signed `cmd:update` accepted, the clock learned from it, `202` answered back
-over the link, and the image chunks flowing in order under acknowledged
-backpressure. What is not yet closed on the bench is the *whole* 1252-chunk
-transfer through to install over GATT -- the shared bench radios were too
-unstable to hold a link for the full run. See `docs/ble5-gatt.md`.
+reflash (a lost key is a ladder, never a brick). Over the 1:1 GATT link, end to end (2026-08-31): the signed `cmd:update`
+accepted and the clock learned from it, `202` answered back over the link,
+the whole image (1286 chunks of 128 bytes) delivered in order over the
+connection under acknowledged backpressure in ~13.5 min, hashed and the
+publisher approval verified, installed by the copier, rebooted into the new
+version, and **proved itself and kept** -- with the callsign and allow-list
+intact across the update. See `docs/ble5-gatt.md`.
 
 Four bugs the chain turned up, all fixed and worth reading:
 - **`xprs_auth` freshness underflowed** on a command whose `ts:` was even a

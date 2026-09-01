@@ -44,6 +44,38 @@ static void vhci_send_available(void)
     if (s_can_send) xSemaphoreGive(s_can_send);
 }
 
+/* ── ACL credits ─────────────────────────────────────────────────────────
+ *
+ * esp_vhci_host_check_send_available() answers for the VHCI PIPE, not for the
+ * controller's ACL buffer pool. HCI's contract is that the host counts
+ * Number Of Completed Packets (event 0x13) credits and never holds more
+ * packets outstanding than the controller has buffers -- send past that and
+ * the controller DISCARDS, silently. The old one-PDU-in-flight users never
+ * felt it; a bulk blast (xprs_blob) lost 99% of its frames to exactly this.
+ *
+ * The pool is worth 8 on this controller config; 6 keeps clear of it while
+ * still filling a connection event. */
+#define TN_ACL_CREDITS 6
+static volatile int s_acl_credits = TN_ACL_CREDITS;
+
+static volatile uint32_t s_nocp_events, s_nocp_packets;   /* diagnostics */
+static void acl_on_completed(const uint8_t *pkt, uint16_t len)
+{
+    /* 04 13 plen num { handle u16, completed u16 }* */
+    if (len < 4 || pkt[0] != 0x04 || pkt[1] != 0x13) return;
+    int num = pkt[3];
+    const uint8_t *p = pkt + 4;
+    int total = 0;
+    for (int i = 0; i < num && (p + 4) <= pkt + len; i++, p += 4)
+        total += p[2] | (p[3] << 8);
+    if (total > 0) {
+        s_nocp_events++; s_nocp_packets += (uint32_t)total;
+        int c = s_acl_credits + total;
+        s_acl_credits = c > TN_ACL_CREDITS ? TN_ACL_CREDITS : c;
+    }
+}
+
+
 static void gatt_on_acl(const uint8_t *pkt, uint16_t len);      /* below */
 static void gatt_on_link(const tn_link_evt_t *e, void *ctx);
 
@@ -55,6 +87,7 @@ static int vhci_recv(uint8_t *data, uint16_t len)
      * sending from the controller's own callback is not a thing this port
      * will do. Everything else the controller says is ignored. */
     if (len > 0 && data[0] == TN_H4_ACL) { gatt_on_acl(data, len); return 0; }
+    acl_on_completed(data, len);            /* ACL credits back from the controller */
     uint8_t status;
     if (tn_hci_cmd_result(data, len, s_cmd_opcode, &status)) {
         s_cmd_status = status;
@@ -163,6 +196,13 @@ esp_err_t tn_start(void)
     n = tn_hci_le_set_event_mask(buf, sizeof buf,
                                  TN_LE_EVENT_MASK_DEFAULT | TN_LE_EVENT_MASK_EXT_ADV);
     if (n > 0 && tn_send_cmd(buf, n, TN_OP_LE_SET_EVENT_MASK) != ESP_OK) goto fail;
+
+    /* Big LL packets by default, so a peer's data-length request gets 251 and
+     * not this controller's 27-byte default (a 244-byte notification then
+     * rides one packet instead of ten). Best-effort: a controller that
+     * refuses simply stays fragmented. */
+    n = tn_hci_le_write_default_data_len(buf, sizeof buf, 251, 2120);
+    if (n > 0) tn_send_cmd(buf, n, TN_OP_LE_WRITE_DEFAULT_DATA_LEN);
 
     ESP_LOGI(TAG, "controller up, HCI direct (no host stack)");
     return ESP_OK;
@@ -342,10 +382,19 @@ static bool             s_gatt_serving;
 static tn_att_t         s_att;
 
 /* Parked inbound L2CAP frame, assembled across HCI fragments. */
-static uint8_t          s_in[4 + TN_ATT_MTU_MAX];
-static volatile int     s_in_len;        /* bytes so far */
-static volatile int     s_in_want;       /* 4 + L2CAP length, once known */
-static volatile bool    s_in_ready;
+/* A RING of parked frames, not a single slot. A central may put several
+ * write commands in one connection event (a reply and a START back-to-back
+ * is the xprs_blob handshake); with one slot the second was dropped before
+ * the pump ever ran, and the session died on a frame the link had in fact
+ * delivered. Single producer (controller context) / single consumer (pump). */
+#define TN_IN_SLOTS 4
+static struct {
+    uint8_t       buf[4 + TN_ATT_MTU_MAX];
+    int           len;        /* bytes so far */
+    int           want;       /* 4 + L2CAP length, once known */
+    volatile bool ready;
+} s_ins[TN_IN_SLOTS];
+static volatile int      s_in_w, s_in_r;
 static volatile uint32_t s_in_dropped;
 
 /* Parked link events, delivered in order from the pump. */
@@ -359,7 +408,9 @@ static void gatt_on_link(const tn_link_evt_t *e, void *ctx)
         s_conn = e->conn;
         s_ev_handle = e->conn;
         s_ev_conn = 1;
-        s_in_len = 0; s_in_ready = false;
+        s_acl_credits = TN_ACL_CREDITS;
+        for (int i = 0; i < TN_IN_SLOTS; i++) { s_ins[i].len = 0; s_ins[i].want = 0; s_ins[i].ready = false; }
+        s_in_w = s_in_r = 0;
     } else if (e->conn == s_conn) {
         s_conn = 0xFFFF;
         s_ev_handle = e->conn;
@@ -374,18 +425,21 @@ static void gatt_on_acl(const uint8_t *pkt, uint16_t len)
     int n = tn_hci_acl_decode(pkt, len, &conn, &pb, &d);
     if (n < 0 || conn != s_conn) return;
     if (pb != TN_ACL_PB_CONT) {
-        if (s_in_ready) { s_in_dropped++; return; }   /* pump has not drained */
+        if (s_ins[s_in_w].ready) { s_in_dropped++; return; }   /* ring full */
         if (n < 4) return;
-        s_in_len = 0;
-        s_in_want = 4 + (int)(d[0] | (d[1] << 8));
-        if (s_in_want > (int)sizeof s_in) { s_in_want = 0; return; }   /* over MTU */
-    } else if (s_in_want == 0) {
+        s_ins[s_in_w].len = 0;
+        s_ins[s_in_w].want = 4 + (int)(d[0] | (d[1] << 8));
+        if (s_ins[s_in_w].want > (int)sizeof s_ins[s_in_w].buf) { s_ins[s_in_w].want = 0; return; }
+    } else if (s_ins[s_in_w].want == 0) {
         return;                                          /* continuation of nothing */
     }
-    if (s_in_len + n > s_in_want) return;               /* would overrun the frame */
-    memcpy(s_in + s_in_len, d, n);
-    s_in_len += n;
-    if (s_in_len == s_in_want) s_in_ready = true;
+    if (s_ins[s_in_w].len + n > s_ins[s_in_w].want) return;
+    memcpy(s_ins[s_in_w].buf + s_ins[s_in_w].len, d, n);
+    s_ins[s_in_w].len += n;
+    if (s_ins[s_in_w].len == s_ins[s_in_w].want) {
+        s_ins[s_in_w].ready = true;                     /* publish, then advance */
+        s_in_w = (s_in_w + 1) % TN_IN_SLOTS;
+    }
 }
 
 static esp_err_t gatt_send_l2cap(const uint8_t *pdu, int len)
@@ -396,13 +450,16 @@ static esp_err_t gatt_send_l2cap(const uint8_t *pdu, int len)
     if (m < 0) return ESP_ERR_INVALID_SIZE;
     int n = tn_hci_acl_encode(acl, sizeof acl, s_conn, TN_ACL_PB_FIRST_NONFLUSH, l2, m);
     if (n < 0) return ESP_ERR_INVALID_SIZE;
-    /* The controller says when it can take a packet. No Number Of Completed
-     * Packets bookkeeping beyond that: ATT is one PDU in flight per
-     * direction, and MSP above it waits for acks, so the controller's ACL
-     * buffers are never asked to hold more than a couple. */
+    /* Two gates. The VHCI pipe must be free, AND a controller ACL buffer
+     * must be spoken for (see TN_ACL_CREDITS above) -- without the second a
+     * bulk sender overruns the pool and the controller discards in silence.
+     * No credit is not an error, it is "later": the caller pauses and
+     * resumes when tn_gatt_pump has drained the completions. */
+    if (s_acl_credits <= 0) return ESP_ERR_NOT_FINISHED;   /* busy: retry later */
     if (!esp_vhci_host_check_send_available() &&
         xSemaphoreTake(s_can_send, pdMS_TO_TICKS(500)) != pdTRUE)
         return ESP_ERR_TIMEOUT;
+    s_acl_credits--;
     esp_vhci_host_send_packet(acl, (uint16_t)n);
     return ESP_OK;
 }
@@ -440,15 +497,17 @@ void tn_gatt_pump(void)
         ESP_LOGI(TAG, "link 0x%04x up", s_ev_handle);
         if (s_gatt.connected) s_gatt.connected(s_gatt.ctx, s_ev_handle, false);
     }
-    if (s_in_ready) {
+    while (s_ins[s_in_r].ready) {
+        int slot = s_in_r;
         uint16_t cid; const uint8_t *pdu;
-        int n = tn_l2cap_unwrap(s_in, s_in_len, &cid, &pdu);
+        int n = tn_l2cap_unwrap(s_ins[slot].buf, s_ins[slot].len, &cid, &pdu);
         uint8_t out[TN_ATT_MTU_MAX];
         int m = 0;
         if (n > 0 && cid == TN_L2CAP_CID_ATT)
             m = tn_att_handle(&s_att, pdu, n, out, sizeof out, gatt_on_write, NULL);
-        s_in_len = 0; s_in_want = 0;
-        s_in_ready = false;                  /* slot free before the send blocks */
+        s_ins[slot].len = 0; s_ins[slot].want = 0;
+        s_ins[slot].ready = false;           /* slot free before the send blocks */
+        s_in_r = (slot + 1) % TN_IN_SLOTS;
         if (m > 0) gatt_send_l2cap(out, m);
     }
     if (s_ev_disc) {
@@ -486,4 +545,12 @@ tn_err_t tn_gatt_disconnect(void)
     int n = tn_hci_disconnect(buf, sizeof buf, s_conn, TN_HCI_ERR_REMOTE_USER_TERM);
     if (n < 0) return ESP_ERR_INVALID_ARG;
     return tn_send_cmd(buf, n, TN_OP_DISCONNECT);
+}
+/* Diagnostics for the probe's status line. */
+void tn_acl_stats(uint32_t *nocp_events, uint32_t *nocp_packets, int *credits, uint32_t *in_dropped)
+{
+    if (nocp_events)  *nocp_events  = s_nocp_events;
+    if (nocp_packets) *nocp_packets = s_nocp_packets;
+    if (credits)      *credits      = s_acl_credits;
+    if (in_dropped)   *in_dropped   = s_in_dropped;
 }

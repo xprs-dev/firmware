@@ -95,6 +95,11 @@ void SD_EVT_IRQHandler(void) { s_evt_flag = true; }
  * overrides it to learn NRF_EVT_FLASH_OPERATION_SUCCESS / _ERROR. */
 __attribute__((weak)) void tn_soc_event(uint32_t evt) { (void)evt; }
 
+/* The ESP port's ACL diagnostics; this port has the SoftDevice's own flow
+ * control, so there is nothing to report. */
+void tn_acl_stats(uint32_t *a, uint32_t *b, int *c, uint32_t *d)
+{ if (a) *a = 0; if (b) *b = 0; if (c) *c = 0; if (d) *d = 0; }
+
 tn_err_t tn_start(void)
 {
     if (s_up) return TN_OK;
@@ -335,8 +340,9 @@ tn_err_t tn_gatt_dial(uint8_t addr_type, const uint8_t addr[6], const tn_gatt_cb
     memcpy(peer.addr, addr, 6);
     ble_gap_scan_params_t sp;
     scan_params(&sp);
-    /* 30-50 ms interval, 4 s supervision: brisk, and gone quickly if the
-     * far end walks off. */
+    /* 15-30 ms interval, 4 s supervision: brisk, gone quickly if the far end
+     * walks off, and tight enough that a bulk transfer gets many connection
+     * events per second (docs/ble5-gatt.md). */
     ble_gap_conn_params_t cp = {
         .min_conn_interval = 24, .max_conn_interval = 40,
         .slave_latency = 0, .conn_sup_timeout = 400,
@@ -407,7 +413,12 @@ static void on_ble_evt(const ble_evt_t *e)
         printf("tn: link 0x%04x up as %s\n", s_conn,
                gap->params.connected.role == BLE_GAP_ROLE_CENTRAL ? "central" : "peripheral");
         if (gap->params.connected.role == BLE_GAP_ROLE_CENTRAL) {
-            /* Step 1 of 3: the MTU. Then the CCCD, then the caller hears. */
+            /* Step 1 of 3: the MTU. Then the CCCD, then the caller hears.
+             * The fast-lane procedures (2M PHY, 251-byte DLE) are NOT fired
+             * here: the SoftDevice runs one link-layer control procedure at a
+             * time, and starting PHY/DLE on top of the MTU exchange makes the
+             * MTU exchange never complete (the link is stuck at 23). They are
+             * chained after the CCCD subscribe instead (WRITE_RSP below). */
             uint32_t err = sd_ble_gattc_exchange_mtu_request(s_conn, TN_ATT_MTU_MAX);
             if (err) printf("tn: mtu request %lu\n", (unsigned long)err);
         }
@@ -430,6 +441,22 @@ static void on_ble_evt(const ble_evt_t *e)
     /* The link-layer negotiations a central is asked about. Say yes. */
     case BLE_GAP_EVT_DATA_LENGTH_UPDATE_REQUEST:
         sd_ble_gap_data_length_update(gap->conn_handle, NULL, NULL);
+        break;
+    case BLE_GAP_EVT_DATA_LENGTH_UPDATE: {
+        const ble_gap_data_length_params_t *eff =
+            &gap->params.data_length_update.effective_params;
+        printf("tn: dle tx %u rx %u\n",
+               (unsigned)eff->max_tx_octets, (unsigned)eff->max_rx_octets);
+        if (s_subscribed) {   /* we dialled: go on to 2M, same one-at-a-time rule */
+            ble_gap_phys_t phys = { BLE_GAP_PHY_2MBPS, BLE_GAP_PHY_2MBPS };
+            sd_ble_gap_phy_update(gap->conn_handle, &phys);
+        }
+        break;
+    }
+    case BLE_GAP_EVT_PHY_UPDATE:
+        printf("tn: phy %s (status 0x%02x)\n",
+               gap->params.phy_update.tx_phy == BLE_GAP_PHY_2MBPS ? "2M" : "1M",
+               gap->params.phy_update.status);
         break;
     case BLE_GAP_EVT_PHY_UPDATE_REQUEST: {
         ble_gap_phys_t phys = { BLE_GAP_PHY_AUTO, BLE_GAP_PHY_AUTO };
@@ -467,8 +494,16 @@ static void on_ble_evt(const ble_evt_t *e)
             break;
         }
         if (!s_subscribed) {
-            /* Step 3: the caller may talk now. */
+            /* Step 3: the caller may talk now. And only NOW ask for the fast
+             * lane: 251-byte LL packets. One link-layer procedure at a time --
+             * firing this beside the MTU exchange left the link stuck at
+             * MTU 23 (measured); the 2M PHY request is chained after this
+             * completes (BLE_GAP_EVT_DATA_LENGTH_UPDATE). Best-effort: a peer
+             * that refuses stays at 27-byte packets, where a 244-byte frame
+             * fragments ~10 ways and the bench moved at 14 frames/s. */
             s_subscribed = true;
+            ble_gap_data_length_params_t dl = { 251, 251, 0, 0 };
+            sd_ble_gap_data_length_update(s_conn, &dl, NULL);
             if (s_gatt.connected) s_gatt.connected(s_gatt.ctx, s_conn, true);
         }
         break;

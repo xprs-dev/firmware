@@ -204,3 +204,159 @@ other. The MSP session (`blemesh_session.c`) has not been wired to
 
 Steps 2 to 4 are all ESP32 and all testable with hardware already on the
 bench.
+
+## XBLOB: the bulk protocol on the connection (2026-09-01)
+
+`common/xprs_blob` is the bulk lane this page argued for, built, measured, and
+now the norm for moving a **binary blob** between two stations over the 1:1
+link. It is BitTorrent-shaped: a manifest of per-block hashes up front, a
+windowed blast of raw parcels, and a receiver that asks for exactly what it is
+missing. It is deliberately NOT XPRS text messaging (no envelope, no base85)
+and NOT MSP (whose wire is frozen against the phones): its own magic byte, its
+own component, host-tested on a desk before any radio
+(`common/xprs_blob/test_xblob_host.c`, nine scenarios).
+
+First user: the P1-Pro's firmware OTA. **Measured: a 168,796-byte image in
+~20 s** over 2M PHY with 251-byte LL packets, zero recovery rounds — against
+~13.5 minutes for the same image pushed as base85 `cmd:zfw` text frames.
+
+### The wire
+
+Binary, little-endian, **one frame per ATT PDU** (nothing here fragments; at
+MTU 247 a frame is at most 244 bytes). Byte 0 is the magic `0x42` ('B'),
+distinct from XPRS text (`t:` = 0x74) and MSP (0x4D), so a receive demux tells
+the three apart on the first byte: `xblob_is_frame()`. Byte 1 is the type.
+
+| type | name | dir | body |
+|---|---|---|---|
+| 0x0A | START | rx → srv | sha256[32] — begin, and only for this image |
+| 0x01 | MANIFEST | srv → rx | ver u8, sha256[32], size u32, blksz u16, nblocks u16, hashlen u8, siglen u8, sig[] |
+| 0x04 | HASHES | srv → rx | start u16, count u8, count×hashlen bytes |
+| 0x02 | BLOCK | srv → rx | idx u16, raw payload (≤ blksz) |
+| 0x0C | READY | rx → srv | — (manifest + every hash held: blast) |
+| 0x0B | ACK | rx → srv | consumed u32 (cumulative this pass — credit) |
+| 0x06 | DONE | srv → rx | — (everything requested has been sent) |
+| 0x03 | NEED | rx → srv | nblocks u16, bitmap (bit i = block i still needed) |
+| 0x07 | OK | rx → srv | — complete |
+| 0x08 | FAIL | either | reason u8 (sha / too big / rounds / io) |
+| 0x09 | BYE | either | — |
+
+**Block size 240** rides one PDU with the 4-byte header and divides cleanly
+into the receiver's 4 KB flash pages. **Per-block hash = first 4 bytes of the
+block's sha256.** That is a corruption filter, not the trust: across ~700
+blocks the false-accept residual is ~10⁻⁷ and everything is backstopped by the
+whole-file sha256, which the receiver was handed by a *signed* command before
+the session began. **A NEED is always one PDU**: 1200 blocks max = 150 bitmap
+bytes.
+
+### The flow
+
+```
+receiver                          server
+   | START(sha) ------------------> |   refuses unless it holds that image
+   | <----------------- MANIFEST   |   must match the sha we were told; else FAIL
+   | <-- HASHES × ~12 (windowed)   |
+   | READY ----------------------> |   THE SYNC POINT: no block flies before it
+   | <-- BLOCK BLAST (windowed)    |   no per-block ack; ACK every 8 as credit
+   | <----------------------- DONE |
+   | NEED(bitmap) ---------------> |   only the missing/corrupt blocks return
+   | <-- BLOCK × (need)  ... DONE  |   repeat; each pass shrinks
+   | OK -------------------------> |   app verifies whole sha + approval, installs
+```
+
+The receiver is the only authority on what it holds. A block is marked present
+**only after its manifest hash verifies**; a corrupt block, a duplicate, or a
+block with no hash yet is discarded and simply stays missing — one bitmap
+covers "never arrived" and "arrived broken" with no special cases. The
+receiver asks on DONE and, if the stream goes quiet for 750 ms, on its own
+stall timer — so a lost DONE, a lost READY, a lost START and a lost block all
+heal by the same path: **every control frame is retried until answered,
+bounded by a round count** (12), after which the session FAILs and the caller
+falls back to its slow lane. Nothing in XBLOB is trusted: the manifest must
+carry the sha the receiver already holds from the signed `cmd:update`, and the
+whole-file sha + `xprsfw1` approval still gate the install.
+
+Flow control is two layers, both credit-shaped: the transport's ACL credits
+(below) pace the radio, and the receiver's cumulative ACK every 8 consumed
+frames bounds how far the server runs ahead of a *host* that is busy writing
+flash — because a notification the receiving host has no buffer for is
+**dropped, not backpressured** (the LL acked it; the SoftDevice had nowhere to
+put it). Both counters reset at every pass boundary (READY, NEED, START), so a
+loss in one pass cannot leak credit into the next.
+
+### The transport work it forced (all in `common/tinynimble`)
+
+The protocol was the easy half. Five transport faults surfaced under load,
+every one invisible at one-frame-at-a-time rates:
+
+1. **ACL credits, or the controller discards in silence.**
+   `esp_vhci_host_check_send_available()` answers for the VHCI *pipe*; HCI's
+   actual contract is that the host counts **Number Of Completed Packets**
+   (event 0x13) and never exceeds the controller's ACL buffer pool. Without
+   it the bench aired 9,269 frames and delivered 36 — no error on either
+   side. `tn_port_esp.c` now holds 6 credits, spends one per ACL send,
+   refills from NOCP, and refuses (busy) at zero. Everything above works
+   *because* "busy" is now honest.
+2. **The scanners starve the link.** Both ends ran their 83 %-duty scan
+   (interval 0x60, window 0x50) through the connection; the transfer got the
+   scraps — ~3 frames/s. Both sides now pause scanning for the transfer and
+   restore it after. A station in a bulk session is briefly deaf to the
+   broadcast plane; that is the time-boxing this page already argued for.
+3. **No DLE means ~10 fragments per frame.** Controllers default to 27-byte
+   LL packets, so a 244-byte notification cost ~10 fragments ≈ 2 connection
+   events — a hard ceiling of ~14 frames/s. The nRF now requests 251/251
+   after bring-up, and the ESP bring-up issues `LE Write Suggested Default
+   Data Length` (251/2120 µs) so its side can say yes. Then 2M PHY on top.
+4. **Link-layer procedures are one at a time.** Firing PHY + DLE next to the
+   MTU exchange left the link stuck at MTU 23 with no error. The order is now
+   a chain: MTU → CCCD subscribe → DLE → (on DLE completion) 2M PHY, each
+   started only when the previous completes, all best-effort with the 1M /
+   27-byte reactive handlers as the fallback.
+5. **One inbound slot drops back-to-back writes.** A central can put two
+   write commands in one connection event (a reply and a START is exactly the
+   OTA handshake); the peripheral's single parked frame lost the second
+   before the pump ran. The parked frame is now a four-slot ring, drained
+   fully per pump pass.
+
+### What the transmission taught, in one list
+
+- **A transport that cannot say "busy" loses data invisibly.** The reliable
+  link layer below and the careful protocol above were both fine; the layer
+  between them silently discarded 99 % of a blast. When throughput looks
+  impossible, suspect the seam that has no error path.
+- **Delivery ≠ acceptance.** LL acks say bytes crossed the air, not that the
+  peer's host kept them. End-to-end credit from the *consumer* (the ACK
+  frame) is what actually paces a fast sender against a slow flash.
+- **Synchronise before you stream.** The READY barrier costs one round-trip
+  and removes a whole class of races (blocks outrunning their hashes). Any
+  frame that changes what the peer will do next must be retried until
+  answered — a handshake with no retry is a coin-flip.
+- **One recovery mechanism, uniformly.** Missing and corrupt converge on the
+  same bitmap; lost control frames converge on the same stall timer. Every
+  special case removed here was a deadlock that could not happen afterwards.
+- **Pass boundaries reset counters.** Any cumulative counter shared across a
+  retransmission boundary will leak on loss; make windows per-pass.
+- **The console is not binary-safe.** The bench image reached the server
+  through a serial console whose CR/LF translation rewrote bytes — same
+  length, different content — and the server then hashed the corruption, so
+  every per-block check passed and only the end-to-end sha failed. Hash at
+  every custody change; only the hash carried from the *signer* is truth.
+- **Measure before tuning.** The first guesses (faster connection interval,
+  proactive PHY) destabilised the link and moved nothing; the real levers —
+  credits, scan-off, DLE — each showed up only in counters
+  (`tn_acl_stats`, the per-2-s progress line). 3 → 14 → 35 frames/s, each
+  step one identified cause.
+
+### Numbers, same bench, same 168 KB image
+
+| configuration | rate | wall time |
+|---|---|---|
+| base85 text frames over adverts/gateway (before) | ~0.2 KB/s | ~13.5 min |
+| XBLOB, scanners on, no credits | broken (99 % loss) | never |
+| XBLOB + credits + scan-off, 27-byte LL | ~3.4 KB/s | ~50 s |
+| XBLOB + DLE 251/251 + 2M PHY | **~8.5 KB/s** | **~20 s** |
+
+The remaining ceiling is the receiver's flash (page erases and word writes
+interleave the stream) and the 30–50 ms connection interval; a shorter
+interval was tried and destabilised bring-up, so it stays until it can be
+negotiated *after* the link settles, the same lesson as №4.

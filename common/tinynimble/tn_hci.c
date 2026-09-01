@@ -58,6 +58,16 @@ int tn_hci_set_event_mask(uint8_t *buf, size_t cap, uint64_t mask)
     return fin(buf, p);
 }
 
+int tn_hci_le_write_default_data_len(uint8_t *buf, size_t cap, uint16_t octets, uint16_t us)
+{
+    if (!buf) return -1;
+    uint8_t *p = begin(buf, cap, 4, TN_OP_LE_WRITE_DEFAULT_DATA_LEN);
+    if (!p) return -1;
+    w16(&p, octets);
+    w16(&p, us);
+    return fin(buf, p);
+}
+
 int tn_hci_le_set_event_mask(uint8_t *buf, size_t cap, uint64_t mask)
 {
     if (!buf) return -1;

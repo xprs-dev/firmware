@@ -56,6 +56,14 @@ bool xfw_handle(xb_t *b, const xprs_t *p);
 typedef void (*xfw_reply_fn)(const char *wire, int len);
 void xfw_gatt_rx(const char *wire, int len, xfw_reply_fn reply);
 
+/* ── XBLOB fast path (docs/ble5-gatt.md) ────────────────────────────────
+ * The 1:1 GATT bulk transfer fills STAGE faster than cmd:zfw; the signed
+ * cmd:update trust chain and try_install are unchanged. */
+bool xfw_pending(uint8_t sha_out[32], uint32_t *size_out);
+void xfw_blob_reset(void);
+int  xfw_blob_write(uint32_t off, const uint8_t *src, int len);
+void xfw_blob_finish(const char *sig85);
+
 /* From the station loop: probation proving, session expiry. */
 void xfw_tick(uint32_t now_ms, bool radio_up);
 

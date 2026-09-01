@@ -354,6 +354,9 @@ static int cmd_update(xb_t *b, const xprs_t *p, const char *from, const char *id
     if (strcmp(ver, XPRS_FW_VERSION) == 0) { snprintf(m, mcap, "already running %s", ver); return 200; }
     if (size > XFW_SLOT)       { snprintf(m, mcap, "%lu bytes does not fit a %lu slot", (unsigned long)size, (unsigned long)XFW_SLOT); return 413; }
     if (s_ses.open && strcmp(s_ses.ver, ver) != 0) session_close();
+    if (s_ses.open) s_ses.sig85[0] = 0;   /* a re-issued update is a fresh attempt:
+                                           * without this, a failed install's stored
+                                           * approval blocks xfw_pending forever */
     if (!s_ses.open) {
         memset(&s_ses, 0, sizeof s_ses);   /* clears have[] and erased[] */
         s_ses.open = true;
@@ -379,7 +382,14 @@ static void try_install(xb_t *b)
     xprs_sha256((const uint8_t *)XFW_STAGE, s_ses.size, sha);
     if (memcmp(sha, s_ses.sha, 32) != 0) {
         answer(b, s_ses.from, s_ses.id, 500, "image does not hash to sha: -- resend with zfwq");
-        memset(s_ses.have, 0, sizeof s_ses.have); s_ses.got = 0;
+        /* Everything about the attempt resets: the blocks, the approval, and
+         * the erase map -- a page that holds the failed attempt's bytes must
+         * be erased again before new ones land on it, or the rewrite ANDs
+         * into the old data and every block is corrupt a second time. */
+        memset(s_ses.have, 0, sizeof s_ses.have);
+        memset(s_ses.erased, 0, sizeof s_ses.erased);
+        s_ses.got = 0;
+        s_ses.sig85[0] = 0;
         return;
     }
     /* The approval: the same line xprs_ota checks, the same pinned key. */
@@ -491,6 +501,64 @@ static int cmd_zdiag(char *m, int mcap)
              (int)s_probation, s_rolled_back[0] ? " rolledback:" : "", s_rolled_back,
              (unsigned long)s_ses.got, (unsigned long)s_ses.nchunks);
     return 200;
+}
+
+/* ── XBLOB fast path (docs/ble5-gatt.md) ────────────────────────────────
+ *
+ * The image arrives over a 1:1 GATT connection as raw parcels instead of
+ * base85 cmd:zfw text wires. The trust chain is unchanged: the signed
+ * cmd:update (cmd_update/xauth_check) has already opened s_ses with the
+ * authenticated sha/size, and the whole-file sha + xprsfw1 approval in
+ * try_install are still what decide. XBLOB only fills STAGE faster; every
+ * byte lands through the same stage_page_ready/words_write it always did. */
+
+/* The blob transfer owns the whole staging area for its attempt: forget any
+ * partial zfw progress AND the erase map, so every page is erased freshly
+ * before the new bytes land (flash cannot be rewritten without erase). */
+void xfw_blob_reset(void)
+{
+    if (!s_ses.open) return;
+    memset(s_ses.have, 0, sizeof s_ses.have);
+    memset(s_ses.erased, 0, sizeof s_ses.erased);
+    s_ses.got = 0;
+}
+
+/* True while an authenticated update is open and not yet installed; hands the
+ * XBLOB receiver the sha and size to demand from the server's manifest. */
+bool xfw_pending(uint8_t sha_out[32], uint32_t *size_out)
+{
+    if (!s_ses.open || s_ses.sig85[0]) return false;
+    memcpy(sha_out, s_ses.sha, 32);
+    *size_out = s_ses.size;
+    return true;
+}
+
+/* Persist one VERIFIED block (the XBLOB session only calls this for a block
+ * whose hash matched the manifest). A 240-byte block can straddle two 4 KB
+ * pages, so erase every page it touches first -- each byte is written exactly
+ * once (the session's have[] dedups), so nothing is ever overwritten. */
+int xfw_blob_write(uint32_t off, const uint8_t *src, int len)
+{
+    if (!s_ses.open || off + (uint32_t)len > XFW_SLOT || len <= 0) return -1;
+    if (!stage_page_ready(off)) return -1;
+    if (!stage_page_ready(off + (uint32_t)len - 1)) return -1;   /* the page it may straddle */
+    uint32_t buf[(240 + 3) / 4];
+    if (len > (int)sizeof buf) return -1;
+    memset(buf, 0xFF, sizeof buf);
+    memcpy(buf, src, (size_t)len);
+    if (!words_write(XFW_STAGE + off, buf, ((uint32_t)len + 3) / 4)) return -1;
+    return 0;
+}
+
+/* The whole blob is present and per-block verified: carry the manifest's
+ * approval into s_ses and run the exact same install as the slow lane. */
+void xfw_blob_finish(const char *sig85)
+{
+    if (!s_ses.open) return;
+    snprintf(s_ses.sig85, sizeof s_ses.sig85, "%s", sig85 ? sig85 : "");
+    s_ses.got = s_ses.nchunks;               /* satisfy try_install's gate; the
+                                              * real check is the whole-file sha */
+    try_install(s_ses.bearer);
 }
 
 void xfw_gatt_rx(const char *wire, int len, xfw_reply_fn reply)

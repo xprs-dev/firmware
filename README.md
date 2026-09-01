@@ -9,6 +9,11 @@ card-backed XPRS index -- one radio, many jobs, which is why the memory and
 scheduling notes in [`docs/esp32.md`](docs/esp32.md) are the first thing to read
 before touching any of it.
 
+**For how each board behaves and what is shared across all of them, read
+[`FIRMWARE.md`](FIRMWARE.md)** -- the fleet-wide guide: the station model, the
+bearers, the relay rules, remote update over HTTP and over BLE GATT, a section
+per board, and the lessons the nRF52 port taught.
+
 ## Layout
 
 ```

@@ -5,6 +5,12 @@ one-to-many, no pairing and no connection. The remaining Bluetooth machinery
 (GATT links, MSP sessions, file transfer) exists for payloads that do not fit in
 an advertisement.
 
+Bulk transfers between two stations do not ride the advertising plane at
+all: they open a 1:1 connection and speak **XBLOB** — the manifest-and-
+parcels protocol in `common/xprs_blob`, specified and measured in
+[`ble5-gatt.md`](ble5-gatt.md) (168 KB in ~20 s on the bench).
+
+
 Related documents: [ble.md](ble.md) (earlier transport overview),
 [mesh.md](mesh.md) (routing), [store-and-forward.md](store-and-forward.md)
 (delivery to absent stations), [architecture.md](architecture.md) (component

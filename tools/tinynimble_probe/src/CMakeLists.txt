@@ -9,4 +9,4 @@ else()
 endif()
 idf_component_register(SRCS "main.c" ${RADIO_SRC}
                        INCLUDE_DIRS "."
-                       REQUIRES ${RADIO_REQ} esp_timer)
+                       REQUIRES ${RADIO_REQ} esp_timer xprs_blob)
