@@ -854,6 +854,26 @@ static void ota_quiesce(bool quiet)
     else       ESP_LOGI(TAG, "storage resumed");
 }
 
+/*
+ * XPRS.md 25.9: owning a station, and what the owner sets.
+ *
+ * Both halves are parked for idx_task, like every other job that verifies a
+ * signature or writes configuration: the radio task decides only that this
+ * looks like ours to answer.
+ */
+static struct {
+    char wire[XPRS_MAX_WIRE + 1];
+    int  len;
+    char bearer[8];
+    volatile bool pending;
+} s_pol;                       /* a cmd:set carrying policy keys */
+
+static struct {
+    char to[10];
+    char bearer[8];
+    volatile bool pending;
+} s_qpol;                      /* a q:policy to answer */
+
 /* A cmd:update waiting for the task that may afford to verify it. */
 static struct {
     char wire[XPRSIDX_WIRE_MAX + 1];
@@ -1080,6 +1100,260 @@ static int goss_try(const char *call, const char *self, char *out, int cap)
     return xgossip_try_candidates(s_goss, call, self, out, cap);
 }
 
+/* ── XPRS.md 25.9: ownership and the policy an owner sets ───────────────── */
+
+/* Is [call] named in `first:`? Comma list, whole callsigns (3.0.1). */
+static bool pol_is_first(const char *call)
+{
+    if (!call || !call[0]) return false;
+    const char *list = xcfg_get("first", "");
+    for (const char *q = list; *q; ) {
+        const char *c = q;
+        while (*q && *q != ',') q++;
+        size_t n = (size_t)(q - c);
+        if (n && strlen(call) == n && strncasecmp(c, call, n) == 0) return true;
+        if (*q) q++;
+    }
+    return false;
+}
+
+/*
+ * 25.9: may [call] originate traffic through this station?
+ *
+ * `t:sos` and `t:warning` are aired for anybody whatever `use:` says -- a
+ * station that would not pass on a call for help from a stranger is worse
+ * than no station -- and that exemption is the caller's to apply, because
+ * only the caller has the packet.
+ */
+static bool pol_may_use(const char *call)
+{
+    const char *use = xcfg_get("use", "all");
+    if (strcmp(use, "all") == 0) return true;
+    if (strcmp(use, "none") == 0) return false;
+    if (xauth_is_owner(call)) return true;
+    if (strcmp(use, "listed") == 0) return pol_is_first(call);
+    return false;                            /* owners, and anything unknown */
+}
+
+/*
+ * The bearer's extra priority test (25.9 `first:`).
+ *
+ * A token walk rather than xprs_parse, for the reason xb_is_priority itself
+ * gives: an xprs_t is 512 bytes and this runs under the queue's stack.
+ */
+static bool pol_priority_hook(const char *wire, int len)
+{
+    if (!xcfg_get("first", "")[0]) return false;
+    for (int i = 0; i + 3 <= len; i++) {
+        if (wire[i] != ' ' || wire[i + 1] != 'f' || wire[i + 2] != ':') continue;
+        int j = i + 3;
+        char call[16] = "";
+        int n = 0;
+        while (j < len && wire[j] != ' ' && n < (int)sizeof call - 1)
+            call[n++] = wire[j++];
+        call[n] = 0;
+        char *dash = strchr(call, '-');       /* a device suffix is the same holder */
+        if (dash) *dash = 0;
+        return pol_is_first(call);
+    }
+    return false;
+}
+
+/* Defined below, with the rest of the answering machinery. */
+static void ota_answer(const char *to, const char *bearer, const char *id,
+                       int code, const char *msg);
+static void idx_air(const char *bearer, const char *wire, int len);
+
+/* Is anybody the owner of this station yet? */
+static bool pol_owned(void)
+{
+    for (int i = 0; i < XAUTH_OWNERS_MAX; i++) {
+        static const char *const k[XAUTH_OWNERS_MAX] = {
+            "own1", "own2", "own3", "own4"
+        };
+        if (xcfg_get(k[i], "")[0]) return true;
+    }
+    return false;
+}
+
+/* The four keys of 25.9, in the fixed order a result and an observation
+ * both carry them. Static buffer: one caller at a time, on idx_task. */
+static const char *pol_keys(void)
+{
+    static char out[160];
+    char owners[80] = "";
+    int o = 0;
+    static const char *const k[XAUTH_OWNERS_MAX] = {
+        "own1", "own2", "own3", "own4"
+    };
+    for (int i = 0; i < XAUTH_OWNERS_MAX; i++) {
+        const char *npub = xcfg_get(k[i], "");
+        if (!npub[0]) continue;
+        /* What they claimed with, when we have it. Deriving a callsign from
+         * the key would put an X3 on a person: section 3 says the prefix is
+         * the holder's choice and only the suffix comes from the key. */
+        char call[NOSTR_CALLSIGN_LEN] = "";
+        const char *claimed = (i == 0) ? xcfg_get("own1c", "") : "";
+        if (claimed[0])
+            snprintf(call, sizeof call, "%s", claimed);
+        else if (nostr_keys_derive_callsign(npub, call) != ESP_OK)
+            continue;
+        o += snprintf(owners + o, sizeof owners - (size_t)o, "%s%s",
+                      o ? "," : "", call);
+        if (o >= (int)sizeof owners - 1) break;
+    }
+    const char *first = xcfg_get("first", "");
+    const char *serve = xcfg_get("serve", "");
+    snprintf(out, sizeof out, "owner:%s use:%s first:%s serve:%s",
+             o ? owners : "none", xcfg_get("use", "all"),
+             first[0] ? first : "none",
+             serve[0] ? serve : (idx_is_super() ? "archive,super" : "archive"));
+    return out;
+}
+
+/*
+ * A claim, or a change of owner (25.9).
+ *
+ * The allow-list stores npubs, because a signature is checked against a key
+ * and a callsign cannot be turned back into one. So a claim is only
+ * acceptable from a station whose key this one already holds -- learned from
+ * its t:identity (18.1), which every station airs. That is not a weakness of
+ * the claim: a claim from a callsign we cannot verify is a claim we cannot
+ * check, and 25.9 says the first VERIFIED one wins.
+ */
+static bool pol_take_owner(const char *call)
+{
+    const uint8_t *pub = peer_key(call);
+    if (!pub) {
+        ESP_LOGW(TAG, "claim from %s: no key held for it yet", call);
+        return false;
+    }
+    char npub[80] = "";
+    if (bech32_encode("npub", pub, 32, npub, sizeof npub) != ESP_OK) return false;
+    /* Slot 1 is the claim's; a transfer replaces the list (25.9). */
+    xcfg_set("own1", npub);
+    xcfg_set("own1c", call);          /* what 25.9's owner: reports */
+    for (int i = 2; i <= XAUTH_OWNERS_MAX; i++) {
+        char key[8];
+        snprintf(key, sizeof key, "own%d", i);
+        xcfg_set(key, "");
+    }
+    ESP_LOGW(TAG, "station claimed by %s (25.9)", call);
+    return true;
+}
+
+/* The replay rule (25.9): a policy command must be strictly newer than the
+ * last one accepted, whatever the 300-second window says. Without it a
+ * cmd:set owner: recorded today hands the station back next year. */
+static bool pol_ts_ok(const char *ts)
+{
+    if (!ts || !ts[0]) return false;
+    const char *last = xcfg_get("polts", "");
+    if (!last[0]) return true;
+    return strcmp(ts, last) > 0;
+}
+
+static void pol_apply(const char *wire, int len, const char *bearer)
+{
+    xprs_t p;
+    if (!xprs_parse(wire, len, &p)) return;
+    char from[16] = "", id[8] = "", ts[32] = "";
+    xprs_get_str(&p, "f", from, sizeof from);
+    xprs_get_str(&p, "ts", ts, sizeof ts);
+    xprs_id_of(wire, len, id);
+    if (!from[0] || !id[0]) return;
+
+    char owner[80] = "";
+    bool has_owner = xprs_get_str(&p, "owner", owner, sizeof owner);
+    bool owned = pol_owned();
+
+    /* 25.4/25.9: signed, verifiable, and not carried. A claim made from
+     * across the country is not a claim; `via:` is what says so. */
+    char via[8] = "";
+    if (xprs_get_str(&p, "via", via, sizeof via)) {
+        ESP_LOGW(TAG, "policy from %s ignored: carried", from);
+        return;
+    }
+    if (!verified(&p)) {
+        ESP_LOGW(TAG, "policy from %s ignored: not verified", from);
+        return;                                   /* 25.4: never answered */
+    }
+    if (!pol_ts_ok(ts)) {
+        ota_answer(from, bearer, id, 408, "policy not newer than the last");
+        return;
+    }
+
+    if (!owned) {
+        /* Unowned: the first verified claim that names its own sender. */
+        if (!has_owner || strncasecmp(owner, from, strlen(from)) != 0) {
+            ota_answer(from, bearer, id, 403, "unowned: claim with owner:you");
+            return;
+        }
+        if (!pol_take_owner(from)) {
+            ota_answer(from, bearer, id, 403, "no key held for that callsign");
+            return;
+        }
+    } else {
+        if (!xauth_is_owner(from)) {
+            ota_answer(from, bearer, id, 403, "not the owner");
+            return;
+        }
+        if (has_owner) {
+            /* A transfer names somebody; naming ourselves is a no-op. */
+            char first_call[16] = "";
+            for (int i = 0; owner[i] && i < (int)sizeof first_call - 1; i++) {
+                if (owner[i] == ',') break;
+                first_call[i] = owner[i];
+                first_call[i + 1] = 0;
+            }
+            if (first_call[0] && strcasecmp(first_call, from) != 0 &&
+                !pol_take_owner(first_call)) {
+                ota_answer(from, bearer, id, 403, "no key held for that callsign");
+                return;
+            }
+        }
+    }
+
+    /* Remember what this owner calls themselves, if they are slot 1's key.
+     * A key does not say whether its holder is a person or a station (3),
+     * so the callsign has to be learned rather than derived -- and an owner
+     * set with a cable only ever learns it here, the first time they speak. */
+    {
+        const char *np1 = xcfg_get("own1", "");
+        char d1[NOSTR_CALLSIGN_LEN] = "";
+        if (np1[0] && nostr_keys_derive_callsign(np1, d1) == ESP_OK &&
+            strcasecmp(d1 + 2, from + 2) == 0 &&
+            strcasecmp(xcfg_get("own1c", ""), from) != 0) {
+            xcfg_set("own1c", from);
+        }
+    }
+
+    char v[64];
+    if (xprs_get_str(&p, "use", v, sizeof v)) {
+        if (strcmp(v, "all") && strcmp(v, "listed") && strcmp(v, "owners") &&
+            strcmp(v, "none")) {
+            ota_answer(from, bearer, id, 400, "use: all|listed|owners|none");
+            return;
+        }
+        xcfg_set("use", v);
+    }
+    if (xprs_get_str(&p, "first", v, sizeof v))
+        xcfg_set("first", strcmp(v, "none") == 0 ? "" : v);
+    if (xprs_get_str(&p, "serve", v, sizeof v))
+        xcfg_set("serve", strcmp(v, "none") == 0 ? "none" : v);
+    xcfg_set("polts", ts);
+
+    /* 25.7: the result states what IS, all four of them. */
+    char w[XPRS_MAX_WIRE + 1];
+    int n = snprintf(w, sizeof w, "t:result f:%s d:%s ts:%s r:%s code:200 %s",
+                     s_call, from, ts, id, pol_keys());
+    if (n > 0 && n < (int)sizeof w) {
+        n = sign_wire(w, n, sizeof w);
+        idx_air(bearer, w, n);
+    }
+    ESP_LOGW(TAG, "policy set by %s: %s", from, pol_keys());
+}
+
 /* One answer to a command, on the bearer it arrived on -- a reply aired
  * somewhere else is a reply the asker never hears. Signed, because a
  * result is evidence and an unsigned one proves nothing (9.1). */
@@ -1257,6 +1531,50 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_qmail.call[0] = 0;
         xprs_get_str(&sp, "only", (char *)s_qmail.call, sizeof s_qmail.call);
         s_qmail.pending = true;                  /* published last */
+    } while (0);
+
+    /* q:policy (25.9): what this station's owner has set. Answered to
+     * anybody -- a phone needs to know whether it may talk through this
+     * station before it spends airtime finding out. */
+    do {
+        char type[16], q[12], dst[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "request") != 0 && strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "q", q, sizeof q) || strcmp(q, "policy") != 0)
+            break;
+        if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
+            strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        if (s_qpol.pending) break;
+        char asker[10] = "";
+        if (!xprs_get_str(&sp, "f", asker, sizeof asker) || !asker[0]) break;
+        snprintf((char *)s_qpol.to, sizeof s_qpol.to, "%s", asker);
+        snprintf((char *)s_qpol.bearer, sizeof s_qpol.bearer, "%s", bearer);
+        s_qpol.pending = true;
+    } while (0);
+
+    /* cmd:set carrying any policy key (25.9). Parked whole: the verdict
+     * needs a signature check, which is curve work and belongs on idx_task
+     * exactly as cmd:update's does. */
+    do {
+        char type[16], cmd[12], dst[16];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "cmd", cmd, sizeof cmd) ||
+            strcmp(cmd, "set") != 0) break;
+        if (!xprs_get_str(&sp, "d", dst, sizeof dst)) break;
+        if (strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        int vl = 0;
+        if (!xprs_get(&sp, "owner", &vl) && !xprs_get(&sp, "use", &vl) &&
+            !xprs_get(&sp, "first", &vl) && !xprs_get(&sp, "serve", &vl))
+            break;                      /* a device cmd:set, not ours */
+        if (s_pol.pending) break;
+        if (len > XPRS_MAX_WIRE) break;
+        memcpy((char *)s_pol.wire, wire, (size_t)len);
+        s_pol.wire[len] = 0;
+        s_pol.len = len;
+        snprintf((char *)s_pol.bearer, sizeof s_pol.bearer, "%s", bearer);
+        s_pol.pending = true;
+        ESP_LOGW(TAG, "cmd:set policy parked from %s", bearer);
     } while (0);
 
     /* q:identity (18.1): publish the key binding on request. */
@@ -3634,10 +3952,21 @@ static void idx_task(void *arg)
              * count: the field is a hint, and 99 is as much as a hint needs
              * to carry. Omitted when there is nothing, as the section says. */
             int held = xprsindex_mail_count(s_index, NULL, 99);
+            /* 25.9: the owner may say what this station announces it does.
+             * Unset is the default, and `none` is a station that announces
+             * nothing -- still a good citizen by 31.2. */
+            const char *serve = xcfg_get("serve", "");
+            char sbuf[48];
+            if (!serve[0])
+                snprintf(sbuf, sizeof sbuf, "archive%s",
+                         idx_is_super() ? ",super" : "");
+            else
+                snprintf(sbuf, sizeof sbuf, "%s", serve);
+            if (strcmp(sbuf, "none") == 0) { last_announce_s = now_s; goto no_announce; }
             int n = snprintf(w, sizeof w,
-                             "t:service f:%s serve:archive%s count:%lu fw:%s",
-                             s_call, idx_is_super() ? ",super" : "",
-                             (unsigned long)st.count, xota_version());
+                             "t:service f:%s serve:%s count:%lu fw:%s",
+                             s_call, sbuf, (unsigned long)st.count,
+                             xota_version());
             if (held > 0 && n > 0 && n < (int)sizeof w)
                 n += snprintf(w + n, sizeof w - (size_t)n, " mail:%d", held);
             /* uptime, health word, last crash: a few bytes on a packet that
@@ -3654,10 +3983,39 @@ static void idx_task(void *arg)
              * this archive existed, which for a super is the whole point. */
             if (xprsrns_is_up()) xprsrns_send(w, n);
         }
+no_announce:
 
         if (s_qid_pending) {
             s_qid_pending = false;
             air_identity();
+        }
+
+        /* 25.9: the policy this station's owner set, on request. */
+        if (s_qpol.pending) {
+            char to[10], bearer[8];
+            snprintf(to, sizeof to, "%s", (const char *)s_qpol.to);
+            snprintf(bearer, sizeof bearer, "%s", (const char *)s_qpol.bearer);
+            s_qpol.pending = false;
+            char w[XPRS_MAX_WIRE + 1], ts[32];
+            time_field(ts, sizeof ts);
+            int n = snprintf(w, sizeof w,
+                             "t:observation f:%s d:%s %s s:policy %s",
+                             s_call, to, ts, pol_keys());
+            if (n > 0 && n < (int)sizeof w) {
+                n = sign_wire(w, n, sizeof w);
+                idx_air(bearer, w, n);
+            }
+        }
+
+        /* 25.9: a cmd:set carrying policy keys. */
+        if (s_pol.pending) {
+            char wire[XPRS_MAX_WIRE + 1], bearer[8];
+            int wlen = s_pol.len;
+            memcpy(wire, (const char *)s_pol.wire, (size_t)wlen);
+            wire[wlen] = 0;
+            snprintf(bearer, sizeof bearer, "%s", (const char *)s_pol.bearer);
+            s_pol.pending = false;
+            pol_apply(wire, wlen, bearer);
         }
 
         /* The q:mail answer (13.12.3): one observation, signed, saying how
@@ -4272,6 +4630,29 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
             }
         }
         xst_chat_note(&p);   /* our hotspot users' messages show on the LCD too */
+    }
+
+    /*
+     * 25.9 `use:`: this is the door a phone hands a packet through, so this
+     * is where the owner's answer to "who may talk through my station" is
+     * given. Our own sayings are not somebody else's traffic, and safety
+     * traffic is aired for anybody -- both exemptions are in the section.
+     */
+    {
+        char sender[16] = "", stype[16] = "";
+        xprs_t up;
+        if (xprs_parse(wire, len, &up)) {
+            xprs_type(&up, stype, sizeof stype);
+            xprs_get_str(&up, "f", sender, sizeof sender);
+        }
+        bool ours = sender[0] && strncasecmp(sender, s_call, strlen(s_call)) == 0;
+        bool safety = strcmp(stype, "sos") == 0 || strcmp(stype, "warning") == 0;
+        if (sender[0] && !ours && !safety && !pol_may_use(sender)) {
+            ESP_LOGW(TAG, "refused to air for %s: use:%s (25.9)",
+                     sender, xcfg_get("use", "all"));
+            if (took && took_cap) took[0] = 0;
+            return false;
+        }
     }
 
     /* Every bearer, or exactly the one that was named (xapi_send.h): the
@@ -4942,6 +5323,9 @@ void xapp_run(const xapp_board_t *board)
      * packet no receiver can order against the last boot (10.7). */
     boot_epoch_init();
     acked_load();   /* what was acknowledged before the reboot */
+    /* 25.9: the owner's `first:` outranks the queue's own reading of a
+     * packet, and the bearer cannot read configuration. */
+    xb_set_priority_hook(pol_priority_hook);
     snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", board->wifi_ssid));
     snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", board->wifi_pass));
 

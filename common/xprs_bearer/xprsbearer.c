@@ -105,8 +105,18 @@ static void xb_cancel(xb_t *b, const char *id)
  * scars in exactly that shape. xprs_looks_like has already guaranteed the
  * wire begins "t:", so the type is the first token.
  */
+static bool (*s_prio_hook)(const char *wire, int len);
+
+void xb_set_priority_hook(bool (*fn)(const char *wire, int len))
+{
+    s_prio_hook = fn;
+}
+
 static bool xb_is_priority(const char *wire, int len)
 {
+    /* The station's own answer first: 25.9's `first:` is somebody the owner
+     * named, and the owner outranks this function's opinion of the packet. */
+    if (s_prio_hook && s_prio_hook(wire, len)) return true;
     if (len >= 6 && memcmp(wire, "t:sos", 5) == 0 &&
         (wire[5] == ' ' || len == 5)) return true;
     if (len >= 10 && memcmp(wire, "t:warning", 9) == 0 &&

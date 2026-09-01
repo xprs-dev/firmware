@@ -85,6 +85,21 @@ static cfg_entry_t s_cfg[] = {
     { "echo_quiet_ms", {0}, false },
     { "echo_gap_ms",   {0}, false },
     { "digi_ble_on",   {0}, false },
+    /* XPRS.md 25.9, the policy an owner sets over the air: who may
+     * originate through this station (`use`), whose traffic leaves first
+     * (`first`), what it announces it does (`serve`, empty = the default),
+     * and the ts: of the last policy command accepted -- a later command
+     * must be strictly newer or it is a replay (25.9). */
+    { "use",       {0}, false },
+    { "first",     {0}, false },
+    { "serve",     {0}, false },
+    { "polts",     {0}, false },
+    /* The callsign each owner claimed with. The npub beside it is what a
+     * signature is checked against; this is what 25.9's `owner:` reports,
+     * because a key does not say whether its holder is a person (X1) or a
+     * station (X3) -- section 3 makes that the holder's own choice, so
+     * deriving it back invents one. Empty for an entry set with a cable. */
+    { "own1c",     {0}, false },
     { "own1",      {0}, false },
     { "own2",      {0}, false },
     { "own3",      {0}, false },
@@ -230,6 +245,19 @@ int xcfg_ini_render(char *buf, size_t cap)
         "channel = %s\n"
         "auto = %s\n"
         "\n"
+        "[policy]\n"
+        "; XPRS.md 25.9, also settable over the air by an owner.\n"
+        "; use:   who may originate traffic through this station --\n"
+        ";        all | listed | owners | none. `listed` is the owners\n"
+        ";        together with everyone in `first`. sos and warning are\n"
+        ";        aired for anybody whatever this says.\n"
+        "; first: callsigns whose traffic leaves ahead of everyone else's.\n"
+        "; serve: what this station announces it does; empty is the\n"
+        ";        default (archive, and super when it qualifies).\n"
+        "use = %s\n"
+        "first = %s\n"
+        "serve = %s\n"
+        "\n"
         "[owners]\n"
         "; npubs allowed to command this station: update, reboot, and any\n"
         "; other actuation. A command from anybody else is discarded, and one\n"
@@ -263,6 +291,9 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("fwurl", ""),
         xcfg_get("fwchan", "stable"),
         xcfg_get_bool("fwauto", false) ? "yes" : "no",
+        xcfg_get("use", "all"),
+        xcfg_get("first", ""),
+        xcfg_get("serve", ""),
         xcfg_get("own1", ""),
         xcfg_get("own2", ""),
         xcfg_get("own3", ""),
@@ -318,6 +349,9 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
      * also delegating "may reflash the roof". Unset falls back to fwkey. */
     { "scripts", "enabled",  "scripts_on" },
     { "scripts", "key",      "scriptkey" },
+    { "policy",  "use",      "use" },
+    { "policy",  "first",    "first" },
+    { "policy",  "serve",    "serve" },
     { "owners",  "one",      "own1" },
     { "owners",  "two",      "own2" },
     { "owners",  "three",    "own3" },

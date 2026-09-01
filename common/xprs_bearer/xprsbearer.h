@@ -261,6 +261,18 @@ void xb_set_beacon(xb_t *b, xb_beacon_cb_t cb, uint32_t interval_sec,
  * guarantee is that a busy neighbour bearer cannot pour traffic onto a slow
  * radio faster than the radio was told it may speak.
  */
+/**
+ * @brief An extra test for "this packet goes first".
+ *
+ * The queue ranks by 13.1's own reading of a packet -- sos, warning,
+ * urg:urgent -- and knows nothing about who sent it. XPRS.md 25.9 lets a
+ * station's OWNER name callsigns whose traffic leaves ahead of everyone
+ * else's, which is a question about configuration and therefore not this
+ * component's to answer. The station supplies the answer here; NULL (the
+ * default) leaves the ranking exactly as the section defines it.
+ */
+void xb_set_priority_hook(bool (*fn)(const char *wire, int len));
+
 void xb_set_pace(xb_t *b, uint32_t per_packet_ms);
 
 /** Milliseconds until this bearer may transmit again; 0 when free now.
