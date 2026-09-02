@@ -2457,8 +2457,21 @@ static void status_task(void *arg)
         xh_report(false);
         xh_heap_floor(heap_floor());
 
+        /* The BLE half of the same question. `xprsble_scan_results` and
+         * `xprsble_ad_dropped` have existed since the receive path was written
+         * and had NO caller anywhere in the tree, so the one fault they were
+         * added to tell apart -- this station is deaf, versus nobody is
+         * talking -- was undiagnosable from the console. It cost a full bench
+         * session: the phone beside it reported thousands of beacons sent,
+         * this log said nothing about BLE at all, and only an independent
+         * scanner settled which end was at fault.
+         *
+         *   rx    adverts the radio delivered, before any filtering
+         *   drop  adverts thrown away because the rx queue was full
+         *   quiet seconds since the last one; -1 = never heard anything */
         ESP_LOGW(TAG, "alive %us heap=%u/%u call=%s ch=%u espnow rx=%u tx=%u "
-                      "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u",
+                      "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u "
+                      "ble rx=%u drop=%u quiet=%ds",
                  (unsigned)(esp_timer_get_time() / 1000000ULL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -2466,7 +2479,9 @@ static void status_task(void *arg)
                  xprsnow_channel(), (unsigned)rx, (unsigned)tx,
                  (unsigned)cancelled, (unsigned)dropped,
                  (unsigned)done, (unsigned)issued, (unsigned)failed,
-                 xprsnow_peer_count(600), (unsigned)s_heard_count);
+                 xprsnow_peer_count(600), (unsigned)s_heard_count,
+                 (unsigned)xprsble_scan_results(), (unsigned)xprsble_ad_dropped(),
+                 xprsble_silent_for());
     }
 }
 

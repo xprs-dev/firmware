@@ -59,6 +59,7 @@ uint32_t xprsble_idle_ms(uint32_t now_ms) { (void)now_ms; return 0xFFFFFFFFu; }
 void xprsble_offer(const char *wire, int len) { (void)wire; (void)len; }
 
 uint32_t xprsble_scan_results(void) { return 0; }
+uint32_t xprsble_ad_dropped(void) { return 0; }
 
 /* -1 is what the live implementation returns before the first frame is heard:
  * "nothing to report", not "silent for zero seconds". */
@@ -583,6 +584,8 @@ bool xprsble_is_active(void) { return s_ble_up; }
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb) { s_rx_cb = cb; }
 
 uint32_t xprsble_scan_results(void) { return s_scan_results; }
+
+uint32_t xprsble_ad_dropped(void) { return s_ad_dropped; }
 
 int xprsble_silent_for(void)
 {

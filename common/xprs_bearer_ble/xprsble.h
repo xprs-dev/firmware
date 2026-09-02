@@ -137,6 +137,13 @@ uint32_t xprsble_scan_results(void);
 /** Seconds since the last scan result, or -1 if there has never been one. */
 int xprsble_silent_for(void);
 
+/** Adverts the radio handed us that the rx queue was too full to take.
+ *
+ * Separate from [xprsble_scan_results] because they are opposite faults: a
+ * scan count of zero means the radio heard nothing, a drop count climbing
+ * means it heard plenty and this station threw it away. */
+uint32_t xprsble_ad_dropped(void);
+
 #ifdef __cplusplus
 }
 #endif
