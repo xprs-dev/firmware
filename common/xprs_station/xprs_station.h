@@ -98,8 +98,19 @@ void xst_dev_note(const char *call, const char *bearer, int rssi);
 void xst_tx_total(uint32_t tx_total_now);
 
 /* Snapshots (copied out under the lock). Devices: freshest first, only
- * rows heard within [in_range_sec]. Chat: newest first. */
+ * rows heard within [in_range_sec]. Chat: newest first.
+ *
+ * xst_devices() is ONE ROW PER STATION -- what the radar plots, the
+ * Reachable panel lists and /api/xprs/devices serves. A station heard on
+ * several bearers wears the bearer, hops and age of its latest contact; its
+ * rssi is the strongest radio reading it has inside the window, so a LAN
+ * packet arriving last does not cost the blip its distance.
+ *
+ * xst_devices_links() is the table as kept, one row per (callsign, bearer):
+ * for the per-link `hears:` of an observation (10.6.1) and the per-link
+ * counts on the home panel, and nothing a person reads as "who is there". */
 int  xst_devices(xst_dev_t *out, int max, int in_range_sec);
+int  xst_devices_links(xst_dev_t *out, int max, int in_range_sec);
 
 /**
  * @brief One neighbour's signal as a single digit, 9 loud to 0 barely there.
@@ -154,6 +165,7 @@ int xst_signal_bucket(int rssi, uint8_t was);
 int xst_hears_render(const char *bearer, int ttl_sec, int budget,
                      char *calls, int calls_cap, int *total,
                      char *q, int q_cap);
+/* Distinct stations heard within [in_range_sec]. */
 int  xst_devices_in_range(int in_range_sec);
 int  xst_chat(xst_chat_t *out, int max);
 /* Find a chat row by its section-5 id (reply-parent lookup). 1 = found. */

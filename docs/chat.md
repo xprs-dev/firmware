@@ -38,8 +38,12 @@ and are not yet in that document:
 - `GET /api/xprs/devices` -> `{ok, heard, count, devices:[{call, bearer,
   rssi, dist_m, hops, age_s}]}` -- the list `xst_devices()` keeps, the same
   one the Reachable panel prints and the radar plots, 300-second window.
-  `dist_m` is `xst_est_distance_m()`: RSSI through a log-distance model,
-  an estimate and no better than the room.
+  One row per station: `bearer`, `hops` and `age_s` are the station's
+  latest contact, and `rssi` is its strongest radio reading inside the
+  window, whichever bearer carried the last packet (a LAN packet has no
+  signal and must not cost the row its distance). `dist_m` is
+  `xst_est_distance_m()`: RSSI through a log-distance model, an estimate
+  and no better than the room.
 - `GET /api/stats?view=` -> `{ok, view, bucket_s, points, devices[], rx[],
   tx[]}` -- the three series of the Stats panel. `view` 0 ten-minute,
   1 hourly, 2 daily. `points` is 0 until NTP has spoken.

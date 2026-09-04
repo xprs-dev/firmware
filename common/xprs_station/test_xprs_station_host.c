@@ -276,6 +276,57 @@ static void test_full_table(void)
           "and the whole suffix is 139 bytes");
 }
 
+/* ── One station, one row ───────────────────────────────────────────────── */
+
+static void test_one_row_per_station(void)
+{
+    /* The table keys on (callsign, bearer) for the beacon's sake, and the
+     * radar read it raw: three stations, nine blips (bench 2026-09-04). */
+    reset();
+    hear("X1VCVM", "ble", -55);
+    hear("X1VCVM", "lan", 0);
+    hear("X1VCVM", "lora", -26);
+    uint32_t lora_at = xst_test_now_ms;
+
+    xst_dev_t d[XST_SEEN_MAX];
+    int n = xst_devices(d, XST_SEEN_MAX, 600);
+    CHECK(n == 1, "one station, one row, got %d", n);
+    CHECK(strcmp(d[0].bearer, "lora") == 0,
+          "wearing its latest contact, got %s", d[0].bearer);
+    CHECK(d[0].rssi == -26, "with that contact's signal, got %d", d[0].rssi);
+    CHECK(d[0].last_ms == lora_at, "and its age");
+    CHECK(xst_devices_links(d, XST_SEEN_MAX, 600) == 3,
+          "the beacon still sees three links");
+    CHECK(xst_devices_in_range(600) == 1,
+          "in reach counts stations, got %d", xst_devices_in_range(600));
+
+    /* The LAN heard it last and the LAN has no signal: the distance is
+     * borrowed from the strongest radio reading inside the window. */
+    reset();
+    hear("X1VCVM", "lora", -70);
+    hear("X1VCVM", "ble", -55);
+    hear("X1VCVM", "lan", 0);
+    uint32_t lan_at = xst_test_now_ms;
+    n = xst_devices(d, XST_SEEN_MAX, 600);
+    CHECK(n == 1, "still one row, got %d", n);
+    CHECK(strcmp(d[0].bearer, "lan") == 0, "latest contact is the LAN");
+    CHECK(d[0].rssi == -55, "distance borrowed from the loudest radio, got %d",
+          d[0].rssi);
+    CHECK(d[0].last_ms == lan_at, "age is the LAN's");
+
+    /* A reading that fell out of the window is not borrowed from. */
+    xst_test_now_ms += 700 * 1000;
+    hear("X1VCVM", "lan", 0);
+    n = xst_devices(d, XST_SEEN_MAX, 600);
+    CHECK(n == 1 && d[0].rssi == 0, "no fresh radio reading, no distance");
+
+    /* Two stations stay two. */
+    hear("X3S7S8", "ble", -65);
+    n = xst_devices(d, XST_SEEN_MAX, 600);
+    CHECK(n == 2, "two stations, got %d", n);
+    CHECK(xst_devices_in_range(600) == 2, "and counted as two");
+}
+
 int main(void)
 {
     printf("xprs_station host tests (XPRS.md 10.6.3, 10.6.4)\n");
@@ -287,6 +338,7 @@ int main(void)
     test_bearers();
     test_direct_only();
     test_full_table();
+    test_one_row_per_station();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

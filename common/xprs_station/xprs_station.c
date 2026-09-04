@@ -294,10 +294,12 @@ void xst_tx_total(uint32_t tx_total_now)
     UNLOCK();
 }
 
-int xst_devices(xst_dev_t *out, int max, int in_range_sec)
+/* The fresh rows, copied out under the lock, freshest first. Both public
+ * listings start here; the difference between them is only whether a
+ * station heard on two bearers is two rows or one. */
+static int fresh_rows(xst_dev_t *rows, int in_range_sec)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    xst_dev_t rows[XST_SEEN_MAX];
     int n = 0;
     LOCK();
     for (int i = 0; i < XST_SEEN_MAX; i++) {
@@ -307,7 +309,7 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
         rows[n++] = s_seen[i];
     }
     UNLOCK();
-    /* Freshest first (insertion sort; n <= 16). */
+    /* Freshest first (insertion sort; n <= 24). */
     for (int i = 1; i < n; i++) {
         xst_dev_t v = rows[i];
         int j = i - 1;
@@ -317,9 +319,52 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
         }
         rows[j + 1] = v;
     }
+    return n;
+}
+
+int xst_devices_links(xst_dev_t *out, int max, int in_range_sec)
+{
+    xst_dev_t rows[XST_SEEN_MAX];
+    int n = fresh_rows(rows, in_range_sec);
     if (n > max) n = max;
     for (int i = 0; i < n; i++) out[i] = rows[i];
     return n;
+}
+
+int xst_devices(xst_dev_t *out, int max, int in_range_sec)
+{
+    xst_dev_t rows[XST_SEEN_MAX];
+    int n = fresh_rows(rows, in_range_sec);
+    /* ONE ROW PER STATION. The table underneath keys on (callsign, bearer)
+     * because the `hears:` of an observation is a claim about one radio
+     * (10.6.1) -- but a person looking at the radar, the Reachable panel or
+     * /api/xprs/devices is asking who is out there, and a phone heard over
+     * Bluetooth, the LAN and LoRa is one phone. Bench 2026-09-04: three
+     * stations, nine blips.
+     *
+     * The rows arrive freshest first, so the first row seen for a callsign
+     * is the survivor: its bearer, hops and age are the station's latest
+     * contact, literally. What it may lack is a signal -- the LAN has none
+     * -- so the distance is borrowed from the strongest radio reading the
+     * station has inside the same window. A blip without a distance because
+     * the last packet happened to come over WiFi would be the radar
+     * forgetting what it measured a moment ago. */
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        int k = -1;
+        for (int j = 0; j < m; j++) {
+            if (strcasecmp(rows[j].call, rows[i].call) == 0) { k = j; break; }
+        }
+        if (k < 0) {
+            rows[m++] = rows[i];              /* m <= i: in place is safe */
+            continue;
+        }
+        if (rows[i].rssi && (!rows[k].rssi || rows[i].rssi > rows[k].rssi))
+            rows[k].rssi = rows[i].rssi;
+    }
+    if (m > max) m = max;
+    for (int i = 0; i < m; i++) out[i] = rows[i];
+    return m;
 }
 
 int xst_signal_bucket(int rssi, uint8_t was)
@@ -377,7 +422,8 @@ int xst_hears_render(const char *bearer, int ttl_sec, int budget,
     calls[0] = 0;
 
     xst_dev_t rows[XST_SEEN_MAX];
-    int n = xst_devices(rows, XST_SEEN_MAX, ttl_sec);
+    /* Per link, not per station: the filter below is BY bearer. */
+    int n = xst_devices_links(rows, XST_SEEN_MAX, ttl_sec);
 
     /* Direct, and on this bearer: a claim about one radio proven on another
      * is the lie 10.6.1 discards a packet for. */
@@ -459,16 +505,11 @@ int xst_hears_render(const char *bearer, int ttl_sec, int budget,
 
 int xst_devices_in_range(int in_range_sec)
 {
-    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    int n = 0;
-    LOCK();
-    for (int i = 0; i < XST_SEEN_MAX; i++) {
-        if (s_seen[i].call[0] &&
-            (now - s_seen[i].last_ms) / 1000 < (uint32_t)in_range_sec)
-            n++;
-    }
-    UNLOCK();
-    return n;
+    /* Stations, not rows: the screen's "in reach", /api/status and the
+     * beacon pacing all read this, and each was counting a station once per
+     * bearer it had been heard on. */
+    xst_dev_t rows[XST_SEEN_MAX];
+    return xst_devices(rows, XST_SEEN_MAX, in_range_sec);
 }
 
 int xst_chat(xst_chat_t *out, int max)

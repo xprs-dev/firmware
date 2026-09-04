@@ -2824,14 +2824,15 @@ static void ui_render(void)
 
     switch (s_panel) {
     case 0: {   /* Radar: the scope, and who is in reach on which link */
-        /* One station, one count. The devices store is keyed by callsign,
-         * so a station heard on three bearers is one row wearing the bearer
-         * it was LAST heard on -- which is what "reachable via" honestly
-         * means from here. */
-        xst_dev_t devs[XST_SEEN_MAX];
-        int nb = xst_devices(devs, XST_SEEN_MAX, UI_INRANGE_SEC);
+        /* Two questions, two lists. The link rows ("ESP-NOW 2, LAN 3") are
+         * per bearer, because a station on two links honestly counts on
+         * both. The scope and the station count are per STATION: the table
+         * underneath keys on (callsign, bearer) for the beacon's sake, and
+         * reading it raw here put the same phone on the radar three times. */
+        xst_dev_t devs[XST_SEEN_MAX];       /* one buffer, filled twice */
+        int nl = xst_devices_links(devs, XST_SEEN_MAX, UI_INRANGE_SEC);
         int n_now = 0, n_lan = 0, n_lora = 0, n_inet = 0;
-        for (int i = 0; i < nb; i++) {
+        for (int i = 0; i < nl; i++) {
             if (strcmp(devs[i].bearer, "espnow") == 0) n_now++;
             else if (strcmp(devs[i].bearer, "lora") == 0) n_lora++;
             else if (strcmp(devs[i].bearer, "lan") == 0) {
@@ -2842,6 +2843,7 @@ static void ui_render(void)
                 else n_lan++;
             }
         }
+        int nb = xst_devices(devs, XST_SEEN_MAX, UI_INRANGE_SEC);
 
         /* A count, and nothing else: the dot already says whether the link
          * is up, and the addresses and channel numbers that used to sit
