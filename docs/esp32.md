@@ -1489,6 +1489,19 @@ away:
 - **"Every subsystem is up" does not include the screen.** `xprs_health`'s
   roster covers what has been `xh_expect()`ed, and the UI task is not in it, so
   `station up: ...` is silent about a dark panel. Do not read it as one.
+- **A dark T-Deck that enumerates on USB and prints nothing to `cat` may be
+  running somebody else's firmware.** 2026-09-04: the bench T-Deck was found
+  dark -- no splash, no way to tell on from off -- and the reflex was to bisect
+  the display code. The boot log settled it in one line: `Project name:
+  tinynimble_probe`. It had been flashed as the GATT peer for the P1-Pro
+  bring-up (TODO: "remember to reflash the T-Deck back to the station
+  afterwards") and never flashed back; the probe has no display code and its
+  own single-`factory` table. Read `Project name` / `App version` in the boot
+  log BEFORE touching anything. Note `cat /dev/ttyACM0` showed 0 bytes: the
+  native USB-serial-JTAG console needs the port opened with DTR/RTS driven
+  (pyserial, `pio device monitor`), not a bare `cat`. Restoring the station
+  is the three-write move above -- bootloader, table, app -- plus
+  `erase_region 0xF000 0x2000`, and NVS keeps the callsign.
 - **A failed upload can leave a board that looks broken.** A `pio run -t upload`
   that dies partway (the S3's native USB-JTAG re-enumerates, and the port can
   come back as a DIFFERENT `/dev/ttyACM*` than it left on) leaves a half-written

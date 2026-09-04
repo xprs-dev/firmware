@@ -50,7 +50,11 @@ case $(( BASE )) in
 esac
 CHUNK=$((256 * 1024))
 ET=~/.platformio/packages/tool-esptoolpy/esptool.py
-PY=~/.platformio/penv/bin/python
+# PlatformIO's own venv is not guaranteed to exist: penv/ was recreated on
+# 2026-09-02 holding only the IDF tools, and this script then failed every
+# chunk with "No such file or directory" -- the one failure mode the retry
+# loop cannot fix. esptool needs only pyserial, which the system python has.
+PY=${PY:-$(ls ~/.platformio/penv/bin/python 2>/dev/null || command -v python3)}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
