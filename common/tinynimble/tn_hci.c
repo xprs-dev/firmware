@@ -12,6 +12,21 @@
 
 #include "tinynimble.h"
 
+/* The advert-reassembly slots below are ~556 B. On a board with PSRAM they
+ * belong there, not in scarce internal DRAM (docs/esp32.md, "heap is the
+ * binding constraint"). EXT_RAM_BSS_ATTR (esp_attr.h) places .bss in PSRAM
+ * when the board enables SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY and is a no-op
+ * otherwise -- so a no-PSRAM board (the T-Dongle) keeps them internal, and the
+ * host test, which compiles this file with no ESP-IDF, is unaffected. */
+#if defined(__has_include)
+#  if __has_include(<esp_attr.h>)
+#    include <esp_attr.h>
+#  endif
+#endif
+#ifndef EXT_RAM_BSS_ATTR
+#  define EXT_RAM_BSS_ATTR
+#endif
+
 #include <string.h>
 
 /* Little-endian writers. Everything on the HCI wire is little-endian. */
@@ -242,7 +257,7 @@ typedef struct {
     uint8_t  buf[TN_REASM_MAX];
 } reasm_t;
 
-static reasm_t         s_reasm[TN_REASM_SLOTS];
+static EXT_RAM_BSS_ATTR reasm_t s_reasm[TN_REASM_SLOTS];
 static uint32_t        s_reasm_seq;
 static tn_reasm_stats_t s_rs;
 
