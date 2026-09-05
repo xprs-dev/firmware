@@ -238,12 +238,22 @@ int tn_hci_ext_scan_enable(uint8_t *buf, size_t cap, bool on, bool filter_dup)
  *
  * So the pieces are joined here, per advertiser (address + SID), and the
  * caller sees one report with the whole data, exactly as it sees an
- * un-chained one. Two slots: a chain is two reports a few hundred
- * microseconds apart, and two phones interleaving is the most this bench
- * has produced. TN_REASM_MAX is the largest AD anything above parses
+ * un-chained one. TN_REASM_MAX is the largest AD anything above parses
  * (docs/ble5.md: one AD, 254 bytes); a chain that outgrows it is dropped
- * and counted, not delivered short. */
-#define TN_REASM_SLOTS 2
+ * and counted, not delivered short.
+ *
+ * Slot count follows where the buffer lives. On a PSRAM board these slots
+ * are in PSRAM (EXT_RAM_BSS_ATTR above), so two -- room for two phones
+ * interleaving their chains, the most this bench has produced. Without
+ * PSRAM the slots are internal DRAM, the resource these boards are short of
+ * (docs/esp32.md), so one: a single chain reassembles at a time, and a
+ * second advertiser mid-chain evicts the older (counted as overflow) rather
+ * than costing another 272 bytes of internal RAM that board cannot spare. */
+#if defined(CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY)
+#  define TN_REASM_SLOTS 2
+#else
+#  define TN_REASM_SLOTS 1
+#endif
 #define TN_REASM_MAX   254
 
 typedef struct {
