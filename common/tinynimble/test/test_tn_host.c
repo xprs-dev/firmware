@@ -259,6 +259,93 @@ int main(void)
               "an unrelated LE event was not ignored");
     }
 
+    /* ── chained reports: one advertisement, several reports ──────────── */
+    {
+        /* Build one extended advertising report event for [peer] carrying
+         * [data], with the Data_Status the controller would set. */
+        int mk(uint8_t *ev, const uint8_t *peer, uint8_t sid, unsigned status,
+               const uint8_t *data, int dlen)
+        {
+            int e = 0;
+            ev[e++] = 0x04; ev[e++] = 0x3E;
+            int plen_at = e++;
+            ev[e++] = 0x0D; ev[e++] = 0x01;
+            uint16_t et = (uint16_t)(status << 5);
+            ev[e++] = (uint8_t)(et & 0xFF); ev[e++] = (uint8_t)(et >> 8);
+            ev[e++] = 0x01;
+            memcpy(ev + e, peer, 6); e += 6;
+            ev[e++] = 0x01; ev[e++] = 0x01; ev[e++] = sid; ev[e++] = 0x7F;
+            ev[e++] = (uint8_t)(int8_t)-60;
+            ev[e++] = 0; ev[e++] = 0; ev[e++] = 0;
+            memset(ev + e, 0, 6); e += 6;
+            ev[e++] = (uint8_t)dlen;
+            memcpy(ev + e, data, (size_t)dlen); e += dlen;
+            ev[plen_at] = (uint8_t)(e - 3);
+            return e;
+        }
+        const uint8_t phone[6] = { 0xC0,0x11,0x22,0x33,0x44,0x55 };
+        const uint8_t other[6] = { 0xC0,0x99,0x88,0x77,0x66,0x55 };
+        static uint8_t big[254];
+        for (int i = 0; i < 254; i++) big[i] = (uint8_t)i;
+        static uint8_t ev[300];
+        static uint8_t got[300];
+        int n;
+        tn_hci_reasm_reset();
+
+        /* A 248-byte AD, as a phone airs it: 229 then 19. */
+        seen = 0;
+        n = mk(ev, phone, 0, 1, big, 229);
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 0 && seen == 0,
+              "the first piece of a chain was delivered on its own");
+        n = mk(ev, phone, 0, 0, big + 229, 19);
+        /* on_report keeps only 64 bytes; check the length and a spot. */
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 1 && seen == 1,
+              "the completed chain was not delivered once");
+        CHECK(last.data_len == 248, "the joined report is not 248 bytes");
+        memcpy(got, last.data, last.data_len);
+        CHECK(memcmp(got, big, 248) == 0, "the joined data is not the advertisement");
+        CHECK(last.rssi == -60 && memcmp(last.addr, phone, 6) == 0,
+              "the joined report lost its envelope");
+
+        /* Another advertiser's complete report in between does not join. */
+        seen = 0;
+        n = mk(ev, phone, 0, 1, big, 100);
+        tn_hci_feed_evt(ev, n, on_report, NULL);
+        n = mk(ev, other, 0, 0, big, 30);
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 1 && seen == 1 &&
+              last.data_len == 30 && memcmp(last.addr, other, 6) == 0,
+              "a stranger's whole report was held or joined");
+        n = mk(ev, phone, 0, 0, big + 100, 50);
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 1 && seen == 2 &&
+              last.data_len == 150 && memcmp(last.addr, phone, 6) == 0,
+              "the chain did not survive an interleaved report");
+
+        /* The controller gave up: nothing is delivered, and it is counted. */
+        seen = 0;
+        n = mk(ev, phone, 0, 1, big, 200);
+        tn_hci_feed_evt(ev, n, on_report, NULL);
+        n = mk(ev, phone, 0, 2, big, 10);
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 0 && seen == 0,
+              "a truncated chain was delivered");
+        /* A chain that outgrows one AD is dropped whole, never delivered short. */
+        n = mk(ev, phone, 0, 1, big, 200);
+        tn_hci_feed_evt(ev, n, on_report, NULL);
+        n = mk(ev, phone, 0, 0, big, 100);
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 0 && seen == 0,
+              "an oversized chain was delivered");
+        tn_reasm_stats_t rs;
+        tn_hci_reasm_stats(&rs);
+        CHECK(rs.chained == 2 && rs.truncated == 1 && rs.overflow == 1,
+              "the chain counters are wrong");
+
+        /* An un-chained report is untouched: same bytes, same count. */
+        seen = 0;
+        n = mk(ev, other, 0, 0, big, 40);
+        CHECK(tn_hci_feed_evt(ev, n, on_report, NULL) == 1 && seen == 1 &&
+              last.data_len == 40, "a whole report was held");
+        tn_hci_reasm_reset();
+    }
+
     /* ── command results ───────────────────────────────────────────────── */
     {
         const uint8_t cc[] = { 0x04, 0x0E, 0x04, 0x01, 0x36, 0x20, 0x00 };

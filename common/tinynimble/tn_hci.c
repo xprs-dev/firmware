@@ -202,6 +202,132 @@ int tn_hci_ext_scan_enable(uint8_t *buf, size_t cap, bool on, bool filter_dup)
 /* One extended advertising report is 24 fixed bytes then the data. */
 #define RPT_FIXED          24
 
+/* ── chained reports ──────────────────────────────────────────────────────
+ *
+ * One advertisement is not one report. A report carries at most 229 bytes of
+ * data (Vol 4 Part E 7.7.65.13, Data_Length 0x00-0xE5), and a controller
+ * hands anything longer over as a CHAIN: reports whose Data_Status (bits 5-6
+ * of Event_Type) says "incomplete, more to come", then one that says
+ * "complete" -- or "truncated", when it gave up. A phone's XPRS beacon is
+ * 248 bytes of payload inside a 254-byte AD, so every one of them arrives in
+ * two pieces.
+ *
+ * This decoder delivered each piece as a report of its own. The first piece
+ * began with an AD length its 229 bytes could not satisfy, the second began
+ * in the middle of a callsign, and the bearer's AD walk dropped both without
+ * a counter. Every tinynimble board -- the T-Deck, the Heltec, the T-Dongle
+ * -- was deaf to every phone in the room while hearing every station, whose
+ * beacons are 135 bytes and never chain. The M5Stack heard the phones,
+ * because NimBLE's host reassembles. Bench 2026-09-05, X3DCK0 next to
+ * X1VCVM at -42 dBm, for a day.
+ *
+ * So the pieces are joined here, per advertiser (address + SID), and the
+ * caller sees one report with the whole data, exactly as it sees an
+ * un-chained one. Two slots: a chain is two reports a few hundred
+ * microseconds apart, and two phones interleaving is the most this bench
+ * has produced. TN_REASM_MAX is the largest AD anything above parses
+ * (docs/ble5.md: one AD, 254 bytes); a chain that outgrows it is dropped
+ * and counted, not delivered short. */
+#define TN_REASM_SLOTS 2
+#define TN_REASM_MAX   254
+
+typedef struct {
+    uint8_t  used;
+    uint8_t  addr_type;
+    uint8_t  addr[6];
+    uint8_t  sid;
+    uint8_t  overflow;
+    uint16_t len;
+    uint32_t seq;
+    uint8_t  buf[TN_REASM_MAX];
+} reasm_t;
+
+static reasm_t         s_reasm[TN_REASM_SLOTS];
+static uint32_t        s_reasm_seq;
+static tn_reasm_stats_t s_rs;
+
+static reasm_t *reasm_find(const tn_adv_report_t *r)
+{
+    for (int i = 0; i < TN_REASM_SLOTS; i++) {
+        reasm_t *m = &s_reasm[i];
+        if (m->used && m->addr_type == r->addr_type && m->sid == r->sid &&
+            memcmp(m->addr, r->addr, 6) == 0)
+            return m;
+    }
+    return NULL;
+}
+
+static reasm_t *reasm_take(const tn_adv_report_t *r)
+{
+    reasm_t *m = reasm_find(r);
+    if (m) return m;
+    /* A free slot, else the one that has waited longest: a chain the
+     * controller never finished is not coming back. */
+    reasm_t *pick = &s_reasm[0];
+    for (int i = 0; i < TN_REASM_SLOTS; i++) {
+        if (!s_reasm[i].used) { pick = &s_reasm[i]; break; }
+        if (s_reasm[i].seq < pick->seq) pick = &s_reasm[i];
+    }
+    if (pick->used) s_rs.overflow++;             /* evicted unfinished */
+    pick->used = 1;
+    pick->addr_type = r->addr_type;
+    memcpy(pick->addr, r->addr, 6);
+    pick->sid = r->sid;
+    pick->len = 0;
+    pick->overflow = 0;
+    return pick;
+}
+
+static void reasm_append(reasm_t *m, const tn_adv_report_t *r)
+{
+    m->seq = ++s_reasm_seq;
+    if (m->overflow) return;
+    if ((int)m->len + r->data_len > TN_REASM_MAX) { m->overflow = 1; return; }
+    memcpy(m->buf + m->len, r->data, r->data_len);
+    m->len = (uint16_t)(m->len + r->data_len);
+}
+
+/* Deliver [r], joined to whatever earlier pieces its advertiser has here.
+ * Returns whether the caller was called. */
+static int reasm_feed(tn_adv_report_t *r, tn_report_cb_t cb, void *ctx)
+{
+    unsigned status = (r->evt_type >> 5) & 0x3;   /* Data_Status */
+    if (status == 0) {                             /* complete */
+        reasm_t *m = reasm_find(r);
+        if (!m) { if (cb) cb(r, ctx); return 1; }  /* the ordinary case */
+        reasm_append(m, r);
+        m->used = 0;
+        if (m->overflow) { s_rs.overflow++; return 0; }
+        s_rs.chained++;
+        tn_adv_report_t whole = *r;
+        whole.data = m->buf;
+        whole.data_len = (uint8_t)m->len;
+        if (cb) cb(&whole, ctx);
+        return 1;
+    }
+    if (status == 1) {                             /* more to come */
+        reasm_append(reasm_take(r), r);
+        return 0;
+    }
+    /* truncated (2), or the reserved value: the controller gave up. */
+    reasm_t *m = reasm_find(r);
+    if (m) m->used = 0;
+    s_rs.truncated++;
+    return 0;
+}
+
+void tn_hci_reasm_stats(tn_reasm_stats_t *out)
+{
+    if (out) *out = s_rs;
+}
+
+void tn_hci_reasm_reset(void)
+{
+    memset(s_reasm, 0, sizeof s_reasm);
+    memset(&s_rs, 0, sizeof s_rs);
+    s_reasm_seq = 0;
+}
+
 int tn_hci_feed_evt(const uint8_t *pkt, size_t len, tn_report_cb_t cb, void *ctx)
 {
     if (!pkt || len < 3) return -1;
@@ -237,8 +363,7 @@ int tn_hci_feed_evt(const uint8_t *pkt, size_t len, tn_report_cb_t cb, void *ctx
 
         if (r.data + r.data_len > end) return -1;   /* claimed past the packet */
 
-        if (cb) cb(&r, ctx);
-        delivered++;
+        delivered += reasm_feed(&r, cb, ctx);
         p += RPT_FIXED + r.data_len;
     }
     return delivered;

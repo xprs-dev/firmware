@@ -2471,7 +2471,7 @@ static void status_task(void *arg)
          *   quiet seconds since the last one; -1 = never heard anything */
         ESP_LOGW(TAG, "alive %us heap=%u/%u call=%s ch=%u espnow rx=%u tx=%u "
                       "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u "
-                      "ble rx=%u drop=%u quiet=%ds",
+                      "ble rx=%u drop=%u chain=%u/%u quiet=%ds",
                  (unsigned)(esp_timer_get_time() / 1000000ULL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -2481,6 +2481,7 @@ static void status_task(void *arg)
                  (unsigned)done, (unsigned)issued, (unsigned)failed,
                  xprsnow_peer_count(600), (unsigned)s_heard_count,
                  (unsigned)xprsble_scan_results(), (unsigned)xprsble_ad_dropped(),
+                 (unsigned)xprsble_chained(), (unsigned)xprsble_chain_lost(),
                  xprsble_silent_for());
     }
 }

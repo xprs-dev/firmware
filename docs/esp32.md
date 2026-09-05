@@ -1489,6 +1489,18 @@ away:
 - **"Every subsystem is up" does not include the screen.** `xprs_health`'s
   roster covers what has been `xh_expect()`ed, and the UI task is not in it, so
   `station up: ...` is silent about a dark panel. Do not read it as one.
+- **A tinynimble board that hears every station and no phone is not out of
+  range.** 2026-09-05: X3DCK0 sat next to X1VCVM at -42 dBm for a day and
+  never listed it, while the M5Stack across the room did. An HCI LE Extended
+  Advertising Report carries at most 229 bytes of data; a phone's beacon is
+  248, so the controller delivers it as a CHAIN of reports with Data_Status
+  "incomplete, more to come" then "complete". NimBLE's host joins them;
+  `tn_hci_feed_evt` handed each piece to the bearer as a report of its own,
+  the AD walk found a length its piece could not satisfy, and dropped it with
+  no counter. Station beacons are ~135 bytes and never chain, which is why the
+  fault looked like a phone problem. Joined in tinynimble now; the alive line
+  says `chain=<joined>/<lost>`, and `lost` climbing is the controller giving
+  up, not the join. Read Data_Status before trusting any report decoder.
 - **A dark T-Deck that enumerates on USB and prints nothing to `cat` may be
   running somebody else's firmware.** 2026-09-04: the bench T-Deck was found
   dark -- no splash, no way to tell on from off -- and the reflex was to bisect

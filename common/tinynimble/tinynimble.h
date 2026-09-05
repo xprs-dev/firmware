@@ -135,6 +135,20 @@ typedef struct {
 
 typedef void (*tn_report_cb_t)(const tn_adv_report_t *r, void *ctx);
 
+/* Chained reports, joined before the callback sees them (tn_hci.c). A report
+ * carries at most 229 bytes; a longer advertisement -- every phone beacon --
+ * arrives as several, and the callback gets ONE report with the whole data.
+ * `chained` counts whole advertisements delivered that way, `truncated` the
+ * chains the controller abandoned, `overflow` the chains that outgrew one AD
+ * (254 bytes) or were evicted unfinished. */
+typedef struct {
+    uint32_t chained;
+    uint32_t truncated;
+    uint32_t overflow;
+} tn_reasm_stats_t;
+void tn_hci_reasm_stats(tn_reasm_stats_t *out);
+void tn_hci_reasm_reset(void);
+
 /* ── Command encoders ───────────────────────────────────────────────────────
  *
  * Each writes a complete H4 command packet (indicator, opcode, length,

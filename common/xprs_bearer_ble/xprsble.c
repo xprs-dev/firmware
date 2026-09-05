@@ -60,6 +60,8 @@ void xprsble_offer(const char *wire, int len) { (void)wire; (void)len; }
 
 uint32_t xprsble_scan_results(void) { return 0; }
 uint32_t xprsble_ad_dropped(void) { return 0; }
+uint32_t xprsble_chained(void) { return 0; }
+uint32_t xprsble_chain_lost(void) { return 0; }
 
 /* -1 is what the live implementation returns before the first frame is heard:
  * "nothing to report", not "silent for zero seconds". */
@@ -586,6 +588,24 @@ void xprsble_set_rx_cb(xprsble_rx_cb_t cb) { s_rx_cb = cb; }
 uint32_t xprsble_scan_results(void) { return s_scan_results; }
 
 uint32_t xprsble_ad_dropped(void) { return s_ad_dropped; }
+
+#if CONFIG_XPRSBLE_BACKEND_TINYNIMBLE
+uint32_t xprsble_chained(void)
+{
+    tn_reasm_stats_t rs;
+    tn_hci_reasm_stats(&rs);
+    return rs.chained;
+}
+uint32_t xprsble_chain_lost(void)
+{
+    tn_reasm_stats_t rs;
+    tn_hci_reasm_stats(&rs);
+    return rs.truncated + rs.overflow;
+}
+#else
+uint32_t xprsble_chained(void) { return 0; }
+uint32_t xprsble_chain_lost(void) { return 0; }
+#endif
 
 int xprsble_silent_for(void)
 {

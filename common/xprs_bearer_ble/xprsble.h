@@ -144,6 +144,15 @@ int xprsble_silent_for(void);
  * means it heard plenty and this station threw it away. */
 uint32_t xprsble_ad_dropped(void);
 
+/* Advertisements longer than one HCI report (229 B) -- every phone beacon --
+ * arrive as a chain the tinynimble decoder joins before the bearer sees
+ * them. `chained` is how many whole ones that produced; `chain_lost` how
+ * many chains the controller abandoned or that outgrew one AD. Before the
+ * join existed every tinynimble board was deaf to phones and heard stations
+ * (bench 2026-09-05). 0/0 on the NimBLE backend, whose host joins them. */
+uint32_t xprsble_chained(void);
+uint32_t xprsble_chain_lost(void);
+
 #ifdef __cplusplus
 }
 #endif
