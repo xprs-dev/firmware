@@ -17,6 +17,7 @@
 #include <stdbool.h>
 
 #include "xprs_station.h"
+#include "xprs.h"
 
 extern uint32_t xst_test_now_ms;
 void xst_test_reset(void);
@@ -46,6 +47,17 @@ static void hear(const char *call, const char *bearer, int rssi)
 {
     xst_test_now_ms += 1;
     xst_dev_note(call, bearer, rssi);
+}
+
+/* Note a 1:1 into the chat ring, as the ingest path would. */
+static void chat_msg(const char *from, const char *to, const char *text)
+{
+    xst_test_now_ms += 1;
+    char wire[160];
+    snprintf(wire, sizeof wire,
+             "t:message f:%s d:%s ts:2026-09-05_08:00:00 m:%s", from, to, text);
+    xprs_t p;
+    if (xprs_parse(wire, (int)strlen(wire), &p)) xst_chat_note(&p);
 }
 
 static int render(const char *bearer, int budget, char *calls, int *total,
@@ -327,6 +339,46 @@ static void test_one_row_per_station(void)
     CHECK(xst_devices_in_range(600) == 2, "and counted as two");
 }
 
+static void test_chat_peers(void)
+{
+    reset();
+    /* Heard but never messaged: NOT a peer. */
+    hear("X3AAAA", "espnow", -50);
+    hear("X5GRP", "espnow", -50);          /* a group, never a 1:1 */
+    /* Two exchanges, both directions, newest last. */
+    chat_msg("X1ZEBRA", SELF, "hi from zebra");   /* incoming */
+    chat_msg(SELF, "X1ALPHA", "hi to alpha");     /* outgoing */
+    chat_msg("X1ALPHA-2", SELF, "same person, suffix");  /* base collapses */
+
+    char peers[8][10];
+    int n = xst_chat_peers(SELF, peers, 8);
+    CHECK(n == 2, "two exchanged peers, got %d", n);
+    CHECK(strcmp(peers[0], "X1ALPHA") == 0, "alphabetical first, got %s", peers[0]);
+    CHECK(strcmp(peers[1], "X1ZEBRA") == 0, "alphabetical second, got %s", peers[1]);
+    /* A device merely heard is absent. */
+    for (int i = 0; i < n; i++)
+        CHECK(strcmp(peers[i], "X3AAAA") != 0, "a heard non-peer leaked in");
+
+    /* The cap is honoured. */
+    chat_msg(SELF, "X1BRAVO", "x");
+    chat_msg(SELF, "X1CHARLIE", "x");
+    n = xst_chat_peers(SELF, peers, 2);
+    CHECK(n == 2, "cap respected, got %d", n);
+}
+
+static void test_heard(void)
+{
+    reset();
+    hear("X1NEAR", "ble", -55);
+    hear("X1NEAR-3", "lan", 0);            /* same base, other bearer */
+    CHECK(xst_heard("X1NEAR", 300), "a fresh station is heard");
+    CHECK(xst_heard("x1near-9", 300), "base + case-insensitive");
+    CHECK(!xst_heard("X1GONE", 300), "an unheard station is not");
+    /* Age it out. */
+    xst_test_now_ms += 301u * 1000u;
+    CHECK(!xst_heard("X1NEAR", 300), "stale is not heard");
+}
+
 int main(void)
 {
     printf("xprs_station host tests (XPRS.md 10.6.3, 10.6.4)\n");
@@ -339,6 +391,8 @@ int main(void)
     test_direct_only();
     test_full_table();
     test_one_row_per_station();
+    test_chat_peers();
+    test_heard();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -247,7 +247,8 @@ void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n);
 typedef struct {
     char name[12];
     bool heading;            /* a section label (ROOMS / FEED / PEOPLE)     */
-    bool unread;             /* marks the row with a dot                    */
+    bool unread;             /* marks the row with a bell                   */
+    uint8_t presence;        /* 0 none, 1 offline (grey), 2 online (green)  */
 } xui_room_t;
 
 typedef struct {

@@ -171,6 +171,18 @@ int  xst_chat(xst_chat_t *out, int max);
 /* Find a chat row by its section-5 id (reply-parent lookup). 1 = found. */
 int  xst_chat_find(const char *id, xst_chat_t *out);
 
+/* The people this station has a 1:1 history with: distinct base callsigns of
+ * `kind == 2` rows where [self] is the sender or the recipient, most-recent
+ * exchange first, then sorted alphabetically so the order never depends on
+ * who spoke last. Returns the count written to [out] (each `char[10]`), at
+ * most [max]. This is the chat rail's PEOPLE list -- who we have talked to,
+ * not everyone the radio has heard. */
+int  xst_chat_peers(const char *self, char out[][10], int max);
+
+/* Is [call] (base match, case-insensitive) a station we have heard on any
+ * bearer within [in_range_sec]? The chat's green/grey presence dot. */
+bool xst_heard(const char *call, int in_range_sec);
+
 /* Series for the stats charts. view 0 = last 24 ten-minute buckets,
  * 1 = last 24 hours, 2 = last 30 days. Returns the point count written
  * (<= max), 0 before NTP has spoken. */

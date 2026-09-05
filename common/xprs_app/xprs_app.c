@@ -2618,6 +2618,15 @@ static bool chat_active(void)   /* the interactive panel, not the table */
 static int  s_room;                       /* 0..2 fixed, else a peer index */
 static char s_peer[CHAT_PEERS_MAX][10];   /* callsigns offered for a 1:1  */
 static int  s_peer_n;
+/* The open conversation, remembered BY CALLSIGN, not by index -- an index
+ * into a list that is rebuilt names a different person the moment the list
+ * changes, which is the "callsigns keep moving under me" bug. Empty when a
+ * fixed room is open. While it is set the peer list is frozen: nothing is
+ * added, moved or taken away under the person being read. */
+static char s_open_call[10];
+/* A 1:1 arrived from someone not on the (frozen) rail: the bell goes on the
+ * PEOPLE heading until the list is next rebuilt and they appear. */
+static bool s_people_unread;
 
 /* ONE scratch copy of the chat ring, shared by everything on the UI task
  * that needs to walk it -- the rail's peer list and the bubbles.
@@ -2673,47 +2682,26 @@ static int room_of(const xst_chat_t *c)
     return c->kind == 1 ? RM_LOCAL : RM_GLOBAL;
 }
 
-/* The rail's peers: everyone within reach, so a conversation can be
- * started with somebody who has not spoken yet, plus anyone we have
- * already exchanged with even if they have since gone quiet. */
+/* Remember which conversation is open BY CALLSIGN (empty for a fixed room),
+ * so a rebuilt, reordered rail cannot slide the selection onto someone else. */
+static void chat_sync_open(void)
+{
+    if (s_room >= RM_FIXED && s_room - RM_FIXED < s_peer_n)
+        snprintf(s_open_call, sizeof s_open_call, "%s", s_peer[s_room - RM_FIXED]);
+    else
+        s_open_call[0] = 0;
+}
+
+/* The rail's peers: the people we have a 1:1 history with, alphabetical so a
+ * later beacon never reorders them. The library owns the rule (xst_chat_peers);
+ * this only copies the result and clears the PEOPLE-heading bell, since a
+ * rebuild is where a newly-heard sender finally gets its own row. */
 static void chat_refresh_peers(void)
 {
-    char me[10];
-    base_call(s_call, me, sizeof me);
-    s_peer_n = 0;
-
-    xst_dev_t dev[XST_SEEN_MAX];
-    /* An hour, not UI_INRANGE_SEC's five minutes: somebody who spoke half
-     * an hour ago is still worth being able to answer. */
-    int dn = xst_devices(dev, XST_SEEN_MAX, 3600);
-    for (int i = 0; i < dn && s_peer_n < CHAT_PEERS_MAX; i++) {
-        char b[10];
-        base_call(dev[i].call, b, sizeof b);
-        if (!b[0] || strcasecmp(b, me) == 0) continue;
-        /* A group is not a person: only a callsign can hold a 1:1. */
-        if (!xprs_is_station(b, (int)strlen(b))) continue;
-        bool seen = false;
-        for (int j = 0; j < s_peer_n; j++)
-            if (strcasecmp(s_peer[j], b) == 0) { seen = true; break; }
-        if (!seen) snprintf(s_peer[s_peer_n++], 10, "%s", b);
-    }
-
-    xst_chat_t *rows = s_chat_scratch;
-    int cn = xst_chat(rows, XST_CHAT_MAX);
-    for (int i = 0; i < cn && s_peer_n < CHAT_PEERS_MAX; i++) {
-        if (rows[i].kind != 2) continue;
-        char f[10], t[10];
-        base_call(rows[i].from, f, sizeof f);
-        base_call(rows[i].to, t, sizeof t);
-        const char *peer = strcasecmp(t, me) == 0 ? f
-                         : strcasecmp(f, me) == 0 ? t : NULL;
-        if (!peer || !peer[0]) continue;
-        bool seen = false;
-        for (int j = 0; j < s_peer_n; j++)
-            if (strcasecmp(s_peer[j], peer) == 0) { seen = true; break; }
-        if (!seen) snprintf(s_peer[s_peer_n++], 10, "%s", peer);
-    }
+    s_peer_n = xst_chat_peers(s_call, s_peer, CHAT_PEERS_MAX);
+    s_people_unread = false;
 }
+
 
 /* Something arrived. Which room it landed in decides which rail row grows
  * a dot -- except the room being read, where arriving and being read are
@@ -2737,8 +2725,14 @@ static void chat_note_unread(const xprs_t *p)
               strcmp(sc, "local") == 0) ? 1 : 0;
 
     int r = room_of(&c);
-    if (r < 0 || r >= (int)(sizeof s_room_unread / sizeof s_room_unread[0]))
+    if (r < 0) {
+        /* A 1:1 whose peer is not on the rail right now (the list is frozen
+         * while a conversation is open, or they are new). Mark the PEOPLE
+         * heading; the row appears when the list is next rebuilt. */
+        if (c.kind == 2) s_people_unread = true;
         return;
+    }
+    if (r >= (int)(sizeof s_room_unread / sizeof s_room_unread[0])) return;
     if (chat_active() && r == s_room) return;
     s_room_unread[r] = true;
 }
@@ -3158,9 +3152,25 @@ static void ui_render(void)
     }
     case 1: if (chat_active()) {
         /* The interactive chat: rooms down the left, the conversation as
-         * bubbles, and a composer. Only reached on a board that can type. */
-        chat_refresh_peers();
-        if (s_room >= RM_FIXED + s_peer_n) s_room = RM_GLOBAL;
+         * bubbles, and a composer. Only reached on a board that can type.
+         *
+         * The peer list is rebuilt ONLY when no conversation is open. While
+         * one is (`s_open_call` set), the rail is frozen -- nothing is added,
+         * reordered or removed under the person being read, which is the
+         * whole of feedback (1). A newly-heard sender waits on the PEOPLE
+         * bell until the reader steps back to a room. */
+        if (!s_open_call[0]) chat_refresh_peers();
+        /* Re-resolve the open conversation to its (possibly new) index by
+         * CALLSIGN. If it is somehow no longer listed, fall back rather than
+         * point the header and the composer's d: at a different person. */
+        if (s_open_call[0]) {
+            int at = -1;
+            for (int i = 0; i < s_peer_n; i++)
+                if (strcasecmp(s_peer[i], s_open_call) == 0) { at = i; break; }
+            if (at >= 0) s_room = RM_FIXED + at;
+            else { s_open_call[0] = 0; s_room = RM_GLOBAL; }
+        }
+        if (s_room >= RM_FIXED + s_peer_n) { s_room = RM_GLOBAL; s_open_call[0] = 0; }
 
         static xui_room_t rr[XUI_CHAT_ROOMS];
         int rn = 0, sel = 0;
@@ -3184,12 +3194,16 @@ static void ui_render(void)
         }
         if (s_peer_n && rn < XUI_CHAT_ROOMS) {
             snprintf(rr[rn].name, sizeof rr[rn].name, "PEOPLE");
-            rr[rn].heading = true; rr[rn].unread = false; rn++;
+            rr[rn].heading = true; rr[rn].unread = s_people_unread; rn++;
         }
         for (int i = 0; i < s_peer_n && rn < XUI_CHAT_ROOMS; i++) {
             snprintf(rr[rn].name, sizeof rr[rn].name, "%s", s_peer[i]);
             rr[rn].heading = false;
             rr[rn].unread = s_room_unread[RM_FIXED + i];
+            /* Green when this station has been heard on any bearer inside the
+             * five-minute window, grey when it is a name we have talked to
+             * but cannot reach right now (feedback 3). */
+            rr[rn].presence = xst_heard(s_peer[i], UI_INRANGE_SEC) ? 2 : 1;
             if (s_room == RM_FIXED + i) sel = rn;
             s_rail_room[rn] = RM_FIXED + i;
             rn++;
@@ -3468,6 +3482,7 @@ static xapp_key_t touch_events(xapp_key_t key, bool *force)
             if (ev.arg >= 0 && ev.arg < XUI_CHAT_ROOMS && s_rail_room[ev.arg] >= 0) {
                 ESP_LOGI(TAG, "touch: room %d -> %d", ev.arg, s_rail_room[ev.arg]);
                 s_room = s_rail_room[ev.arg];
+                chat_sync_open();
                 s_compose_focus = false;
                 *force = true;
             }
@@ -5119,6 +5134,7 @@ static void ui_task(void *arg)
             s_room += key == XAPP_KEY_UP ? -1 : 1;
             if (s_room < 0) s_room = last;
             if (s_room > last) s_room = 0;
+            chat_sync_open();
             force = true;
             ESP_LOGI(TAG, "chat: room %d", s_room);
             key = XAPP_KEY_NONE;

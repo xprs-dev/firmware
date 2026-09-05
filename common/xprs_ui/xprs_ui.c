@@ -163,6 +163,7 @@ static lv_obj_t *s_chat;
 static lv_obj_t *s_chat_rail;
 static lv_obj_t *s_room_row[XUI_CHAT_ROOMS];
 static lv_obj_t *s_room_lbl[XUI_CHAT_ROOMS];
+static lv_obj_t *s_room_dot[XUI_CHAT_ROOMS];
 static lv_obj_t *s_chat_head;
 static lv_obj_t *s_chat_list;
 static lv_obj_t *s_chat_input;
@@ -1489,6 +1490,16 @@ static void chat_build(void)
         lv_obj_clear_flag(s_room_row[i], LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(s_room_row[i], LV_OBJ_FLAG_HIDDEN);
 
+        /* A presence dot, hidden until a peer row asks for one. Same 6px
+         * circle the home panel uses; created once and reused. */
+        s_room_dot[i] = lv_obj_create(s_room_row[i]);
+        lv_obj_remove_style_all(s_room_dot[i]);
+        lv_obj_set_size(s_room_dot[i], 6, 6);
+        lv_obj_set_style_radius(s_room_dot[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(s_room_dot[i], LV_OPA_COVER, 0);
+        lv_obj_align(s_room_dot[i], LV_ALIGN_LEFT_MID, 5, 0);
+        lv_obj_add_flag(s_room_dot[i], LV_OBJ_FLAG_HIDDEN);
+
         s_room_lbl[i] = lv_label_create(s_room_row[i]);
         lv_label_set_text(s_room_lbl[i], "");
         lv_obj_set_style_text_font(s_room_lbl[i], &lv_font_montserrat_12, 0);
@@ -1575,6 +1586,17 @@ void xui_chat_rooms(const xui_room_t *rooms, int n, int sel)
         const xui_room_t *r = &rooms[i];
         lv_obj_clear_flag(s_room_row[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(s_room_row[i], 0, i * XUI_ROOM_H);
+        /* Presence dot: green heard-recently, grey known-but-quiet, none for
+         * headings and fixed rooms. The label shifts right to make room. */
+        if (r->presence && !r->heading) {
+            lv_obj_set_style_bg_color(s_room_dot[i],
+                r->presence == 2 ? lv_color_make(60, 255, 90) : XUI_C_MUTED, 0);
+            lv_obj_clear_flag(s_room_dot[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(s_room_lbl[i], LV_ALIGN_LEFT_MID, 16, 0);
+        } else {
+            lv_obj_add_flag(s_room_dot[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_align(s_room_lbl[i], LV_ALIGN_LEFT_MID, 6, 0);
+        }
         /* The unread mark is a character, not an object: at 16 px a row it
          * reads the same and costs nothing from LVGL's pool. */
         if (r->unread && !r->heading)

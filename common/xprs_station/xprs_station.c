@@ -512,6 +512,80 @@ int xst_devices_in_range(int in_range_sec)
     return xst_devices(rows, XST_SEEN_MAX, in_range_sec);
 }
 
+/* First `-` ends the base callsign: X1A67X-2 and X1A67X are one person. */
+static void xst_base(const char *in, char *out, int cap)
+{
+    int i = 0;
+    for (; in && in[i] && in[i] != '-' && i < cap - 1; i++) out[i] = in[i];
+    out[i] = 0;
+}
+
+int xst_chat_peers(const char *self, char out[][10], int max)
+{
+    if (!out || max <= 0) return 0;
+    char me[10];
+    xst_base(self, me, sizeof me);
+    int n = 0;
+    /* Newest exchange first: walk the ring by seq (xst_chat already does),
+     * add each base peer once, until full. Then sort alphabetically so a
+     * later beacon cannot reorder the rail under a selection.
+     *
+     * The ring copy is 6.7 KB -- too much for the UI task's stack, so it is
+     * a PSRAM static like s_chat_scratch in xprs_app. Called only from the
+     * single UI task, so one is enough. */
+    static XPRS_PSRAM_BSS xst_chat_t rows[XST_CHAT_MAX];
+    int cn = xst_chat(rows, XST_CHAT_MAX);
+    for (int i = 0; i < cn && n < max; i++) {
+        if (rows[i].kind != 2) continue;
+        char f[10], t[10];
+        xst_base(rows[i].from, f, sizeof f);
+        xst_base(rows[i].to, t, sizeof t);
+        const char *peer = strcasecmp(t, me) == 0 ? f
+                         : strcasecmp(f, me) == 0 ? t : NULL;
+        if (!peer || !peer[0]) continue;
+        bool seen = false;
+        for (int j = 0; j < n; j++)
+            if (strcasecmp(out[j], peer) == 0) { seen = true; break; }
+        if (!seen) snprintf(out[n++], 10, "%s", peer);
+    }
+    /* Insertion sort, case-insensitive; n <= max <= a handful. memmove, not
+     * snprintf, because the slots overlap and -Werror=restrict rejects a
+     * copy between them. */
+    for (int i = 1; i < n; i++) {
+        char v[10];
+        memcpy(v, out[i], 10);
+        int j = i - 1;
+        while (j >= 0 && strcasecmp(out[j], v) > 0) {
+            memmove(out[j + 1], out[j], 10);
+            j--;
+        }
+        memcpy(out[j + 1], v, 10);
+    }
+    return n;
+}
+
+bool xst_heard(const char *call, int in_range_sec)
+{
+    if (!call || !call[0]) return false;
+    char want[10];
+    xst_base(call, want, sizeof want);
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    bool fresh = false;
+    LOCK();
+    for (int i = 0; i < XST_SEEN_MAX; i++) {
+        if (!s_seen[i].call[0]) continue;
+        char b[10];
+        xst_base(s_seen[i].call, b, sizeof b);
+        if (strcasecmp(b, want) != 0) continue;
+        if ((now - s_seen[i].last_ms) / 1000 < (uint32_t)in_range_sec) {
+            fresh = true;
+            break;
+        }
+    }
+    UNLOCK();
+    return fresh;
+}
+
 int xst_chat(xst_chat_t *out, int max)
 {
     int n = 0;
