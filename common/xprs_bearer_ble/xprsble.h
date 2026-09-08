@@ -79,6 +79,19 @@ esp_err_t xprsble_start(const char *callsign);
 /** True once the controller has synced and instance 0 may be driven. */
 bool xprsble_is_active(void);
 
+/**
+ * @brief Duty-cycle the scan: true is the low-power window, false is full.
+ *
+ * Full is a 50 ms window in a 60 ms interval -- the receiver on 83% of the
+ * time, which is what discovery latency costs. Low is 12.5 ms in the same
+ * 60 ms. XPRS beacons repeat, so the low window delays a neighbour rather
+ * than losing one; the station still hears everything, a few seconds later.
+ *
+ * Driven by common/xprs_power while the battery is discharging, and put back
+ * the moment a charger appears. A board with no battery never calls it.
+ */
+void xprsble_scan_duty(bool low);
+
 /** Register the receive hook. Called on the NimBLE host task: copy and return. */
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb);
 

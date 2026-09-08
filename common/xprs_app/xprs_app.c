@@ -100,6 +100,7 @@ static uint32_t heap_floor(void);   /* the board's, or the default above */
 #include "xprs_auth.h"
 #include "xprs_ota.h"
 #include "xprs_hotspot.h"
+#include "xprs_power.h"
 #include "xprsindex.h"
 #include "xgossip.h"
 #include "xcadence.h"
@@ -567,61 +568,70 @@ static void splash_step(const char *what)
 static bool     s_kb_lit;
 static uint32_t s_kb_off_ms;
 
-/* Battery. Six samples ten seconds apart: one minute of trend. The state
- * is what the trend says, not the voltage -- a full battery on USB and a
- * full battery just unplugged read the same millivolts. */
-#define BAT_RING 6
-#define BAT_SAMPLE_MS 10000
-#define BAT_TREND_MV 40      /* outside the ADC's own wander */
-#define BAT_USB_MV   4300    /* above any lithium cell: USB is present */
-enum { BAT_UNKNOWN = 0, BAT_CHARGING, BAT_DISCHARGING };
-static int      s_bat_mv = -1;
-static int      s_bat_ring[BAT_RING];
-static int      s_bat_n;              /* samples taken, saturates at BAT_RING */
-static int      s_bat_state = BAT_UNKNOWN;
-static uint32_t s_bat_next_ms;
+/*
+ * Battery. The arithmetic moved to common/xprs_power, which learns this
+ * cell's real full-to-empty runtime instead of guessing a percentage off a
+ * voltage that sags every time the radio transmits. The bench-measured
+ * constants that used to live here -- the 4300 mV "that is USB" clamp and the
+ * 40 mV trend band -- moved with it unaltered.
+ *
+ * What is left here is the seam: the board owns the ADC, the gauge owns the
+ * meaning, and this reads one from the other.
+ */
 static bool     s_screen_off;
 static bool     s_touch_pressed;      /* a finger went down this tick */
+static int      s_bat_pct_shown = -2; /* what the top bar last carried */
+static int      s_bat_chg_shown = -1; /* ... and whether it drew the bolt */
+
+/*
+ * "1 day, 3 hours". Two units, largest first, and the second one dropped once
+ * it is zero -- "2 days" reads better than "2 days, 0 hours".
+ */
+static void uptime_words(uint32_t secs, char *out, size_t cap)
+{
+    uint32_t d = secs / 86400, h = (secs / 3600) % 24;
+    uint32_t m = (secs / 60) % 60, s = secs % 60;
+    if (d)      snprintf(out, cap, h ? "%lu day%s, %lu hour%s" : "%lu day%s",
+                         (unsigned long)d, d == 1 ? "" : "s",
+                         (unsigned long)h, h == 1 ? "" : "s");
+    else if (h) snprintf(out, cap, m ? "%lu hour%s, %lu min" : "%lu hour%s",
+                         (unsigned long)h, h == 1 ? "" : "s",
+                         (unsigned long)m);
+    else if (m) snprintf(out, cap, "%lu min, %lu s",
+                         (unsigned long)m, (unsigned long)s);
+    else        snprintf(out, cap, "%lu s", (unsigned long)s);
+}
 
 static const char *bat_state_name(void)
 {
-    return s_bat_state == BAT_CHARGING ? "charging"
-         : s_bat_state == BAT_DISCHARGING ? "discharging" : "unknown";
+    return xpwr_state_name();
 }
 
 static void battery_tick(void)
 {
     if (!s_board->battery_mv) return;
     uint32_t now = now_ms();
-    if ((int32_t)(now - s_bat_next_ms) < 0) return;
-    s_bat_next_ms = now + BAT_SAMPLE_MS;
-    int mv = s_board->battery_mv();
-    if (mv < 0) return;
-    s_bat_mv = mv;
-    for (int i = BAT_RING - 1; i > 0; i--) s_bat_ring[i] = s_bat_ring[i - 1];
-    s_bat_ring[0] = mv;
-    if (s_bat_n < BAT_RING) s_bat_n++;
+    if (!xpwr_should_sample(now)) return;
+    xpwr_feed(s_board->battery_mv(), now);
 
-    int was = s_bat_state;
-    /* First the hard fact: a lithium cell never exceeds ~4.2 V, so a node
-     * reading above 4.3 V is being held up by USB. The trend cannot be
-     * trusted there -- measured on a bench T-Deck, the ADC wandered between
-     * 4456 and 4568 mV on USB, which a 15 mV threshold read as "discharging"
-     * and put the screen out. Below that, the trend decides, with a band
-     * wide enough to sit outside that noise, and only once a full minute of
-     * samples exists. */
-    if (mv >= BAT_USB_MV) {
-        s_bat_state = BAT_CHARGING;
-    } else if (s_bat_n >= BAT_RING) {
-        int delta = s_bat_ring[0] - s_bat_ring[BAT_RING - 1];
-        if (delta <= -BAT_TREND_MV)      s_bat_state = BAT_DISCHARGING;
-        else if (delta >= BAT_TREND_MV)  s_bat_state = BAT_CHARGING;
-        /* flat and below the USB line: whatever it was, unchanged */
+    /* The top bar, and only when what it SHOWS has actually changed -- a
+     * label rewrite is a full-width redraw of the orange strip.
+     *
+     * Both halves are compared, not just the number. Watching the percentage
+     * alone was wrong in the one case that matters most: plug a full station
+     * in and the charge stays at 100 while the state goes to charging, so the
+     * bolt never appeared. Caught on the bench, from a screenshot, which is
+     * the only place it could have been caught. */
+    int pct = xpwr_pct();
+    int chg = (xpwr_state() == XPWR_CHARGING);
+    if (pct != s_bat_pct_shown || chg != s_bat_chg_shown) {
+        s_bat_pct_shown = pct;
+        s_bat_chg_shown = chg;
+        xui_set_battery(pct, chg);
     }
-    if (s_bat_state != was)
-        ESP_LOGI(TAG, "battery %d mV %s", mv, bat_state_name());
-    else
-        ESP_LOGD(TAG, "battery %d mV %s", mv, bat_state_name());
+
+    char warn[96];
+    if (xpwr_warning(warn, sizeof warn)) xui_set_note(warn);
 }
 
 static void screen_wake(const char *why)
@@ -636,10 +646,33 @@ static void screen_wake(const char *why)
 
 static void screen_tick(void)
 {
-    if (s_screen_off || !s_board->screen_power) return;
-    int off_s = atoi(xcfg_get("screen_off_s", "120"));
+    if (!s_board->screen_power) return;
+
+    /*
+     * Back on power: light up, the way a phone does when you plug it in.
+     *
+     * Without this the screen was a one-way door. Blanking is gated on the
+     * trend saying "discharging", and the trend is a guess below the USB
+     * line -- so a station could take one dip, go dark, be put back on the
+     * charger, and stay dark until somebody touched it. Seen on the bench:
+     * `"state":"charging"` and `"screen":"off"` in the same /api/status.
+     *
+     * The board this was found on reads 4276-4366 mV on USB, where the one
+     * the 4300 mV clamp was tuned against read 4456-4568. Same model, same
+     * firmware, 200 mV apart -- which is the whole argument for not trusting
+     * a threshold to be the only way out of a dark screen.
+     */
+    if (s_screen_off) {
+        if (xpwr_state() == XPWR_CHARGING) screen_wake("power");
+        return;
+    }
+    /* 60 s, not 120. The backlight is the single largest load on this board
+     * whenever it is lit, and two minutes of lighting an empty room is the
+     * cheapest minute in the whole power budget to give back. Still a config
+     * key, still 0 for never. */
+    int off_s = atoi(xcfg_get("screen_off_s", "60"));
     if (off_s <= 0) return;                         /* 0 = never */
-    if (s_bat_state != BAT_DISCHARGING) return;     /* on power: stay lit */
+    if (xpwr_state() != XPWR_DISCHARGING) return;   /* on power: stay lit */
     if (xui_idle_ms() < (uint32_t)off_s * 1000u) return;
     s_screen_off = true;
     xui_flush_enable(false);
@@ -1828,6 +1861,74 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 /* ── Network state the UI shows ─────────────────────────────────────────── */
 
 static char s_ip_str[20];                 /* empty until GOT_IP */
+
+/*
+ * What the power policy is allowed to switch off on this station.
+ *
+ * The gauge decides WHEN (it is the only thing that knows the cell is
+ * draining); these decide WHAT, because they are the only things that know
+ * what this station is for. A board that cannot do one of them leaves the
+ * hook NULL and simply saves nothing there.
+ */
+static void pwr_ble_scan_duty(bool low)
+{
+    xprsble_scan_duty(low);
+}
+
+static bool pwr_sta_up(void)
+{
+    /* Not "the driver is in APSTA" -- "somebody can reach us". The AP is only
+     * ever stood down when this is true, so the station stays answerable on
+     * the LAN instead of disappearing to save power. */
+    return s_ip_str[0] != 0;
+}
+
+static int pwr_ap_clients(void)
+{
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_OK) return -1;
+    if (mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) return 0;
+    wifi_sta_list_t list;
+    if (esp_wifi_ap_get_sta_list(&list) != ESP_OK) return -1;
+    return list.num;
+}
+
+/*
+ * The SoftAP beacons at 20 dBm whether or not anybody is listening, and an
+ * access point is the one radio role that can never sleep -- it has to be
+ * awake for its own beacon interval, forever.
+ *
+ * This is the same mechanism ota_quiesce() already uses, and it defers to it:
+ * while an install has the AP down, this leaves it alone in both directions.
+ * Fighting over one wifi mode from two places is how a station ends up with
+ * no hotspot and nobody knowing which half took it.
+ */
+static bool pwr_ap_stand_down(bool down)
+{
+    if (s_ap_stood_down) return false;          /* an install owns it */
+    if (!xcfg_get_bool("ap_on", true)) return false;
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_OK) return false;
+
+    if (down) {
+        if (mode != WIFI_MODE_APSTA) return false;
+        if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
+        ESP_LOGI(TAG, "hotspot down: on battery with nobody on it");
+        return true;
+    }
+    if (mode != WIFI_MODE_STA) return false;
+    if (esp_wifi_set_mode(WIFI_MODE_APSTA) != ESP_OK) return false;
+    ESP_LOGI(TAG, "hotspot back up");
+    return true;
+}
+
+static const xpwr_hooks_t k_pwr_hooks = {
+    .ble_scan_duty = pwr_ble_scan_duty,
+    .ap_stand_down = pwr_ap_stand_down,
+    .ap_clients    = pwr_ap_clients,
+    .sta_up        = pwr_sta_up,
+};
+
 static volatile bool s_inet_up;           /* last probe verdict */
 static volatile bool s_inet_known;        /* at least one probe finished */
 
@@ -2995,10 +3096,15 @@ static void ui_render(void)
             NROW("Key", "none", "No signing key: packets go out unsigned.");
         }
 
+        /*
+         * Words, not a stopwatch. This row said "%02lu:%02lu:%02lu" over
+         * up/3600, which never rolled into days: a station up for a week
+         * reported "168:23:14", and counting hours in your head is not what
+         * this row is for. The two largest units that are non-zero is how
+         * long anybody actually describes an uptime.
+         */
         uint32_t up = now / 1000;
-        snprintf(val, sizeof val, "%02lu:%02lu:%02lu",
-                 (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60),
-                 (unsigned long)(up % 60));
+        uptime_words(up, val, sizeof val);
         NROW("Uptime", val, "Time since this station booted.");
 
         unsigned heap = (unsigned)esp_get_free_heap_size();
@@ -3006,14 +3112,31 @@ static void ui_render(void)
         snprintf(det, sizeof det, "%u bytes of internal RAM free.", heap);
         NROW("Heap", val, det);
         if (s_board->battery_mv) {
-            if (s_bat_mv >= 0) snprintf(val, sizeof val, "%d mV", s_bat_mv);
-            else snprintf(val, sizeof val, "--");
-            snprintf(det, sizeof det, "%s%s. The screen blanks after %s s "
-                     "idle on battery; any key or touch wakes it.",
+            int bpct = xpwr_pct(), bmv = xpwr_mv(), left = xpwr_secs_left();
+            if (bpct >= 0) snprintf(val, sizeof val, "%d%%  %d mV", bpct, bmv);
+            else           snprintf(val, sizeof val, "--");
+
+            /* The row says what the gauge knows AND what it does not. A
+             * confidence of zero means it has never watched this cell run
+             * down and the number is a curve's opinion; saying so is the
+             * difference between a gauge and a decoration. */
+            char rest[72];
+            if (left >= 0)
+                snprintf(rest, sizeof rest, " About %dh%02dm left, learned "
+                         "from %u discharge%s.", left / 3600,
+                         (left % 3600) / 60, (unsigned)xpwr_cycles(),
+                         xpwr_cycles() == 1 ? "" : "s");
+            else
+                snprintf(rest, sizeof rest,
+                         " No runtime learned yet; voltage only.");
+            /* %.4s on a config value: xcfg hands back up to 80 bytes and
+             * the row's detail is 160, so an unbounded %s here is a
+             * truncation the compiler is right to refuse. Four digits is
+             * every screen timeout anybody will ever set. */
+            snprintf(det, sizeof det, "%s.%s Screen blanks after %.4s s idle.",
                      bat_state_name()[0] == 'c' ? "Charging" :
                      bat_state_name()[0] == 'd' ? "Discharging" : "Trend unknown",
-                     s_bat_n < BAT_RING ? " (first minute)" : "",
-                     xcfg_get("screen_off_s", "120"));
+                     rest, xcfg_get("screen_off_s", "60"));
             NROW("Battery", val, det);
         }
 
@@ -4801,11 +4924,13 @@ static int api_status_json(char *buf, size_t cap)
 {
     /* Cached values only -- this runs on the HTTP task; the lora report is
      * a 60-entry walk with no locks and no radio, which qualifies. */
+    char bat[192];
+    xpwr_status_json(bat, sizeof bat);
     int n = snprintf(buf, cap,
-        "\"battery\":{\"mv\":%d,\"state\":\"%s\"},\"screen\":\"%s\","
+        "\"battery\":{%s},\"screen\":\"%s\","
         "\"heard\":%lu,\"in_reach\":%d,"
         "\"net\":{\"ip\":\"%s\",\"internet\":%s}",
-        s_bat_mv, bat_state_name(), s_screen_off ? "off" : "on",
+        bat, s_screen_off ? "off" : "on",
         (unsigned long)s_heard_count,
         xst_devices_in_range(UI_INRANGE_SEC),
         s_ip_str[0] ? s_ip_str : "",
@@ -5295,6 +5420,7 @@ static void ui_task(void *arg)
             force = true;
         }
         battery_tick();
+        xpwr_policy_tick(now_ms());
         screen_tick();
 
         /* The strip's top bar. On a LoRa board it carries the last packet's
@@ -5349,9 +5475,22 @@ static void ui_task(void *arg)
         xui_update();
         esp_task_wdt_reset();
 
-        /* At 100 Hz tick a small delay can round to zero and starve IDLE0 —
-         * same guard the T-Dongle carries. */
-        TickType_t d = pdMS_TO_TICKS(10);
+        /*
+         * 100 Hz with something on the screen, 20 Hz with the screen dark.
+         *
+         * This loop reads the trackball's five GPIOs and runs a full I2C
+         * transaction against the keyboard MCU on EVERY pass, and it did that
+         * a hundred times a second against a panel that was switched off --
+         * polling, at the station's highest sustained cost, for input to a
+         * display nobody can see. At 20 Hz a keypress is still caught within
+         * 50 ms and still wakes the screen, which is faster than the panel
+         * comes back anyway, and it lets the CPU sit at its scaled-down
+         * frequency for most of the interval instead of none of it.
+         *
+         * At a 100 Hz FreeRTOS tick a small delay can round to zero and
+         * starve IDLE0 -- same guard the T-Dongle carries.
+         */
+        TickType_t d = pdMS_TO_TICKS(s_screen_off ? 50 : 10);
         vTaskDelay(d ? d : 1);
     }
 }
@@ -5385,6 +5524,9 @@ void xapp_run(const xapp_board_t *board)
     ESP_ERROR_CHECK(err);
 
     xcfg_init();
+    /* Before anything reads a percentage, and before the policy can act on
+     * one: the learned runtime lives in NVS and this is where NVS is up. */
+    xpwr_init();
     /* Before anything airs: a packet sent with the ordinal still zero is a
      * packet no receiver can order against the last boot (10.7). */
     boot_epoch_init();
@@ -5840,6 +5982,12 @@ void xapp_run(const xapp_board_t *board)
      * and complain if this board came up with less room than the tables
      * in docs/esp32.md record for it. WiFi may still be associating, so
      * the address is not judged here -- the heartbeat picks it up. */
+    /* Last, because it needs the radios it is allowed to switch off, and it
+     * sets the CPU's frequency-scaling policy for everything that follows.
+     * A board with no battery_mv never feeds the gauge, so the state stays
+     * UNKNOWN, nothing is ever "discharging", and the policy is inert. */
+    if (s_board->battery_mv) xpwr_policy_init(&k_pwr_hooks);
+
     xh_set(XH_HTTP, xprs_api_httpd() != NULL);
     xh_set(XH_LAN, xprslan_is_active());
     xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));

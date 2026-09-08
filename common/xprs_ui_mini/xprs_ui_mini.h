@@ -72,6 +72,9 @@ void xum_chat(const xum_chat_t *rows, int n);
 
 /* Devices-in-range figure in the top bar. */
 void xum_set_count(int devices);
+/** Battery for the strip's top bar: a level glyph, plus a bolt when
+ *  charging. pct < 0 (a board that cannot measure) draws nothing. */
+void xum_set_battery(int pct, bool charging);
 void xum_set_note(const char *text);
 
 /* Mirror the next refresh onto the UART as base64 (host screenshot). */

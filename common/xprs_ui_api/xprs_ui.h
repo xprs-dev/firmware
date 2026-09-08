@@ -141,6 +141,20 @@ void xui_home_row(int idx, const char *name, bool up, const char *detail,
  *  how many packets carried them there. UI task only. */
 void xui_home_counts(int devices, uint32_t packets);
 
+/**
+ * Battery for the top bar: a phone's status bar, on a station.
+ *
+ * `pct` is 0..100, or NEGATIVE when the board cannot tell -- and a board that
+ * cannot tell shows nothing at all, rather than an empty cell or a dash.
+ * Offering the number is what earns the glyph, the same idiom as raw_key and
+ * touch_read: the T-Dongle passes battery_mv = NULL, never calls this, and
+ * its bar is byte-identical to the one it had before this existed.
+ *
+ * `charging` draws the lightning bolt beside the cell, which is the one piece
+ * of battery iconography every user already knows how to read.
+ */
+void xui_set_battery(int pct, bool charging);
+
 /** The station's callsign, shown in the top bar where the wordmark was --
  *  who this screen belongs to matters more than what protocol it speaks.
  *  Any task (deferred like the title). */

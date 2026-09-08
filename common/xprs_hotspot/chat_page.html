@@ -631,10 +631,21 @@ function ago(sec){
   if(sec<86400)return Math.round(sec/3600)+'h';
   return Math.round(sec/86400)+'d';
 }
+// Words, not a stopwatch: the two largest non-zero units. "168h" is not an
+// uptime anybody reads, and this row has the width for "1 day, 3 hours".
+function plur(n,w){return n+' '+w+(n==1?'':'s');}
 function hms(sec){
   var d=Math.floor(sec/86400),h=Math.floor(sec%86400/3600),
-      m=Math.floor(sec%3600/60);
-  return d?d+'d '+h+'h':h?h+'h '+m+'m':m+'m';
+      m=Math.floor(sec%3600/60),s=Math.floor(sec%60);
+  if(d)return h?plur(d,'day')+', '+plur(h,'hour'):plur(d,'day');
+  if(h)return m?plur(h,'hour')+', '+m+' min':plur(h,'hour');
+  if(m)return m+' min, '+s+' s';
+  return s+' s';
+}
+// The same shape for "how much battery is left", which is a duration too.
+function left(sec){
+  var h=Math.floor(sec/3600),m=Math.floor(sec%3600/60);
+  return h?h+'h '+(m<10?'0':'')+m+'m':m+'m';
 }
 function kb(n){
   if(n==null)return '-';
@@ -778,8 +789,24 @@ function loadStation(){
       row('Clock',d.time&&d.time.synced?
           esc(new Date(d.time.epoch*1000).toISOString().slice(0,19)
               .replace('T',' '))+' UTC':'<span class="dim">not synced</span>');
-    if(d.battery&&d.battery.mv>0)
-      h+=row('Battery',esc(d.battery.mv)+' mV, '+esc(d.battery.state));
+    if(d.battery&&d.battery.mv>0){
+      // esc() on everything from the wire, exactly as this row did before
+      // it grew fields: the surrounding string is raw HTML by design (see
+      // the 'Address' row) and that only stays safe while the values are
+      // escaped.
+      var b=d.battery,t=(b.pct>=0?esc(b.pct)+'%':'')+
+            (b.secs_left>0?' \u00b7 about '+esc(left(b.secs_left))+' left':'')+
+            ' \u00b7 '+esc(b.mv)+' mV \u00b7 '+esc(b.state);
+      // What the gauge has NOT learned is worth a line: a percentage with no
+      // discharge behind it is a curve's opinion, and saying so is the
+      // difference between a gauge and a decoration.
+      if(!b.cycles) t+=' <span class="dim">(voltage only)</span>';
+      else if(b.confidence<100)
+        t+=' <span class="dim">('+esc(b.cycles)+' cycle'+(b.cycles==1?'':'s')+
+           ' learned)</span>';
+      if(b.saving) t+=' <span class="dim">\u00b7 saving power</span>';
+      h+=row('Battery',t);
+    }
     if(d.net)
       h+=row('Address',d.net.ip?esc(d.net.ip):'<span class="dim">hotspot only</span>')+
          row('Internet',d.net.internet==null?'<span class="dim">unknown</span>':

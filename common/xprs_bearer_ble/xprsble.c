@@ -39,6 +39,7 @@ esp_err_t xprsble_start(const char *callsign)
 
 bool xprsble_is_active(void) { return false; }
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb) { (void)cb; }
+void xprsble_scan_duty(bool low) { (void)low; }
 
 bool xprsble_send(const char *wire, int len)
 {
@@ -352,17 +353,50 @@ static int build_ad(uint8_t subtype, const uint8_t *payload, int len,
     return n;
 }
 
+/*
+ * How hard we listen, and why it is a switch.
+ *
+ * The scan ran at a 50 ms window inside a 60 ms interval -- the radio
+ * receiving 83% of every second, forever, on a board that also holds WiFi
+ * awake and an SX1262 in continuous RX. On mains that is the right trade:
+ * discovery latency is the product, and a station that finds a phone slowly
+ * is a worse station. On a battery it is most of an hour.
+ *
+ * XPRS beacons REPEAT -- a neighbour that is missed at 12.5 ms is caught on
+ * one of its next adverts -- so the low window costs latency and not
+ * neighbours. That is the trade this switch makes, and it is only ever made
+ * while the cell is actually discharging.
+ */
+#define BLE_SCAN_ITVL       0x0060   /* 60 ms, both duties */
+#define BLE_SCAN_WIN_MAINS  0x0050   /* 50 ms in 60: 83% */
+#define BLE_SCAN_WIN_BATT   0x0014   /* 12.5 ms in 60: 21% */
+
+static bool s_scan_low;              /* the battery duty is engaged */
+static bool s_scanning;
+
+static uint16_t scan_window(void)
+{
+    return s_scan_low ? BLE_SCAN_WIN_BATT : BLE_SCAN_WIN_MAINS;
+}
+
 #if CONFIG_XPRSBLE_BACKEND_TINYNIMBLE
+
+static void stop_scan(void)
+{
+    if (s_scanning) { tn_scan_stop(); s_scanning = false; }
+}
 
 static void start_scan(void)
 {
     tn_scan_cfg_t scan = {
         .own_addr_type = 0x01, .passive = 1,
-        .itvl = 0x0060, .window = 0x0050, .phy = TN_PHY_1M,
+        .itvl = BLE_SCAN_ITVL, .window = scan_window(), .phy = TN_PHY_1M,
     };
     esp_err_t err = tn_scan_start(&scan, tn_report, NULL);
     if (err != ESP_OK) ESP_LOGE(TAG, "scan: %s", esp_err_to_name(err));
-    else               ESP_LOGI(TAG, "extended scanning…");
+    else { s_scanning = true;
+           ESP_LOGI(TAG, "extended scanning… window %u/%u",
+                    (unsigned)scan_window(), (unsigned)BLE_SCAN_ITVL); }
 }
 
 /* tn_adv_set_data does stop -> set -> start itself, and does NOT recreate the
@@ -379,15 +413,22 @@ static bool air_raw_ad(const uint8_t *ad, int n)
 
 #else   /* NimBLE */
 
+static void stop_scan(void)
+{
+    if (s_scanning) { ble_gap_disc_cancel(); s_scanning = false; }
+}
+
 static void start_scan(void)
 {
     struct ble_gap_ext_disc_params uncoded = {
-        .itvl = 0x0060, .window = 0x0050, .passive = 1,
+        .itvl = BLE_SCAN_ITVL, .window = scan_window(), .passive = 1,
     };
     int rc = ble_gap_ext_disc(s_own_addr_type, 0, 0, 0, 0, 0, &uncoded, NULL,
                               gap_event, NULL);
     if (rc != 0) ESP_LOGE(TAG, "ext_disc rc=%d", rc);
-    else         ESP_LOGI(TAG, "extended scanning…");
+    else { s_scanning = true;
+           ESP_LOGI(TAG, "extended scanning… window %u/%u",
+                    (unsigned)scan_window(), (unsigned)BLE_SCAN_ITVL); }
 }
 
 /*
@@ -582,6 +623,25 @@ uint32_t xprsble_idle_ms(uint32_t now_ms)
 }
 
 bool xprsble_is_active(void) { return s_ble_up; }
+
+/*
+ * Retune the scan without recreating the advertising set.
+ *
+ * Only the SCAN is stopped and restarted. The advertising instance is left
+ * strictly alone, because stopping and recreating one is what makes the
+ * controller hand out a fresh random address, and that churn fills every
+ * peer's address book with several entries for one station (docs/ble5.md
+ * section 1). A power saving that makes this board look like four boards
+ * would not be a saving.
+ */
+void xprsble_scan_duty(bool low)
+{
+    if (low == s_scan_low) return;
+    s_scan_low = low;
+    if (!s_ble_up) return;          /* it will start at the new window */
+    stop_scan();
+    start_scan();
+}
 
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb) { s_rx_cb = cb; }
 

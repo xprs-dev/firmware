@@ -79,10 +79,10 @@ The bottom bar names what a tap does because this board has no buttons
 under it; a board with buttons (the M5Stack) keeps its button legends.
 
 **Keyboard backlight** lights on any keypress and goes out after 5 s idle.
-**Screen** blanks after `screen_off_s` (config.ini, default 120, 0 = never)
-seconds idle -- but only once the battery trend says it is discharging, so
-a station on the bench stays lit. Both panel and backlight sleep; the radios
-and LVGL's touch polling do not.
+**Screen** blanks after `screen_off_s` (config.ini, default 60, 0 = never)
+seconds idle -- but only once the battery says it is discharging, so a station
+on the bench stays lit, and it comes back on its own when the charger returns.
+Both panel and backlight sleep; the radios do not.
 
 A trackball is not a button: rolling it makes and breaks a contact several
 times per turn, so `main.c` counts contact CHANGES rather than debouncing a
@@ -95,6 +95,97 @@ The keyboard feeds the station's console handler, so every key a serial console
 understands works from the device: `S` takes a screenshot over serial, `1`-`8`
 jump to a panel, `U`/`D` move the selection, `K` is OK, `W` wipes the archive.
 Typing text needs a UI that can accept text, which does not exist yet.
+
+## Power
+
+This board ran flat in about two hours and had no way to say so. Both halves
+are fixed: it now reports what is left, and it stops spending it quite so
+freely.
+
+### The gauge
+
+The top bar carries a cell, a percentage, and a lightning bolt when a charger
+is present. Below 15% the figure turns red. Settings > Battery has the detail,
+and `/api/status` has all of it:
+
+```json
+"battery": { "mv": 3980, "pct": 76, "state": "discharging",
+             "secs_left": 12000, "confidence": 75, "cycles": 3,
+             "full_s": 15800, "saving": true }
+```
+
+**It learns.** A voltage is not a percentage: a lithium cell spends most of its
+charge inside 200 mV, and this board reads that through a 100k/100k divider
+while a LoRa TX burst is sagging the rail. So `common/xprs_power` learns how
+long this cell actually lasts and reports elapsed discharge time instead --
+which is monotonic, unlike a voltage.
+
+| cycles seen | what the percentage is | time remaining |
+|---|---|---|
+| 0 | a seeded lithium curve's guess | not offered |
+| 1 | three parts curve, one part clock | offered |
+| 4+ | mostly the clock | offered |
+
+A run does not have to be a clean 100%-to-0%. Anything covering 40% of the
+range is extrapolated and folded in, because nobody runs a station flat on
+purpose and a gauge that insists on it never learns anything. The learned
+state lives in its own NVS namespace (`xprspwr`), survives reflashing, and is
+thrown away by `xpwr_forget()`.
+
+The percentage **never climbs while unplugged**, the way a phone's does not.
+It is released by a charger, not by the trend -- a rebound after a TX burst
+looks exactly like charging to six samples, and following it made the gauge
+look broken when its arithmetic was right.
+
+### What it switches off, and only on battery
+
+| | on USB | discharging |
+|---|---|---|
+| BLE scan window | 50 ms in 60 (83%) | 12.5 ms in 60 (21%) |
+| SoftAP | up | down after 5 min with nobody on it, back for 5 min every 20 |
+| UI task | 100 Hz | 20 Hz once the screen is dark |
+| screen | lit | out after `screen_off_s` |
+| CPU | 160 MHz | scales 160/80 |
+| LoRa RX | continuous | continuous |
+
+Everything reverts the moment a charger appears.
+
+**LoRa RX is never touched** -- hearing packets is what this station is for.
+Neither is **WiFi power save**: `WIFI_PS_NONE` is set deliberately in
+`xprsnow.c` because a station that modem-sleeps misses ESP-NOW frames, and
+that decision stands.
+
+**Light sleep is off on purpose**, and it is the setting to resist turning on.
+It only enters when nothing holds a power lock and the radios agree to sleep;
+with WiFi held awake, a BLE scan running and the SX1262 in continuous RX there
+is no window to enter. It would buy nothing and add ISR latency to a panel and
+a radio that share one SPI bus. DFS has no such precondition, and 80 MHz is
+the floor rather than 40 because the S3's APB clock only follows the CPU
+*below* 80 -- so 160/80 leaves every peripheral on exactly the clock it has
+today.
+
+The AP only stands down **while a station interface is up**, so the board is
+still answerable on the LAN; a field deployment with no network never loses
+its hotspot. It also defers to `ota_quiesce()`, which uses the same mechanism
+for installs.
+
+### What is measured, and what is not
+
+The gauge is tested on the host -- `common/xprs_power/test_xpwr_host.sh`,
+which simulates cycles that would each cost half a day on hardware, and which
+caught two real bugs before the code ever reached this board.
+
+The runtime improvement is **not measured yet**. It cannot be proven from a
+build log: it needs a discharge run on the old firmware and one on the new,
+several hours each, polled over WiFi rather than serial -- a USB cable holds
+the rail at 4.3 V and voids the experiment. Arithmetic says the removed loads
+are worth roughly 60-100 mA against a 250-300 mA baseline. The gauge is what
+will say whether that is true, which is the point of having built it first.
+
+One number already known and worth recording: **this board reads 4276-4366 mV
+on USB**, where the bench T-Deck the 4300 mV clamp was tuned against read
+4456-4568. Same model, 200 mV apart. That is why the screen no longer relies
+on that threshold to find its way back on.
 
 ## Verifying it
 

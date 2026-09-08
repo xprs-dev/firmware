@@ -69,10 +69,22 @@ Independently of its radios, a station:
   starting them and names anything that failed to come up, at boot and from its
   heartbeat (`common/xprs_health`). The same verdict gates an OTA's rollback
   self-test (§6).
+- **Knows what its battery is doing**, if it has one (`common/xprs_power`). A
+  board offers `battery_mv` and gets a percentage, a time remaining and a
+  low-battery warning; a board that does not offer it shows nothing anywhere,
+  the same idiom as `raw_key` and `touch_read`. The gauge does not trust the
+  voltage -- it learns how long this particular cell actually lasts, across
+  partial discharges, and persists that. The same component owns what a
+  station switches off while discharging (the BLE scan duty, an idle SoftAP,
+  the UI poll rate, CPU frequency), and every one of those reverts the moment
+  a charger appears. What it never touches is the radios' ability to hear:
+  LoRa stays in continuous RX and WiFi stays at `WIFI_PS_NONE`. See the Power
+  section of `models/tdeck/README.md` for the reasoning and the measurements.
 
 The shared implementation is `common/xprs_app` (the ESP32 station) plus
 `common/xprs_station`, `common/xprs_codec` (the wire), `common/xprs_bearer`
-(the relay queue), `common/xprs_sig` / `common/xprs_id` (signatures). The
+(the relay queue), `common/xprs_sig` / `common/xprs_id` (signatures),
+`common/xprs_power` (the battery). The
 nRF52 board is not `xprs_app` — it is a smaller `main.cpp` that calls the same
 `xprs_codec` and `xprs_bearer` directly (§9).
 

@@ -478,3 +478,26 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 # On because the T-Deck has the memory (8 MB PSRAM); boards without it leave
 # the symbol unset and the component compiles to nothing.
 CONFIG_XPRS_BEARER_RNS=y
+
+# ── Power: frequency scaling, and deliberately NOT light sleep ──────────────
+#
+# This board ran flat in about two hours and had no way to say so. The gauge
+# (common/xprs_power) is the half that reports; this is the half that helps.
+#
+# PM_ENABLE turns on DFS. LIGHT SLEEP IS LEFT OFF AND THE REASON MATTERS,
+# because it is the setting everyone reaches for first: automatic light sleep
+# only enters when nothing holds a power lock AND the radios agree to sleep,
+# and this station holds WiFi at WIFI_PS_NONE on purpose (xprsnow.c -- a
+# station that modem-sleeps misses ESP-NOW frames), scans BLE, and keeps the
+# SX1262 in continuous RX. There is no window to enter. It would buy nothing
+# and add ISR latency to a panel and a radio that share SPI.
+#
+# 80 MHz is the floor, not 40, and that is what makes this safe rather than
+# merely cheap: on the S3 the APB clock follows the CPU only BELOW 80 MHz, so
+# a 160/80 pair leaves APB at 80 MHz in both states. Every peripheral -- the
+# ST7789, the SX1262, the keyboard I2C, the USB-serial console -- sees exactly
+# the clock it sees today, and the whole class of "DFS broke my driver" bugs
+# is sidestepped. Going to 40 would save more and would put PSRAM at 80 MHz on
+# the other side of an APB change; not on this board.
+CONFIG_PM_ENABLE=y
+# CONFIG_FREERTOS_USE_TICKLESS_IDLE is not set

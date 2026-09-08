@@ -43,6 +43,8 @@ static lv_disp_t         *s_disp;
 static lv_obj_t *s_top;
 static lv_obj_t *s_title_label;      /* view name + uptime */
 static lv_obj_t *s_count_label;      /* devices in range + pause glyph */
+static int       s_batt_pct = -1;    /* -1: this board cannot measure */
+static bool      s_batt_charging;
 static bool      s_held;
 static int       s_count = -1;
 
@@ -432,11 +434,52 @@ void xum_set_note(const char *text)
     s_uptime_last = 0;               /* redraw the title on the next pass */
 }
 
+/*
+ * The strip's battery: a glyph, and no digits.
+ *
+ * This bar is 128 px of monochrome OLED on a Heltec and it already carries a
+ * view name and a device count. A percentage would fit only by taking the
+ * count's place, and on a board whose whole job is hearing other stations the
+ * count is worth more. The exact figure is in Settings and in /api/status;
+ * what the strip owes the user is "it is getting low" and "it is charging",
+ * and five levels plus a bolt say both.
+ */
+static void count_render(void)
+{
+    if (!s_count_label) return;
+    char b[24];
+    const char *glyph = "";
+    if (s_batt_pct >= 0)
+        glyph = s_batt_pct >= 90 ? LV_SYMBOL_BATTERY_FULL
+              : s_batt_pct >= 65 ? LV_SYMBOL_BATTERY_3
+              : s_batt_pct >= 40 ? LV_SYMBOL_BATTERY_2
+              : s_batt_pct >= 15 ? LV_SYMBOL_BATTERY_1
+                                 : LV_SYMBOL_BATTERY_EMPTY;
+    snprintf(b, sizeof b, "%d dev %s%s", s_count,
+             s_batt_charging ? LV_SYMBOL_CHARGE : "", glyph);
+    lv_label_set_text(s_count_label, b);
+}
+
 void xum_set_count(int devices)
 {
     if (devices == s_count || !s_count_label) return;
     s_count = devices;
-    char b[16];
-    snprintf(b, sizeof b, "%d dev", devices);
-    lv_label_set_text(s_count_label, b);
+    count_render();
+}
+
+void xum_set_battery(int pct, bool charging)
+{
+    if (pct < 0) pct = -1; else if (pct > 100) pct = 100;
+    /* Only five levels are drawable, so only a level change is worth a
+     * redraw of a bar that costs a full-width flush on this panel. */
+    int was = s_batt_pct < 0 ? -1
+            : s_batt_pct >= 90 ? 4 : s_batt_pct >= 65 ? 3
+            : s_batt_pct >= 40 ? 2 : s_batt_pct >= 15 ? 1 : 0;
+    int now = pct < 0 ? -1
+            : pct >= 90 ? 4 : pct >= 65 ? 3
+            : pct >= 40 ? 2 : pct >= 15 ? 1 : 0;
+    bool same = (was == now) && (charging == s_batt_charging);
+    s_batt_pct = pct;
+    s_batt_charging = charging;
+    if (!same) count_render();
 }

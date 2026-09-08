@@ -116,6 +116,7 @@ void xui_flush_enable(bool on)
 
 void xui_set_device_count(int count) { xum_set_count(count); }
 void xui_set_note(const char *text) { xum_set_note(text); }
+void xui_set_battery(int pct, bool charging) { xum_set_battery(pct, charging); }
 
 void xui_home_counts(int devices, uint32_t packets)
 {

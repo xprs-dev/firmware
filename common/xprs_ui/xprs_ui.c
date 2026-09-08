@@ -171,7 +171,32 @@ static lv_obj_t *s_chat_input_lbl;
 static lv_obj_t *s_chat_send;
 static int s_rail_w;
 static int s_msgs_h;
+/*
+ * The top bar is four things on 320 px and they cannot all float.
+ *
+ * Every element used to be aligned to an EDGE -- callsign left, clock right,
+ * title centred on the screen -- which works only while nothing grows. Adding
+ * the battery grew the right-hand block by 74 px and the centred title walked
+ * straight into the clock: "This device 6/7" over "00:01:41", found on a
+ * bench screenshot and invisible on the Radar panel whose title is short.
+ *
+ * So the bar is lanes now. The battery and the clock have FIXED widths with
+ * their text right-aligned inside, and the title gets the span that is left
+ * over, centred in that span rather than on the screen. Nothing can collide
+ * with anything, whatever the panel is called and whatever the charge is.
+ */
+#define XUI_BATT_W  66   /* bolt + cell + "100%" */
+#define XUI_CLOCK_W 58   /* "00:00:00", and "999d 23h" */
+#define XUI_CALL_W  56   /* the callsign's lane on the left */
+#define XUI_BAR_PAD  6
 static char s_call_txt[12];
+/* The battery corner. -1 says the board cannot measure, and the label stays
+ * empty rather than showing a dash -- an empty cell outline reads as "flat",
+ * which is a worse lie than saying nothing. */
+static lv_obj_t     *s_batt_label;
+static int           s_batt_pct = -1;
+static bool          s_batt_charging;
+static volatile bool s_batt_dirty;
 static char s_uptime_txt[12];
 static lv_obj_t *s_clock_label;
 
@@ -183,12 +208,44 @@ static lv_obj_t *s_clock_label;
  * second that is a bar that never stops moving. The clock is its own label,
  * pinned at a fixed x, and the title starts where the clock's widest
  * reading ends. */
+/*
+ * The five battery glyphs are already in the Montserrat fonts LVGL builds and
+ * were used nowhere in this tree, so the whole indicator costs no flash: no
+ * new font, no bitmap, no widget. LV_SYMBOL_CHARGE beside them is the bolt
+ * every phone draws, which is the point -- nobody has to be taught it.
+ */
+static const char *batt_glyph(int pct)
+{
+    if (pct >= 90) return LV_SYMBOL_BATTERY_FULL;
+    if (pct >= 65) return LV_SYMBOL_BATTERY_3;
+    if (pct >= 40) return LV_SYMBOL_BATTERY_2;
+    if (pct >= 15) return LV_SYMBOL_BATTERY_1;
+    return LV_SYMBOL_BATTERY_EMPTY;
+}
+
+static void batt_render(void)
+{
+    if (!s_batt_label) return;
+    if (s_batt_pct < 0) { lv_label_set_text(s_batt_label, ""); return; }
+    if (s_batt_charging)
+        lv_label_set_text_fmt(s_batt_label, LV_SYMBOL_CHARGE "%s %d%%",
+                              batt_glyph(s_batt_pct), s_batt_pct);
+    else
+        lv_label_set_text_fmt(s_batt_label, "%s %d%%",
+                              batt_glyph(s_batt_pct), s_batt_pct);
+    /* Red below the warning line, and only when it is actually draining --
+     * 12%% on a charger is a battery filling up, not a problem. */
+    bool alarm = (s_batt_pct < 15 && !s_batt_charging);
+    lv_obj_set_style_text_color(s_batt_label,
+        alarm ? lv_color_make(180, 0, 0) : lv_color_black(), 0);
+}
+
 static void title_render(void)
 {
     if (!s_title_label) return;
     lv_label_set_text(s_title_label, s_title);
     if (s_clock_label)
-        lv_label_set_text_fmt(s_clock_label, "Uptime: %s", s_uptime_txt);
+        lv_label_set_text(s_clock_label, s_uptime_txt);
 }
 static volatile bool s_call_dirty;
 static char s_input_text[128];
@@ -356,7 +413,6 @@ void xui_update(void)
     uint32_t total_sec = (uint32_t)(esp_timer_get_time() / 1000000);
     if (total_sec != s_uptime_last && s_status_label) {
         s_uptime_last = total_sec;
-        static char buf[64];
         uint32_t days = total_sec / 86400;
         uint32_t h = (total_sec / 3600) % 24;
         uint32_t m = (total_sec / 60) % 60;
@@ -366,17 +422,26 @@ void xui_update(void)
          * reads as one status line rather than crowding the name. */
         lv_label_set_text(s_status_label,
                           s_call_txt[0] ? s_call_txt : "XPRS");
+        /* Under a day, a clock. Past one, days and hours -- the seconds stop
+         * being information long before then, and this lane is 58 px wide
+         * next to a title and a battery, so "1 day, 3 hours" in full lives in
+         * the Settings panel where there is room for words. */
         if (days == 0)
             snprintf(s_uptime_txt, sizeof s_uptime_txt, "%02lu:%02lu:%02lu",
                      (unsigned long)h, (unsigned long)m, (unsigned long)s);
         else
-            snprintf(s_uptime_txt, sizeof s_uptime_txt, "%lud %02luh",
+            snprintf(s_uptime_txt, sizeof s_uptime_txt, "%lud %luh",
                      (unsigned long)days, (unsigned long)h);
         title_render();
     }
     if (s_call_dirty) {
         s_call_dirty = false;
         s_uptime_last--;             /* force the label to redraw now */
+    }
+
+    if (s_batt_dirty) {
+        s_batt_dirty = false;
+        batt_render();
     }
 
     if (s_body_dirty) {
@@ -450,23 +515,56 @@ static void build_ui(void)
     lv_obj_set_style_text_color(s_status_label, lv_color_black(), 0);
     lv_obj_align(s_status_label, LV_ALIGN_LEFT_MID, 6, 0);
 
-    /* The clock owns the right corner. "Uptime: HH:MM:SS" is a constant
-     * width, so right-aligning it holds still -- what wandered before was a
-     * bare clock whose digit count changed under a right-aligned label. */
+    /*
+     * The battery owns the right corner now, where a phone puts it, and the
+     * clock has moved in beside it.
+     *
+     * The label is a FIXED width with its text right-aligned inside, so the
+     * clock's position does not move when the percentage goes from 100%% to
+     * 9%% or the charging bolt appears. The old comment on the clock had it
+     * right for the same reason: what wandered before was a right-aligned
+     * label whose own width changed under it.
+     */
+    s_batt_label = lv_label_create(top);
+    lv_label_set_text(s_batt_label, "");
+    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_batt_label, lv_color_black(), 0);
+    lv_obj_set_width(s_batt_label, XUI_BATT_W);
+    lv_obj_set_style_text_align(s_batt_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(s_batt_label, LV_ALIGN_RIGHT_MID, -XUI_BAR_PAD, 0);
+
+    /* "HH:MM:SS" is a constant width, so right-aligning it holds still. The
+     * "Uptime: " prefix it used to carry paid for itself when it was alone in
+     * the corner and is redundant next to a battery: a clock and a cell side
+     * by side is a status bar, and nobody labels those. */
     s_clock_label = lv_label_create(top);
     lv_label_set_text(s_clock_label, "");
     lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_clock_label, lv_color_black(), 0);
-    lv_obj_align(s_clock_label, LV_ALIGN_RIGHT_MID, -6, 0);
+    lv_obj_set_width(s_clock_label, XUI_CLOCK_W);
+    lv_obj_set_style_text_align(s_clock_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(s_clock_label, LV_ALIGN_RIGHT_MID,
+                 -(XUI_BAR_PAD + XUI_BATT_W + XUI_BAR_PAD), 0);
 
     s_title_label = lv_label_create(top);
     lv_label_set_text(s_title_label, "");
     lv_obj_set_style_text_font(s_title_label, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_black(), 0);
-    /* The panel name in the middle, between the callsign and the clock:
-     * it changes only when somebody changes panel, so centring costs no
-     * movement. */
-    lv_obj_align(s_title_label, LV_ALIGN_CENTER, 0, 0);
+    /* The panel name gets whatever the callsign, the clock and the battery
+     * have not claimed, and is centred inside THAT -- see the lane note by
+     * XUI_BATT_W. A title too long for its lane is clipped by the label
+     * rather than drawn over the clock. */
+    {
+        lv_coord_t lane_x = XUI_BAR_PAD + XUI_CALL_W;
+        lv_coord_t lane_w = s_w - lane_x
+                          - (XUI_BAR_PAD + XUI_BATT_W + XUI_BAR_PAD
+                             + XUI_CLOCK_W + XUI_BAR_PAD);
+        if (lane_w < 40) lane_w = 40;      /* a narrow panel keeps something */
+        lv_obj_set_width(s_title_label, lane_w);
+        lv_obj_set_style_text_align(s_title_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(s_title_label, LV_LABEL_LONG_CLIP);
+        lv_obj_align(s_title_label, LV_ALIGN_LEFT_MID, lane_x, 0);
+    }
 
     /* ---- Centre body (black) ---- */
     lv_obj_t *center = lv_obj_create(scr);
@@ -1274,6 +1372,13 @@ void xui_home_row(int idx, const char *name, bool up, const char *detail,
         lv_obj_add_flag(s_home_note[idx], LV_OBJ_FLAG_HIDDEN);
     }
     home_relayout();
+}
+
+void xui_set_battery(int pct, bool charging)
+{
+    s_batt_pct = pct < 0 ? -1 : (pct > 100 ? 100 : pct);
+    s_batt_charging = charging;
+    s_batt_dirty = true;
 }
 
 void xui_set_call(const char *call)
