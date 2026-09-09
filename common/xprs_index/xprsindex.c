@@ -1345,16 +1345,16 @@ void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes)
     if (st) st->max_bytes = bytes;
 }
 
-uint64_t xprsindex_budget(const char *mount, uint64_t base, bool super)
+uint64_t xprsindex_budget(const char *mount, uint64_t base, bool always_on)
 {
-    if (!super) return base;
+    if (!always_on) return base;
 #ifdef XPRSIDX_HOST_TEST
     (void)mount;
     return base;
 #else
     uint64_t total = 0, freeb = 0;
     if (!mount || esp_vfs_fat_info(mount, &total, &freeb) != ESP_OK || !total) {
-        XI_LOGW("super: cannot size %s, keeping the %llu MB budget",
+        XI_LOGW("always-on: cannot size %s, keeping the %llu MB budget",
                 mount ? mount : "(null)",
                 (unsigned long long)(base / (1024u * 1024u)));
         return base;
@@ -1377,7 +1377,7 @@ uint64_t xprsindex_budget(const char *mount, uint64_t base, bool super)
      */
     if (cap > XPRSIDX_BUDGET_MAX) cap = XPRSIDX_BUDGET_MAX;
     if (cap < base) cap = base;
-    XI_LOGI("super: archive budget %llu MB on %s (%llu MB volume)",
+    XI_LOGI("always-on: archive budget %llu MB on %s (%llu MB volume)",
             (unsigned long long)(cap / (1024u * 1024u)), mount,
             (unsigned long long)(total / (1024u * 1024u)));
     return cap;

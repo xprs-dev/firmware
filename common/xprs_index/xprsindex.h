@@ -382,7 +382,7 @@ typedef struct {
  */
 int xprsindex_directory(xprsidx_t *st, xprsidx_dir_entry_t *out, int max);
 
-/** Deepest archive a super-archiver will keep, whatever the volume holds.
+/** Deepest archive an always-on archiver will keep, whatever the volume holds.
  *  ~3.3 million records; see xprsindex_budget for why there is a ceiling at
  *  all -- it is the cost of rebuilding the directory, not the space. */
 #define XPRSIDX_BUDGET_MAX  (1024ull * 1024ull * 1024ull)
@@ -391,16 +391,17 @@ int xprsindex_directory(xprsidx_t *st, xprsidx_dir_entry_t *out, int max);
  * @brief The archive budget for this station, in bytes.
  *
  * @p base is what the board keeps when it is an ordinary archiver -- a figure
- * its own flash or card justifies. A station configured as a super-archiver
+ * its own flash or card justifies. A station configured as an always-on archiver
  * (XPRS.md 36.9.4) is expected to keep what others cannot, so it sizes to the
  * VOLUME instead, less headroom for the logs and capped at
  * XPRSIDX_BUDGET_MAX.
  *
  * @param mount  the volume the store lives on, e.g. "/idx" or "/sdcard".
  * @param base   the ordinary-archiver budget for this board.
- * @param super  whether this station claims the word.
+ * @param always_on  whether this station runs at always-on scale (12.9.4);
+ *                   a local budget decision, never a word on the wire.
  */
-uint64_t xprsindex_budget(const char *mount, uint64_t base, bool super);
+uint64_t xprsindex_budget(const char *mount, uint64_t base, bool always_on);
 
 /**
  * @brief Render entries as the XDIR1 text of §36.9 — a header line, then

@@ -7,7 +7,7 @@
  *
  * Every station used to ask every archiver on the same clock forever: a room
  * nobody had spoken in for three months cost the same metered replay as one
- * with a conversation running. On a super-archiver -- the station everybody
+ * with a conversation running. On an always-on archiver -- the station everybody
  * pulls the public rooms from -- that fixed clock IS the load.
  *
  * So the interval follows the room. What an archiver returns is the only
@@ -22,8 +22,8 @@
  *   the FLOOR is what the peer permits. Section 31.2 lets an ordinary
  *   archiver answer a known caller six times an hour, and 36.10.1 says the
  *   ten-minute poll IS that ceiling rather than an arbitrary number. Only a
- *   super-archiver's raised budgets (36.9.4) can serve a fast caller, so only
- *   a super gets one -- a station that polls an ordinary peer faster steals
+ *   always-on archiver's raised budgets (36.9.4) can serve a fast caller, so
+ *   only one of those gets it -- a station that polls an ordinary peer faster steals
  *   that peer's whole cross-caller allowance and 429-starves everyone else.
  *
  * And a 429 is not noise. It is the peer saying our cadence is wrong, and it
@@ -47,7 +47,7 @@ typedef enum {
 
 /** How reachable an archiver is, which decides how fast it may be asked. */
 typedef enum {
-    XC_FAST = 0,    /**< `serve:archive,super` (36.9.4): absorbs a fast caller */
+    XC_FAST = 0,    /**< always-on by 12.9.4's qualities: absorbs a fast caller */
     XC_ORDINARY,    /**< anything else: 31.2's reference budgets apply */
 } xc_peer_t;
 
@@ -85,7 +85,7 @@ uint32_t xcadence_initial(void);
 /**
  * @brief Spread the herd, +/-10%.
  *
- * Many stations pulling one super on the same interval arrive together, which
+ * Many stations pulling one archiver on the same interval arrive together, which
  * is the load pattern this file exists to avoid. @p rand is any value; only
  * its low bits are used, so a caller can pass a tick count.
  */

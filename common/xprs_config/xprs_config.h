@@ -72,7 +72,7 @@ esp_err_t xcfg_ini_apply(const char *text, size_t len);
  * worth of trust, and it is exactly why an always-on station is NOT
  * port-forwarded.
  *
- * A super-archiver does not need to be. It DIALS OUT to a hub ([rns] hub)
+ * An always-on archiver does not need to be. It DIALS OUT to a hub ([rns] hub)
  * and is reachable through the connection it opened; there is no inbound
  * listener for XPRS traffic here at all. Anyone reasoning about "how do I
  * reach my archiver from outside" should reach for that, never for a port

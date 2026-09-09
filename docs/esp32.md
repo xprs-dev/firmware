@@ -369,8 +369,8 @@ Two consequences worth building around:
   an `sdspi` driver AND arbitrating a bus the radio is on, which is the kind
   of coupling that turns "the archive is busy" into "the station missed a
   packet". Its `storage, data, fat` partition is 11.38 MB and its archive
-  budget 10 MB. So the T-Deck can serve a super-archiver's ROLE but not a
-  super-archiver's DEPTH -- 28k records against the dongle's card -- and the
+  budget 10 MB. So the T-Deck can serve an always-on archiver's ROLE but not
+  its DEPTH -- 28k records against the dongle's card -- and the
   board with the card is the one to put beside a router.
 
 ## What a station can actually hold
@@ -391,9 +391,22 @@ demoted at 0.4.0 (`models/tdongle-s3/firmware/partitions.csv` says why).
 | M5Stack Core | 11.625 MiB | |
 | Heltec V3 | **3.81 MiB** | smaller than the 10 MiB budget, so eviction never fires and FAT free space is the real bound (~12k records) |
 
-**A super-archiver needs 64 MiB** (`SUPER_MIN_BYTES`), so no ESP32 board here
-can honestly claim the word, and `idx_is_super()` declines it out loud. That
+**Always-on budgets need 64 MiB** (`ALWAYS_ON_MIN_BYTES`), so no ESP32 board
+here can honestly spend them, and `idx_is_always_on()` declines out loud. That
 is a statement about these boards, not about the role.
+
+**And what it gates is local, because there is no word for it on the air.**
+This used to decide whether the beacon said `serve:archive,super` -- a word
+XPRS.md 13's vocabulary does not contain, so only this project's own receivers
+could read it, and a genuinely deep archiver from any other implementation was
+rated ordinary however much it held. Since 2026-09 the beacon says `archive`
+and nothing else; the depth it wants judged is `count:` on the same packet, the
+wakefulness is `uptime:`, and the lane it arrived on says whether it can be
+reached from anywhere but this room (12.9.4). The board reads its peers the
+same way (`ALWAYS_ON_MIN_RECORDS`, `ALWAYS_ON_MIN_UPTIME_S` in `xprs_app.c`),
+and an old station's `archive,super` is heard, correctly, as `archive`.
+Config: `[indexer] always_on` and `archivers` -- `super` and `supers` are still
+read so a configured board keeps its settings.
 
 Eviction follows XPRS.md 36.11 and nothing else: class first (declared mail,
 then other mail, then the spool), age second, and no packet outlives its

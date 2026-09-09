@@ -49,7 +49,7 @@ static void test_signer_credited(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);          /* need-to-know out of the way */
+    xgossip_set_always_on(g, true);          /* need-to-know out of the way */
 
     xgossip_note_hears(g, "X3OBS1", H1, 1, "ble", false, 1000);
     xgossip_pump(g);
@@ -75,7 +75,7 @@ static void test_signer_quota(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
 
     CHECK(xgossip_would_accept(g, "X3OBS1", 1000), "first ask refused");
     xgossip_note_hears(g, "X3OBS1", H1, 1, "ble", true, 1000);
@@ -116,7 +116,7 @@ static void test_radio_truth(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
 
     xgossip_note_hears(g, "X3HUB1", H1, 1, "rns", true, 1000);
     xgossip_pump(g);
@@ -171,7 +171,7 @@ static void test_ranking_and_try(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
 
     xgossip_note_hears(g, "X3OLD1", H1, 1, "espnow", true, 1000);
     xgossip_pump(g);
@@ -200,7 +200,7 @@ static void test_ranking_and_try(const char *dir)
 
 /*
  * Need-to-know (36.9.4). An ordinary station keeps gossip in proportion to its
- * duties; a super keeps every callsign it can learn of, because being the
+ * duties; an always-on archiver keeps every callsign it can learn of, because being the
  * station that remembers what the others could not IS the role.
  */
 static void test_need_to_know(const char *dir)
@@ -229,11 +229,11 @@ static void test_need_to_know(const char *dir)
     CHECK(from_obs > 0, "gossip about a known callsign was still refused");
 
     /* The same station, promoted. */
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
     xgossip_note_hears(g, "X3OBS2", H2, 2, "espnow", true, 4000);
     xgossip_pump(g);
     CHECK(xgossip_where_is(g, "X1BBBB", s, 8) > 0,
-          "a super refused a callsign it had not met");
+          "an always-on archiver refused a callsign it had not met");
     xgossip_close(g);
 }
 
@@ -243,13 +243,13 @@ static void test_survives_a_reboot(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
     xgossip_note_hears(g, "X3OBS1", H2, 2, "espnow", true, 1000);
     xgossip_pump(g);
     xgossip_close(g);
 
     g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
     xgossip_sighting_t s[8];
     CHECK(xgossip_where_is(g, "X1AAAA", s, 8) > 0, "X1AAAA lost across a reopen");
     CHECK(xgossip_where_is(g, "X1BBBB", s, 8) > 0, "X1BBBB lost across a reopen");
@@ -264,7 +264,7 @@ static void test_per_callsign_cap(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
 
     for (int i = 0; i < XGOSSIP_LIVE_G + 4; i++) {
         char gw[10];
@@ -289,7 +289,7 @@ static void test_ssid_is_the_same_station(const char *dir)
 {
     rm_rf(dir);
     xgossip_t *g = xgossip_open(dir);
-    xgossip_set_super(g, true);
+    xgossip_set_always_on(g, true);
     const char *h[] = { "X1AAAA-7" };
     xgossip_note_hears(g, "X3OBS1", h, 1, "espnow", true, 1000);
     xgossip_pump(g);

@@ -180,7 +180,8 @@ static void derive_callsign(void)
  * is a stranger when history is metered (31.2: six replays an hour against
  * two), so on a station that many peers ask, a table this small quietly
  * demotes the fifth onward to a stranger's budget and keeps them there.
- * 36.9.4 asks a super to be budgeted for being leaned on; that starts with
+ * 36.9.4 asks an always-on archiver to be budgeted for being leaned on;
+ * that starts with
  * being able to remember who is asking. 42 bytes an entry. */
 #define PEERKEYS_MAX 32
 static struct { char call[10]; uint8_t pub[32]; } s_peers[PEERKEYS_MAX];
@@ -397,10 +398,10 @@ static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it 
  *
  * One replay in flight protects the channel (31.4), and for an ordinary
  * archiver that is still the rule: depth one. But 36.9.4 lists `concurrent`
- * among the things claiming `super` commits a station to -- "one replay at a
+ * among the things always-on scale commits a station to -- "one replay at a
  * time, with a page taking tens of seconds to air, means the second asker of
- * any minute is refused" -- and a page here takes about 19.5 s. So a super
- * queues a few and works through them.
+ * any minute is refused" -- and a page here takes about 19.5 s. So a station
+ * running those budgets queues a few and works through them.
  *
  * The other half matters more than the depth: an ask that does not fit used
  * to be dropped where it arrived, with no answer at all. Silence is the one
@@ -409,7 +410,7 @@ static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it 
  * nothing. So the overflow is remembered and answered 429 on idx_task, which
  * is where this station is allowed to transmit from.
  */
-static bool idx_is_super(void);        /* defined with the budgets below */
+static bool idx_is_always_on(void);    /* defined with the budgets below */
 
 #define ASKQ_MAX 4
 static struct {
@@ -721,6 +722,35 @@ static uint64_t s_rotate_next_us;      /* total ever, ring position = s_flow_n %
  * which is the load 36.10.2 exists to prevent. Two pages that do not move
  * the mark end the chain and count as quiet.
  */
+/*
+ * What makes a peer worth leaning on (XPRS.md 12.9.4), read off its beacon.
+ *
+ * "None of this is a separate role": an always-on archiver is DEEP, AWAKE and
+ * ADDRESSABLE, and every one of those is already on the `t:service` this
+ * station receives -- `count:` (13.0.1, records held), `uptime:` (10.5) and
+ * the lane it arrived on. Ten thousand records is more than a pocket device
+ * or this board will ever hold; a week awake is a machine that is plugged in.
+ */
+#define ALWAYS_ON_MIN_RECORDS  10000u
+#define ALWAYS_ON_MIN_UPTIME_S (7u * 24u * 3600u)
+
+/* `uptime:`/`lifetime:` as seconds. Section 10.5 asks for `26h`, not
+ * `94340s` -- "their meaning changes by the hour" -- so a reader that wants a
+ * number parses the shorthand. Unknown text is no claim, which is 0. */
+static uint32_t xprs_qty_seconds(const char *v)
+{
+    if (!v || !v[0]) return 0;
+    char *end = NULL;
+    unsigned long n = strtoul(v, &end, 10);
+    if (!end || end == v) return 0;
+    switch (*end) {
+        case 'd': case 'D': return (uint32_t)(n * 86400u);
+        case 'h': case 'H': return (uint32_t)(n * 3600u);
+        case 'm': case 'M': return (uint32_t)(n * 60u);
+        default:            return (uint32_t)n;   /* bare is seconds */
+    }
+}
+
 #define CU_PEERS 6
 typedef struct {
     char     call[10];
@@ -734,7 +764,7 @@ typedef struct {
     uint32_t ask_at_s;        /* uptime the outstanding ask went out */
     uint16_t rows;            /* records this peer served since the ask */
     uint8_t  stalls;          /* continuations that moved nothing */
-    bool     super;           /* it announced serve:archive,super */
+    bool     deep;            /* worth leaning on: 12.9.4's qualities */
     bool     await;           /* an ask is out and unanswered */
     bool     used;
 } cu_peer_t;
@@ -774,7 +804,7 @@ static cu_peer_t *cu_find(const char *call, bool create)
  * hole begins where the archive stopped (36.10). But an EMPTY store used to
  * mean "nothing missed", and that is exactly backwards: a station whose
  * archive has just been wiped, or which has never had one, has missed
- * everything there is. It sat next to a super-archiver holding eighteen
+ * everything there is. It sat next to an always-on archiver holding eighteen
  * thousand records and never asked it a single question.
  *
  * A bounded bootstrap instead: a day back. The peer's budgets and the 206
@@ -821,7 +851,7 @@ static void cu_answered(cu_peer_t *r, xc_answer_t a, uint32_t now_s)
 {
     const uint32_t silent = r->last_news_s ? now_s - r->last_news_s : 0;
     r->interval_s = xcadence_next(r->interval_s, a,
-                                  r->super ? XC_FAST : XC_ORDINARY,
+                                  r->deep ? XC_FAST : XC_ORDINARY,
                                   true, silent);
     r->next_ask_s = now_s + xcadence_jitter(r->interval_s, now_s);
     r->await = false;
@@ -1240,7 +1270,7 @@ static const char *pol_keys(void)
     snprintf(out, sizeof out, "owner:%s use:%s first:%s serve:%s",
              o ? owners : "none", xcfg_get("use", "all"),
              first[0] ? first : "none",
-             serve[0] ? serve : (idx_is_super() ? "archive,super" : "archive"));
+             serve[0] ? serve : "archive");
     return out;
 }
 
@@ -1446,7 +1476,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
             if (dash) *dash = 0;
             if (strcasecmp(dst, base) != 0) break;
         }
-        const int depth = idx_is_super() ? ASKQ_MAX : 1;
+        const int depth = idx_is_always_on() ? ASKQ_MAX : 1;
         if (s_askq_n >= depth) {
             /* Full. Keep the newest for a 429 rather than saying nothing;
              * an earlier overflow still waiting is simply overwritten,
@@ -1729,10 +1759,32 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 
         cu_peer_t *r = cu_find(call, true);
         if (!r) break;
-        /* `serve:archive,super` is what earns the fast floor: only raised
-         * budgets can serve a fast caller (36.9.4), and asking an ordinary
-         * peer faster steals its whole cross-caller allowance. */
-        r->super = strstr(sv, "super") != NULL;
+        /*
+         * What earns the fast floor: only raised budgets can serve a fast
+         * caller (36.9.4), and asking an ordinary peer faster steals its
+         * whole cross-caller allowance.
+         *
+         * This used to read `strstr(sv, "super")` -- a word section 13 does
+         * not have, which only this project aired, so a genuinely deep
+         * archiver from any other implementation was rated ordinary however
+         * much it held. 12.9.4's qualities are on the beacon already:
+         * DEEP is `count:` (records held, 13.0.1), AWAKE is `uptime:`
+         * (10.5), and ADDRESSABLE is the lane it reached us on -- a station
+         * you have to stand next to is not one to lean on while away.
+         */
+        uint32_t peer_count = 0;
+        char qty[16];
+        if (xprs_get_str(&sp, "count", qty, sizeof qty))
+            peer_count = (uint32_t)strtoul(qty, NULL, 10);
+        uint32_t peer_up = 0;
+        if (xprs_get_str(&sp, "uptime", qty, sizeof qty))
+            peer_up = xprs_qty_seconds(qty);
+        const bool addressable =
+            strcmp(bearer, "rns") == 0 || strcmp(bearer, "lan") == 0;
+        if (!r->deep)                       /* a named peer stays named */
+            r->deep = addressable &&
+                      (peer_count >= ALWAYS_ON_MIN_RECORDS ||
+                       peer_up >= ALWAYS_ON_MIN_UPTIME_S);
         snprintf(r->bearer, sizeof r->bearer, "%s", bearer);
 
         const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -3698,52 +3750,59 @@ static void idx_result_m(const char *bearer, const char *to,
     idx_air(bearer, w, n);
 }
 
-/* Does this station get to write `super` (XPRS.md 36.9.4)?
+/* Does this station run at always-on scale (XPRS.md 12.9.4, 36.9.4)?
  *
- * The word is a claim like any other `serve:` word and compels nothing -- but
- * 36.9.4 is explicit that a station which cannot back it should not write it,
- * "because every humble node that believes it will route its asks nowhere".
- * So the config key is permission to claim it, not the claim itself.
+ * Nothing here reaches the air. This used to gate the word `super` in
+ * `serve:`, which section 13's vocabulary does not contain: a claim only this
+ * project could make and only this project could read. What it gates now is
+ * what it should always have gated -- the LOCAL budgets this station spends
+ * on other people: how many replays it queues, how many asks an hour it will
+ * answer, how much gossip it keeps. A peer works out for itself whether this
+ * station is worth leaning on, from the `count:` and `uptime:` already on
+ * every beacon.
  *
- * What is checkable here is DEEP: "a spool measured in RECORDS, not in
- * whatever the board's flash happened to have spare. A store that holds a
- * busy neighbourhood's day is a pocket archiver with ambitions." This board's
- * archive is internal flash -- about 28k records -- so it declines, and says
- * so once rather than every ten minutes.
+ * The config key is therefore permission to SPEND, and 36.9.4's warning
+ * survives it: a station that cannot back the depth should not behave as
+ * though it could, "because every humble node that believes it will route its
+ * asks nowhere". What is checkable is DEEP: "a spool measured in RECORDS, not
+ * in whatever the board's flash happened to have spare." This board's archive
+ * is internal flash -- about 28k records -- so it declines, and says so once
+ * rather than every ten minutes.
  *
- * ADDRESSABLE is not checked, because since the RNS bearer learned to send a
- * directed packet this firmware answers asks on every lane it hears them on;
- * the commitment names stations that can only announce, which this is no
- * longer one of. Reach is a different thing from addressability and gets a
- * warning of its own: a super whose only lanes are ESP-NOW and the LAN is a
- * super for the room it is standing in, which is worth being, and is not what
- * 36.12.2 leans on. The remaining commitments -- budgeted, concurrent,
- * complete, awake -- are properties of the code, and are what the rest of
- * this file has to earn.
+ * Reach still gets a warning of its own: a deep station whose only lanes are
+ * ESP-NOW and the LAN is an archiver for the room it is standing in, which is
+ * worth being, and is not what 36.12.2 leans on. The remaining commitments --
+ * budgeted, concurrent, complete, awake -- are properties of the code, and are
+ * what the rest of this file has to earn.
  */
-#define SUPER_MIN_BYTES  (64u * 1024u * 1024u)   /* ~200k records */
+#define ALWAYS_ON_MIN_BYTES  (64u * 1024u * 1024u)   /* ~200k records */
 static uint64_t s_idx_budget;
 
-static bool idx_is_super(void)
+static bool idx_is_always_on(void)
 {
-    if (!xcfg_get_bool("index_super", false)) return false;
+    /* `index_super` is the old name for this key, read once so a board
+     * already configured keeps its budgets across the update. */
+    if (!xcfg_get_bool("index_always_on", xcfg_get_bool("index_super", false)))
+        return false;
     static int said;                 /* 0 unsaid, 1 said yes, 2 said no */
-    if (s_idx_budget < SUPER_MIN_BYTES) {
+    if (s_idx_budget < ALWAYS_ON_MIN_BYTES) {
         if (said != 2) {
             said = 2;
-            ESP_LOGW(TAG, "index_super set, but this station declines `super`: "
-                     "%llu MB of archive is not a deep spool (36.9.4)",
+            ESP_LOGW(TAG, "index_always_on set, but this station declines the "
+                     "budgets: %llu MB of archive is not a deep spool (36.9.4)",
                      (unsigned long long)(s_idx_budget / (1024u * 1024u)));
         }
         return false;
     }
     if (said != 1) {
         said = 1;
-        ESP_LOGI(TAG, "announcing serve:archive,super — %llu MB of spool",
+        ESP_LOGI(TAG, "always-on budgets — %llu MB of spool, announced as "
+                 "serve:archive with count: for anyone judging it",
                  (unsigned long long)(s_idx_budget / (1024u * 1024u)));
         if (!xprsrns_is_up())
-            ESP_LOGW(TAG, "super without Reticulum: reachable by the stations "
-                          "in this room, not by the ones 36.12.2 is about");
+            ESP_LOGW(TAG, "always-on without Reticulum: reachable by the "
+                          "stations in this room, not by the ones 36.12.2 is "
+                          "about");
     }
     return true;
 }
@@ -3758,73 +3817,73 @@ static uint32_t s_hist_global[HIST_GLOBAL_PH];
 static struct { char id[8]; uint32_t when; } s_hist_answered[8];
 
 /*
- * A super's budgets (36.9.4: "orders of magnitude above the reference
+ * Always-on budgets (36.9.4: "orders of magnitude above the reference
  * numbers", and 31.2's six-an-hour is explicitly a pocket device's figure).
  * The Dart responder uses a thousandfold, so this does too.
  *
  * A SEPARATE implementation from the rings below, deliberately. The rings
  * hold one timestamp per permitted replay, which is what makes them an exact
  * sliding hour -- and which is also why they cannot be scaled: six thousand
- * timestamps per asker is not a table this board can hold. At super scale the
+ * timestamps per asker is not a table this board can hold. At that scale the
  * exact position of the hour boundary stops meaning anything (the budget is
  * there to stop a flood, not to ration a neighbour), so this counts within a
  * window instead and costs twelve bytes per asker. The ordinary path is left
  * exactly as it was: a pocket archiver's budget is the one that has to be
  * precise, because it is the one an asker actually runs into.
  */
-#define HIST_SUPER_MULT   1000
-#define HIST_SUPER_ASKERS   32
+#define HIST_ALWAYSON_MULT   1000
+#define HIST_ALWAYSON_ASKERS   32
 static struct { char call[16]; uint32_t win; uint32_t n; }
-    s_hist_super[HIST_SUPER_ASKERS];
-static struct { uint32_t win; uint32_t n; } s_hist_super_global;
+    s_hist_alwayson[HIST_ALWAYSON_ASKERS];
+static struct { uint32_t win; uint32_t n; } s_hist_alwayson_global;
 
-static bool hist_budget_super(const char *from, uint32_t now_s)
+static bool hist_budget_always_on(const char *from, uint32_t now_s)
 {
-    if (now_s - s_hist_super_global.win < 3600 &&
-        s_hist_super_global.n >= (uint32_t)HIST_GLOBAL_PH * HIST_SUPER_MULT)
+    if (now_s - s_hist_alwayson_global.win < 3600 &&
+        s_hist_alwayson_global.n >= (uint32_t)HIST_GLOBAL_PH * HIST_ALWAYSON_MULT)
         return false;
     const uint32_t limit = (uint32_t)(peer_key(from) ? HIST_KNOWN_PH
                                                      : HIST_STRANGER_PH)
-                           * HIST_SUPER_MULT;
-    for (int i = 0; i < HIST_SUPER_ASKERS; i++) {
-        if (strcasecmp(s_hist_super[i].call, from) != 0) continue;
-        if (now_s - s_hist_super[i].win >= 3600) return true;
-        return s_hist_super[i].n < limit;
+                           * HIST_ALWAYSON_MULT;
+    for (int i = 0; i < HIST_ALWAYSON_ASKERS; i++) {
+        if (strcasecmp(s_hist_alwayson[i].call, from) != 0) continue;
+        if (now_s - s_hist_alwayson[i].win >= 3600) return true;
+        return s_hist_alwayson[i].n < limit;
     }
     return true;
 }
 
-static void hist_record_super(const char *from, uint32_t now_s)
+static void hist_record_always_on(const char *from, uint32_t now_s)
 {
-    if (now_s - s_hist_super_global.win >= 3600) {
-        s_hist_super_global.win = now_s;
-        s_hist_super_global.n = 0;
+    if (now_s - s_hist_alwayson_global.win >= 3600) {
+        s_hist_alwayson_global.win = now_s;
+        s_hist_alwayson_global.n = 0;
     }
-    s_hist_super_global.n++;
+    s_hist_alwayson_global.n++;
 
     int slot = -1, oldest = 0;
-    for (int i = 0; i < HIST_SUPER_ASKERS; i++) {
-        if (strcasecmp(s_hist_super[i].call, from) == 0) { slot = i; break; }
-        if (!s_hist_super[i].call[0]) { slot = i; break; }
-        if (s_hist_super[i].win < s_hist_super[oldest].win) oldest = i;
+    for (int i = 0; i < HIST_ALWAYSON_ASKERS; i++) {
+        if (strcasecmp(s_hist_alwayson[i].call, from) == 0) { slot = i; break; }
+        if (!s_hist_alwayson[i].call[0]) { slot = i; break; }
+        if (s_hist_alwayson[i].win < s_hist_alwayson[oldest].win) oldest = i;
     }
     /* Full: the least recently active asker goes. Losing a row only forgets
      * what somebody already spent, and the global counter still holds. */
     if (slot < 0) slot = oldest;
-    if (strcasecmp(s_hist_super[slot].call, from) != 0) {
-        snprintf(s_hist_super[slot].call, sizeof s_hist_super[0].call, "%s", from);
-        s_hist_super[slot].win = now_s;
-        s_hist_super[slot].n = 0;
-    } else if (now_s - s_hist_super[slot].win >= 3600) {
-        s_hist_super[slot].win = now_s;
-        s_hist_super[slot].n = 0;
+    if (strcasecmp(s_hist_alwayson[slot].call, from) != 0) {
+        snprintf(s_hist_alwayson[slot].call, sizeof s_hist_alwayson[0].call, "%s", from);
+        s_hist_alwayson[slot].win = now_s;
+        s_hist_alwayson[slot].n = 0;
+    } else if (now_s - s_hist_alwayson[slot].win >= 3600) {
+        s_hist_alwayson[slot].win = now_s;
+        s_hist_alwayson[slot].n = 0;
     }
-    s_hist_super[slot].n++;
+    s_hist_alwayson[slot].n++;
 }
 
 static bool hist_budget(const char *from, uint32_t now_s)
 {
-    if (idx_is_super()) return hist_budget_super(from, now_s);
+    if (idx_is_always_on()) return hist_budget_always_on(from, now_s);
     int g = 0;
     for (int i = 0; i < HIST_GLOBAL_PH; i++)
         if (s_hist_global[i] && now_s - s_hist_global[i] < 3600) g++;
@@ -3843,7 +3902,7 @@ static bool hist_budget(const char *from, uint32_t now_s)
 
 static void hist_record(const char *from, uint32_t now_s)
 {
-    if (idx_is_super()) { hist_record_super(from, now_s); return; }
+    if (idx_is_always_on()) { hist_record_always_on(from, now_s); return; }
     for (int i = 0; i < HIST_GLOBAL_PH; i++)
         if (!s_hist_global[i] || now_s - s_hist_global[i] >= 3600) {
             s_hist_global[i] = now_s;
@@ -4035,18 +4094,19 @@ static void idx_task(void *arg)
         s_index = xprsindex_open("/idx/xprs");
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
-         * A super sizes to the volume instead -- which on a board whose
+         * An always-on station sizes to the volume instead -- which on a board whose
          * archive is internal flash is barely more, and that IS the finding:
-         * this board can serve a super's role, but not a super's depth. */
+         * this board can serve the role, but not that depth. */
         s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
-                                        xcfg_get_bool("index_super", false));
+                                        xcfg_get_bool("index_always_on",
+                                            xcfg_get_bool("index_super", false)));
         xprsindex_set_max_bytes(s_index, s_idx_budget);
         if (!s_goss) {
             /* Beside the archive, in a directory that already exists:
              * this volume will not make a new one. The bucket names cannot
              * collide -- the index reads seg_* and its own index files. */
             s_goss = xgossip_open("/idx/xprs");
-            xgossip_set_super(s_goss, idx_is_super());
+            xgossip_set_always_on(s_goss, idx_is_always_on());
         }
         if (s_index) {
             s_api_cfg.index = s_index;
@@ -4145,9 +4205,15 @@ static void idx_task(void *arg)
              * nothing -- still a good citizen by 31.2. */
             const char *serve = xcfg_get("serve", "");
             char sbuf[48];
+            /* `archive`, and nothing above it: section 13's serve:
+             * vocabulary has no word for scale, and 12.9.4 settles why --
+             * an always-on archiver is recognised by its QUALITIES, "None
+             * of this is a separate role." This used to air `archive,super`,
+             * a word only this project's own receivers understood, while
+             * `count:` and `uptime:` on the very same beacon already carry
+             * the depth and the wakefulness a reader needs. */
             if (!serve[0])
-                snprintf(sbuf, sizeof sbuf, "archive%s",
-                         idx_is_super() ? ",super" : "");
+                snprintf(sbuf, sizeof sbuf, "archive");
             else
                 snprintf(sbuf, sizeof sbuf, "%s", serve);
             if (strcmp(sbuf, "none") == 0) { last_announce_s = now_s; goto no_announce; }
@@ -4168,7 +4234,7 @@ static void idx_task(void *arg)
              * beacon reaches ESP-NOW and the LAN only -- the two transports
              * whose listeners are, by definition, already in the room. A
              * station whose peers are all remote (36.12.2) could not learn
-             * this archive existed, which for a super is the whole point. */
+             * this archive existed, which for an always-on archiver is the whole point. */
             if (xprsrns_is_up()) xprsrns_send(w, n);
         }
 no_announce:
@@ -4495,18 +4561,20 @@ no_announce:
         }
 
         /*
-         * Super-archivers named in the config, seeded into the table so they
-         * are pulled whether or not this station ever hears them beacon. A
-         * board on a LAN hears its neighbours; the super that matters for
-         * the public rooms may be on the far side of a hub (36.12.2), and a
-         * peer nobody has heard from is exactly the one worth asking.
+         * Archivers named in the config, seeded into the table so they are
+         * pulled whether or not this station ever hears them beacon. A board
+         * on a LAN hears its neighbours; the archiver that matters for the
+         * public rooms may be on the far side of a hub (36.12.2), and a peer
+         * nobody has heard from is exactly the one worth asking. A named one
+         * needs no qualities checked: the operator already decided.
          */
-        static uint32_t s_supers_at;
+        static uint32_t s_named_at;
         {
             const uint32_t nows = (uint32_t)(esp_timer_get_time() / 1000000);
-            if (s_supers_at && nows - s_supers_at < 60) goto supers_done;
-            s_supers_at = nows ? nows : 1;
-            const char *list = xcfg_get("supers", "");
+            if (s_named_at && nows - s_named_at < 60) goto named_done;
+            s_named_at = nows ? nows : 1;
+            const char *list = xcfg_get("archivers", "");
+            if (!list[0]) list = xcfg_get("supers", "");  /* the old key */
             char one[10];
             int w = 0;
             for (const char *c = list; ; c++) {
@@ -4518,7 +4586,7 @@ no_announce:
                 if (w) {
                     cu_peer_t *r = cu_find(one, true);
                     if (r) {
-                        r->super = true;
+                        r->deep = true;
                         if (!r->bearer[0])
                             snprintf(r->bearer, sizeof r->bearer, "lan");
                         if (!r->next_ask_s)
@@ -4530,7 +4598,7 @@ no_announce:
                 if (!*c) break;
             }
         }
-supers_done:
+named_done:
 
         if (!s_cu.pending && s_index && xst_epoch_now()) {
             const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
@@ -4703,18 +4771,19 @@ supers_done:
             s_index = xprsindex_open("/idx/xprs");
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
-         * A super sizes to the volume instead -- which on a board whose
+         * An always-on station sizes to the volume instead -- which on a board whose
          * archive is internal flash is barely more, and that IS the finding:
-         * this board can serve a super's role, but not a super's depth. */
+         * this board can serve the role, but not that depth. */
         s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
-                                        xcfg_get_bool("index_super", false));
+                                        xcfg_get_bool("index_always_on",
+                                            xcfg_get_bool("index_super", false)));
         xprsindex_set_max_bytes(s_index, s_idx_budget);
         if (!s_goss) {
             /* Beside the archive, in a directory that already exists:
              * this volume will not make a new one. The bucket names cannot
              * collide -- the index reads seg_* and its own index files. */
             s_goss = xgossip_open("/idx/xprs");
-            xgossip_set_super(s_goss, idx_is_super());
+            xgossip_set_always_on(s_goss, idx_is_always_on());
         }
             if (s_index) {
                 xprsindex_set_verifier(s_index, index_verifier);
@@ -5010,10 +5079,10 @@ static int api_peers_json(char *buf, size_t cap)
         const cu_peer_t *r = &s_cu_peers[i];
         if (!r->used) continue;
         n += snprintf(buf + n, cap - n,
-            "%s{\"call\":\"%s\",\"super\":%s,\"bearer\":\"%s\","
+            "%s{\"call\":\"%s\",\"alwaysOn\":%s,\"bearer\":\"%s\","
             "\"interval_s\":%u,\"due_in_s\":%d,\"asked_ago_s\":%d,"
             "\"await\":%s,\"rows\":%u,\"resume\":%u}",
-            first ? "" : ",", r->call, r->super ? "true" : "false", r->bearer,
+            first ? "" : ",", r->call, r->deep ? "true" : "false", r->bearer,
             (unsigned)r->interval_s,
             r->next_ask_s ? (int)((int32_t)r->next_ask_s - (int32_t)now_s) : -1,
             r->ask_at_s ? (int)(now_s - r->ask_at_s) : -1,

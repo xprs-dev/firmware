@@ -32,14 +32,14 @@ static void test_halves_and_doubles(void)
     CHECK(iv == 300, "quiet gave %u, wanted 300", iv);
 }
 
-/* Only a super's raised budgets can serve a fast caller. Asking an ordinary
+/* Only an always-on archiver's raised budgets can serve a fast caller. Asking an ordinary
  * peer faster steals its whole cross-caller allowance. */
 static void test_floors(void)
 {
     uint32_t iv = 20;
     for (int i = 0; i < 8; i++)
         iv = xcadence_next(iv, XC_NEWS, XC_FAST, true, 0);
-    CHECK(iv == XC_FAST_FLOOR, "a busy super settled at %u, floor is %u",
+    CHECK(iv == XC_FAST_FLOOR, "a busy always-on archiver settled at %u, floor is %u",
           iv, XC_FAST_FLOOR);
 
     iv = 600;
@@ -49,7 +49,7 @@ static void test_floors(void)
           "an ordinary peer was polled at %u, floor is %u",
           iv, XC_ORDINARY_FLOOR);
 
-    /* Nobody looking: a super gets no more than an ordinary peer, because the
+    /* Nobody looking: an always-on archiver gets no more than an ordinary peer, because the
      * news nobody is awake to read is not worth anybody's battery. */
     iv = 15;
     iv = xcadence_next(iv, XC_NEWS, XC_FAST, false, 0);
@@ -113,7 +113,7 @@ static void test_initial(void)
           "no state gave a sub-floor interval");
 }
 
-/* Many stations pulling one super on the same interval arrive together. */
+/* Many stations pulling one archiver on the same interval arrive together. */
 static void test_jitter_stays_in_band(void)
 {
     for (uint32_t r = 0; r < 200; r++) {

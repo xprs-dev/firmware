@@ -4,7 +4,7 @@
  * ON DISK. Buckets: g_00.bin .. g_0F.bin, fixed 32-byte records, a callsign
  * hashing to exactly one of them. The point is the lookup: a flat file would
  * make every upsert and every question a read of the whole store, which on a
- * super's card is megabytes for one answer. Sixteen buckets turn that into a
+ * an always-on archiver's card is megabytes for one answer. Sixteen buckets turn that into a
  * sixteenth, and the hash is over the BASE callsign so X1ABC and X1ABC-7 land
  * together and are answered together.
  *
@@ -47,7 +47,7 @@ static const char *TAG = "xgossip";
  */
 #define XG_BUCKETS      64
 #define XG_BUCKET_MAX  256        /* records per bucket; 8 KB of card */
-#define XG_PER_CALL     40        /* G + K_SUPER: every row one callsign can
+#define XG_PER_CALL     40        /* G + K_ALWAYS_ON: every row one callsign can
                                    * have in its bucket */
 #define XG_QUEUE_LEN    12        /* sightings waiting for the pump */
 #define XG_METERS       16        /* per-signer and per-direct meters */
@@ -67,7 +67,7 @@ typedef struct {
 _Static_assert(sizeof(xg_rec_t) == 32, "the on-card record is 32 bytes");
 
 /* Bearer names, indexed. Stored as one byte rather than a string because the
- * record is on a card and a super holds a lot of them. Index 0 is unknown;
+ * record is on a card and an always-on archiver holds a lot of them. Index 0 is unknown;
  * everything from XG_B_RADIO_FIRST to XG_B_RADIO_LAST is short-range, which
  * is what 36.9.4 means by radio truth -- `rns` sits outside it deliberately.
  */
@@ -123,7 +123,7 @@ typedef struct {
 struct xgossip_s {
     char     dir[80];
     bool     ready;
-    bool     super;
+    bool     always_on;
     uint32_t max_bytes;
     int      visit_k;
 
@@ -296,7 +296,7 @@ static void xg_apply(xgossip_t *g, const xg_job_t *j)
      * it. Hearing it on our OWN radio is that reason, and it is how a
      * callsign becomes known in the first place -- after which what other
      * stations say about it is worth keeping too. */
-    if (!g->super && !j->own && sc->n == 0) {
+    if (!g->always_on && !j->own && sc->n == 0) {
         g->st.refused_need++;
         return;
     }
@@ -526,14 +526,14 @@ int xgossip_try_candidates(xgossip_t *g, const char *call, const char *self,
 
 /* ── lifecycle ───────────────────────────────────────────────────────────── */
 
-void xgossip_set_super(xgossip_t *g, bool super)
+void xgossip_set_always_on(xgossip_t *g, bool always_on)
 {
     if (!g) return;
-    g->super = super;
-    g->max_bytes = super ? XGOSSIP_MAX_BYTES_SUPER : XGOSSIP_MAX_BYTES;
-    g->visit_k = super ? XGOSSIP_VISIT_K_SUPER : XGOSSIP_VISIT_K;
+    g->always_on = always_on;
+    g->max_bytes = always_on ? XGOSSIP_MAX_BYTES_ALWAYS_ON : XGOSSIP_MAX_BYTES;
+    g->visit_k = always_on ? XGOSSIP_VISIT_K_ALWAYS_ON : XGOSSIP_VISIT_K;
     XG_LOGI("gossip: %s, %u KB, K=%d",
-            super ? "super (every callsign it can learn of)"
+            always_on ? "always-on (every callsign it can learn of)"
                   : "need-to-know", (unsigned)(g->max_bytes / 1024),
             g->visit_k);
 }
@@ -570,7 +570,7 @@ xgossip_t *xgossip_open(const char *dir)
     fclose(pf);
     remove(probe);
     g->ready = true;
-    xgossip_set_super(g, false);
+    xgossip_set_always_on(g, false);
 
     uint32_t rows = 0;
     for (int b = 0; b < XG_BUCKETS; b++) {

@@ -35,15 +35,20 @@ static cfg_entry_t s_cfg[] = {
     { "bridge_on", {0}, false },
     { "igate_on",  {0}, false },
     { "index_on",  {0}, false },
-    /* A super-archiver (XPRS.md 36.9.4): keeps everything it is handed, is
-     * asked by many stations, and sizes its spool to the volume rather than
-     * to a pocket device's budget. Off by default -- claiming the word
-     * commits a station to serving it. */
+    /* Always-on scale (XPRS.md 12.9.4, 36.9.4): keeps everything it is
+     * handed, is asked by many stations, and sizes its spool to the volume
+     * rather than to a pocket device's budget. Off by default -- these are
+     * budgets a station spends on other people. It is NOT announced: a peer
+     * reads the `count:` and `uptime:` already on every beacon.
+     * `index_super` is the old name, still read so a configured board keeps
+     * its budgets across the update. */
+    { "index_always_on", {0}, false },
     { "index_super", {0}, false },
-    /* Super-archivers this station pulls from by name, comma separated.
-     * Discovery from a `serve:archive,super` beacon covers whoever is in
-     * earshot; this covers the one on the far side of a hub, which a board
-     * will never hear a beacon from (36.12.2). */
+    /* Archivers this station pulls from by name, comma separated. Discovery
+     * from a `serve:archive` beacon covers whoever is in earshot; this covers
+     * the one on the far side of a hub, which a board will never hear a
+     * beacon from (36.12.2). `supers` is the old name. */
+    { "archivers", {0}, false },
     { "supers",    {0}, false },
     { "ntp",       {0}, false },
     { "ap_on",     {0}, false },
@@ -253,7 +258,8 @@ int xcfg_ini_render(char *buf, size_t cap)
         ";        aired for anybody whatever this says.\n"
         "; first: callsigns whose traffic leaves ahead of everyone else's.\n"
         "; serve: what this station announces it does; empty is the\n"
-        ";        default (archive, and super when it qualifies).\n"
+        ";        default (archive). There is no word above it: a peer\n"
+        ";        judges scale from count: and uptime: (12.9.4).\n"
         "use = %s\n"
         "first = %s\n"
         "serve = %s\n"
@@ -313,12 +319,17 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "bridge",  "enabled",  "bridge_on" },
     { "igate",   "enabled",  "igate_on" },
     { "indexer", "enabled",  "index_on" },
+    { "indexer", "always_on", "index_always_on" },
+    { "indexer", "archivers", "archivers" },
+    /* The names these two had before 12.9.4's qualities replaced the word
+     * `super`. Kept so an existing xprs.ini keeps working. */
     { "indexer", "super",    "index_super" },
     { "indexer", "supers",   "supers" },
     /* The hub this station DIALS OUT to. It was in the cache and nowhere in
      * this map, so it could only be set from a serial console -- which a box
-     * beside a router does not have a cable to. A super-archiver is never
-     * port-forwarded; it dials out, and this is the line that says where. */
+     * beside a router does not have a cable to. An always-on archiver is
+     * never port-forwarded; it dials out, and this is the line that says
+     * where. */
     { "rns",     "hub",      "rns_hub" },
     { "rns",     "pace_ms",  "rns_pace_ms" },
     /* The radio's region decides the channel, the hourly airtime budget and

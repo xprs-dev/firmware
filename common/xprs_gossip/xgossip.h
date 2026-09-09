@@ -31,7 +31,7 @@
  * WHERE IT LIVES. On the card, in buckets: a callsign hashes to one file, so
  * a lookup reads a fraction of the store instead of all of it. RAM holds only
  * the quota meters -- this runs on boards whose free heap is measured in
- * kilobytes, and a table sized for a super would not fit in it.
+ * kilobytes, and a table sized for an always-on archiver would not fit in it.
  *
  * THREADING. xgossip_note_* are safe to call from a receive path: they do a
  * RAM check and queue. Nothing touches the card until xgossip_pump() is
@@ -62,16 +62,16 @@ typedef struct {
  * card on one busy neighbour. */
 #define XGOSSIP_LIVE_G          8        /* gateways per callsign, L3 */
 #define XGOSSIP_VISIT_K         8        /* gateways per callsign, L2 */
-/* What a super keeps. The phone keeps 100 in sqlite; a board keeps 32,
+/* What an always-on archiver keeps. The phone keeps 100 in sqlite; a board keeps 32,
  * because every row a callsign can have has to fit in the working array the
  * store uses instead of loading a bucket into RAM. Four times an ordinary
  * station is still the difference the role is about. */
-#define XGOSSIP_VISIT_K_SUPER  32
+#define XGOSSIP_VISIT_K_ALWAYS_ON  32
 #define XGOSSIP_LIVE_TTL_SEC  (24 * 3600)
 #define XGOSSIP_SIGNER_SEC     30        /* the fastest beacon cadence */
 #define XGOSSIP_DIRECT_SEC     60        /* debounce for our own hearings */
 #define XGOSSIP_MAX_BYTES     (256u * 1024u)
-#define XGOSSIP_MAX_BYTES_SUPER (16u * 1024u * 1024u)
+#define XGOSSIP_MAX_BYTES_ALWAYS_ON (16u * 1024u * 1024u)
 
 typedef struct xgossip_s xgossip_t;
 
@@ -80,16 +80,16 @@ xgossip_t *xgossip_open(const char *dir);
 void       xgossip_close(xgossip_t *g);
 
 /**
- * @brief Claim the super-archiver's gossip duties (36.9.4).
+ * @brief Claim the always-on archiver's gossip duties (36.9.4).
  *
  * Two things change. The byte budget and the per-callsign visit ring grow --
- * a super is asked about callsigns nobody else remembers. And the need-to-know
+ * an always-on archiver is asked about callsigns nobody else remembers. And the need-to-know
  * admission goes away: an ordinary station keeps gossip in proportion to its
  * duties, which means callsigns it has heard itself or already knows of, while
- * a super keeps "every active callsign it can learn of" because that is what
+ * an always-on archiver keeps "every active callsign it can learn of" because that is what
  * the humble stations are going to ask it about.
  */
-void xgossip_set_super(xgossip_t *g, bool super);
+void xgossip_set_always_on(xgossip_t *g, bool always_on);
 
 /**
  * @brief This station heard @p call itself, direct, no `via:`.
