@@ -805,7 +805,7 @@ def hero(embed):
       <li><b>iGate (internet gateway)</b>Passes what the radios hear onto the network over
         WiFi, and what arrives from there back onto the air, so a message is not
         limited to radio range.</li>
-      <li><b>Portable chat hotspot</b>Opens its own WiFi access point: a phone
+      <li><b>Hotspot (portable chat)</b>Opens its own WiFi access point: a phone
         joins, the chat page opens by itself, and nobody needs an app or an
         account. The T-Deck's keyboard lets it chat on its own.</li>
     </ul>
