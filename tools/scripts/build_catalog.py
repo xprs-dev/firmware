@@ -616,13 +616,13 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
 .legend b{font-weight:700; font-style:normal}
 .foot{color:var(--ink-dim); font-size:13px; padding-top:16px; max-width:70ch}
 @media (max-width:860px){
-  /* One column, and the film straight under the heading rather than after
-     four paragraphs: on a phone it is the first thing worth seeing. */
+  /* One column: what XPRS is, then the film, then the four jobs, so the film
+     is not pushed below all four of them on a phone. */
   .hero{display:flex; flex-direction:column; align-items:stretch; gap:0}
   .hero-text{display:contents}
-  .hero .eyebrow{order:1} .hero h1{order:2}
-  .film{order:3; max-width:560px; margin:20px 0 6px}
-  .hero-text p:not(.eyebrow){order:4} .jobs{order:5}
+  .hero .eyebrow{order:1} .hero h1{order:2} .hero-text p:not(.eyebrow){order:3}
+  .film{order:4; max-width:560px; margin:24px 0 6px}
+  .jobs{order:5}
 }
 @media (max-width:640px){
   body{font-size:16px}
