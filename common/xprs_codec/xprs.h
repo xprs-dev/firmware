@@ -146,6 +146,14 @@ bool xprs_scope_local(const xprs_t *p);
  * X5 prefix, which is a (closed) group. Mirrors MeshCustodyDelegate._isStation. */
 bool xprs_is_station(const char *addr, int len);
 
+/* Is [call] self-generated (section 3): X1 to X5, derived from a key and
+ * issued by nobody? Such a callsign may never be originated onto licensed
+ * spectrum (section 6.4.1). The ITU allocates no X-and-digit prefix, so the
+ * first two characters decide it, and a malformed tail does not turn one into
+ * an issued callsign. Nothing can tell whether any OTHER callsign was really
+ * issued (section 6.4.2); this answers only the question the rule asks. */
+bool xprs_is_self_generated(const char *call, int len);
+
 /* Rebuild [wire] with [self] appended to via: (created before m: when absent),
  * which is what a relay transmits (section 13). Neither the identifier nor a
  * signature changes — both are computed with via: removed. Returns the new

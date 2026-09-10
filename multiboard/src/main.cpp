@@ -415,6 +415,41 @@ static void tdongle_load_igate_position(void)
     }
 }
 
+/* The callsign the iGate gates traffic up under. Only one issued to the
+ * operator by a radio authority will do (XPRS section 6.4.1); with none the
+ * iGate is receive-only. NVS wins over the build-time default, and an empty
+ * NVS value is a deliberate clear. */
+static void tdongle_load_igate_call(void)
+{
+    char call[16] = {0};
+    bool have = false;
+    nvs_handle_t h;
+    if (nvs_open(TDONGLE_IGATE_NVS_NS, NVS_READONLY, &h) == ESP_OK) {
+        size_t n = sizeof call;
+        have = (nvs_get_str(h, "issued_call", call, &n) == ESP_OK);
+        nvs_close(h);
+    }
+#ifdef TDONGLE_IGATE_CALLSIGN
+    if (!have) {
+        strncpy(call, TDONGLE_IGATE_CALLSIGN, sizeof call - 1);
+        have = true;
+    }
+#endif
+    if (have && aprsis_set_issued_call(call) != ESP_OK)
+        ESP_LOGW(TAG, "iGate callsign '%s' refused; receive-only", call);
+}
+
+static esp_err_t tdongle_save_igate_call(const char *call)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(TDONGLE_IGATE_NVS_NS, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, "issued_call", call);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
 static void tdongle_save_igate_position(double lat, double lon, int radius_km)
 {
     nvs_handle_t h;
@@ -1122,13 +1157,17 @@ static esp_err_t tdongle_igate_status_handler(httpd_req_t *req)
     aprsis_get_rx_stats(&rx_lines, &rx_msgs, &rx_gated);
     double lat = 0, lon = 0; int radius = 0; bool have_pos = false;
     aprsis_get_position(&lat, &lon, &radius, &have_pos);
-    char buf[420];
+    char issued[16];
+    aprsis_get_issued_call(issued, sizeof issued);
+    char buf[480];
     int n = snprintf(buf, sizeof buf,
-        "{\"aprsis_connected\":%s,\"have_position\":%s,\"lat\":%.5f,\"lon\":%.5f,"
+        "{\"aprsis_connected\":%s,\"issued_call\":\"%s\",\"uplink\":%s,"
+        "\"have_position\":%s,\"lat\":%.5f,\"lon\":%.5f,"
         "\"radius_km\":%d,\"rx_lines\":%u,\"rx_msgs\":%u,\"rx_gated\":%u,"
         "\"messages\":{\"ready\":%s,\"count\":%u,\"latest_index\":\"%c%u\",\"diag\":\"%s\"},"
         "\"beacons\":{\"ready\":%s,\"count\":%u,\"latest_index\":\"%c%u\",\"diag\":\"%s\"}}",
         aprsis_is_connected() ? "true" : "false",
+        issued, issued[0] ? "true" : "false",
         have_pos ? "true" : "false", lat, lon, radius,
         (unsigned)rx_lines, (unsigned)rx_msgs, (unsigned)rx_gated,
         msgstore_ready(s_msg_store) ? "true" : "false",
@@ -1458,6 +1497,40 @@ static esp_err_t tdongle_igate_position_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/igate/callsign?call=: set and persist the issued callsign the
+ * iGate gates up under; call= empty goes back to receive-only. An X1-X5
+ * callsign, or anything not shaped like an amateur one, is 400 (XPRS 6.4.1).
+ * Unauthenticated, like /api/igate/position: it grants nothing new, since the
+ * passcode is a public function of the callsign and anyone on this LAN could
+ * log in to APRS-IS under one directly. */
+static esp_err_t tdongle_igate_callsign_handler(httpd_req_t *req)
+{
+    char query[64] = {0};
+    char call[16] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "call", call, sizeof(call)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "call required (empty clears)");
+        return ESP_FAIL;
+    }
+    if (aprsis_set_issued_call(call) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+            "not an issued amateur callsign; an X1-X5 callsign may never gate "
+            "traffic onto APRS-IS (XPRS section 6.4.1)");
+        return ESP_FAIL;
+    }
+    char issued[16];
+    aprsis_get_issued_call(issued, sizeof issued);
+    if (tdongle_save_igate_call(issued) != ESP_OK)
+        ESP_LOGW(TAG, "iGate callsign set but not persisted");
+    char buf[96];
+    int n = snprintf(buf, sizeof buf, "{\"ok\":true,\"issued_call\":\"%s\",\"uplink\":%s}",
+                     issued, issued[0] ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_send(req, buf, n);
+    return ESP_OK;
+}
+
 static void tdongle_register_igate_status(void)
 {
     httpd_handle_t srv = http_server_get_handle();
@@ -1466,6 +1539,8 @@ static void tdongle_register_igate_status(void)
         .handler = tdongle_igate_status_handler, .user_ctx = NULL };
     static const httpd_uri_t u_pos = { .uri = "/api/igate/position", .method = HTTP_POST,
         .handler = tdongle_igate_position_handler, .user_ctx = NULL };
+    static const httpd_uri_t u_call = { .uri = "/api/igate/callsign", .method = HTTP_POST,
+        .handler = tdongle_igate_callsign_handler, .user_ctx = NULL };
     static const httpd_uri_t u_msgs = { .uri = "/api/aprs", .method = HTTP_GET,
         .handler = tdongle_api_messages_handler, .user_ctx = NULL };
     static const httpd_uri_t u_beacons = { .uri = "/api/beacons", .method = HTTP_GET,
@@ -1474,10 +1549,11 @@ static void tdongle_register_igate_status(void)
         .handler = tdongle_api_xprs_handler, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &u_status);
     httpd_register_uri_handler(srv, &u_pos);
+    httpd_register_uri_handler(srv, &u_call);
     httpd_register_uri_handler(srv, &u_msgs);
     httpd_register_uri_handler(srv, &u_beacons);
     httpd_register_uri_handler(srv, &u_xprs);
-    ESP_LOGI(TAG, "iGate endpoints registered (/api/igate[/position], /api/aprs, /api/beacons)");
+    ESP_LOGI(TAG, "iGate endpoints registered (/api/igate[/position|/callsign], /api/aprs, /api/beacons)");
 }
 #endif  /* MODEL_TDONGLE_S3 */
 
@@ -1740,6 +1816,10 @@ extern "C" void app_main(void)
                 // BLE-heard callsigns are gated; set TDONGLE_DEFAULT_LAT/LON
                 // or call aprsis_set_position() to also gate nearby traffic.
 #if FEATURE_APRSIS
+                // `callsign` is this station's X3, which may never gate
+                // traffic up (XPRS 6.4.1): it names the iGate on the filter and
+                // the receive-only login. Gating up waits for an issued one.
+                tdongle_load_igate_call();
                 ret = aprsis_init(callsign);
                 if (ret == ESP_OK) {
                     // Bridge the iGate to this firmware's legacy-BLE link (heard

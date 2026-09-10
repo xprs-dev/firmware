@@ -25,6 +25,7 @@
 
 #include "wifi_bsp.h"
 #include "msgstore.h"
+#include "xprs.h"
 
 static const char *TAG = "aprsis";
 
@@ -91,7 +92,14 @@ typedef struct {
 /* ---- state -------------------------------------------------------------- */
 
 static char            s_call[10];
-static int             s_pass;
+/* The issued callsign TX happens under (aprsis_set_issued_call), "" for
+ * receive-only. Written by whoever configures it, read by the task, so it is
+ * copied under a lock; the task works from its own copy, taken at login, and
+ * reconnects when the generation moves. */
+static char            s_issued[10];
+static volatile uint32_t s_issued_gen;
+static portMUX_TYPE    s_issued_mux = portMUX_INITIALIZER_UNLOCKED;
+static char            s_gate_call[10];    /* task-owned: the login's copy */
 static volatile double s_lat = APRSIS_DEFAULT_LAT;
 static volatile double s_lon = APRSIS_DEFAULT_LON;
 static volatile int    s_radius_km = APRSIS_RADIUS_KM;
@@ -176,6 +184,37 @@ static int aprs_passcode(const char *callsign)
         if (i < n) { hash ^= (int)base[i]; i++; }
     }
     return hash & 0x7FFF;
+}
+
+/* Shaped like an amateur callsign: 3 to 7 letters and digits with at least one
+ * of each, then optionally "-" and a 1-2 character SSID, 9 characters in all,
+ * and not X1-X5. Writes the uppercased form to [out]. The shape catches typing
+ * errors and the one kind of callsign that is never issued; nothing here can
+ * tell whether the rest were issued to this operator (XPRS section 6.4.2). */
+static bool issued_call_ok(const char *in, char out[10])
+{
+    int n = 0, base = -1, letters = 0, digits = 0;
+    for (; in[n]; n++) {
+        if (n >= 9) return false;
+        char c = a_up(in[n]);
+        if (c == '-') {
+            if (base >= 0) return false;
+            base = n;
+        } else if (a_digit(c)) {
+            if (base < 0) digits++;
+        } else if (c >= 'A' && c <= 'Z') {
+            if (base < 0) letters++;
+        } else {
+            return false;
+        }
+        out[n] = c;
+    }
+    out[n] = 0;
+    if (base < 0) base = n;
+    int ssid = base < n ? n - base - 1 : 0;
+    if (base < 3 || base > 7 || !letters || !digits) return false;
+    if (base < n && (ssid < 1 || ssid > 2)) return false;
+    return !xprs_is_self_generated(out, n);
 }
 
 /* ---- parsing (port of aprs.c) ------------------------------------------- */
@@ -392,7 +431,12 @@ static void handle_info_line(const char *line)
 
 static void do_uplink(int fd, const uplink_job_t *j)
 {
+    if (!s_gate_call[0]) return;                  /* receive-only login */
     if (call_eq(j->from, s_call)) return;         /* don't gate our own beacons */
+    /* XPRS section 6.4.1: a bridge onto licensed spectrum drops what comes
+     * from a self-generated callsign rather than relaying it under its
+     * operator's licence. */
+    if (xprs_is_self_generated(j->from, (int)strlen(j->from))) return;
 
     uint32_t h = fnv1a(j->from, (int)strlen(j->from))
                ^ fnv1a(j->to, (int)strlen(j->to))
@@ -412,11 +456,11 @@ static void do_uplink(int fd, const uplink_job_t *j)
         char la[16], lo[16];
         fmt_lat(lat, la); fmt_lon(lon, lo);
         snprintf(line, sizeof line, "%s>APRS,qAR,%s:!%s/%s>\r\n",
-                 j->from, s_call, la, lo);
+                 j->from, s_gate_call, la, lo);
     } else if (j->to[0] && j->to[0] != '#') {     /* direct message */
         char dest[10]; pad_addressee(j->to, dest);
         snprintf(line, sizeof line, "%s>APRS,qAR,%s::%s:%s{%d\r\n",
-                 j->from, s_call, dest, j->text, s_seq++);
+                 j->from, s_gate_call, dest, j->text, s_seq++);
     } else {
         return;                                   /* geo-chat / groups: not gated */
     }
@@ -447,12 +491,22 @@ static void aprsis_task(void *arg)
         if (fd < 0) { vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS)); continue; }
 
         build_filter(cur_filter, sizeof cur_filter);
+        /* With an issued callsign, log in as it with its passcode. Without
+         * one, passcode -1: APRS-IS serves the feed and accepts nothing, so
+         * this station cannot put a packet on the air however it is fed. */
+        uint32_t gen = s_issued_gen;
+        taskENTER_CRITICAL(&s_issued_mux);
+        memcpy(s_gate_call, s_issued, sizeof s_gate_call);
+        taskEXIT_CRITICAL(&s_issued_mux);
         char login[420];
         snprintf(login, sizeof login,
-                 "user %s pass %d vers XPRSIgate 0.1 filter %s\r\n",
-                 s_call, s_pass, cur_filter);
+                 "user %s pass %d vers XPRSIgate 0.2 filter %s\r\n",
+                 s_gate_call[0] ? s_gate_call : s_call,
+                 s_gate_call[0] ? aprs_passcode(s_gate_call) : -1, cur_filter);
         if (!send_line(fd, login)) { close(fd); vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS)); continue; }
-        ESP_LOGI(TAG, "connected; login as %s, filter: %s", s_call, cur_filter);
+        ESP_LOGI(TAG, "connected; %s %s, filter: %s",
+                 s_gate_call[0] ? "gating as" : "receive-only as",
+                 s_gate_call[0] ? s_gate_call : s_call, cur_filter);
 
         s_connected = true;
         int acclen = 0;
@@ -491,6 +545,10 @@ static void aprsis_task(void *arg)
             if (t - last_check >= FILTER_CHECK_SEC) {
                 last_check = t;
                 if (!send_line(fd, "# keepalive\r\n")) { ESP_LOGW(TAG, "keepalive send failed"); break; }
+                if (s_issued_gen != gen) {
+                    ESP_LOGI(TAG, "issued callsign changed -> reconnecting");
+                    break;
+                }
                 char nf[256];
                 build_filter(nf, sizeof nf);
                 if (strcmp(nf, cur_filter) != 0) {
@@ -516,7 +574,6 @@ esp_err_t aprsis_init(const char *callsign)
 
     strncpy(s_call, callsign, sizeof s_call - 1);
     s_call[sizeof s_call - 1] = 0;
-    s_pass = aprs_passcode(s_call);
     s_have_pos = (s_lat != 0.0 || s_lon != 0.0);
 
     s_uplink_q = xQueueCreate(UPLINK_Q_LEN, sizeof(uplink_job_t));
@@ -532,9 +589,31 @@ esp_err_t aprsis_init(const char *callsign)
         s_uplink_q = NULL;
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "iGate started — call %s, passcode %d%s",
-             s_call, s_pass, s_have_pos ? " (position set)" : " (no position)");
+    ESP_LOGI(TAG, "iGate started: call %s, %s%s", s_call,
+             s_issued[0] ? "gating up" : "receive-only (no issued callsign)",
+             s_have_pos ? " (position set)" : " (no position)");
     return ESP_OK;
+}
+
+esp_err_t aprsis_set_issued_call(const char *call)
+{
+    char norm[10] = {0};
+    if (call && call[0] && !issued_call_ok(call, norm)) return ESP_ERR_INVALID_ARG;
+    taskENTER_CRITICAL(&s_issued_mux);
+    memcpy(s_issued, norm, sizeof s_issued);
+    taskEXIT_CRITICAL(&s_issued_mux);
+    s_issued_gen++;
+    ESP_LOGI(TAG, "issued callsign %s", norm[0] ? norm : "cleared: receive-only");
+    return ESP_OK;
+}
+
+void aprsis_get_issued_call(char *out, size_t max)
+{
+    if (!out || !max) return;
+    taskENTER_CRITICAL(&s_issued_mux);
+    strncpy(out, s_issued, max - 1);
+    taskEXIT_CRITICAL(&s_issued_mux);
+    out[max - 1] = 0;
 }
 
 void aprsis_set_position(double lat, double lon, int radius_km)

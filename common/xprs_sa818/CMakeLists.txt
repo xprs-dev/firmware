@@ -3,7 +3,7 @@ if("${IDF_TARGET}" STREQUAL "esp32")
         SRCS "sa818.c" "sa818_radio.c"
         INCLUDE_DIRS "."
         REQUIRES driver log esp_timer esp_adc
-        PRIV_REQUIRES freertos
+        PRIV_REQUIRES freertos xprs_codec
     )
 else()
     idf_component_register()

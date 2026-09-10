@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sa818_radio.h"
+#include "xprs.h"
 #include "soc/soc_caps.h"
 #if CONFIG_IDF_TARGET_ESP32
 #include "driver/i2s.h"
@@ -2133,6 +2134,16 @@ esp_err_t sa818_radio_send_aprs_message(sa818_radio_handle_t handle,
     }
     if (!sa818_radio_is_aprs_tx_supported(handle)) {
         return ESP_ERR_NOT_SUPPORTED;
+    }
+    // Every frame this radio sends is on licensed spectrum (134-174 MHz), and
+    // every path to it ends here: the web chat, the console, and the BLE
+    // bridge relaying what phones sent. An X1-X5 callsign was issued by
+    // nobody, so it identifies nobody on the air (XPRS section 6.4.1), and a
+    // relayed frame would go out under this station's operator's licence.
+    if (xprs_is_self_generated(from_callsign, (int)strlen(from_callsign))) {
+        ESP_LOGW(TAG, "APRS TX refused: %s is self-generated, and only an issued "
+                      "callsign may transmit on licensed spectrum", from_callsign);
+        return ESP_ERR_NOT_ALLOWED;
     }
 
     // Pause RX task so TX can use I2S write (DAC) without interference.

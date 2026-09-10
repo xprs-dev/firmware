@@ -372,6 +372,12 @@ static int cmd_aprs_send(int argc, char **argv)
     }
 
     esp_err_t ret = sa818_radio_send_aprs_message(radio, from_callsign, argv[1], msg);
+    if (ret == ESP_ERR_NOT_ALLOWED) {
+        printf("Error: %s is self-generated; only a callsign issued by a radio "
+               "authority may transmit on this band (XPRS section 6.4.1)\n",
+               from_callsign);
+        return 1;
+    }
     if (ret != ESP_OK) {
         printf("Error: %s\n", esp_err_to_name(ret));
         return 1;

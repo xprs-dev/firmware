@@ -42,6 +42,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "radio_tx.h"
+#include "xprs.h"
 #endif
 
 #if BOARD_MODEL == MODEL_TDONGLE_S3
@@ -950,6 +951,17 @@ static esp_err_t api_aprs_post_handler(httpd_req_t *req)
         httpd_resp_set_type(req, "application/json");
         httpd_resp_set_hdr(req, "Connection", "close");
         httpd_resp_send(req, "{\"ok\":false,\"error\":\"Missing 'from'\"}", -1);
+        return ESP_OK;
+    }
+    // The radio refuses it anyway (sa818_radio_send_aprs_message); saying so
+    // here is what tells the person at the web chat why nothing went out.
+    if (xprs_is_self_generated(from, (int)strlen(from))) {
+        free(content);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        httpd_resp_send(req, "{\"ok\":false,\"error\":\"Only a callsign issued by your "
+                             "radio authority may transmit on this band, not an X1-X5 "
+                             "callsign (XPRS section 6.4.1)\"}", -1);
         return ESP_OK;
     }
     if (!extract_form_value(content, "to", to, sizeof(to)) || to[0] == '\0') {

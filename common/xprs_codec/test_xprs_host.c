@@ -166,6 +166,16 @@ int main(void)
     CHECK(!xprs_is_station("X5A3F2", 6), "X5 is a group");
     CHECK(xprs_is_station("CT1ABC-9", 8), "CT1ABC-9 is a station");
 
+    /* 4a. Section 6.4.1: only an issued callsign may go on licensed spectrum. */
+    CHECK(xprs_is_self_generated("X1QZ3N", 6), "X1QZ3N is self-generated");
+    CHECK(xprs_is_self_generated("X3RLY7-9", 8), "a suffix does not issue it");
+    CHECK(xprs_is_self_generated("x4ab", 4), "case does not issue it");
+    CHECK(xprs_is_self_generated("X5A3F2", 6), "X5, a group, is self-generated");
+    CHECK(!xprs_is_self_generated("CT1ABC", 6), "CT1ABC is not");
+    CHECK(!xprs_is_self_generated("XE1ABC", 6), "XE1ABC (Mexico) is not");
+    CHECK(!xprs_is_self_generated("X6ABC", 5), "X6 is not an XPRS prefix");
+    CHECK(!xprs_is_self_generated("X", 1), "one character is not a callsign");
+
     /* 4b. uptime:/lifetime: are ordinary qty fields — parse, survive a
      * round-trip, and never disturb the identifier derivation. */
     const char *wu = "t:observation f:X3RLY7 link:ble peers:4 mail:3 uptime:26h lifetime:38day";

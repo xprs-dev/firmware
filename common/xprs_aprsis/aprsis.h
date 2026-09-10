@@ -2,8 +2,7 @@
  * @file aprsis.h
  * @brief APRS-IS iGate for the T-Dongle — bridges APRS-IS <-> BLE.
  *
- * Connects to an APRS-IS server over WiFi (computed passcode, no licence
- * needed for an X3 callsign), and:
+ * Connects to an APRS-IS server over WiFi, and:
  *
  *   - RX (Internet -> BLE): pulls APRS messages addressed to callsigns this
  *     node has heard over BLE (and itself), plus — only when the node's
@@ -11,6 +10,14 @@
  *     over BLE so local devices receive them.
  *   - TX (BLE -> Internet): gates frames heard locally over BLE up to APRS-IS
  *     (third-party format), so messages from BLE-only devices reach the world.
+ *
+ * TX needs a callsign issued to the operator by a radio authority, set with
+ * aprsis_set_issued_call(). Other iGates transmit APRS-IS traffic on amateur
+ * bands, so what goes up is traffic on licensed spectrum under this
+ * operator's licence, and an X1-X5 callsign may never be originated there
+ * (XPRS sections 6.4.1 and 32). Without one the iGate logs in receive-only
+ * (passcode -1) and does RX alone. Frames from X1-X5 senders are never gated
+ * up, whoever the operator is.
  *
  * Mirrors the XPRS app desktop/Android APRS client (same passcode + TNC2 logic).
  * Runs on its own FreeRTOS task; safe to start once at boot.
@@ -20,6 +27,7 @@
 
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "msgstore.h"
 
@@ -33,6 +41,21 @@ extern "C" {
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE if already running.
  */
 esp_err_t aprsis_init(const char *callsign);
+
+/**
+ * @brief Set the issued callsign the iGate gates traffic up under, or clear it.
+ *
+ * May be called before or after aprsis_init(); a change reconnects. Whether
+ * the callsign was really issued to this operator is theirs to answer (XPRS
+ * section 6.4.2): this checks only that it is shaped like an amateur callsign
+ * and is not X1-X5.
+ * @param call e.g. "CT1ABC-10"; NULL or "" clears it (receive-only).
+ * @return ESP_OK, or ESP_ERR_INVALID_ARG for a callsign that fails the check.
+ */
+esp_err_t aprsis_set_issued_call(const char *call);
+
+/** @brief Copy the issued callsign into [out]; "" when receive-only. */
+void aprsis_get_issued_call(char *out, size_t max);
 
 /* BLE integration hooks — set so this component does not hard-depend on any one
  * BLE firmware (legacy ble_hello on the main build, BLE5 on the rns_ble5 dongle).
@@ -72,7 +95,8 @@ void aprsis_get_position(double *lat, double *lon, int *radius_km, bool *have_po
  *
  * Call from the BLE receive path. `to` may be a callsign, "#GRP", "!"
  * (position; `text` = "lat,lon[,comment]"), or "" (geo-chat, not gated).
- * No-op if not currently connected/logged in. Content-deduped.
+ * No-op if not currently connected/logged in, when no issued callsign is set,
+ * and for a `from` that is X1-X5. Content-deduped.
  */
 void aprsis_uplink(const char *from, const char *to, const char *text);
 

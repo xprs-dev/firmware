@@ -12,7 +12,7 @@ if(CONFIG_XPRS_BOARD_EPAPER_1IN54)
 endif()
 
 # Private requirements — APRS/SA818/model_kv4p are empty stubs on non-KV4P boards
-set(HTTP_PRIV_REQUIRES esp_wifi xprs_aprs xprs_sa818 xprs_model_kv4p xprs_radio_tx)
+set(HTTP_PRIV_REQUIRES esp_wifi xprs_aprs xprs_sa818 xprs_model_kv4p xprs_radio_tx xprs_codec)
 
 # Add mesh and nostr components on targets that support ESP-MESH
 # These are used conditionally via CONFIG_XPRS_MESH_ENABLED

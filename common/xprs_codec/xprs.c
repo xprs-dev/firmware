@@ -383,6 +383,12 @@ bool xprs_is_station(const char *addr, int len)
     return false;
 }
 
+bool xprs_is_self_generated(const char *call, int len)
+{
+    return call && len >= 2 && upc(call[0]) == 'X' &&
+           call[1] >= '1' && call[1] <= '5';
+}
+
 int xprs_append_via(const char *wire, int len, const char *self,
                     char *out, int cap)
 {
