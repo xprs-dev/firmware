@@ -797,12 +797,12 @@ def hero(embed):
       from the station's own key so a receiver can check who said what. One board
       usually does several of these jobs at once.</p>
     <ul class="jobs">
-      <li><b>Repeater</b>Re-airs what it hears so a packet reaches stations beyond
+      <li><b>Digipeater (repeater)</b>Re-airs what it hears so a packet reaches stations beyond
         the sender's range, within a hop budget, and holds back when a neighbour
         has already repeated it.</li>
       <li><b>Bridge</b>Joins the radios it has into one network: what it hears on
         Bluetooth, LoRa or ESP-NOW it passes to the others and to the LAN.</li>
-      <li><b>Internet gateway</b>Passes what the radios hear onto the network over
+      <li><b>iGate (internet gateway)</b>Passes what the radios hear onto the network over
         WiFi, and what arrives from there back onto the air, so a message is not
         limited to radio range.</li>
       <li><b>Portable chat hotspot</b>Opens its own WiFi access point: a phone
