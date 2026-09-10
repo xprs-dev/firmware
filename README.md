@@ -143,3 +143,11 @@ AIR and over HTTP: the `app` field of `/api/status` (`xprs_app.c`), the
 `service` field of the BLE hello payload (`xprs_ble.c`), and the comment
 documenting the first. Changing those changes what every station reports to
 clients that already parse it, which is a protocol decision and not a rename.
+
+## License
+
+BSD-3-Clause, copyright Max Brito and XPRS contributors. See [LICENSE](LICENSE).
+Third-party components keep their own licences: `common/jimmyw__ssh_cli_server/`
+(MIT), `common/xprs_wrench/` (MIT, Curt Hartung) and
+`models/sensecap-p1-pro/firmware/lib/mbedtls_ecp/` (Apache-2.0 or
+GPL-2.0-or-later).
