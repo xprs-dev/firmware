@@ -275,17 +275,38 @@ static void test_full_table(void)
     char calls[208], q[XST_SEEN_MAX + 1];
     int total = 0;
 
+    /* A full table of six-character callsigns costs 6 each plus a comma
+     * between: XST_SEEN_MAX * 7 - 1 bytes. With " hears:" (7), " zhq:" (5)
+     * and one digit per name, the whole thing needs
+     * 7 + (7n - 1) + 5 + n bytes, which at 24 rows is 203.
+     *
+     * This used to be written out as "sixteen names is 111 ... 139 bytes",
+     * and then XST_SEEN_MAX became 24 (d015b9c, one row per callsign AND
+     * bearer). The ladder did exactly what it exists for and the arithmetic
+     * in this test was the only thing still living in a sixteen-row world,
+     * so it is computed here instead of quoted. */
+    const int names = XST_SEEN_MAX * 7 - 1;
+    const int whole = 7 + names + 5 + XST_SEEN_MAX;
+
+    render("espnow", whole, calls, &total, q);
+    CHECK(total == XST_SEEN_MAX, "every neighbour, got %d", total);
+    CHECK((int)strlen(calls) == names, "every name, got %zu", strlen(calls));
+    CHECK((int)strlen(q) == XST_SEEN_MAX, "a digit each, got %zu", strlen(q));
+    CHECK(7 + (int)strlen(calls) + 5 + (int)strlen(q) == whole,
+          "and the whole suffix is exactly the budget");
+
     /* 141 is what a signed observation from a six-character callsign really
-     * has for its suffix: 250 less a 44-byte head and 65 for the signature.
-     * Sixteen names is 111, and " hears:" + " zhq:" + sixteen digits brings
-     * it to 139 -- so the whole table fits, with its signal, and two bytes to
-     * spare. Seventeen would not, which is why the ladder exists. */
+     * has for its suffix: 250 less a 44-byte head and 65 for the signature --
+     * less than the whole table now costs. Signal is what gives way first,
+     * and only then callsigns: the reply still fits, still counts every
+     * neighbour in `zhc:`, and carries as many names as the budget allows. */
+    memset(q, 0, sizeof q);
     render("espnow", 141, calls, &total, q);
-    CHECK(total == XST_SEEN_MAX, "sixteen neighbours, got %d", total);
-    CHECK((int)strlen(q) == XST_SEEN_MAX, "sixteen digits, got %zu",
-          strlen(q));
-    CHECK(7 + (int)strlen(calls) + 5 + (int)strlen(q) == 139,
-          "and the whole suffix is 139 bytes");
+    CHECK(total == XST_SEEN_MAX,
+          "the true count survives the cut (10.6.4), got %d", total);
+    CHECK(q[0] == 0, "the digits gave way, got '%s'", q);
+    CHECK(7 + (int)strlen(calls) <= 141, "and what is left fits the budget");
+    CHECK((int)strlen(calls) > names / 2, "with most of the names kept");
 }
 
 /* ── One station, one row ───────────────────────────────────────────────── */
