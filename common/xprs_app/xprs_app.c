@@ -23,6 +23,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -44,11 +45,13 @@
 #include "xprsrns.h"
 #include "xprsid.h"
 #include "xprssig.h"
+#include "xprsseal.h"
 #include "xprschan.h"
 #include "nostr_keys.h"
 #include "bech32.h"
 
 #include "xprs_app.h"
+#include "xprs_setup.h"
 
 /* The board this station is running on. Set once by xapp_run(), read
  * everywhere; never NULL after that. */
@@ -56,7 +59,7 @@ static const xapp_board_t *s_board;
 
 /* The credentials actually used: config.ini overrides the board's
  * compiled-in secrets, so a device can be repointed without a rebuild. */
-static char s_ssid[32];   /* sized to wifi_config_t */
+static char s_ssid[33];   /* 32 bytes of 802.11 SSID, and the NUL */
 static char s_pass[64];
 
 #include <math.h>
@@ -212,6 +215,14 @@ static void identity_heard(const xprs_t *p)
     size_t dlen = sizeof data;
     if (bech32_decode(npub, hrp, data, &dlen) != ESP_OK) return;
     if (dlen != 32 || strcmp(hrp, "npub") != 0) return;
+    /* An X1 to X4 callsign derives from its key (section 3), so one that
+     * does not is somebody else's key under this name: first speaker wins
+     * in this table, and the first speaker must not be a squatter. */
+    if (call[0] == 'X' && call[1] >= '1' && call[1] <= '4' &&
+        !xauth_call_matches_npub(call, npub)) {
+        ESP_LOGW(TAG, "%s published a key it does not derive from", call);
+        return;
+    }
     if (!xprsid_verify(p, data)) {
         ESP_LOGW(TAG, "%s does not sign for the key it published", call);
         return;
@@ -950,6 +961,46 @@ static struct {
     volatile bool pending;
 } s_qpol;                      /* a q:policy to answer */
 
+/* The last cmd:set this station answered with a verdict (11.10). A phone's
+ * Bluetooth advertisement repeats until the phone stops it, so the same
+ * command arrives many times: the radio side drops copies for fifteen
+ * seconds, and idx_task answers a later copy with what IS now rather than
+ * refusing it as a replay. Written on idx_task only; the radio side reads
+ * [id] and [answered_ms] and a torn read costs one extra parse. */
+static struct {
+    char     id[8];
+    uint32_t answered_ms;
+} s_cmdset_last;
+
+/* A WiFi join someone is waiting to hear the end of (11.10): who asked, by
+ * which command, on which bearer, and until when. The event handler only
+ * sets flags; idx_task signs and airs the answer. */
+static struct {
+    char     to[16];
+    char     id[8];
+    char     bearer[8];
+    uint32_t deadline_ms;
+    volatile bool    active;
+    volatile bool    got_ip;
+    volatile uint8_t fails;
+    volatile uint8_t reason;       /* the last disconnect's reason code */
+} s_wjoin;
+
+/* The hotspot, switched by an owner, after the answer has gone out on it. */
+static volatile int s_ap_want = -1;   /* -1 nothing to do, 0 off, 1 on */
+
+/* A new key waiting for the restart that takes it (11.10). */
+static volatile bool s_rekey_reboot;
+static uint32_t      s_rekey_at_ms;
+
+/* A repeat of the command that changed the key, still addressed to the old
+ * callsign: the phone re-sends until it hears the 200, and on a weak link the
+ * first two can be lost. Answered from the new callsign until the command's
+ * window closes (seen_note sets it, idx_task answers). */
+static volatile bool s_keyres_repeat;
+static char     s_keyres_old[12];
+static char     s_keyres_id[8];
+
 /* A cmd:update waiting for the task that may afford to verify it. */
 static struct {
     char wire[XPRSIDX_WIRE_MAX + 1];
@@ -1288,39 +1339,34 @@ static const char *pol_keys(void)
 }
 
 /*
- * A claim, or a change of owner (25.9).
+ * A claim, or a change of owner (11.9).
  *
  * The allow-list stores npubs, because a signature is checked against a key
- * and a callsign cannot be turned back into one. So a claim is only
- * acceptable from a station whose key this one already holds -- learned from
- * its t:identity (18.1), which every station airs. That is not a weakness of
- * the claim: a claim from a callsign we cannot verify is a claim we cannot
- * check, and 25.9 says the first VERIFIED one wins.
+ * and a callsign cannot be turned back into one. The key comes with the
+ * claim (`k:`, checked to derive the claimer's callsign) or, for a claim
+ * without one, from a t:identity this station already heard. Either way
+ * the caller has verified the command against [pub] before this runs.
  */
-static bool pol_take_owner(const char *call)
+static bool pol_take_owner(const char *call, const uint8_t pub[32])
 {
-    const uint8_t *pub = peer_key(call);
-    if (!pub) {
-        ESP_LOGW(TAG, "claim from %s: no key held for it yet", call);
-        return false;
-    }
     char npub[80] = "";
     if (bech32_encode("npub", pub, 32, npub, sizeof npub) != ESP_OK) return false;
-    /* Slot 1 is the claim's; a transfer replaces the list (25.9). */
+    /* Slot 1 is the claim's; a transfer replaces the list (11.9). */
     xcfg_set("own1", npub);
-    xcfg_set("own1c", call);          /* what 25.9's owner: reports */
+    xcfg_set("own1c", call);          /* what 11.9's owner: reports */
     for (int i = 2; i <= XAUTH_OWNERS_MAX; i++) {
         char key[8];
         snprintf(key, sizeof key, "own%d", i);
         xcfg_set(key, "");
     }
-    ESP_LOGW(TAG, "station claimed by %s (25.9)", call);
+    ESP_LOGW(TAG, "station claimed by %s (11.9)", call);
     return true;
 }
 
-/* The replay rule (25.9): a policy command must be strictly newer than the
- * last one accepted, whatever the 300-second window says. Without it a
- * cmd:set owner: recorded today hands the station back next year. */
+/* The replay rule (11.9): a policy or setup command must be strictly newer
+ * than the last one accepted, whatever the 300-second window says. Without
+ * it a cmd:set owner: recorded today hands the station back next year, and
+ * a station being set up has no clock to hold a window against anyway. */
 static bool pol_ts_ok(const char *ts)
 {
     if (!ts || !ts[0]) return false;
@@ -1329,7 +1375,232 @@ static bool pol_ts_ok(const char *ts)
     return strcmp(ts, last) > 0;
 }
 
-static void pol_apply(const char *wire, int len, const char *bearer)
+/* Defined with the WiFi and the time zone, below. */
+static void time_field(char *out, int cap);
+static uint32_t now_ms(void);
+static char s_ip_str[20];               /* defined with the WiFi, below */
+static int64_t s_tz_next_s;             /* defined with the time zone, below */
+
+/* The keys of 11.9 and 11.10 a cmd:set may carry in the clear. */
+static const char *const k_pol_keys[] = { "owner", "use", "first", "serve" };
+static const char *const k_setup_clear[] = {
+    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key"
+};
+
+static bool has_any(const xprs_t *p, const char *const *keys, int n)
+{
+    int vl = 0;
+    for (int i = 0; i < n; i++)
+        if (xprs_get(p, keys[i], &vl)) return true;
+    return false;
+}
+
+/* 11.10: what a station being set up IS, in the order a result carries
+ * it. Never the network name or the password. */
+static int setup_state(char *out, int cap)
+{
+    const char *w;
+    if (!xcfg_get_bool("wifi_on", true) || !s_ssid[0]) w = "off";
+    else if (s_ip_str[0])                                w = "up";
+    else if (s_wjoin.active)                             w = "joining";
+    else if (s_wjoin.fails)                              w = "failed";
+    else                                                 w = "joining";
+    int n = snprintf(out, cap, "wifi:%s", w);
+    if (s_ip_str[0] && n < cap)
+        n += snprintf(out + n, cap - n, " ip:%s", s_ip_str);
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    bool ap = esp_wifi_get_mode(&mode) == ESP_OK &&
+              (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP);
+    if (n < cap) n += snprintf(out + n, cap - n, " ap:%s", ap ? "on" : "off");
+    const char *nick = xcfg_get("name", "");
+    if (nick[0] && n < cap) n += snprintf(out + n, cap - n, " nick:%s", nick);
+    const char *tz = xcfg_get("tz", "");
+    if (n < cap) n += snprintf(out + n, cap - n, " zone:%s", tz[0] ? tz : "auto");
+    return n;
+}
+
+/* A signed result to an owner, `code:` then [fields], on the bearer the
+ * command came by. The command's own `ts:` dates it when this station has
+ * no clock of its own, which is the only time it would not. */
+static void cmdset_result(const char *to, const char *bearer, const char *id,
+                          const char *ts, int code, const char *fields,
+                          const char *msg)
+{
+    char w[XPRS_MAX_WIRE + 1], tsf[32];
+    if (xst_epoch_now()) time_field(tsf, sizeof tsf);
+    else snprintf(tsf, sizeof tsf, "ts:%s", ts);
+    int n = snprintf(w, sizeof w, "t:result f:%s d:%s %s r:%s code:%d",
+                     s_call, to, tsf, id, code);
+    if (fields && fields[0] && n > 0 && n < (int)sizeof w)
+        n += snprintf(w + n, sizeof w - (size_t)n, " %s", fields);
+    if (msg && msg[0] && n > 0 && n < (int)sizeof w)
+        n += snprintf(w + n, sizeof w - (size_t)n, " m:%s", msg);
+    if (n <= 0 || n >= (int)sizeof w - SIG_ROOM) return;
+    n = sign_wire(w, n, sizeof w);
+    idx_air(bearer, w, n);
+}
+
+/* The npub of a private scalar, for the answer that names a new key. */
+static bool npub_of(const uint8_t priv[32], char *npub, size_t cap)
+{
+    uint8_t x[32];
+    if (!xprssig_public_key(priv, x)) return false;
+    return bech32_encode("npub", x, 32, npub, cap) == ESP_OK;
+}
+
+static void wifi_rejoin(void);          /* with the rest of the WiFi, below */
+
+/*
+ * A station with no clock takes its owner's (11.10). The command verified
+ * against the owner's key, so its `ts:` is the best guess this box has of
+ * the time, and a better one than none: signatures get dated, results carry
+ * a real `ts:`, and the owner's zdiag passes the 300 s gate of 11.4. NTP
+ * replaces it the moment the station reaches a network.
+ */
+static void clock_from_owner(const char *ts)
+{
+    if (xst_epoch_now()) return;
+    uint32_t e = xauth_ts_epoch(ts);
+    if (e < 1700000000u) return;
+    struct timeval tv = { .tv_sec = (time_t)e, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    ESP_LOGW(TAG, "no clock: took the owner's, %s UTC (NTP will correct it)", ts);
+}
+
+/*
+ * 11.10: the setup keys, from the clear fields and the sealed lines alike.
+ * Returns the code to answer; the caller answers.
+ *
+ * Deferred work is flagged rather than done here: switching the hotspot off
+ * before the answer leaves by it would lose the answer, and a new key takes
+ * a restart, which has to wait until the old key has signed its goodbye.
+ */
+static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
+                       const char *from, const char *bearer, const char *id,
+                       char *extra, int extra_cap, char *why, int why_cap)
+{
+    const char *ssid = NULL, *pass = NULL, *nsec = NULL, *wifi = NULL;
+    const char *nick = NULL, *zone = NULL, *ap = NULL, *key = NULL;
+    for (int i = 0; i < n; i++) {
+        const char *k = kv[i].key, *v = kv[i].val;
+        if (!xsetup_is_key(k)) {
+            snprintf(why, why_cap, "%s is not a setup key", k);
+            return 400;
+        }
+        if (xsetup_is_secret(k) && !sealed) {
+            /* 11.10: a Bluetooth advertisement is a broadcast. Refused, and
+             * not stored: it is already on everybody's screen. */
+            snprintf(why, why_cap, "%s goes sealed, in x:", k);
+            return 400;
+        }
+        const char *bad = xsetup_check(k, v);
+        if (bad) { snprintf(why, why_cap, "%s", bad); return 400; }
+        if      (!strcmp(k, "ssid")) ssid = v;
+        else if (!strcmp(k, "pass")) pass = v;
+        else if (!strcmp(k, "nsec")) nsec = v;
+        else if (!strcmp(k, "wifi")) wifi = v;
+        else if (!strcmp(k, "nick")) nick = v;
+        else if (!strcmp(k, "zone")) zone = v;
+        else if (!strcmp(k, "ap"))   ap = v;
+        else if (!strcmp(k, "key"))  key = v;
+    }
+    if (nsec && key) { snprintf(why, why_cap, "key:new or nsec:, not both"); return 400; }
+
+    if (nick) xcfg_set("name", nick);
+    if (zone) {
+        if (!strcmp(zone, "auto")) { xcfg_set("tz", ""); xcfg_set_bool("tz_auto", true); }
+        else                        xcfg_set("tz", zone);
+        s_tz_next_s = 0;                  /* tz_tick applies it within a minute */
+    }
+    if (ap) s_ap_want = !strcmp(ap, "on");
+
+    bool join = false;
+    if (ssid) {
+        xcfg_set("ssid", ssid);
+        snprintf(s_ssid, sizeof s_ssid, "%.32s", ssid);
+        /* A new network with the last one's password is not a network. */
+        if (!pass) { xcfg_set("pass", ""); s_pass[0] = 0; }
+    }
+    if (pass) {
+        xcfg_set("pass", pass);
+        snprintf(s_pass, sizeof s_pass, "%.63s", pass);
+        join = true;
+    }
+    if (wifi && !strcmp(wifi, "join")) join = true;
+    if (wifi && !strcmp(wifi, "off")) {
+        xcfg_set_bool("wifi_on", false);
+        s_wjoin.active = false;
+        esp_wifi_disconnect();
+    }
+    if (join) {
+        if (!s_ssid[0]) { snprintf(why, why_cap, "no network: send ssid: first"); return 400; }
+        xcfg_set_bool("wifi_on", true);
+        snprintf(s_wjoin.to, sizeof s_wjoin.to, "%s", from);
+        snprintf(s_wjoin.id, sizeof s_wjoin.id, "%s", id);
+        snprintf(s_wjoin.bearer, sizeof s_wjoin.bearer, "%s", bearer);
+        s_wjoin.fails = 0;
+        s_wjoin.reason = 0;
+        s_wjoin.got_ip = false;
+        s_wjoin.deadline_ms = now_ms() + 30000;
+        s_wjoin.active = true;
+        wifi_rejoin();
+    }
+
+    if (key || nsec) {
+        /* The new key goes where a key from config.ini always went: the boot
+         * import consumes it, wipes it, and the station comes up under it. */
+        uint8_t priv[32];
+        char nsecbuf[80];
+        if (key) {
+            if (!xprssig_generate(priv) ||
+                bech32_encode("nsec", priv, 32, nsecbuf, sizeof nsecbuf) != ESP_OK) {
+                snprintf(why, why_cap, "could not make a key");
+                return 500;
+            }
+        } else {
+            char hrp[8];
+            size_t pl = sizeof priv;
+            if (bech32_decode(nsec, hrp, priv, &pl) != ESP_OK || pl != 32 ||
+                strcmp(hrp, "nsec") != 0) {
+                snprintf(why, why_cap, "nsec: not a key");
+                return 400;
+            }
+            snprintf(nsecbuf, sizeof nsecbuf, "%s", nsec);
+        }
+        char npub[80];
+        bool ok = npub_of(priv, npub, sizeof npub);
+        memset(priv, 0, sizeof priv);
+        if (!ok) { memset(nsecbuf, 0, sizeof nsecbuf); snprintf(why, why_cap, "nsec: not a key"); return 400; }
+        xcfg_set("nsec", nsecbuf);
+        memset(nsecbuf, 0, sizeof nsecbuf);
+        /* Who to tell, and by which command, after the restart. */
+        nvs_handle_t h;
+        if (nvs_open("xprscfg", NVS_READWRITE, &h) == ESP_OK) {
+            char rec[48];
+            snprintf(rec, sizeof rec, "%s %s %s %s", id, from, bearer, s_call);
+            nvs_set_str(h, "keyres", rec);
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        snprintf(extra, extra_cap, "k:%s", npub);
+        s_rekey_at_ms = now_ms() + 4000;
+        s_rekey_reboot = true;
+        ESP_LOGW(TAG, "new key %.16s... taken at the restart in 4 s (11.10)", npub);
+        return 202;
+    }
+    return join ? 202 : 200;
+}
+
+/*
+ * cmd:set, the whole of it: a claim, an owner's policy (11.9), and setting
+ * the station up (11.10), in the clear or sealed in `x:`.
+ *
+ * The order is the gate's, cheap and silent first: not carried, from a
+ * local bearer if it is a claim, then the signature against the one key
+ * that may make it (the owner's, or for a claim the claimer's own), then
+ * the replay rule, and only then anything that decrypts or writes.
+ */
+static void cmdset_apply(const char *wire, int len, const char *bearer)
 {
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return;
@@ -1339,61 +1610,155 @@ static void pol_apply(const char *wire, int len, const char *bearer)
     xprs_id_of(wire, len, id);
     if (!from[0] || !id[0]) return;
 
+    /* 11.4/11.9: not carried. A claim made from across the country is not
+     * a claim; `via:` is what says so. */
+    int vl = 0;
+    if (xprs_get(&p, "via", &vl)) {
+        ESP_LOGW(TAG, "cmd:set from %s ignored: carried", from);
+        return;
+    }
+
     char owner[80] = "";
     bool has_owner = xprs_get_str(&p, "owner", owner, sizeof owner);
     bool owned = pol_owned();
+    bool local = !strcmp(bearer, "ble") || !strcmp(bearer, "lan") ||
+                 !strcmp(bearer, "espnow");
 
-    /* 25.4/25.9: signed, verifiable, and not carried. A claim made from
-     * across the country is not a claim; `via:` is what says so. */
-    char via[8] = "";
-    if (xprs_get_str(&p, "via", via, sizeof via)) {
-        ESP_LOGW(TAG, "policy from %s ignored: carried", from);
+    /* The key this command must verify under. An owner's is the one on the
+     * allow-list, never a key learned from the air, which is where an
+     * attacker is. A claim brings its own `k:`, checked to derive `f:`. */
+    uint8_t pub[32];
+    bool have = false;
+    if (owned) have = xauth_owner_key_of(from, pub);
+    if (!have) {
+        char k[80] = "", hrp[8];
+        size_t kl = sizeof pub;
+        uint8_t buf[64];
+        if (xprs_get_str(&p, "k", k, sizeof k) && xauth_call_matches_npub(from, k) &&
+            bech32_decode(k, hrp, buf, &kl) == ESP_OK && kl == 32 &&
+            !strcmp(hrp, "npub")) {
+            memcpy(pub, buf, 32);
+            have = true;
+        } else {
+            const uint8_t *pk = peer_key(from);
+            if (pk) { memcpy(pub, pk, 32); have = true; }
+        }
+    }
+    if (!have) {
+        /* A claim nobody can check. Said out loud to a station that is
+         * asking to be claimed, because a phone that left out k: should
+         * learn why; to anybody else, nothing (11.4). */
+        if (!owned && has_owner && local)
+            ota_answer(from, bearer, id, 403, "no key for you: claim with k:");
         return;
     }
-    if (!verified(&p)) {
-        ESP_LOGW(TAG, "policy from %s ignored: not verified", from);
-        return;                                   /* 25.4: never answered */
+    if (!xprsid_verify(&p, pub)) {
+        if (xprssig_last_result() == XPRSSIG_NO_MEM)
+            ota_answer(from, bearer, id, 429, "no memory to check that, ask again");
+        else
+            ESP_LOGW(TAG, "cmd:set claiming %s does not verify -- discarded", from);
+        return;
+    }
+
+    /* The command this station answered last, heard again: answered again
+     * with what IS now, and not refused as a replay (11.10). */
+    if (s_cmdset_last.id[0] && !strcmp(id, s_cmdset_last.id)) {
+        char st[160];
+        if (xprs_get(&p, "x", &vl) || has_any(&p, k_setup_clear, 8))
+            setup_state(st, sizeof st);
+        else
+            snprintf(st, sizeof st, "%s", pol_keys());
+        cmdset_result(from, bearer, id, ts, 200, st, NULL);
+        s_cmdset_last.answered_ms = now_ms();
+        return;
     }
     if (!pol_ts_ok(ts)) {
-        ota_answer(from, bearer, id, 408, "policy not newer than the last");
+        ota_answer(from, bearer, id, 408, "not newer than the last cmd:set");
+        return;
+    }
+
+    /* What is being set: in the clear, or sealed (11.4). */
+    xsetup_kv_t kv[XSETUP_KV_MAX];
+    int nkv = 0;
+    bool sealed = false;
+    char xval[XPRSSEAL_X_MAX + 1] = "";
+    if (xprs_get_str(&p, "x", xval, sizeof xval)) {
+        if (!owned || !xauth_is_owner(from)) {
+            ota_answer(from, bearer, id, 403, owned ? "not the owner" : "claim first");
+            return;
+        }
+        static uint8_t plain[XPRSSEAL_X_MAX];     /* idx_task only */
+        const nostr_keys_t *mk = nostr_keys_get();
+        int pl = mk ? xprsseal_open(mk->private_key, pub, xval, strlen(xval),
+                                    plain, sizeof plain) : -1;
+        if (pl < 0) {
+            ota_answer(from, bearer, id, 400, "x: does not open: sealed to another key?");
+            return;
+        }
+        nkv = xsetup_lines((const char *)plain, kv, XSETUP_KV_MAX);
+        memset(plain, 0, sizeof plain);
+        if (nkv < 0) {
+            memset(kv, 0, sizeof kv);
+            ota_answer(from, bearer, id, 400, "sealed body is not cmd:set lines");
+            return;
+        }
+        sealed = true;
+    } else {
+        for (int i = 0; i < (int)(sizeof k_setup_clear / sizeof k_setup_clear[0]); i++) {
+            if (nkv < XSETUP_KV_MAX &&
+                xprs_get_str(&p, k_setup_clear[i], kv[nkv].val, sizeof kv[nkv].val)) {
+                snprintf(kv[nkv].key, sizeof kv[nkv].key, "%s", k_setup_clear[i]);
+                nkv++;
+            }
+        }
+    }
+    bool policy = has_any(&p, k_pol_keys, 4);
+    if (policy && nkv > 0) {
+        memset(kv, 0, sizeof kv);
+        ota_answer(from, bearer, id, 400, "policy and setup keys go separately");
         return;
     }
 
     if (!owned) {
-        /* Unowned: the first verified claim that names its own sender. */
-        if (!has_owner || strncasecmp(owner, from, strlen(from)) != 0) {
+        /* Unowned: the first verified claim that names its own sender, heard
+         * directly on a local bearer (11.9). */
+        if (!has_owner || strncasecmp(owner, from, strlen(from)) != 0 || nkv > 0) {
             ota_answer(from, bearer, id, 403, "unowned: claim with owner:you");
             return;
         }
-        if (!pol_take_owner(from)) {
-            ota_answer(from, bearer, id, 403, "no key held for that callsign");
+        if (!local) {
+            ESP_LOGW(TAG, "claim from %s on %s ignored: not a local bearer", from, bearer);
             return;
         }
-    } else {
-        if (!xauth_is_owner(from)) {
-            ota_answer(from, bearer, id, 403, "not the owner");
-            return;
+        pol_take_owner(from, pub);
+    } else if (!xauth_is_owner(from)) {
+        memset(kv, 0, sizeof kv);
+        ota_answer(from, bearer, id, 403, "not the owner");
+        return;
+    } else if (has_owner) {
+        /* A transfer names somebody, whose key this station must hold. */
+        char first_call[16] = "";
+        for (int i = 0; owner[i] && i < (int)sizeof first_call - 1; i++) {
+            if (owner[i] == ',') break;
+            first_call[i] = owner[i];
+            first_call[i + 1] = 0;
         }
-        if (has_owner) {
-            /* A transfer names somebody; naming ourselves is a no-op. */
-            char first_call[16] = "";
-            for (int i = 0; owner[i] && i < (int)sizeof first_call - 1; i++) {
-                if (owner[i] == ',') break;
-                first_call[i] = owner[i];
-                first_call[i + 1] = 0;
-            }
-            if (first_call[0] && strcasecmp(first_call, from) != 0 &&
-                !pol_take_owner(first_call)) {
+        if (first_call[0] && strcasecmp(first_call, from) != 0) {
+            const uint8_t *tk = peer_key(first_call);
+            if (!tk) {
                 ota_answer(from, bearer, id, 403, "no key held for that callsign");
                 return;
             }
+            pol_take_owner(first_call, tk);
         }
     }
 
+    /* The owner's word is the best clock a clockless station will get. */
+    clock_from_owner(ts);
+
     /* Remember what this owner calls themselves, if they are slot 1's key.
      * A key does not say whether its holder is a person or a station (3),
-     * so the callsign has to be learned rather than derived -- and an owner
-     * set with a cable only ever learns it here, the first time they speak. */
+     * so the callsign has to be learned rather than derived. */
     {
         const char *np1 = xcfg_get("own1", "");
         char d1[NOSTR_CALLSIGN_LEN] = "";
@@ -1404,30 +1769,45 @@ static void pol_apply(const char *wire, int len, const char *bearer)
         }
     }
 
-    char v[64];
-    if (xprs_get_str(&p, "use", v, sizeof v)) {
-        if (strcmp(v, "all") && strcmp(v, "listed") && strcmp(v, "owners") &&
-            strcmp(v, "none")) {
-            ota_answer(from, bearer, id, 400, "use: all|listed|owners|none");
+    int code = 200;
+    char fields[160] = "", why[64] = "";
+    if (nkv > 0) {
+        char extra[80] = "";
+        code = setup_apply(kv, nkv, sealed, from, bearer, id,
+                           extra, sizeof extra, why, sizeof why);
+        memset(kv, 0, sizeof kv);
+        if (code >= 400) {
+            ota_answer(from, bearer, id, code, why);
             return;
         }
-        xcfg_set("use", v);
+        if (extra[0]) {
+            snprintf(fields, sizeof fields, "%s", extra);   /* 202 k:<new npub> */
+        } else {
+            setup_state(fields, sizeof fields);
+        }
+        ESP_LOGW(TAG, "set up by %s: %s", from, fields);
+    } else {
+        char v[64];
+        if (xprs_get_str(&p, "use", v, sizeof v)) {
+            if (strcmp(v, "all") && strcmp(v, "listed") && strcmp(v, "owners") &&
+                strcmp(v, "none")) {
+                ota_answer(from, bearer, id, 400, "use: all|listed|owners|none");
+                return;
+            }
+            xcfg_set("use", v);
+        }
+        if (xprs_get_str(&p, "first", v, sizeof v))
+            xcfg_set("first", strcmp(v, "none") == 0 ? "" : v);
+        if (xprs_get_str(&p, "serve", v, sizeof v))
+            xcfg_set("serve", strcmp(v, "none") == 0 ? "none" : v);
+        /* 11.7: the result states what IS, all four of them. */
+        snprintf(fields, sizeof fields, "%s", pol_keys());
+        ESP_LOGW(TAG, "policy set by %s: %s", from, fields);
     }
-    if (xprs_get_str(&p, "first", v, sizeof v))
-        xcfg_set("first", strcmp(v, "none") == 0 ? "" : v);
-    if (xprs_get_str(&p, "serve", v, sizeof v))
-        xcfg_set("serve", strcmp(v, "none") == 0 ? "none" : v);
     xcfg_set("polts", ts);
-
-    /* 25.7: the result states what IS, all four of them. */
-    char w[XPRS_MAX_WIRE + 1];
-    int n = snprintf(w, sizeof w, "t:result f:%s d:%s ts:%s r:%s code:200 %s",
-                     s_call, from, ts, id, pol_keys());
-    if (n > 0 && n < (int)sizeof w) {
-        n = sign_wire(w, n, sizeof w);
-        idx_air(bearer, w, n);
-    }
-    ESP_LOGW(TAG, "policy set by %s: %s", from, pol_keys());
+    cmdset_result(from, bearer, id, ts, code, fields, NULL);
+    snprintf(s_cmdset_last.id, sizeof s_cmdset_last.id, "%s", id);
+    s_cmdset_last.answered_ms = now_ms();
 }
 
 /* One answer to a command, on the bearer it arrived on -- a reply aired
@@ -1452,8 +1832,10 @@ static void ota_answer(const char *to, const char *bearer, const char *id,
         n += snprintf(w + n, sizeof w - n, " m:%s", msg);
     if (n <= 0 || n >= (int)sizeof w) return;
     n = sign_wire(w, n, sizeof w);
-    if (strcmp(bearer, "espnow") == 0) xprsnow_send(w, n);
-    else                               xprslan_send(w, n);
+    /* Every bearer idx_air knows, Bluetooth included: a phone setting a
+     * station up over Bluetooth is listening there and nowhere else, and a
+     * refusal sent to the LAN instead was a refusal it never heard. */
+    idx_air(bearer, w, n);
 }
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
@@ -1628,36 +2010,62 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_qpol.pending = true;
     } while (0);
 
-    /* cmd:set carrying any policy key (25.9). Parked whole: the verdict
-     * needs a signature check, which is curve work and belongs on idx_task
-     * exactly as cmd:update's does. */
+    /* cmd:set carrying a policy key (11.9) or a setup key (11.10), or a
+     * command to us sealed in x:, which can only be a setup one. Parked
+     * whole: the verdict needs a signature check, which is curve work and
+     * belongs on idx_task exactly as cmd:update's does. */
     do {
         char type[16], cmd[12], dst[16];
         xprs_type(&sp, type, sizeof type);
         if (strcmp(type, "command") != 0) break;
-        if (!xprs_get_str(&sp, "cmd", cmd, sizeof cmd) ||
-            strcmp(cmd, "set") != 0) break;
         if (!xprs_get_str(&sp, "d", dst, sizeof dst)) break;
         if (strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
         int vl = 0;
-        if (!xprs_get(&sp, "owner", &vl) && !xprs_get(&sp, "use", &vl) &&
-            !xprs_get(&sp, "first", &vl) && !xprs_get(&sp, "serve", &vl))
-            break;                      /* a device cmd:set, not ours */
-        if (s_pol.pending) break;
+        bool has_cmd = xprs_get_str(&sp, "cmd", cmd, sizeof cmd);
+        bool sealed = !has_cmd && xprs_get(&sp, "x", &vl);
+        if (!sealed) {
+            if (!has_cmd || strcmp(cmd, "set") != 0) break;
+            if (!has_any(&sp, k_pol_keys, 4) && !has_any(&sp, k_setup_clear, 8))
+                break;                  /* a device cmd:set, not ours */
+        }
         if (len > XPRS_MAX_WIRE) break;
+        /* A carried copy is refused anyway (11.4), and parked it held the
+         * one slot while the direct copy, a moment behind it, was dropped. */
+        if (xprs_get(&sp, "via", &vl)) break;
+        /* A phone's advertisement repeats until the phone stops it: the
+         * copies of a command just answered are not news. */
+        char id[8];
+        if (s_cmdset_last.id[0] && xprs_id_of(wire, len, id) &&
+            strcmp(id, s_cmdset_last.id) == 0 &&
+            (uint32_t)(esp_timer_get_time() / 1000) - s_cmdset_last.answered_ms < 15000)
+            break;
+        if (s_pol.pending) break;
         memcpy((char *)s_pol.wire, wire, (size_t)len);
         s_pol.wire[len] = 0;
         s_pol.len = len;
         snprintf((char *)s_pol.bearer, sizeof s_pol.bearer, "%s", bearer);
         s_pol.pending = true;
-        ESP_LOGW(TAG, "cmd:set policy parked from %s", bearer);
+        ESP_LOGW(TAG, "cmd:set parked from %s", bearer);
     } while (0);
 
-    /* q:identity (18.1): publish the key binding on request. */
+    /* The command that changed our key, re-sent to the callsign we had:
+     * answered from this one (keyres_step). */
+    do {
+        if (!s_keyres_old[0] || !s_keyres_id[0]) break;
+        char type[16], dst[16], id[8];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "command") != 0) break;
+        if (!xprs_get_str(&sp, "d", dst, sizeof dst) || strcasecmp(dst, s_keyres_old) != 0) break;
+        if (!xprs_id_of(wire, len, id) || strcmp(id, s_keyres_id) != 0) break;
+        s_keyres_repeat = true;
+    } while (0);
+
+    /* q:identity (6.3): publish the key binding on request, asked as a
+     * t:request the way section 8 spells it or inside a t:command. */
     do {
         char type[16], q[12], dst[16];
         xprs_type(&sp, type, sizeof type);
-        if (strcmp(type, "command") != 0) break;
+        if (strcmp(type, "command") != 0 && strcmp(type, "request") != 0) break;
         if (!xprs_get_str(&sp, "q", q, sizeof q) ||
             strcmp(q, "identity") != 0) break;
         if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
@@ -2131,8 +2539,88 @@ static void echo_tick(void)
  */
 typedef enum { FROM_LAN, FROM_NOW, FROM_LORA, FROM_BLE, FROM_RNS } from_t;
 
+/*
+ * Where each station last spoke from on the LAN, so an answer to it also
+ * goes there directly. A broadcast is the LAN bearer's wire (docs/lan.md),
+ * but it is sent at the lowest rate, never acknowledged, and leaves by the
+ * default route: a phone on this station's hotspot stopped hearing any of
+ * them once the station had joined another network, and every answer to its
+ * setup was lost (C3, 2026-09-11). Only packets heard directly are noted, so
+ * the address is the station's own, and the sender's callsign is its key.
+ */
+static struct { char call[12]; uint32_t ip; uint32_t ms; } s_lanpeer[8];
+
+static void lan_peer_note(const char *wire, int len, uint32_t ip)
+{
+    if (!ip) return;
+    char f[12] = "";
+    bool via = false;
+    for (int i = 0; i + 3 < len; i++) {
+        if (wire[i] != ' ') continue;
+        if (!f[0] && wire[i + 1] == 'f' && wire[i + 2] == ':') {
+            int n = 0;
+            for (int j = i + 3; j < len && wire[j] != ' ' && n < (int)sizeof f - 1; j++)
+                f[n++] = wire[j];
+            f[n] = 0;
+        }
+        if (wire[i + 1] == 'v' && i + 4 < len && wire[i + 2] == 'i' &&
+            wire[i + 3] == 'a' && wire[i + 4] == ':') via = true;
+    }
+    if (!f[0] || via) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    int slot = 0;
+    for (int i = 0; i < 8; i++) {
+        if (strcmp(s_lanpeer[i].call, f) == 0) { slot = i; break; }
+        if (s_lanpeer[i].ms < s_lanpeer[slot].ms) slot = i;
+    }
+    snprintf(s_lanpeer[slot].call, sizeof s_lanpeer[slot].call, "%s", f);
+    s_lanpeer[slot].ip = ip;
+    s_lanpeer[slot].ms = now ? now : 1;
+}
+
+/* The address the station a wire is addressed to (`d:`) last spoke from, if
+ * within ten minutes; 0 otherwise. */
+static uint32_t lan_peer_of(const char *wire, int len)
+{
+    char d[12] = "";
+    for (int i = 0; i + 3 < len; i++) {
+        if (wire[i] != ' ' || wire[i + 1] != 'd' || wire[i + 2] != ':') continue;
+        int n = 0;
+        for (int j = i + 3; j < len && wire[j] != ' ' && n < (int)sizeof d - 1; j++)
+            d[n++] = wire[j];
+        d[n] = 0;
+        break;
+    }
+    if (!d[0]) return 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    for (int i = 0; i < 8; i++)
+        if (s_lanpeer[i].ip && strcmp(s_lanpeer[i].call, d) == 0 &&
+            now - s_lanpeer[i].ms < 600000)
+            return s_lanpeer[i].ip;
+    return 0;
+}
+
+/* A t:command addressed to this station: ours to act on or refuse, and
+ * nobody else's to hear. Bridged, a sealed setup command went out onto the
+ * LAN and the internet it was sent past (XPRS.md 11.4: commands are never
+ * carried). A token walk, not a parse: this runs for every packet heard. */
+static bool command_to_us(const char *wire, int len)
+{
+    if (len < 12 || strncmp(wire, "t:command ", 10) != 0) return false;
+    size_t cl = strlen(s_call);
+    for (int i = 9; i + 3 + (int)cl <= len; i++) {
+        if (wire[i] != ' ' || wire[i + 1] != 'd' || wire[i + 2] != ':') continue;
+        const char *d = wire + i + 3;
+        if (strncasecmp(d, s_call, cl) != 0) return false;
+        char e = (i + 3 + (int)cl < len) ? d[cl] : ' ';
+        return e == ' ' || e == '-';
+    }
+    return false;
+}
+
 static void bridge_out(const char *wire, int len, from_t from)
 {
+    if (command_to_us(wire, len)) return;
     echo_keep(wire, len);
 
     bool bridge = xcfg_get_bool("bridge_on", true);
@@ -2191,6 +2679,7 @@ static void heard_espnow(const char *id, const char *wire, int len)
 
 static void on_lan(const char *wire, int len, uint32_t ip)
 {
+    lan_peer_note(wire, len, ip);
     seen_note(wire, len, "lan", 0);
     /* A key published on the LAN is as good as one published on a radio, and
      * a station we only ever meet here -- a desktop, typically -- had no other
@@ -2687,6 +3176,8 @@ static uint32_t sta_retry_ms(void)
 {
     wifi_mode_t mode;
     bool ap = esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_APSTA;
+    /* Somebody is standing there waiting to hear whether it joined. */
+    if (s_wjoin.active) return 2000;
     if (!ap || s_sta_fails <= STA_QUICK_TRIES) return 2000;
     return pwr_ap_clients() > 0 ? 300000 : 60000;
 }
@@ -2696,7 +3187,12 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
 {
     (void)arg; (void)data;
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        /* Only with a network to join. With none, a connect is a scan for
+         * an empty name, and while it runs the channel cannot be set: the
+         * set in wifi_up() failed, ESP_ERROR_CHECK aborted, and a freshly
+         * flashed station, the one that has no network by definition,
+         * restarted every half second (seen on the C3, 2026-09-11). */
+        if (s_ssid[0]) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         /* Leaving the access point's channel on purpose (§23.7) looks exactly
          * like losing the link. Reconnecting here would drag us home before the
@@ -2704,6 +3200,15 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
         if (xprschan_busy()) return;
         s_ip_str[0] = 0;
         s_sta_fails++;
+        /* 11.10: why, for the owner who asked. Leaving on purpose (8) is
+         * wifi_rejoin() switching networks, not a failure to join one. */
+        if (s_wjoin.active && data) {
+            uint8_t r = ((wifi_event_sta_disconnected_t *)data)->reason;
+            if (r != WIFI_REASON_ASSOC_LEAVE) {
+                s_wjoin.reason = r;
+                s_wjoin.fails++;
+            }
+        }
         uint32_t wait = sta_retry_ms();
         ESP_LOGW(TAG, "wifi disconnected, retrying in %lu s",
                  (unsigned long)(wait / 1000));
@@ -2722,8 +3227,56 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
         s_sta_fails = 0;
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         snprintf(s_ip_str, sizeof s_ip_str, IPSTR, IP2STR(&e->ip_info.ip));
+        if (s_wjoin.active) s_wjoin.got_ip = true;
         ESP_LOGI(TAG, "wifi up on channel %u, ip %s", xprsnow_channel(),
                  s_ip_str);
+    }
+}
+
+/*
+ * Join the network an owner just set (11.10), now, without a restart.
+ *
+ * Connected to another network: leave it, and the disconnect handler comes
+ * back in two seconds with the new configuration, because a join is being
+ * watched. Not connected: connect. Either way the long backoff a hotspot
+ * earns is cancelled, or the next try could be five minutes away while the
+ * person who asked stands there.
+ */
+static void wifi_rejoin(void)
+{
+    if (s_sta_retry) esp_timer_stop(s_sta_retry);
+    s_sta_fails = 0;
+    wifi_config_t wc = {0};
+    memcpy(wc.sta.ssid, s_ssid, strnlen(s_ssid, sizeof wc.sta.ssid));
+    snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", s_pass);
+    bool was_up = s_ip_str[0] != 0;
+    if (was_up) esp_wifi_disconnect();
+    esp_err_t e = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    memset(&wc, 0, sizeof wc);
+    if (e != ESP_OK) {
+        ESP_LOGE(TAG, "wifi: new network not taken: %s", esp_err_to_name(e));
+        return;
+    }
+    ESP_LOGW(TAG, "joining \"%s\" as its owner asked (11.10)", s_ssid);
+    if (!was_up) esp_wifi_connect();
+}
+
+/* 11.10's reason for a join that failed, in the words a person needs. */
+static const char *wifi_fail_word(uint8_t reason)
+{
+    switch (reason) {
+    case 2:     /* AUTH_EXPIRE */
+    case 15:    /* 4WAY_HANDSHAKE_TIMEOUT: the classic wrong passphrase */
+    case 202:   /* AUTH_FAIL */
+    case 204:   /* HANDSHAKE_TIMEOUT */
+        return "wrong password";
+    case 201:   /* NO_AP_FOUND */
+    case 210:   /* NO_AP_FOUND_W_COMPATIBLE_SECURITY */
+    case 211:   /* NO_AP_FOUND_IN_AUTHMODE_THRESHOLD */
+    case 212:   /* NO_AP_FOUND_IN_RSSI_THRESHOLD */
+        return "no network by that name";
+    default:
+        return "could not join";
     }
 }
 
@@ -2743,7 +3296,9 @@ static void wifi_up(void)
 
     if (s_ssid[0]) {
         wifi_config_t wc = {0};
-        snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", s_ssid);
+        /* memcpy: a 32-byte SSID fills the field and has no room for a NUL,
+         * which snprintf would take from the name's last character. */
+        memcpy(wc.sta.ssid, s_ssid, strnlen(s_ssid, sizeof wc.sta.ssid));
         snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", s_pass);
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
         ESP_LOGI(TAG, "associating to \"%s\" — this is what puts us on the "
@@ -2756,8 +3311,13 @@ static void wifi_up(void)
     }
     ESP_ERROR_CHECK(esp_wifi_start());
     if (!s_ssid[0]) {
-        ESP_ERROR_CHECK(esp_wifi_set_channel(s_board->espnow_channel,
-                                             WIFI_SECOND_CHAN_NONE));
+        /* Not ESP_ERROR_CHECK: a channel that did not take is a station on
+         * another channel, not a reason to restart. */
+        esp_err_t ce = esp_wifi_set_channel(s_board->espnow_channel,
+                                            WIFI_SECOND_CHAN_NONE);
+        if (ce != ESP_OK)
+            ESP_LOGW(TAG, "channel %d not set: %s", s_board->espnow_channel,
+                     esp_err_to_name(ce));
     }
 }
 
@@ -3947,7 +4507,13 @@ static void idx_air(const char *bearer, const char *wire, int len)
         if (xprs_parse(wire, len, &rp)) xprs_get_str(&rp, "d", to, sizeof to);
         if (!to[0] || !xprsrns_send_to(to, wire, len)) xprsrns_send(wire, len);
     }
-    else                                  xprslan_send(wire, len);
+    else {
+        xprslan_send(wire, len);
+        /* And straight to the station it answers, when that station spoke
+         * from an address we know: see lan_peer_note(). */
+        uint32_t ip = lan_peer_of(wire, len);
+        if (ip) xprslan_unicast(ip, wire, len);
+    }
 }
 
 /* The ESP-NOW counters the alive line prints, for cmd:zdiag. */
@@ -4367,6 +4933,115 @@ static void air_report(void)
         ESP_LOGW(TAG, "report: no bearer took it");
 }
 
+/* The walk-up hotspot's name: `ap_ssid` if the owner chose one, else
+ * XPRS- and the callsign, which is how a phone finds this station. */
+static void hotspot_name(char *out, size_t cap)
+{
+    const char *want = xcfg_get("ap_ssid", NULL);
+    if (want && want[0]) snprintf(out, cap, "%s", want);
+    else                 snprintf(out, cap, "XPRS-%s", s_call);
+}
+
+/* 11.10 `ap:` -- the hotspot on or off, now, and remembered. */
+static void ap_apply(bool on)
+{
+    xcfg_set_bool("ap_on", on);
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&mode);
+    if (!on) {
+        xprslan_set_extra_bcast(0, 0);
+        if (mode == WIFI_MODE_APSTA) esp_wifi_set_mode(WIFI_MODE_STA);
+        ESP_LOGW(TAG, "hotspot off, as its owner asked");
+        return;
+    }
+    if (mode == WIFI_MODE_APSTA || mode == WIFI_MODE_AP) return;
+    if (!xprs_api_httpd()) return;
+    char ssid[33];
+    hotspot_name(ssid, sizeof ssid);
+    if (xprs_hotspot_start(ssid, xprs_api_httpd()) == ESP_OK)
+        xprslan_set_extra_bcast(xprs_hotspot_bcast(), xprs_hotspot_ip());
+    ESP_LOGW(TAG, "hotspot on, as its owner asked");
+}
+
+/*
+ * The second half of a new key (11.10). Before the restart the old key
+ * answered 202 with the new one in k:; after it, this station is the new
+ * key, and it says so twice: t:identity at once, so a phone can check the
+ * callsign against the key, then the 200 under the same r:, from the new
+ * callsign and signed with the new key, which is the proof it holds it.
+ * Twice, ten and forty seconds in, because the phone may be scanning in
+ * bursts; then the record is gone.
+ */
+static bool     s_keyres_due;
+static char     s_keyres[48];            /* "<id> <owner> <bearer> <old call>" */
+
+
+static void keyres_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprscfg", NVS_READWRITE, &h) != ESP_OK) return;
+    size_t n = sizeof s_keyres;
+    if (nvs_get_str(h, "keyres", s_keyres, &n) == ESP_OK && s_keyres[0])
+        s_keyres_due = true;
+    nvs_close(h);
+}
+
+/* The answer a new key gives under its own name (11.10): its public key,
+ * which the callsign derives from and the signature verifies under, so a
+ * phone that missed the 202 and the t:identity can still believe it; and
+ * where the WiFi stands. The rest of the state does not fit beside a key. */
+static void keyres_answer(const char *to, const char *bearer, const char *id)
+{
+    char f[240];
+    const char *npub = nostr_keys_get_npub();
+    int n = snprintf(f, sizeof f, "k:%s", npub ? npub : "");
+    char st[160];
+    setup_state(st, sizeof st);
+    /* setup_state starts "wifi:<word>[ ip:<a.b.c.d>]": keep just that. */
+    char *ap = strstr(st, " ap:");
+    if (ap) *ap = 0;
+    if (n > 0 && n < (int)sizeof f) snprintf(f + n, sizeof f - (size_t)n, " %s", st);
+    cmdset_result(to, bearer, id, "", 200, f, NULL);
+}
+
+static void keyres_step(uint32_t now_s)
+{
+    static int stage;
+    char id[8] = "", to[16] = "", bearer[8] = "", old[12] = "";
+    if (sscanf(s_keyres, "%7s %15s %7s %11s", id, to, bearer, old) < 3) stage = 4;
+    if (stage == 0) {
+        snprintf(s_keyres_old, sizeof s_keyres_old, "%s", old);
+        snprintf(s_keyres_id, sizeof s_keyres_id, "%s", id);
+    }
+    if (s_keyres_repeat) {
+        s_keyres_repeat = false;
+        keyres_answer(to, bearer, id);
+        ESP_LOGW(TAG, "new key in use: told %s again, it asked %s", to, old);
+    }
+    if (stage == 0 && now_s >= 8) {
+        air_identity();
+        stage = 1;
+    } else if ((stage == 1 && now_s >= 10) || (stage == 2 && now_s >= 40)) {
+        keyres_answer(to, bearer, id);
+        ESP_LOGW(TAG, "new key in use: told %s under r:%s", to, id);
+        stage++;
+    }
+    if (stage == 3) {
+        nvs_handle_t h;
+        if (nvs_open("xprscfg", NVS_READWRITE, &h) == ESP_OK) {
+            nvs_erase_key(h, "keyres");
+            nvs_commit(h);
+            nvs_close(h);
+        }
+        stage = 4;
+    }
+    /* Kept in RAM for the rest of the command's window (11.4), for repeats. */
+    if (stage >= 4 && now_s >= 300) {
+        s_keyres_old[0] = 0;
+        s_keyres_due = false;
+    }
+}
+
 static void idx_task(void *arg)
 {
     (void)arg;
@@ -4437,6 +5112,7 @@ static void idx_task(void *arg)
 
     uint32_t last_announce_s = 0;
     uint32_t last_claimask_s = 0;
+    uint32_t last_claimask_all_s = 0;
     uint32_t last_logflush_s = 0;
     uint32_t last_stats_save_s = 0;
     uint32_t last_report_s = 0;
@@ -4477,18 +5153,37 @@ static void idx_task(void *arg)
          * one left unclaimed for a year should not still be shouting every
          * ten seconds.
          */
-        if (!pol_owned() && now_s - last_claimask_s >= 120) {
+        /* First ask a quarter of a minute in, because whoever flashed it is
+         * standing there with a phone; then every two minutes. `k:` is the
+         * key a phone checks the callsign against and seals a password to
+         * (11.9, 11.10). */
+        /*
+         * On Bluetooth it is asked every half minute, the beacon's own
+         * cadence (section 30), because an advertisement lasts only until the
+         * next one replaces it: a station that digipeats replaces its own
+         * frame within a second, and a phone scanning half a second in every
+         * five caught one ask in several (seen on the C3 on a four-station
+         * bench, 2026-09-11). The LAN and ESP-NOW keep two minutes.
+         */
+        if (!pol_owned() && now_s >= 15 &&
+            (!last_claimask_s || now_s - last_claimask_s >= 30)) {
+            bool all = !last_claimask_all_s || now_s - last_claimask_all_s >= 120;
             last_claimask_s = now_s;
+            if (all) last_claimask_all_s = now_s;
             char w[XPRS_MAX_WIRE + 1], ts[32];
             time_field(ts, sizeof ts);
-            int n = snprintf(w, sizeof w, "t:request f:%s %s q:owner scope:local",
-                             s_call, ts);
+            const char *npub = nostr_keys_get_npub();
+            int n = snprintf(w, sizeof w, "t:request f:%s q:owner scope:local %s%s%s",
+                             s_call, ts, npub && npub[0] ? " k:" : "",
+                             npub && npub[0] ? npub : "");
             if (n > 0 && n < (int)sizeof w) {
                 n = sign_wire(w, n, sizeof w);
-                xprslan_send(w, n);
-                if (xcfg_get_bool("espnow_on", true)) xprsnow_send(w, n);
+                if (all) {
+                    xprslan_send(w, n);
+                    if (xcfg_get_bool("espnow_on", true)) xprsnow_send(w, n);
+                    ESP_LOGW(TAG, "unowned: asking to be claimed (11.9)");
+                }
                 if (xprsble_is_active()) xprsble_send(w, n);
-                ESP_LOGW(TAG, "unowned: asking to be claimed (25.9)");
             }
         }
 
@@ -4583,8 +5278,44 @@ no_announce:
             wire[wlen] = 0;
             snprintf(bearer, sizeof bearer, "%s", (const char *)s_pol.bearer);
             s_pol.pending = false;
-            pol_apply(wire, wlen, bearer);
+            cmdset_apply(wire, wlen, bearer);
         }
+
+        /* 11.10: the end of a join somebody is waiting on. */
+        if (s_wjoin.active) {
+            int code = 0;
+            const char *why = NULL;
+            if (s_wjoin.got_ip) {
+                code = 200;
+            } else if (s_wjoin.fails >= 3 ||
+                       (int32_t)(now_ms() - s_wjoin.deadline_ms) >= 0) {
+                code = 500;
+                why = s_wjoin.fails ? wifi_fail_word(s_wjoin.reason) : "could not join";
+            }
+            if (code) {
+                s_wjoin.active = false;
+                char st[160];
+                setup_state(st, sizeof st);
+                cmdset_result(s_wjoin.to, s_wjoin.bearer, s_wjoin.id, "", code, st, why);
+                ESP_LOGW(TAG, "join for %s: %d %s", s_wjoin.to, code, why ? why : st);
+            }
+        }
+
+        /* 11.10: the hotspot, switched after its answer went out. */
+        if (s_ap_want >= 0) {
+            int want = s_ap_want;
+            s_ap_want = -1;
+            ap_apply(want == 1);
+        }
+
+        /* 11.10: a new key is taken at a restart, once the old key's 202
+         * has had the four seconds it needs to leave. */
+        if (s_rekey_reboot && (int32_t)(now_ms() - s_rekey_at_ms) >= 0) {
+            ESP_LOGW(TAG, "restarting to take the new key");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
+        if (s_keyres_due) keyres_step(now_s);
 
         /* The q:mail answer (13.12.3): one observation, signed, saying how
          * much is held. Zero is answered rather than met with silence --
@@ -5982,6 +6713,8 @@ void xapp_run(const xapp_board_t *board)
             ESP_LOGE(TAG, "config nsec was invalid; keeping the old identity");
         xcfg_set("nsec", "");
     }
+    /* A key changed by its owner over the air has an answer owed (11.10). */
+    keyres_load();
 
     /* The indexer's writer/replayer, pinned to core 1 (flash work off the
      * radio cores) and created HERE, before WiFi and the bearers carve up
@@ -6369,10 +7102,9 @@ void xapp_run(const xapp_board_t *board)
         if (xprs_api_httpd()) xprs_hotspot_serve_page(xprs_api_httpd());
         if (xcfg_get_bool("ap_on", true) && xprs_api_httpd()) {
             char ssid[33];
-            const char *want = xcfg_get("ap_ssid", NULL);
-            if (want && want[0]) snprintf(ssid, sizeof ssid, "%s", want);
-            else snprintf(ssid, sizeof ssid, "XPRS-%s", s_call);
-            xprs_hotspot_start(ssid, xprs_api_httpd());
+            hotspot_name(ssid, sizeof ssid);
+            if (xprs_hotspot_start(ssid, xprs_api_httpd()) == ESP_OK)
+                xprslan_set_extra_bcast(xprs_hotspot_bcast(), xprs_hotspot_ip());
             heap_mark("after hotspot");
         }
         xcfg_share_set_log("/idx/log/cur.txt", "/idx/log/prev.txt");

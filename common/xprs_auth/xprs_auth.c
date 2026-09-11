@@ -168,6 +168,19 @@ bool xauth_owner_key_of(const char *call, uint8_t out[32])
     return call && out && owner_key(call, out);
 }
 
+uint32_t xauth_ts_epoch(const char *ts)
+{
+    return ts_epoch(ts);
+}
+
+bool xauth_call_matches_npub(const char *call, const char *npub)
+{
+    if (!call || !call[0] || !npub || strncmp(npub, "npub1", 5) != 0) return false;
+    char derived[NOSTR_CALLSIGN_LEN] = "";
+    if (nostr_keys_derive_callsign(npub, derived) != ESP_OK) return false;
+    return key_eq(derived, call);
+}
+
 void xauth_remember(const char *id, int code)
 {
     if (!id || !id[0]) return;

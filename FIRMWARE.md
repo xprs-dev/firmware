@@ -168,7 +168,49 @@ repeat and does not show it twice.
   carries a `ts:`, and the station moves its clock forward to the newest one
   (never backward, so a replayed old command cannot rewind it). This is enough
   to age commands and to stamp its own packets; it is documented as a deliberate
-  weakening for a clockless node, closed by a real clock when one exists.
+  weakening for a clockless node, closed by a real clock when one exists. The
+  ESP32 station does the same once, for the same reason: a station being set
+  up has no network and so no NTP, and the first verified command from its
+  owner sets its clock until NTP replaces it (`clock_from_owner()`).
+
+### 5.1 Setting a station up from the phone (XPRS.md 11.9, 11.10)
+
+A freshly flashed station needs no cable. The published images carry no owner
+and no network (`tools/build-published.sh` builds them that way), so a new
+board comes up unowned and, a quarter of a minute in and every two minutes
+after, airs `t:request q:owner` with its own key in `k:` on its local
+bearers. The phone's **Firmwares** wapp hears it, tells the person holding
+the phone, and from there:
+
+| Step | Packet | Where it is handled |
+|---|---|---|
+| claim | `cmd:set owner:<me> k:<my npub>`, verified against the `k:` it carries | `cmdset_apply()`, `pol_take_owner()` |
+| WiFi | `ssid` and `pass` sealed in `x:` to the station's key, joined at once, answered `202 wifi:joining` then `200 wifi:up ip:` or `500 wifi:failed m:<why>` | `setup_apply()`, `wifi_rejoin()`, the join watch in `idx_task` |
+| name, zone, hotspot | `cmd:set nick: zone: ap:`, in the clear | `setup_apply()`, `ap_apply()` |
+| identity | `key:new`, or an `nsec` sealed; `202 k:<new npub>` under the old key, a restart, `t:identity` and `200` under the new one | `setup_apply()`, `keyres_step()` |
+| stats | `cmd:zdiag`, owner only | `common/xprs_diag` |
+
+Secrets travel only sealed, and are opened only after the signature and the
+allow-list have passed: `common/xprs_sig/xprsseal.c` is ECDH to the X
+coordinate, AES-256-CBC and a strict PKCS#7 check, host-tested against bodies
+reticulum-dart sealed (`test_xprsseal_host.sh`). What a setup command may say
+is checked in `common/xprs_app/xprs_setup.c` (`test_xprs_setup_host.sh`).
+These commands take the 11.9 replay rule, strictly newer `ts:` than the last
+one accepted, rather than the 300-second window a station with no clock
+cannot keep, and a command just answered that arrives again, as a Bluetooth
+advertisement does until the phone stops it, is answered again rather than
+refused. Every answer, a refusal included, goes back on the bearer the command
+came in on, Bluetooth included.
+
+A board with no Bluetooth (the M5Stack, a plain ESP32) is set up the same
+way over its hotspot: the phone joins `XPRS-<callsign>` and the same packets
+cross the LAN lane. The LAN bearer airs to the hotspot's own subnet as well as
+255.255.255.255, because the latter leaves by the station's own network once
+it has joined one, and the phone on the hotspot would stop hearing it
+(`xprslan_set_extra_bcast()`).
+
+`reticulum-dart/tool/xprs_setup_bench.dart` plays the phone over UDP 4242 on a
+bench: claim, WiFi, settings, a new key, a replay, the repeats.
 
 ---
 

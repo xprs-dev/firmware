@@ -43,6 +43,15 @@ There is nothing else to it. The packet is what was composed and signed
 (section 4), it arrives byte for byte, and a receiver decides what it is by
 parsing it: a datagram that is not a well-formed XPRS packet is dropped.
 
+**A station with its own hotspot airs twice.** 255.255.255.255 leaves by the
+default route, and once a station has joined a network that is the network,
+not its hotspot: a phone on the hotspot, setting the station up (XPRS.md
+11.10), stopped hearing it the moment the station got onto the WiFi it had
+just been given. So the station also sends every packet to its hotspot's own
+subnet broadcast, 192.168.4.255 by default (`xprslan_set_extra_bcast()`,
+`xprs_hotspot_bcast()`). A phone that hears both copies keeps one: the
+identifier is the same.
+
 That is deliberate. There is no version to negotiate, no envelope to strip and
 no framing to get wrong, so a new station joins the bearer by opening a socket.
 A packet is at most 250 bytes, so it always fits one datagram and is never

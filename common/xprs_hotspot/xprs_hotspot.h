@@ -21,6 +21,7 @@
 
 #include "esp_err.h"
 #include "esp_http_server.h"
+#include "esp_netif.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,6 +40,21 @@ esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server);
  * LAN side. xprs_hotspot_start() calls this itself; calling both is safe.
  */
 esp_err_t xprs_hotspot_serve_page(httpd_handle_t server);
+
+/** The AP's netif once xprs_hotspot_start() has made it, else NULL. */
+esp_netif_t *xprs_hotspot_netif(void);
+
+/**
+ * The AP subnet's directed broadcast (192.168.4.255 by default), network
+ * byte order, or 0 before the AP has an address. The LAN bearer airs to it
+ * as well, because 255.255.255.255 leaves by the default route, which is the
+ * station's own network once it has joined one, and a phone on the hotspot
+ * would stop hearing it (XPRS.md 11.10).
+ */
+uint32_t xprs_hotspot_bcast(void);
+
+/** The access point's own address, network byte order, or 0. */
+uint32_t xprs_hotspot_ip(void);
 
 #ifdef __cplusplus
 }

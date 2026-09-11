@@ -74,13 +74,36 @@ esp_err_t xprs_hotspot_serve_page(httpd_handle_t server)
     return ESP_OK;
 }
 
+/* The AP's netif, made once: a second esp_netif_create_default_wifi_ap()
+ * for the same interface is refused, and an owner can switch the hotspot
+ * off and on again without a restart (XPRS.md 11.10). */
+static esp_netif_t *s_ap;
+
+esp_netif_t *xprs_hotspot_netif(void) { return s_ap; }
+
+uint32_t xprs_hotspot_ip(void)
+{
+    esp_netif_ip_info_t ip;
+    if (!s_ap || esp_netif_get_ip_info(s_ap, &ip) != ESP_OK) return 0;
+    return ip.ip.addr;
+}
+
+uint32_t xprs_hotspot_bcast(void)
+{
+    esp_netif_ip_info_t ip;
+    if (!s_ap || esp_netif_get_ip_info(s_ap, &ip) != ESP_OK || !ip.ip.addr)
+        return 0;
+    return ip.ip.addr | ~ip.netmask.addr;
+}
+
 esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server)
 {
     if (!ssid || !ssid[0] || !server) return ESP_ERR_INVALID_ARG;
 
     /* The AP netif + DHCP server. The driver is already up (STA or NULL
      * mode); flip to APSTA WITHOUT stopping it, or the STA drops. */
-    esp_netif_t *ap = esp_netif_create_default_wifi_ap();
+    if (!s_ap) s_ap = esp_netif_create_default_wifi_ap();
+    esp_netif_t *ap = s_ap;
     if (!ap) return ESP_FAIL;
 
     wifi_mode_t mode = WIFI_MODE_NULL;

@@ -112,6 +112,24 @@ void xprslan_set_heard_cb(xprslan_heard_cb_t cb);
 bool xprslan_send(const char *wire, int len);
 
 /**
+ * A second broadcast address every packet also goes to: the station's own
+ * access point's subnet (xprs_hotspot_bcast()), sent from a socket bound to
+ * the access point's address [src] (xprs_hotspot_ip()) so it leaves by the
+ * access point whatever the default route is. Network byte order; 0 to stop.
+ * Device only; the host harness has no second interface.
+ */
+void xprslan_set_extra_bcast(uint32_t addr, uint32_t src);
+
+/**
+ * One datagram to one address (network byte order), port 4242, outside the
+ * bearer's queue. For an answer to a station that asked over the LAN: a
+ * unicast is acknowledged and retried by WiFi and routed by its destination,
+ * where a broadcast is neither, and a phone on the station's hotspot stopped
+ * hearing broadcasts once the station had joined another network.
+ */
+bool xprslan_unicast(uint32_t ip, const char *wire, int len);
+
+/**
  * @brief Offer a packet heard on another bearer for re-airing on the LAN.
  *
  * Appends this station to `via:` (xprs_append_via, which refuses when we are

@@ -6,7 +6,7 @@
 # that this component compiles once and links against whichever of the two
 # the board chose. See common/xprs_ui_api/CMakeLists.txt.
 idf_component_register(
-    SRCS "xprs_app.c"
+    SRCS "xprs_app.c" "xprs_setup.c"
     INCLUDE_DIRS "include"
     REQUIRES nvs_flash log esp_timer esp_hw_support esp_wifi esp_event
              esp_netif lwip driver

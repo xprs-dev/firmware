@@ -52,6 +52,36 @@ esptool.py --port <port> --no-stub write_flash 0xE000 /tmp/ff12k.bin
 before building. A default only fills keys the generated file does not
 already have, so a new line is silently ignored otherwise.
 
+## Setting it up from a phone
+
+The published image has no owner and no network, and says so: a quarter of a
+minute after it starts, and then every half minute on Bluetooth and every
+two minutes on the LAN side, it airs `q:owner` with its own key (XPRS.md
+11.9). The XPRS app's **Firmwares** screen lists it under *Waiting for an
+owner*; from there it is claimed, given a WiFi network (the password sealed
+to the board's key), a name and a time zone, and its stats read (11.10).
+
+Over Bluetooth the phone has to be within the board's own range: a claim
+relayed by another station carries `via:` and is refused, as 11.9 requires.
+On the bench this board's weak antenna put the phone at the edge of that
+range (-95 dBm), so the flow below was run over the board's hotspot, which
+is also how a board without Bluetooth is set up:
+
+| Step, 2026-09-11 | What happened |
+|---|---|
+| phone joins `XPRS-X30Y64` | the ask arrives over the LAN lane, the station is listed |
+| claim | `station claimed by X1ARKL (11.9)`, `200 owner:X1ARKL` |
+| stats | `cmd:zdiag` answered: firmware, uptime, free memory |
+| name and zone | `200 ... nick:bench-c3 zone:+02:00` |
+| WiFi, sealed | opened on the board, joined in about a second, `202 wifi:joining` then `200 wifi:up ip:192.168.178.145` |
+| a new key (phone back on the home network, the board on it too) | `202 k:`, a restart, and the phone followed it to X3P5UQ; the board was then put back to X30Y64 from a copy of its NVS |
+
+Two faults this found, both fixed in the shared station: with no network set
+the board restarted every half second (a connect for an empty network name
+made the channel set fail, and that was fatal), and once the board had joined
+a network its broadcasts stopped reaching the phone on its hotspot, so every
+answer to a LAN command now also goes straight to the address it came from.
+
 ## What had to change for this chip
 
 **One core.** Six places in the shared code pinned tasks to core 1, and on

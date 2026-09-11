@@ -91,6 +91,17 @@ bool xauth_is_owner(const char *call);
 bool xauth_owner_key_of(const char *call, uint8_t out[32]);
 
 /**
+ * Does [call] derive from [npub]? Section 3: the characters after the prefix
+ * come from the key, so a claim carrying `k:` (XPRS.md 11.9) is checked
+ * against the key it brought rather than one learned from the air. The
+ * prefix digit and any device suffix are ignored, as the allow-list does.
+ */
+bool xauth_call_matches_npub(const char *call, const char *npub);
+
+/** `ts:` (YYYY-MM-DD_hh:mm:ss, UTC) as epoch seconds, 0 when it is not one. */
+uint32_t xauth_ts_epoch(const char *ts);
+
+/**
  * The HTTP door. [auth_header] is a complete signed XPRS command wire, and
  * [body_sha16] is the first 16 hex characters of sha256(request body) which
  * the wire must carry in `zsha:` -- so an authorisation captured from one

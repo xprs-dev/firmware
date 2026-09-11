@@ -88,6 +88,16 @@ static void xl_unlock(void *ctx) { (void)ctx; if (s_tx_mtx) xSemaphoreGive(s_tx_
 static uint32_t xl_now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static uint32_t xl_random(void) { return esp_random(); }
 
+/* The station's own access point, when it has one: see
+ * xprslan_set_extra_bcast(). Network byte order, 0 for none. The socket is
+ * bound to the access point's own address, because once the station has
+ * joined a network its default route is that network, and a subnet broadcast
+ * sent from an unbound socket followed it there (the phone on the hotspot
+ * heard nothing from then on, C3, 2026-09-11). ESP-IDF's lwIP routes a bound
+ * socket's datagrams by their source address. */
+static volatile uint32_t s_extra_bcast;
+static int s_fd_ap = -1;
+
 /* One datagram to everyone on the wire. */
 static bool xl_air(void *ctx, const char *wire, int len)
 {
@@ -98,12 +108,60 @@ static bool xl_air(void *ctx, const char *wire, int len)
         .sin_port = htons(XPRSLAN_PORT),
         .sin_addr.s_addr = htonl(INADDR_BROADCAST),
     };
+    /* Both addresses are tried and either will do. A station that has only
+     * its hotspot has no route for 255.255.255.255 (it leaves by the station
+     * interface, which is down), so that send fails, and returning on it left
+     * the hotspot's own subnet unsent: a phone on the hotspot heard nothing
+     * from a station that had joined no network yet, which is every station
+     * being set up (XPRS.md 11.10, seen on the C3, 2026-09-11). Once a network
+     * is joined, 255.255.255.255 goes there, and the subnet send is what keeps
+     * the hotspot's phone in the conversation. */
     int n = sendto(s_fd, wire, (size_t)len, 0, (struct sockaddr *)&to, sizeof to);
-    if (n != len) {
-        XL_LOGW("sendto failed: errno %d", errno);
-        return false;
+    bool ok = n == len;
+    uint32_t extra = s_extra_bcast;
+    if (extra) {
+        to.sin_addr.s_addr = extra;
+        int fd = s_fd_ap >= 0 ? s_fd_ap : s_fd;
+        if (sendto(fd, wire, (size_t)len, 0, (struct sockaddr *)&to, sizeof to) == len)
+            ok = true;
     }
-    return true;
+    if (!ok) XL_LOGW("sendto failed: errno %d", errno);
+    return ok;
+}
+
+bool xprslan_unicast(uint32_t ip, const char *wire, int len)
+{
+    if (s_fd < 0 || !ip || !wire || len <= 0) return false;
+    struct sockaddr_in to = {
+        .sin_family = AF_INET,
+        .sin_port = htons(XPRSLAN_PORT),
+        .sin_addr.s_addr = ip,
+    };
+    xl_lock(NULL);
+    int n = sendto(s_fd, wire, (size_t)len, 0, (struct sockaddr *)&to, sizeof to);
+    xl_unlock(NULL);
+    return n == len;
+}
+
+void xprslan_set_extra_bcast(uint32_t addr, uint32_t src)
+{
+    /* Under the transmit lock: xl_air may be sending on the old socket from
+     * another task right now. */
+    xl_lock(NULL);
+    if (s_fd_ap >= 0) { close(s_fd_ap); s_fd_ap = -1; }
+    if (addr && src) {
+        int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
+        if (fd >= 0) {
+            int one = 1;
+            setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
+            struct sockaddr_in me = { .sin_family = AF_INET, .sin_port = 0,
+                                      .sin_addr.s_addr = src };
+            if (bind(fd, (struct sockaddr *)&me, sizeof me) == 0) s_fd_ap = fd;
+            else { XL_LOGW("hotspot socket: bind failed, errno %d", errno); close(fd); }
+        }
+    }
+    s_extra_bcast = addr;
+    xl_unlock(NULL);
 }
 
 #endif

@@ -27,12 +27,15 @@ chips with their own images (`esp32c3-mini` runs on any C3 board).
    browser cannot connect, hold the board's BOOT button while it does. Or
    download the three files and write them with esptool: the bootloader at
    `0x1000`, the partition table at `0x8000`, the firmware at `0x20000`.
-2. **Use it from a phone.** With no network set, the board opens its own
-   access point, `XPRS-<callsign>`. Join it and the chat page comes up.
-3. **Put it on your network** (optional, and what lets it bridge to the
-   others): open a serial terminal on the board's port at 115200 baud (the
-   Arduino IDE's Serial Monitor, PuTTY, `screen`, or `pio device monitor`),
-   type these two lines, and press the EN (reset) button:
+2. **Set it up from a phone.** A fresh image has no owner and no network,
+   and says so. This board has no Bluetooth, so the phone meets it on its own
+   access point: join `XPRS-<callsign>` from the phone, open the XPRS app's
+   **Firmwares** screen, and the board is listed under *Waiting for an owner*.
+   Claim it, give it your WiFi (the password is sealed to the board's key
+   before it leaves the phone), a name and a time zone (XPRS.md 11.10).
+3. **Or with a cable.** Open a serial terminal on the board's port at 115200
+   baud (the Arduino IDE's Serial Monitor, PuTTY, `screen`, or `pio device
+   monitor`), type these two lines, and press the EN (reset) button:
 
    ```
    cfg set ssid <your network>
