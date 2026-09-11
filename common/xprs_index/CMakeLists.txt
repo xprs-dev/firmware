@@ -11,4 +11,4 @@
 idf_component_register(
     SRCS "xprsindex.c"
     INCLUDE_DIRS "."
-    REQUIRES xprs_codec fatfs vfs log esp_timer)
+    REQUIRES xprs_codec fatfs vfs log esp_timer xprs_common)

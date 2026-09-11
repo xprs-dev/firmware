@@ -36,8 +36,8 @@ There are three kinds of firmware in the tree:
 
 | Kind | Boards | Where |
 |---|---|---|
-| **Own project** | `tdongle-s3`, `m5stack-core`, `tdeck`, `sensecap-p1-pro` | `models/<board>/firmware/` |
-| **`multiboard` target** | `heltec-v1/v2/v3`, `kv4p`, `esp32c3-mini`, `epaper-1in54`, `generic` | `multiboard/` builds them |
+| **Own project** | `tdongle-s3`, `m5stack-core`, `tdeck`, `epaper-1in54`, `esp32c3-mini`, `sensecap-p1-pro` | `models/<board>/firmware/` |
+| **`multiboard` target** | `heltec-v1/v2/v3`, `kv4p`, `esp32c3-mini` and `epaper-1in54` (the old builds), `generic` | `multiboard/` builds them |
 | **Not an ESP32** | `sensecap-p1-pro` | Nordic nRF52840, Arduino/Adafruit core |
 
 The shared code reaches an ESP-IDF board as an IDF **component** and reaches the
@@ -65,6 +65,12 @@ Independently of its radios, a station:
 - **Dates its packets.** `ts:` under a real clock, `epoch:<boots>.<uptime>`
   when it has none (§10.7), so a receiver can still order a clockless station's
   traffic.
+- **Knows its time zone.** `ts:` is always UTC, but screens and the daily
+  statistics use local time. Unless `tz` pins an offset, the station asks
+  worldtimeapi.org, then ip-api.com, over plain HTTP once it reaches the
+  internet, follows daylight saving, and keeps the last answer for the next
+  boot (`common/xprs_tz`, `tz_tick()` in `xprs_app.c`; `tz_auto = no`
+  declines the lookup).
 - **Says whether it is well.** It declares the parts it should have before
   starting them and names anything that failed to come up, at boot and from its
   heartbeat (`common/xprs_health`). The same verdict gates an OTA's rollback
@@ -357,14 +363,31 @@ target that does not yet compile; the natural next full station.
 ESP32 driving an **SA818 VHF transceiver** — packet on the 2 m band through
 `xprs_sa818`, the fleet's only non-ISM radio. Legacy `multiboard` build.
 
-### esp32c3-mini — `models/esp32c3-mini/` · planned · multiboard
-The cheapest headless station: RISC-V ESP32-C3, **BLE5 + WiFi, nothing else**.
-Firmware not written yet.
+### esp32c3-mini: `models/esp32c3-mini/`, own project
+The cheapest headless station: single-core RISC-V ESP32-C3, 4 MB flash, no
+PSRAM, no screen. Runs the full `xprs_app` on **BLE5, ESP-NOW and the LAN**,
+with the API and the walk-up hotspot (its chat page is how a person uses
+it); no archive, because 4 MB leaves less than one index segment. The first
+single-core board: blocking tasks use `XPRS_WORK_CORE` instead of core 1,
+the UI is `common/xprs_ui_none`, and the shared radio is tuned for a weak
+WiFi link (short BLE scan, 536-byte TCP segments). docs/esp32.md, "The
+ESP32-C3", has the measurements.
 
-### ePaper 1.54" — `models/epaper-1in54/` · legacy · multiboard
-ESP32-S3 with a 200×200 e-paper panel, an RTC and sensors. The board the
-`multiboard` project's `docs/summary.md` was originally written around
-(LVGL UI, WiFi portal, sensor/RTC tasks). Legacy build.
+### ePaper 1.54": `models/epaper-1in54/`, own project
+Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (V1: 4 MB flash, 2 MB PSRAM), a
+200×200 black-and-white e-paper panel, an SHTC3 thermometer, microSD, a
+PCF85063 RTC, an ES8311 codec and a battery. Runs the full `xprs_app` on
+**BLE5, LAN and ESP-NOW**, with digipeater, bridge, API and archive. The
+screen is `common/xprs_ui_paper`, one page drawn for e-paper: the room's
+temperature and humidity, who is in reach, the newest messages, the network.
+It commits to the panel only when the picture really changes, at most once a
+minute, and a full refresh clears the ghosting every 40 partials. Every
+minute it also reports the room as a signed `t:observation` with `intemp:`
+and `inhum:` (`xapp_board_t.report`, the hook any board with sensors can use;
+`cfg set report_s` sets the period). The 4 MB
+flash leaves no room for an archive, so it lives on the microSD card
+(`xapp_board_t.storage_mount`). The older `multiboard` target for this board
+still exists and is not the one to use.
 
 ### generic — `models/generic/` · legacy · multiboard
 A plain ESP32 devkit with no screen and no radio module — for exercising the

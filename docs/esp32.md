@@ -726,6 +726,52 @@ The rest was claimed when the interface was created and a mode change does not
 give it back; that would mean tearing the netif down. Do not budget for memory
 you have only seen disappear.
 
+### Reconnecting is a scan, and the hotspot pays for it
+
+The station used to answer every `WIFI_EVENT_STA_DISCONNECTED` by sleeping
+two seconds and calling `esp_wifi_connect()` again, forever. Two things were
+wrong with that, both found on the e-paper board (2026-09-11) when it was
+asked to keep its hotspot usable with no LAN in range:
+
+- **Each connect is a scan across all channels**, and this is one radio. With
+  the configured network absent the station scanned more or less
+  continuously, and the SoftAP kept being pulled off its own channel: the
+  heartbeat caught `ch=8` on a board whose AP lives on 1. The hotspot was
+  least usable exactly when it was the only way in. Now the first five
+  retries are two seconds apart and, while the hotspot is up, the rest are a
+  minute apart (five while a phone is on it). Without a hotspot the old
+  cadence stays.
+- **The two-second wait was a `vTaskDelay` inside the event handler**, which
+  runs on the default event loop, so every other WiFi and IP event waited
+  behind it. It is an `esp_timer` now. Never sleep in an event handler.
+
+The same change clears the stored address on a real disconnect, so the
+screen and `/api/status` stop showing an address the station no longer has.
+
+### The time zone is plain HTTP, and it costs a kilobyte of stack
+
+`common/xprs_tz` asks worldtimeapi.org, then ip-api.com, which zone the
+station is in (2026-09-11). It is a GET on a raw lwip socket, not
+`esp_http_client`: the client registers its TLS transport whenever HTTPS is
+configured, and these boards trimmed TLS out on purpose (see the mbedTLS
+blocks in the sdkconfig files). It runs on the `inet` task, which already
+holds the internet probe, so there is no new task. The answer is read into
+one static 1 KB buffer, never the stack and never a malloc.
+
+Measured, not guessed: at 3 KB the `inet` task had **320 bytes** left after
+the first lookup (`getaddrinfo` and the socket calls). It is 4 KB now, with
+1,344 left.
+
+### A new REQUIRES needs the project reconfigured by hand
+
+Adding a component to a shared component's REQUIRES (`xprs_tz` to
+`xprs_app`, `xprs_station` to `xprs_ui_paper`) broke every incremental build
+with `fatal error: xprs_tz.h: No such file or directory`, although the
+symlinks were in place: PlatformIO kept the component graph from its last
+CMake run. `touch CMakeLists.txt` in the project, then build. A fresh
+checkout is not affected, which is exactly why this surprises the one person
+who changed the REQUIRES.
+
 ### Defaults are sized for a JSON request, not for bulk over flash
 
 `httpd_config_t.recv_wait_timeout` is five seconds. A firmware push is over a
@@ -1470,6 +1516,127 @@ away:
   and it read as "the station has no messages". When a page shows nothing,
   `curl` the endpoint and pipe it through `python3 -m json.tool` before
   believing the page.
+
+## The ESP32-C3: one core, one SRAM, one radio
+
+*ESP32-C3 v0.4, 4 MB flash, no PSRAM, native USB, measured 2026-09-11 on the
+bench board (X30Y64). `models/esp32c3-mini/` has the full tables.*
+
+The first single-core board on `xprs_app`. Everything below was found by
+running it; none of it showed up in a build.
+
+### Core 1 does not exist, and asking for it is an abort
+
+This whole document says "pin blocking work to core 1". On a C3,
+`xTaskCreatePinnedToCore(..., 1)` fails `taskVALID_CORE_ID()` inside
+FreeRTOS, and with the assertion level every Gen-2 build uses, that is an
+`abort()` at task creation: a boot loop before the station says a word.
+httpd goes through the same check with `httpd_config_t.core_id`. Six sites
+did it (the storage task, the UI task, httpd in `xprs_api` and in
+`xprs_config`'s share, the index writer, `rns_tcp`), and nothing in the tree
+checked the core count.
+
+They all use `XPRS_WORK_CORE` now (`common/xprs_common/include/xprs_core.h`):
+1 where there is a second core, `tskNO_AFFINITY` where there is not. **Use it
+for any new blocking task.** On one core the isolation this document is
+built around does not exist; only task priorities stand between the radios
+and the storage.
+
+### RISC-V has no backtrace in the crash summary
+
+`esp_core_dump_summary_t.exc_bt_info` is `{bt[], depth}` on Xtensa and a raw
+stack dump on RISC-V, so `xprs_diag` did not compile for the C3. It reports
+the return address (`ex_info.ra`) there instead. And coredump-to-flash ELF is
+not optional on any board: `xprs_app` and `xprs_api` call
+`esp_core_dump_get_summary()` unguarded, and it only exists with it.
+
+### No screen is a board shape
+
+`display_init = NULL` used to jump to address zero. It is a supported shape
+now, with `common/xprs_ui_none` (every `xui_*` a no-op, no LVGL). And the
+UI task still starts on a headless board, without rendering, because it is
+also the serial console: before that, a board with no screen had no `cfg`
+over the cable, which is the documented way to rotate a key.
+
+### On a C3, code in IRAM is heap you do not have
+
+The C3 has one SRAM. Static data, the heap and every function placed in IRAM
+all come out of it. The first boot:
+
+| after | internal free |
+|---|---|
+| boot | 114,652 |
+| BLE | 75,584 |
+| WiFi, API | 18,564 |
+| hotspot | **1,612**, then `wifi:alloc eb len=752 fail` and a panic |
+
+ESP-IDF's "minimizing RAM" switches moved 38.5 KB of code from IRAM to flash
+(95,374 to 56,802 bytes): `ESP_WIFI_IRAM_OPT=n`, `ESP_WIFI_RX_IRAM_OPT=n`,
+`FREERTOS_PLACE_FUNCTIONS_INTO_FLASH`, `RINGBUF_...` and
+`HEAP_PLACE_FUNCTION_INTO_FLASH`. On an S3 that would buy nothing; here it is
+all heap.
+
+The other 27 KB was shared code: four 3.5 KB table-row buffers and two 6.5 KB
+chat copies, `static` in `.bss`, used only by a screen's render path. They
+are allocated on first use now, and the four tables share one, since one
+panel is drawn at a time. A headless board never allocates them, and the
+screen boards without PSRAM (T-Dongle, M5Stack, Heltec V3) came out 27 KB
+lighter in static RAM too.
+
+End result on the C3: 180,484 free before BLE, 55,344 after the hotspot,
+about 58,000 running, 35,808 at the lowest point after serving pages.
+
+Two build traps, both seen here: **`-Os` turns `-Wformat-truncation` into
+seven errors in `xprs_app.c`** (the analysis is stricter at that level), so
+Gen-2 builds stay at the default optimisation; and **a new line in
+`sdkconfig.defaults` does nothing while `sdkconfig.<env>` exists**, because a
+default only fills keys the generated file lacks. Delete the generated file
+when adding a default, and check the key in it afterwards.
+
+### One radio: BLE starves a weak WiFi link, and small segments fix it
+
+The bench C3 hears the router at -84 to -92 dBm (the e-paper board beside
+it, -62). With BLE up, pings mostly answered and `/api/diag` (375 bytes)
+came back in 0.3 s, but the 22 KB chat page stalled after its headers every
+time. With BLE off it came in 0.16 s. Heap was ruled out: after the
+`.bss` work there were 58 KB free and it still stalled.
+
+The mechanism: at a weak signal WiFi drops to its lowest rates, where a
+1,500-byte frame is about 12 ms on the air, longer than the gaps BLE's scan
+windows and adverts leave on the shared radio. Small frames fit, full ones
+never do. `CONFIG_LWIP_TCP_MSS=536` (about 4 ms a frame) fixed it.
+Measured, one ping a second for three minutes:
+
+| configuration | pings of 180 | chat page |
+|---|---|---|
+| BLE scan 83% | 108 to 115 | never completes |
+| BLE off | 164 | 0.16 s |
+| BLE scan 21% (`ble_scan_light`) | 133 | never completes |
+| scan 21% + MSS 536 | 172, 174 | 0.2 to 5 s |
+| scan 83% + MSS 536 | 170 | 1.2 to 7.4 s |
+| WiFi transmit power capped at 8.5 dBm | 54 | |
+
+Preferring WiFi in the coexistence scheduler (`ESP_COEX_PREFER_WIFI`)
+improved pings and still delivered no page. Capping transmit power, the fix
+usually given for SuperMini boards, is for boards close to the router where
+full power distorts; this one is far from it, and a weaker uplink made it far
+worse. So `xapp_board_t.ble_scan_light` asks for the short scan from boot,
+and the small MSS lives in the board's `sdkconfig.defaults`.
+
+With the configured network missing and the hotspot up, ESP-NOW was still
+received with BLE running (15 packets in 15 s). docs/espnow.md recorded that
+a running BLE controller takes the radio from an *unassociated* station; a
+SoftAP, which sends its own beacons, keeps the WiFi side scheduled the way
+association does.
+
+### `ble_on` was a key nobody read
+
+`config.ini [ble] enabled` (key `ble_on`) was declared, rendered and
+described as "the one thing a router-side station turns off", and nothing
+read it: `cfg set ble_on 0` changed nothing on any board. Found while trying
+to measure the C3 with BLE off. `xprs_app` reads it now. The config table's
+own comment warns about the opposite fault (a key read but not declared);
+this is the same bug from the other side.
 
 ## Validating on the device
 

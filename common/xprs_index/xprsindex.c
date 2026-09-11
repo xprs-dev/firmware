@@ -42,6 +42,7 @@ static uint64_t xi_card_free(const char *d) { (void)d; return 0; }
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "xprs_core.h"
 static const char *TAG = "xprsidx";
 #define XI_LOGI(fmt, ...) ESP_LOGI(TAG, fmt, ##__VA_ARGS__)
 #define XI_LOGW(fmt, ...) ESP_LOGW(TAG, fmt, ##__VA_ARGS__)
@@ -918,7 +919,7 @@ xprsidx_t *xprsindex_open(const char *dir)
      * secp256k1 wants several kilobytes of its own; a stack overflow here
      * presents as a reboot loop, so this is sized generously on purpose. */
     if (xTaskCreatePinnedToCore(xi_writer_task, "xprsidx_wr", 8192, st, 2,
-                                &st->writer, 1) != pdPASS) {
+                                &st->writer, XPRS_WORK_CORE) != pdPASS) {
         XI_LOGW("writer task failed to start — nothing will reach the card");
         st->ready = false;
         free(st);

@@ -23,6 +23,7 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include "xprs_core.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -254,7 +255,8 @@ esp_err_t rns_tcp_start(const char *host, uint16_t port)
      * burst of announces starved idx for ninety seconds and the watchdog
      * did exactly what it is for. Below it, an uplink flood can never be
      * mistaken for a wedged station. */
-    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 8192, NULL, 2, NULL, 1)
+    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 8192, NULL, 2, NULL,
+                                XPRS_WORK_CORE)
         != pdPASS) {
         s_running = false;
         return ESP_FAIL;

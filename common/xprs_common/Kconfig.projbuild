@@ -8,6 +8,16 @@ menu "XPRS Board Selection"
             bool "ESP32-S3 ePaper 1.54 (Waveshare)"
             depends on IDF_TARGET_ESP32S3
 
+        # The same board running the shared station (xprs_app), from its own
+        # project in models/epaper-1in54/firmware. A separate choice because
+        # the one above is what the multiboard build selects, and several
+        # legacy components (xprs_lvgl's e-paper port, xprs_shtc3,
+        # xprs_epaper_1in54) switch themselves on for it; this project brings
+        # its own panel and sensor code and wants none of them.
+        config XPRS_BOARD_EPAPER_STATION
+            bool "ESP32-S3 ePaper 1.54 (Waveshare), xprs_app station"
+            depends on IDF_TARGET_ESP32S3
+
         config XPRS_BOARD_TDONGLE_S3
             bool "LILYGO T-Dongle-S3 LCD"
             depends on IDF_TARGET_ESP32S3

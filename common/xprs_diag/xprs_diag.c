@@ -77,9 +77,17 @@ static void read_core_summary(void)
     if (esp_core_dump_get_summary(&s) != ESP_OK) return;
     snprintf(s_core_task, sizeof s_core_task, "%s", s.exc_task);
     s_core_pc = s.exc_pc;
+#if CONFIG_IDF_TARGET_ARCH_XTENSA
     s_core_depth = (int)s.exc_bt_info.depth;
     if (s_core_depth > 16) s_core_depth = 16;
     memcpy(s_core_bt, s.exc_bt_info.bt, (size_t)s_core_depth * sizeof s_core_bt[0]);
+#else
+    /* RISC-V (the C3): the summary carries registers and a raw stack dump,
+     * not a walked backtrace. The return address is the one frame that can
+     * be named without unwinding, so that is the "backtrace" reported. */
+    s_core_bt[0] = s.ex_info.ra;
+    s_core_depth = 1;
+#endif
     s_core_valid = true;
 #endif
 }

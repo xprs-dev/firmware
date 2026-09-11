@@ -5,4 +5,4 @@
 idf_component_register(
     SRCS "rns.c" "rns_tcp.c" "tweetnacl.c" "rns_entropy.c"
     INCLUDE_DIRS "."
-    REQUIRES mbedtls esp_hw_support log lwip esp_timer)
+    REQUIRES mbedtls esp_hw_support log lwip esp_timer xprs_common)

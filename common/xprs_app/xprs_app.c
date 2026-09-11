@@ -101,6 +101,7 @@ static uint32_t heap_floor(void);   /* the board's, or the default above */
 #include "xprs_ota.h"
 #include "xprs_hotspot.h"
 #include "xprs_power.h"
+#include "xprs_tz.h"
 #include "xprsindex.h"
 #include "xgossip.h"
 #include "xcadence.h"
@@ -113,6 +114,7 @@ static uint32_t heap_floor(void);   /* the board's, or the default above */
 #include "esp_core_dump.h"
 #include "esp_system.h"
 #include "xprs_psram.h"
+#include "xprs_core.h"
 
 static const char *TAG = "xprs";
 
@@ -391,6 +393,10 @@ static volatile int s_idxq_w, s_idxq_r;   /* single writer set, single reader */
 static uint32_t s_idxq_dropped;
 
 static xprsidx_t *s_index;
+/* The archive budget the storage takes (10 MB on the default partition, or
+ * what the board's storage_mount said), and whether the board said none. */
+static uint64_t s_idx_base = 10u * 1024u * 1024u;
+static bool s_idx_none;
 static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it */
 
 /*
@@ -509,7 +515,14 @@ static int s_flow_n;
 #define LV_SYMBOL_ENVELOPE "\xEF\x83\xA0"
 
 
-static int s_tz_off;      /* seconds east of UTC, from config (Node clock) */
+/* The time zone. The offset itself lives in xprs_station (xst_tz), the one
+ * every local time on the station reads; what is here is how it is found
+ * (tz_tick) and what /api/status says. */
+static char    s_tz_str[8] = "+00:00";  /* s_api_cfg.tz points here     */
+static char    s_tz_zone[48];           /* "Europe/Berlin" when known   */
+static bool    s_tz_has_change;         /* the service named the next   */
+static int64_t s_tz_change_utc;         /* daylight-saving change, and  */
+static int     s_tz_after;              /* the offset after it          */
 static int s_sel[7];      /* per-panel selected row (7 = UI_PANEL_COUNT) */
 static int s_list_n;      /* rows the current panel rendered; the key
                            * handlers bound the selection to it, because
@@ -2606,7 +2619,8 @@ static void status_task(void *arg)
         xh_set(XH_LAN, xprslan_is_active() || !xcfg_get_bool("wifi_on", true));
         xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
         xh_set(XH_ADDR, !xcfg_get_bool("wifi_on", true) || s_ip_str[0] != 0);
-        xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
+        xh_set(XH_INDEX, s_index != NULL || s_idx_none ||
+               !xcfg_get_bool("index_on", true));
         xh_report(false);
         xh_heap_floor(heap_floor());
 
@@ -2641,6 +2655,42 @@ static void status_task(void *arg)
 
 /* ── WiFi ───────────────────────────────────────────────────────────────── */
 
+/*
+ * Reconnecting, without taking the hotspot down with it.
+ *
+ * Every esp_wifi_connect() is a scan across all channels, and this is one
+ * radio: while the station looks for an access point that is not there, the
+ * SoftAP keeps leaving its own channel, and a phone on the hotspot sees it
+ * drop in and out. Retrying every two seconds forever meant the hotspot was
+ * least usable exactly when it was most needed, with no LAN in range.
+ *
+ * So the first few retries are quick (a router rebooting comes back fast),
+ * and after that, only while the hotspot is up, the station asks once a
+ * minute, or once every five while somebody is on the hotspot. Without a
+ * hotspot there is nothing to protect and the two-second retry stays.
+ *
+ * The wait is a timer, not a vTaskDelay: this handler runs on the default
+ * event loop, and sleeping in it held up every other WiFi and IP event for
+ * the length of the sleep.
+ */
+#define STA_QUICK_TRIES   5
+static esp_timer_handle_t s_sta_retry;
+static int s_sta_fails;
+
+static void sta_retry_cb(void *arg)
+{
+    (void)arg;
+    esp_wifi_connect();
+}
+
+static uint32_t sta_retry_ms(void)
+{
+    wifi_mode_t mode;
+    bool ap = esp_wifi_get_mode(&mode) == ESP_OK && mode == WIFI_MODE_APSTA;
+    if (!ap || s_sta_fails <= STA_QUICK_TRIES) return 2000;
+    return pwr_ap_clients() > 0 ? 300000 : 60000;
+}
+
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
                           void *data)
 {
@@ -2652,10 +2702,24 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
          * like losing the link. Reconnecting here would drag us home before the
          * far side arrives, which is what it did the first time. */
         if (xprschan_busy()) return;
-        ESP_LOGW(TAG, "wifi disconnected — retrying");
-        vTaskDelay(pdMS_TO_TICKS(2000));
-        esp_wifi_connect();
+        s_ip_str[0] = 0;
+        s_sta_fails++;
+        uint32_t wait = sta_retry_ms();
+        ESP_LOGW(TAG, "wifi disconnected, retrying in %lu s",
+                 (unsigned long)(wait / 1000));
+        if (!s_sta_retry) {
+            const esp_timer_create_args_t ta = { .callback = sta_retry_cb,
+                                                 .name = "sta_retry" };
+            if (esp_timer_create(&ta, &s_sta_retry) != ESP_OK) {
+                ESP_LOGE(TAG, "wifi retry timer refused: reconnecting now");
+                esp_wifi_connect();
+                return;
+            }
+        }
+        esp_timer_stop(s_sta_retry);            /* harmless when idle */
+        esp_timer_start_once(s_sta_retry, (uint64_t)wait * 1000);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_sta_fails = 0;
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         snprintf(s_ip_str, sizeof s_ip_str, IPSTR, IP2STR(&e->ip_info.ip));
         ESP_LOGI(TAG, "wifi up on channel %u, ip %s", xprsnow_channel(),
@@ -2697,6 +2761,152 @@ static void wifi_up(void)
     }
 }
 
+/* ── The time zone ──────────────────────────────────────────────────────── */
+
+/*
+ * Local time on every station, in every country, without anybody typing an
+ * offset: the station asks a time service which zone it is in
+ * (common/xprs_tz), keeps the answer, and follows daylight saving.
+ *
+ * In order of precedence: `tz` in the config pins an offset and nothing is
+ * looked up; `tz_auto = no` declines the lookup (the services see the
+ * station's public address); otherwise the station asks once it reaches
+ * the internet, which is also the only time it has a clock to show.
+ *
+ * When to ask again: at the daylight-saving change the service announced
+ * (worldtimeapi.org names it), applied on time even if the internet is gone
+ * by then; otherwise just after each full UTC hour, because that is when a
+ * change can happen; never later than a day. A failure waits five minutes,
+ * doubling to an hour.
+ */
+static int64_t  s_tz_next_s;           /* uptime seconds of the next lookup */
+static uint32_t s_tz_backoff_s = 300;
+static bool     s_tz_failing;
+enum { TZ_PINNED, TZ_AUTO, TZ_OFF };
+static int      s_tz_mode = -1;         /* the mode the last pass was in    */
+
+static void tz_apply(int off, const char *zone, const char *why)
+{
+    bool was_known;
+    int was = xst_tz(&was_known);
+    xst_set_tz(off, true);
+    xtz_format_offset(off, s_tz_str, sizeof s_tz_str);
+    bool zone_changed = strcmp(s_tz_zone, zone ? zone : "") != 0;
+    if (zone) snprintf(s_tz_zone, sizeof s_tz_zone, "%s", zone);
+    if (!was_known || was != off || zone_changed)
+        ESP_LOGI(TAG, "timezone %s%s%s (%s)", s_tz_str,
+                 s_tz_zone[0] ? " " : "", s_tz_zone, why);
+}
+
+/* "+02:00 Europe/Berlin": the last answer, so the first minutes after a
+ * reboot, or after a pinned zone is taken away, are not UTC while the
+ * lookup waits for the internet. */
+static bool tz_last_found(void)
+{
+    int off;
+    const char *seen = xcfg_get("tz_seen", "");
+    if (!seen || !seen[0] || !xtz_parse_offset(seen, &off)) return false;
+    const char *sp = strchr(seen, ' ');
+    tz_apply(off, sp ? sp + 1 : "", "last found");
+    return true;
+}
+
+static void tz_unknown(void)
+{
+    xst_set_tz(0, false);
+    snprintf(s_tz_str, sizeof s_tz_str, "+00:00");
+    s_tz_zone[0] = 0;
+}
+
+/* The mode is read from the config on every pass, so `cfg set tz`, `cfg del
+ * tz` and `cfg set tz_auto no` need no restart, and entering a mode is
+ * where it takes over: a pinned offset does not linger once it is removed. */
+static void tz_mode(void)
+{
+    int off;
+    const char *pin = xcfg_get("tz", "");
+    int mode = pin && pin[0] ? TZ_PINNED
+             : xcfg_get_bool("tz_auto", true) ? TZ_AUTO : TZ_OFF;
+    if (mode == TZ_PINNED) {
+        static char bad[16];
+        if (xtz_parse_offset(pin, &off)) {
+            tz_apply(off, "", "pinned in the config");
+        } else if (strncmp(bad, pin, sizeof bad - 1) != 0) {
+            snprintf(bad, sizeof bad, "%s", pin);
+            ESP_LOGW(TAG, "tz = %s is not an offset such as +01:00; ignored", pin);
+        }
+    }
+    if (mode == s_tz_mode) return;
+    s_tz_mode = mode;
+    s_tz_has_change = false;
+    if (mode == TZ_AUTO) {
+        if (!tz_last_found()) tz_unknown();
+        s_tz_next_s = 0;                     /* and ask at the first chance */
+        s_tz_backoff_s = 300;
+    } else if (mode == TZ_OFF) {
+        tz_unknown();
+        ESP_LOGI(TAG, "timezone: not looked up (tz_auto = no), showing UTC");
+    }
+}
+
+static void tz_boot(void)
+{
+    tz_mode();
+}
+
+static void tz_tick(bool inet_up)
+{
+    tz_mode();
+    if (s_tz_mode != TZ_AUTO) return;
+
+    time_t now = time(NULL);
+    bool clock = now > 1704067200;          /* NTP has answered */
+    if (s_tz_has_change && clock && now >= s_tz_change_utc) {
+        s_tz_has_change = false;
+        tz_apply(s_tz_after, NULL, "daylight saving");
+        s_tz_next_s = 0;                     /* and learn the next change */
+    }
+    if (!inet_up) return;
+    int64_t up_s = esp_timer_get_time() / 1000000;
+    if (up_s < s_tz_next_s) return;
+
+    xtz_t r;
+    if (!xtz_lookup(&r)) {
+        s_tz_next_s = up_s + s_tz_backoff_s;
+        if (!s_tz_failing)
+            ESP_LOGW(TAG, "timezone: no time service answered; asking again "
+                          "in %u s", (unsigned)s_tz_backoff_s);
+        s_tz_failing = true;
+        s_tz_backoff_s = s_tz_backoff_s * 2 > 3600 ? 3600 : s_tz_backoff_s * 2;
+        return;
+    }
+    static bool measured;
+    if (!measured) {
+        measured = true;
+        ESP_LOGI(TAG, "timezone: first lookup done, inet stack %u free",
+                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    }
+    s_tz_failing = false;
+    s_tz_backoff_s = 300;
+    tz_apply(r.off_s, r.zone, r.source);
+    s_tz_has_change = r.has_change;
+    s_tz_change_utc = r.change_utc;
+    s_tz_after = r.off_after;
+
+    char seen[64];
+    snprintf(seen, sizeof seen, "%s %s", s_tz_str, r.zone);
+    if (strcmp(seen, xcfg_get("tz_seen", "")) != 0) xcfg_set("tz_seen", seen);
+
+    int64_t wait = 24 * 3600;
+    if (clock && r.has_change && r.change_utc > now)
+        wait = r.change_utc - now + 60;
+    else if (clock)
+        wait = 3600 - (now % 3600) + 60;
+    if (wait > 24 * 3600) wait = 24 * 3600;
+    if (wait < 60) wait = 60;
+    s_tz_next_s = up_s + wait;
+}
+
 /* ── Internet probe ─────────────────────────────────────────────────────── */
 
 /* "Internet: up" means a TCP handshake to a stable public address completed
@@ -2708,6 +2918,7 @@ static void inet_probe_task(void *arg)
     for (;;) {
         if (!s_ip_str[0]) {
             s_inet_known = false;
+            tz_tick(false);     /* an announced change still happens on time */
             vTaskDelay(pdMS_TO_TICKS(5000));
             continue;
         }
@@ -2727,6 +2938,7 @@ static void inet_probe_task(void *arg)
         }
         s_inet_up = up;
         s_inet_known = true;
+        tz_tick(up);
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
@@ -2789,7 +3001,7 @@ static bool s_people_unread;
  * twenty, and the M5Stack answered ESP_ERR_HTTPD_TASK and drew a black
  * screen for want of it. The UI is a single task, so one copy is all there
  * has ever been a need for. */
-static XPRS_PSRAM_BSS xst_chat_t s_chat_scratch[XST_CHAT_MAX];
+static void *s_chat_scratch;   /* xst_chat_t[XST_CHAT_MAX], render_scratch() */
 static bool s_room_unread[RM_FIXED + CHAT_PEERS_MAX];
 static char s_compose[121];               /* what has been typed          */
 static int  s_compose_n;
@@ -2947,11 +3159,41 @@ static bool chat_key(int ch)
 }
 
 
+/*
+ * Scratch that only the screen's render path uses, taken from the heap the
+ * first time it is needed instead of sitting in .bss from boot.
+ *
+ * A board with no screen never renders, so it never pays: on the ESP32-C3,
+ * which has no PSRAM and whose heap ran out under a 22 KB page with BLE up,
+ * that is 26 KB back (the table rows, and the two chat copies). And the
+ * four panels that each kept their own table rows now share one, because
+ * only one panel is drawn at a time and every UI copies what it is given:
+ * 10 KB back on the boards that do have a screen and no PSRAM. PSRAM first
+ * where there is some, as XPRS_PSRAM_BSS did.
+ */
+static void *render_scratch(void **slot, size_t bytes)
+{
+    if (!*slot) {
+        *slot = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!*slot) *slot = heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL |
+                                                    MALLOC_CAP_8BIT);
+        static bool said;
+        if (!*slot && !said) {
+            said = true;
+            ESP_LOGE(TAG, "render scratch: %u bytes refused", (unsigned)bytes);
+        }
+    }
+    return *slot;
+}
+
 static void ui_render(void)
 {
     char body[720];
     int list_n = 0;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    static void *tr_slot;
+    xui_row_t *tr_all = render_scratch(&tr_slot, sizeof(xui_row_t) * XUI_TAB_ROWS);
+    if (!tr_all) return;                /* said once, in render_scratch() */
 
     /* Bank transmitted-packet deltas into the hourly ring on every render
      * tick, whichever panel is up -- the bearers stay untouched and the
@@ -3090,7 +3332,7 @@ static void ui_render(void)
         static const int cw[4] = { 80, 74, 60, 106 };
         xui_table_setup(4, hdr, cw);
 
-        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
+        xui_row_t *tr = tr_all;          /* render_scratch() */
         xst_dev_t devs[XUI_TAB_ROWS];
         int nr = xst_devices(devs, XUI_TAB_ROWS, UI_INRANGE_SEC);
         for (int i = 0; i < nr; i++) {
@@ -3127,7 +3369,7 @@ static void ui_render(void)
         static const int cw[2] = { 110, 210 };
         xui_table_setup(2, hdr, cw);
 
-        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
+        xui_row_t *tr = tr_all;          /* render_scratch() */
         int nr = 0;
         #define NROW(c0, val, det) do { \
             snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
@@ -3218,7 +3460,7 @@ static void ui_render(void)
         static const int cw[2] = { 170, 150 };
         xui_table_setup(2, hdr, cw);
 
-        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
+        xui_row_t *tr = tr_all;          /* render_scratch() */
         int nr = 0;
         #define SROW(c0, val, det) do { \
             snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%s", c0); \
@@ -3285,19 +3527,23 @@ static void ui_render(void)
         {
             uint32_t tep = xst_epoch_now();
             char tval[26];
+            bool tzk;
+            int tzo = xst_tz(&tzk);
             if (tep) {
-                time_t lt = (time_t)((int64_t)tep + s_tz_off);
+                time_t lt = (time_t)((int64_t)tep + tzo);
                 struct tm tmv;
                 gmtime_r(&lt, &tmv);
-                snprintf(tval, sizeof tval, "%02d:%02d UTC%+d",
-                         tmv.tm_hour, tmv.tm_min, s_tz_off / 3600);
+                snprintf(tval, sizeof tval, "%02d:%02d UTC%s",
+                         tmv.tm_hour, tmv.tm_min, tzk ? s_tz_str : "");
             } else {
                 snprintf(tval, sizeof tval, "No sync");
             }
             snprintf(det, sizeof det,
-                     "NTP: %s. Set the server and the timezone offset in "
-                     "config.ini through the config share.",
-                     xcfg_get("ntp", "pool.ntp.org"));
+                     "NTP: %s. Zone: %s. Found automatically unless tz is "
+                     "set in config.ini.",
+                     xcfg_get("ntp", "pool.ntp.org"),
+                     !tzk ? "unknown, showing UTC"
+                          : s_tz_zone[0] ? s_tz_zone : s_tz_str);
             SROW("Time", tval, det);
         }
         {
@@ -3388,8 +3634,9 @@ static void ui_render(void)
         /* The conversation. xst_chat gives newest first; a thread reads
          * the other way, so it is walked backwards into the array. */
         static xui_msg_t mm[XUI_CHAT_MSGS];
-        xst_chat_t *rows = s_chat_scratch;
-        int cn = xst_chat(rows, XST_CHAT_MAX);
+        xst_chat_t *rows = render_scratch(&s_chat_scratch,
+                                          sizeof(xst_chat_t) * XST_CHAT_MAX);
+        int cn = rows ? xst_chat(rows, XST_CHAT_MAX) : 0;
         uint32_t nowep = xst_epoch_now();
         char me[10];
         base_call(s_call, me, sizeof me);
@@ -3455,7 +3702,7 @@ static void ui_render(void)
         static const int cw[3] = { 68, 176, 76 };
         xui_table_setup(3, hdr, cw);
 
-        static XPRS_PSRAM_BSS xui_row_t tr[XUI_TAB_ROWS];
+        xui_row_t *tr = tr_all;          /* render_scratch() */
         xst_chat_t rows[XUI_TAB_ROWS];
         int nr = xst_chat(rows, XUI_TAB_ROWS);
         uint32_t nowep = xst_epoch_now();
@@ -4076,28 +4323,83 @@ static void idx_answer_history(const char *ask_wire, int ask_len,
 }
 
 
+/*
+ * What the board measures, said on the air (section 15): one t:observation
+ * with the board's fields, the time, and the signature, on every bearer the
+ * station has, and archived as its own. Nothing when the board has no
+ * reading to give (a sensor that failed says nothing rather than something
+ * stale).
+ *
+ * The period is the board's (report_s, 60 s when it gives none) unless the
+ * operator has set `report_s`; 0 there stops the reports. Ten seconds is the
+ * floor: section 30.1 says a beacon is not free, and a mistyped period
+ * should not become a packet a second on everybody's radio.
+ */
+#define REPORT_MIN_S 10
+
+static uint32_t report_every_s(void)
+{
+    const char *v = xcfg_get("report_s", "");
+    uint32_t every = (v && v[0]) ? (uint32_t)strtoul(v, NULL, 10)
+                   : (s_board->report_s > 0 ? (uint32_t)s_board->report_s : 60);
+    if (every && every < REPORT_MIN_S) every = REPORT_MIN_S;
+    return every;
+}
+
+static void air_report(void)
+{
+    char fields[160];
+    int fl = s_board->report(fields, sizeof fields);
+    if (fl <= 0 || fl >= (int)sizeof fields || !s_call[0]) return;
+    char tf[40];
+    time_field(tf, sizeof tf);
+    char w[XPRS_MAX_WIRE + 1];
+    int n = snprintf(w, sizeof w, "t:observation f:%s %s %s", s_call, fields, tf);
+    if (n <= 0 || n + SIG_ROOM >= (int)sizeof w) {
+        ESP_LOGW(TAG, "report: %d bytes leaves no room to sign, not aired", n);
+        return;
+    }
+    n = sign_wire(w, n, sizeof w);
+    char took[40];
+    if (api_send_wire(w, n, NULL, took, sizeof took))
+        ESP_LOGI(TAG, "report on %s: %.*s", took, fl, fields);
+    else
+        ESP_LOGW(TAG, "report: no bearer took it");
+}
+
 static void idx_task(void *arg)
 {
     (void)arg;
 
     /* Mount the wear-levelled FAT filling the spare flash and open the
-     * store there. Done on THIS task: it is the only one that touches it. */
+     * store there, or whatever the board mounts at /idx instead, with the
+     * archive size it says that volume holds (xapp_board_t.storage_mount).
+     * Done on THIS task: it is the only one that touches it. */
     static wl_handle_t wl = WL_INVALID_HANDLE;
     const esp_vfs_fat_mount_config_t mc = {
         .max_files = CONFIG_SDCARD_MAX_FILES,  /* 4 KB of sector cache each */
         .format_if_mount_failed = true,
         .allocation_unit_size = 4096,
     };
-    esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage",
-                                                     &mc, &wl);
-    if (err == ESP_OK) {
+    esp_err_t err;
+    if (s_board->storage_mount) {
+        s_idx_base = 0;
+        err = s_board->storage_mount(&s_idx_base);
+        s_idx_none = err == ESP_OK && s_idx_base == 0;
+        if (s_idx_none)
+            ESP_LOGW(TAG, "archive: none. This board's storage is too small "
+                          "for one; the log and statistics are kept there");
+    } else {
+        err = esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage", &mc, &wl);
+    }
+    if (err == ESP_OK && !s_idx_none) {
         s_index = xprsindex_open("/idx/xprs");
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
          * An always-on station sizes to the volume instead -- which on a board whose
          * archive is internal flash is barely more, and that IS the finding:
          * this board can serve the role, but not that depth. */
-        s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
+        s_idx_budget = xprsindex_budget("/idx", s_idx_base,
                                         xcfg_get_bool("index_always_on",
                                             xcfg_get_bool("index_super", false)));
         xprsindex_set_max_bytes(s_index, s_idx_budget);
@@ -4117,7 +4419,7 @@ static void idx_task(void *arg)
                      (unsigned long)st.count, st.count == 1 ? "" : "s",
                      st.epoch);
         }
-    } else {
+    } else if (err != ESP_OK) {
         ESP_LOGE(TAG, "indexer storage failed to mount: %s",
                  esp_err_to_name(err));
     }
@@ -4137,6 +4439,7 @@ static void idx_task(void *arg)
     uint32_t last_claimask_s = 0;
     uint32_t last_logflush_s = 0;
     uint32_t last_stats_save_s = 0;
+    uint32_t last_report_s = 0;
     for (;;) {
         /* Drain what the radios heard. Every add is a flash write, and on
          * a bench where four stations digipeat one another the queue can
@@ -4186,6 +4489,17 @@ static void idx_task(void *arg)
                 if (xcfg_get_bool("espnow_on", true)) xprsnow_send(w, n);
                 if (xprsble_is_active()) xprsble_send(w, n);
                 ESP_LOGW(TAG, "unowned: asking to be claimed (25.9)");
+            }
+        }
+
+        /* The board's own readings, if it has sensors (xapp_board_t.report).
+         * Here and not on the board's task because a report is signed, and
+         * signing is curve work for this task (docs/esp32.md). */
+        if (s_board->report) {
+            uint32_t every = report_every_s();
+            if (every && now_s - last_report_s >= every) {
+                last_report_s = now_s;
+                air_report();
             }
         }
 
@@ -4768,13 +5082,13 @@ named_done:
                 }
                 closedir(d);
             }
-            s_index = xprsindex_open("/idx/xprs");
+            if (!s_idx_none) s_index = xprsindex_open("/idx/xprs");
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
          * An always-on station sizes to the volume instead -- which on a board whose
          * archive is internal flash is barely more, and that IS the finding:
          * this board can serve the role, but not that depth. */
-        s_idx_budget = xprsindex_budget("/idx", 10u * 1024u * 1024u,
+        s_idx_budget = xprsindex_budget("/idx", s_idx_base,
                                         xcfg_get_bool("index_always_on",
                                             xcfg_get_bool("index_super", false)));
         xprsindex_set_max_bytes(s_index, s_idx_budget);
@@ -5173,7 +5487,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .peers_json = api_peers_json,
     .log_cur = "/idx/log/cur.txt",
     .log_prev = "/idx/log/prev.txt",
-    .tz = "+00:00",
+    .tz = s_tz_str,          /* kept current by tz_apply() */
 };
 
 /* Bridge the generic UI's flush callback onto whatever panel the board
@@ -5517,7 +5831,8 @@ static void ui_task(void *arg)
             }
         }
         static bool s_rendered_once, s_splash_gone;
-        if (!s_screen_off && (force || now_us >= next_render_us)) {
+        if (s_display_up && !s_screen_off &&
+            (force || now_us >= next_render_us)) {
             ui_render();
             s_rendered_once = true;
             /* Scope and flow settle every 10 s; the counter panels at 2 s. */
@@ -5559,7 +5874,7 @@ static void ui_task(void *arg)
          * At a 100 Hz FreeRTOS tick a small delay can round to zero and
          * starve IDLE0 -- same guard the T-Dongle carries.
          */
-        TickType_t d = pdMS_TO_TICKS(s_screen_off ? 50 : 10);
+        TickType_t d = pdMS_TO_TICKS(s_screen_off || !s_display_up ? 50 : 10);
         vTaskDelay(d ? d : 1);
     }
 }
@@ -5674,8 +5989,8 @@ void xapp_run(const xapp_board_t *board)
      * silent pdFAIL becomes a station that answers 404 to everything. The
      * task mounts its own storage; its radio sends no-op until the bearers
      * are up. */
-    if (xTaskCreatePinnedToCore(idx_task, "idx", 8192, NULL, 3, NULL, 1)
-            != pdPASS)
+    if (xTaskCreatePinnedToCore(idx_task, "idx", 8192, NULL, 3, NULL,
+                                XPRS_WORK_CORE) != pdPASS)
         ESP_LOGE(TAG, "indexer task failed to start -- nothing will be kept");
 
     /* The updater claims no stack of its own: it runs on idx_task, which
@@ -5780,10 +6095,18 @@ void xapp_run(const xapp_board_t *board)
      * whoever starts last gets the fragments." The radio cannot live on
      * fragments; the HTTP server can.
      */
-    if (board->ble) {
+    /* `ble_on` (config.ini [ble] enabled) was declared and documented as
+     * "the one thing a router-side station turns off" and read by nothing,
+     * so `cfg set ble_on 0` changed nothing on any board. Read here. */
+    if (board->ble && !xcfg_get_bool("ble_on", true))
+        ESP_LOGW(TAG, "BLE5 off by configuration (ble_on = no)");
+    if (board->ble && xcfg_get_bool("ble_on", true)) {
         heap_mark("before ble");
         if (xprsble_start(s_call) == ESP_OK) {
             xprsble_set_rx_cb(on_ble);
+            /* One radio shared with a weak WiFi link: the board asks for
+             * the short scan window from the start (xapp_board_t). */
+            if (board->ble_scan_light) xprsble_scan_duty(true);
         } else {
             ESP_LOGE(TAG, "BLE5 failed to start -- carrying on without");
         }
@@ -5812,10 +6135,16 @@ void xapp_run(const xapp_board_t *board)
      */
     int lcd_w = 0, lcd_h = 0;
     void *lcd = NULL;
-    s_display_up = board->display_init(&lcd_w, &lcd_h, &lcd) == ESP_OK &&
-                   xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK;
-    if (!s_display_up)
-        ESP_LOGE(TAG, "display init failed -- running headless");
+    /* A board with no screen at all says so with display_init = NULL,
+     * which is a board shape, not a fault (the ESP32-C3). */
+    if (board->display_init) {
+        s_display_up = board->display_init(&lcd_w, &lcd_h, &lcd) == ESP_OK &&
+                       xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK;
+        if (!s_display_up)
+            ESP_LOGE(TAG, "display init failed, running headless");
+    } else {
+        ESP_LOGI(TAG, "no display on this board: headless");
+    }
 
     splash_step("network");
     heap_mark("before wifi");
@@ -5859,18 +6188,11 @@ void xapp_run(const xapp_board_t *board)
     esp_sntp_setservername(0, xcfg_get("ntp", "pool.ntp.org"));
     esp_sntp_init();
 
-    /* The timezone ("time fuse"): an offset like +01:00 or -05:30 in the
-     * config. It places the day boundary for the daily statistics. */
-    {
-        const char *tz = xcfg_get("tz", "+00:00");
-        int th = 0, tm = 0;
-        if (sscanf(tz, "%d:%d", &th, &tm) >= 1)
-            s_tz_off = th * 3600 + (th < 0 ? -tm : tm) * 60;
-        ESP_LOGI(TAG, "NTP %s, timezone %+03d:%02d",
-                 xcfg_get("ntp", "pool.ntp.org"),
-                 s_tz_off / 3600, abs(s_tz_off / 60) % 60);
-    }
-    xst_init(s_call, s_tz_off);
+    /* The time zone: pinned in the config, or the last one found, or not
+     * known yet (UTC). tz_tick() keeps it right from here on. */
+    xst_init(s_call, 0);
+    tz_boot();
+    ESP_LOGI(TAG, "NTP %s", xcfg_get("ntp", "pool.ntp.org"));
 
     /* The LAN bearer first, deliberately: its task is what pumps every bearer's
      * re-air queue and beacon, ESP-NOW included. Starting ESP-NOW without it
@@ -5954,7 +6276,11 @@ void xapp_run(const xapp_board_t *board)
      * the first identity, exactly 60 s after every boot. Stack overflow, and
      * it named itself: "A stack overflow in task status has been detected." */
     xTaskCreate(status_task, "status", 6144, NULL, 1, NULL);
-    xTaskCreate(inet_probe_task, "inet", 3072, NULL, 1, NULL);
+    /* 4 KB, not 3: the time-zone lookup (tz_tick) resolves a name and
+     * reads an HTTP answer on this task, and at 3 KB it left 320 bytes
+     * (measured on the e-paper board, 2026-09-11). */
+    if (xTaskCreate(inet_probe_task, "inet", 4096, NULL, 1, NULL) != pdPASS)
+        ESP_LOGE(TAG, "inet task did not start: no internet probe, no time zone");
 
 
     /*
@@ -5993,10 +6319,10 @@ void xapp_run(const xapp_board_t *board)
          * at 94 bytes a second and then failed to answer ping at all,
          * which the same page warns reads as a wedged server and is not
          * one. The T-Dongle and the M5Stack were lucky, not right. */
-        if (xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, 4, NULL, 1)
-            != pdPASS) {
-            if (xTaskCreatePinnedToCore(ui_task, "ui", 6144, NULL, 4, NULL, 1)
-                != pdPASS)
+        if (xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, 4, NULL,
+                                    XPRS_WORK_CORE) != pdPASS) {
+            if (xTaskCreatePinnedToCore(ui_task, "ui", 6144, NULL, 4, NULL,
+                                        XPRS_WORK_CORE) != pdPASS)
                 ESP_LOGE(TAG, "UI task failed to start");
             else
                 ESP_LOGW(TAG, "UI task on a 6 KB stack: no room for 8 "
@@ -6004,6 +6330,14 @@ void xapp_run(const xapp_board_t *board)
                          (unsigned)heap_caps_get_largest_free_block(
                              MALLOC_CAP_INTERNAL));
         }
+    } else {
+        /* Headless, the UI task still has work that is not drawing: the
+         * serial console (the `cfg` lines, the only way in with a cable),
+         * the board's buttons and the battery. So it runs, without the
+         * render, and on a smaller stack: what needed 8 KB was LVGL. */
+        if (xTaskCreatePinnedToCore(ui_task, "ui", 4096, NULL, 4, NULL,
+                                    XPRS_WORK_CORE) != pdPASS)
+            ESP_LOGE(TAG, "console task failed to start: no serial console");
     }
 
     /* The station's LAN face: AFTER the screen, but no longer INSIDE it.
@@ -6060,6 +6394,7 @@ void xapp_run(const xapp_board_t *board)
     xh_set(XH_HTTP, xprs_api_httpd() != NULL);
     xh_set(XH_LAN, xprslan_is_active());
     xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
-    xh_set(XH_INDEX, s_index != NULL || !xcfg_get_bool("index_on", true));
+    xh_set(XH_INDEX, s_index != NULL || s_idx_none ||
+               !xcfg_get_bool("index_on", true));
     xh_heap_floor(heap_floor());
 }

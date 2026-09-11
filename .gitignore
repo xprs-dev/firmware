@@ -12,6 +12,8 @@ sdkconfig.m5stack
 sdkconfig.tdeck
 sdkconfig.tdeck_plus
 sdkconfig.tdongle
+sdkconfig.epaper
+sdkconfig.c3mini
 sdkconfig.espnow_probe
 # Same, for the two-deck tinynimble probe (deckA, deckB, deckA_nimble).
 tools/tinynimble_probe/sdkconfig.*

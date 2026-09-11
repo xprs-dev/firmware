@@ -25,6 +25,8 @@ uint32_t xst_test_now_ms;
 #define UNLOCK()             ((void)0)
 static const char *TAG __attribute__((unused)) = "xst";
 #else
+#include <stdlib.h>
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -39,6 +41,7 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static char s_call[10];
 static int  s_tz_off;
+static bool s_tz_known;     /* false: nobody has said, and s_tz_off is 0 */
 
 /* ── Who we have heard, by name ─────────────────────────────────────── */
 static XPRS_PSRAM_BSS xst_dev_t s_seen[XST_SEEN_MAX];
@@ -102,6 +105,23 @@ void xst_init(const char *own_call, int tz_off_sec)
 {
     xst_set_call(own_call ? own_call : "");
     s_tz_off = tz_off_sec;
+}
+
+void xst_set_tz(int off_sec, bool known)
+{
+    LOCK();
+    s_tz_off = known ? off_sec : 0;
+    s_tz_known = known;
+    UNLOCK();
+}
+
+int xst_tz(bool *known)
+{
+    LOCK();
+    int off = s_tz_off;
+    if (known) *known = s_tz_known;
+    UNLOCK();
+    return off;
 }
 
 void xst_set_call(const char *own_call)
@@ -531,9 +551,22 @@ int xst_chat_peers(const char *self, char out[][10], int max)
      * later beacon cannot reorder the rail under a selection.
      *
      * The ring copy is 6.7 KB -- too much for the UI task's stack, so it is
-     * a PSRAM static like s_chat_scratch in xprs_app. Called only from the
-     * single UI task, so one is enough. */
-    static XPRS_PSRAM_BSS xst_chat_t rows[XST_CHAT_MAX];
+     * taken from the heap (PSRAM first) the first time a chat rail asks,
+     * like xprs_app's render scratch: only a screen with a keyboard ever
+     * calls this, and a board without one (the ESP32-C3) never pays for
+     * it. Called only from the single UI task, so one is enough. */
+#ifdef XST_HOST_TEST
+    static xst_chat_t rows_host[XST_CHAT_MAX];
+    xst_chat_t *rows = rows_host;
+#else
+    static xst_chat_t *rows;
+    if (!rows) {
+        rows = heap_caps_malloc(sizeof(xst_chat_t) * XST_CHAT_MAX,
+                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!rows) rows = malloc(sizeof(xst_chat_t) * XST_CHAT_MAX);
+        if (!rows) return 0;
+    }
+#endif
     int cn = xst_chat(rows, XST_CHAT_MAX);
     for (int i = 0; i < cn && n < max; i++) {
         if (rows[i].kind != 2) continue;

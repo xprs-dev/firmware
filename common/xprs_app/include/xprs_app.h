@@ -42,9 +42,11 @@ typedef enum {
     XAPP_KEY_DOWN,      /**< selection down, and the rotate tour on home */
 } xapp_key_t;
 
-/** What one board is. Every field is required except the input hooks --
- *  a board with no controls at all still runs, driven by the serial
- *  console keys the UI task already reads. */
+/** What one board is. Every field is required except the input hooks,
+ *  and the display: a board with no controls at all still runs, driven by
+ *  the serial console keys the UI task reads, and a board with no screen
+ *  (display_init and flush NULL) still runs that task for the console.
+ *  It links common/xprs_ui_none, the UI that draws nothing. */
 typedef struct {
     const char *board_id;      /**< "m5stack-core" -- reported by /api/status */
     const char *banner;        /**< one line for the boot log, board's own words */
@@ -70,7 +72,7 @@ typedef struct {
     int espnow_channel;        /**< used only when the SSID is empty */
 
     /** Bring the panel up. Returns its size and an opaque handle that is
-     *  handed back to flush(). */
+     *  handed back to flush(). NULL: this board has no screen. */
     esp_err_t (*display_init)(int *width, int *height, void **ctx);
     /** Push RGB565 pixels. The signature is xui_flush_fn. */
     void (*flush)(int x1, int y1, int x2, int y2,
@@ -177,6 +179,58 @@ typedef struct {
      * flag false is how that is said, and the M5Stack says it.
      */
     bool ble;
+
+    /**
+     * Where the station keeps its files, if not where every other board does.
+     *
+     * NULL is the default and changes nothing: a wear-levelled FAT on the
+     * "storage" partition, mounted at /idx, holding the archive (10 MB), the
+     * log, the statistics and the conversation. That suits a 16 MB board.
+     *
+     * A board whose flash cannot hold it mounts a volume at /idx itself (a
+     * microSD card, a smaller partition) and says how many bytes of archive
+     * that volume will take. Zero keeps the log, statistics and conversation
+     * there and runs no archive, which is the honest answer for a volume
+     * smaller than one index segment (4096 records of 320 bytes, 1.3 MB): the
+     * segment being written can never be evicted, so it would fill the volume
+     * and take the log down with it.
+     *
+     * Called once, on the storage task, which is the only task that touches
+     * /idx. Returns ESP_OK when something is mounted there.
+     */
+    esp_err_t (*storage_mount)(uint64_t *archive_bytes);
+
+    /**
+     * What this board measures, for a board with sensors (section 15).
+     *
+     * Fill @p out with the observation's fields, space separated, each with
+     * its unit ("intemp:23C inhum:58%"), and return their length; return 0
+     * when there is nothing to report this time, such as a sensor that has
+     * stopped answering. The station adds the header, the time and the
+     * signature, airs it as a t:observation on every bearer it has, and
+     * archives it as its own.
+     *
+     * Called on the storage task (core 1), where signing belongs, so it must
+     * be quick and must not block: hand back the latest reading, do not take
+     * one. NULL: this board reports nothing.
+     */
+    int (*report)(char *out, int cap);
+
+    /**
+     * Scan Bluetooth with the short window (21% of the time, the battery
+     * duty in xprsble) from boot, instead of 83%.
+     *
+     * WiFi and Bluetooth share one radio, and the long window is the right
+     * trade where WiFi has signal to spare. It is the wrong one on a board
+     * whose WiFi link is weak: on the ESP32-C3 at -84 to -92 dBm, the chat
+     * page took 1.2 to 7.4 s with the long window and 0.3 s with the short
+     * one. XPRS beacons repeat, so the short window costs discovery
+     * latency, not neighbours.
+     */
+    bool ble_scan_light;
+    /** Seconds between reports; 0 takes the station's default of 60. The
+     *  operator's `cfg set report_s <seconds>` overrides it (0 stops them). */
+    int report_s;
 } xapp_board_t;
 
 /** Run the station. Does not return: it is the body of app_main().

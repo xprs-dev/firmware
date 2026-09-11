@@ -21,6 +21,7 @@
 #include "esp_partition.h"
 #include "xprsindex.h"
 #include "xprs.h"
+#include "xprs_core.h"
 #include <time.h>
 
 static const char *TAG = "xprs_api";
@@ -700,7 +701,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
 
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
     hc.server_port = 80;
-    hc.core_id = 1;          /* handlers read flash; keep off the radio core */
+    hc.core_id = XPRS_WORK_CORE; /* handlers read flash; keep off the radio core */
     hc.stack_size = 6144;
     /* A firmware push is well over a megabyte arriving while this same
      * task erases and writes flash, and an erase stops the cache for both

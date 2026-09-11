@@ -77,6 +77,14 @@ typedef struct {
 void xst_init(const char *own_call, int tz_off_sec);
 void xst_set_call(const char *own_call);
 
+/* The station's offset from UTC, the one every local time on the station
+ * uses (the day boundary here, the clocks on the screens). It can change
+ * while running: found out over the internet, a daylight-saving change, or
+ * the operator pinning one. [known] false means nobody has said and the
+ * offset is 0; a screen should then say its time is UTC. Any task. */
+void xst_set_tz(int off_sec, bool known);
+int  xst_tz(bool *known);
+
 /* Ingest one heard wire (any task; cheap). Parses internally and feeds
  * devices + chat + rx/device stats. Returns false when the wire does not
  * parse, carries no f:, or is our own echo. */

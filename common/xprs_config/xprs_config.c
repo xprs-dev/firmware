@@ -14,6 +14,7 @@
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_http_server.h"
+#include "xprs_core.h"
 
 static const char *TAG = "xprs_config";
 
@@ -54,6 +55,14 @@ static cfg_entry_t s_cfg[] = {
     { "ap_on",     {0}, false },
     { "ap_ssid",   {0}, false },
     { "tz",        {0}, false },
+    /* Empty `tz` means found out automatically (common/xprs_tz); `tz_auto`
+     * = no declines the lookup, and `tz_seen` is the last answer, kept so a
+     * reboot starts with it rather than with UTC. Internal: not in the ini. */
+    { "tz_auto",   {0}, false },
+    { "tz_seen",   {0}, false },
+    /* Seconds between a sensor board's readings on the air (xapp_board_t
+     * .report); empty is the board's default, 0 stops them. */
+    { "report_s",  {0}, false },
     /* Over-the-air updates (XPRS.md 25.8) and who may ask for one (25.4).
      * `fwkey` is the x-only key whose signature makes an image installable
      * here; `own1..own4` are the callsign-deriving npubs allowed to command
@@ -233,11 +242,20 @@ int xcfg_ini_render(char *buf, size_t cap)
         "ssid = %s\n"
         "\n"
         "[time]\n"
-        "; NTP server (community pool by default) and the timezone as an\n"
-        "; offset from UTC, e.g. +01:00 or -05:30. The offset places the\n"
-        "; day boundary for the daily statistics.\n"
+        "; NTP server (community pool by default) and the time zone. Leave\n"
+        "; tz empty and the station finds its zone itself once it reaches the\n"
+        "; internet: it asks worldtimeapi.org, then ip-api.com, which see its\n"
+        "; public address, and follows daylight saving. Set an offset such as\n"
+        "; +01:00 or -05:30 to pin it instead, or auto = no to never ask.\n"
         "server = %s\n"
         "tz = %s\n"
+        "auto = %s\n"
+        "\n"
+        "[report]\n"
+        "; A board with sensors reports them as t:observation (XPRS.md 15).\n"
+        "; Seconds between reports; empty keeps the board's default, 0 stops\n"
+        "; them, and anything under 10 is taken as 10.\n"
+        "every = %s\n"
         "\n"
         "[update]\n"
         "; Firmware updates over the air (XPRS.md 25.8). `key` is the public\n"
@@ -292,7 +310,9 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("ap_on", true) ? "yes" : "no",
         xcfg_get("ap_ssid", ""),
         xcfg_get("ntp", "pool.ntp.org"),
-        xcfg_get("tz", "+00:00"),
+        xcfg_get("tz", ""),
+        xcfg_get_bool("tz_auto", true) ? "yes" : "no",
+        xcfg_get("report_s", ""),
         xcfg_get("fwkey", ""),
         xcfg_get("fwurl", ""),
         xcfg_get("fwchan", "stable"),
@@ -351,6 +371,8 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "hotspot", "ssid",     "ap_ssid" },
     { "time",    "server",   "ntp" },
     { "time",    "tz",       "tz" },
+    { "time",    "auto",     "tz_auto" },
+    { "report",  "every",    "report_s" },
     { "update",  "key",      "fwkey" },
     { "update",  "source",   "fwurl" },
     { "update",  "channel",  "fwchan" },
@@ -591,7 +613,7 @@ esp_err_t xcfg_share_start(void)
     if (!s_httpd) {
         httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
         cfg.server_port = 80;
-        cfg.core_id = 1;      /* handlers read flash (docs/esp32.md) */
+        cfg.core_id = XPRS_WORK_CORE; /* handlers read flash (docs/esp32.md) */
         cfg.stack_size = 6144;
         cfg.lru_purge_enable = true;
         esp_err_t ret = httpd_start(&s_httpd, &cfg);
