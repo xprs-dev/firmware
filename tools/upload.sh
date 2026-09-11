@@ -47,9 +47,7 @@ if [ -z "$ENV" ]; then
         [2]="esp32_generic|ESP32 Generic (no display)"
         [3]="esp32c3_mini|ESP32-C3 Mini"
         [4]="kv4p|KV4P-HT (SA818 radio)"
-        [5]="heltec_v1|Heltec WiFi LoRa 32 V1"
-        [6]="heltec_v2|Heltec WiFi LoRa 32 V2"
-        [7]="heltec_v3|Heltec WiFi LoRa 32 V3"
+        [5]="heltec_v3|Heltec WiFi LoRa 32 V3"
     )
 
     echo ""

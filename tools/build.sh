@@ -27,9 +27,7 @@ TARGETS=(
     [2]="esp32_generic|ESP32 Generic (no display)|esp32|Skeleton / barebones"
     [3]="esp32c3_mini|ESP32-C3 Mini|esp32c3|WiFi + BLE only, minimal"
     [4]="kv4p|KV4P-HT (SA818 radio)|esp32|SA818 radio module, no display"
-    [5]="heltec_v1|Heltec WiFi LoRa 32 V1|esp32|SX1276 LoRa + SSD1306 OLED"
-    [6]="heltec_v2|Heltec WiFi LoRa 32 V2|esp32|SX1276 LoRa + SSD1306 OLED"
-    [7]="heltec_v3|Heltec WiFi LoRa 32 V3|esp32s3|SX1262 LoRa + SSD1306 OLED"
+    [5]="heltec_v3|Heltec WiFi LoRa 32 V3|esp32s3|SX1262 LoRa + SSD1306 OLED"
 )
 
 ACTION="build"

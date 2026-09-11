@@ -37,7 +37,7 @@ There are three kinds of firmware in the tree:
 | Kind | Boards | Where |
 |---|---|---|
 | **Own project** | `tdongle-s3`, `m5stack-core`, `tdeck`, `epaper-1in54`, `esp32c3-mini`, `sensecap-p1-pro` | `models/<board>/firmware/` |
-| **`multiboard` target** | `heltec-v1/v2/v3`, `kv4p`, `esp32c3-mini` and `epaper-1in54` (the old builds), `generic` | `multiboard/` builds them |
+| **`multiboard` target** | `heltec-v3`, `kv4p`, `esp32c3-mini` and `epaper-1in54` (the old builds), `generic` | `multiboard/` builds them |
 | **Not an ESP32** | `sensecap-p1-pro` | Nordic nRF52840, Arduino/Adafruit core |
 
 The shared code reaches an ESP-IDF board as an IDF **component** and reaches the
@@ -115,7 +115,7 @@ Two things about bearers are worth knowing up front:
 
 - **BLE5 needs an extended advert.** An XPRS beacon is 112–173 bytes; the
   original ESP32 and other BLE 4.2 parts only do 31-byte legacy adverts, so
-  they have **no BLE5 bearer** (`heltec-v1/v2`, `m5stack-core`). BLE 5 parts
+  they have **no BLE5 bearer** (`m5stack-core`, `kv4p`). BLE 5 parts
   (all the S3 boards, the nRF52) do.
 - **A bearer's task pumps the others.** On the ESP32 station the LAN bearer's
   task is what drives every bearer's re-air queue and beacon timer. A board
@@ -347,12 +347,6 @@ trackball, and an **SX1262 LoRa** module. The **only board with all four
 bearers** (BLE5, LAN, ESP-NOW, LoRa) and the only one you type on, so it carries
 the interactive chat panel. Also **serves the BLE GATT mesh channel** the
 P1-Pro dials — the reference for the GATT-server side.
-
-### Heltec WiFi LoRa 32 V1 / V2 — `models/heltec-v1`, `-v2/` · legacy · multiboard
-Original ESP32 + **SX1276 LoRa** + 128×64 OLED (V2 has 8 MB flash and Vext
-control). Bluetooth 4.2, so **no BLE5**. Built by `multiboard` as the older
-station (SoftAP web chat, iGate, console); a prebuilt image is in the tree.
-Superseded by the V3.
 
 ### Heltec WiFi LoRa 32 V3 — `models/heltec-v3/` · shipping hardware · multiboard (pending)
 ESP32-S3 + **SX1262 LoRa** + OLED — the **same MCU and LoRa chip as the

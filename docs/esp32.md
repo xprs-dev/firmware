@@ -15,11 +15,11 @@ memory is left**.
 
 | | Main multi-board project (`esp32/`) | `esp32/rns_ble5/` | `esp32/m5stack/` |
 |---|---|---|---|
-| Build | PlatformIO, `platformio.ini` with 8 envs (`pio run -e <env>`) | Own PlatformIO project, single env (`pio run` inside the dir) | same, `pio run` inside `esp32/m5stack/` |
+| Build | PlatformIO, `platformio.ini` with 6 envs (`pio run -e <env>`) | Own PlatformIO project, single env (`pio run` inside the dir) | same, `pio run` inside `esp32/m5stack/` |
 | Framework | ESP-IDF **5.2.1** (espressif32@6.7.0) -- pinned, see memory note about needing a real framework dir | same | same |
 | App | `src/main.cpp` (one binary, `HAS_*`/`FEATURE_*` gates per board) | `src/main.c` + `tweetnacl.c` | `src/main.c`, ~200 lines |
 | BLE | **Legacy advertising only** (31 B) -- `xprs_ble_hello` | **BLE5 extended advertising** (`CONFIG_BT_NIMBLE_EXT_ADV=y`) | **none** -- this chip has no ext-adv |
-| Boards | epaper-S3 (default env!), generic, C3, KV4P, Heltec v1/v2/v3, tdongle_s3 | T-Dongle-S3 (board id `esp32s3-devkitc-1`) | M5Stack Core, original ESP32-D0WDQ6, CP2104 at `/dev/ttyUSB0` |
+| Boards | epaper-S3 (default env!), generic, C3, KV4P, Heltec v3, tdongle_s3 (the Heltec v1/v2 envs were removed 2026-09-11) | T-Dongle-S3 (board id `esp32s3-devkitc-1`) | M5Stack Core, original ESP32-D0WDQ6, CP2104 at `/dev/ttyUSB0` |
 
 `esp32/m5stack/` exists to be a **second voice on the air**: testing a bearer
 with one device only proves that its loopback works. It shares the
@@ -60,7 +60,7 @@ signatures keeps both toolchains working -- see `xprsnow.c`.
 
 ## Radio capability per chip (mesh implications)
 
-- **Original ESP32** (Heltec v1/v2, KV4P): **no BLE5 extended advertising** --
+- **Original ESP32** (M5Stack Core, generic devkits, KV4P): **no BLE5 extended advertising** --
   those boards can never join the extended-advert mesh plane; legacy 31 B only.
 - **S3 / C3 class** (T-Dongle-S3, Heltec v3, C3-mini): extended advertising OK,
   one AD structure <= **254 B** (`EXT_ADV_MAX_SIZE=1650` is the chain cap; we

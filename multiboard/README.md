@@ -1,9 +1,12 @@
 # The shared multi-target build
 
-One PlatformIO project, eight boards. They share `src/main.cpp` and the whole of
+One PlatformIO project, six boards. They share `src/main.cpp` and the whole of
 `common/`; what makes each of them itself is an sdkconfig fragment and a
-`xprs_model_*` component. That is why they are one project rather than eight:
-splitting them would mean eight copies of a `main.cpp` that is currently one.
+`xprs_model_*` component. That is why they are one project rather than six:
+splitting them would mean six copies of a `main.cpp` that is currently one.
+The Heltec V1 and V2 envs were removed on 2026-09-11 with their boards'
+folders (no board left on the bench to run them); git history has both, and
+the `MODEL_HELTEC_V1`/`V2` paths in `src/main.cpp` are still there.
 
 ```sh
 ~/.platformio/penv/bin/pio run -e tdongle_s3
@@ -26,7 +29,7 @@ the tree was reorganised:
 
 ## Build status, honestly
 
-Not all eight compile today, and **they did not compile before the move
+Not all six compile today, and **they did not compile before the move
 either**. Each was built in the old `aurora/esp32` tree and here, and the set of
 errors compared:
 
@@ -36,7 +39,7 @@ errors compared:
 | `esp32c3_mini` | fails: `msgstore.h`, `nimble/nimble_port.h` -- identical before and after |
 | `heltec_v3` | fails: `nimble/nimble_port.h` -- identical before and after |
 | `esp32_generic` | fails at link -- identical before and after |
-| `heltec_v1`, `heltec_v2`, `kv4p`, `esp32s3_epaper_1in54` | not retested |
+| `kv4p`, `esp32s3_epaper_1in54` | not retested |
 
 So the reorganisation is faithful, including where it is faithful to breakage.
 Those failures are a real debt -- components pulling in NimBLE and the message
