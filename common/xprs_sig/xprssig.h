@@ -101,6 +101,18 @@ void xprssig_platform_random(uint8_t *out, size_t len);
  */
 bool xprssig_generate(uint8_t priv[XPRSSIG_KEY_LEN]);
 
+/**
+ * @brief The shared secret of XPRS.md 6.2: the X coordinate of priv times the
+ *        peer's x-only public key (static-static ECDH on secp256k1).
+ *
+ * Used as the AES-256 key of a sealed body as it is, with no KDF, which is
+ * what reticulum-dart's XprsCrypto.encryptFor does. Blinded on the device.
+ * @return false for an unusable scalar or a peer key that is not on the curve.
+ */
+bool xprssig_ecdh_x(const uint8_t priv[XPRSSIG_KEY_LEN],
+                    const uint8_t peer_x[XPRSSIG_KEY_LEN],
+                    uint8_t out_x[XPRSSIG_KEY_LEN]);
+
 #ifdef __cplusplus
 }
 #endif

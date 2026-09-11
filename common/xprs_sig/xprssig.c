@@ -27,6 +27,8 @@ static bool xs_sc_muladd(const uint8_t k[32], const uint8_t e[32],
                          const uint8_t d[32], uint8_t out[32]);
 static bool xs_sc_negate(const uint8_t d[32], uint8_t out[32]);
 static bool xs_sc_valid(const uint8_t d[32]);
+static bool xs_mul_p(const uint8_t d[32], const uint8_t p_x[32],
+                     uint8_t out_x[32]);
 static void xs_sha256(const uint8_t *in, size_t len, uint8_t out[32]);
 static void xs_random(uint8_t *out, size_t len);
 
@@ -154,6 +156,24 @@ static bool xs_sc_valid(const uint8_t d[32])
     EC_GROUP_get_order(grp, n, ctx);
     bool ok = !BN_is_zero(bd) && BN_cmp(bd, n) < 0;
     BN_free(n); BN_free(bd); BN_CTX_free(ctx);
+    return ok;
+}
+
+static bool xs_mul_p(const uint8_t d[32], const uint8_t p_x[32],
+                     uint8_t out_x[32])
+{
+    EC_GROUP *grp = xs_group();
+    BN_CTX *ctx = BN_CTX_new();
+    EC_POINT *p = EC_POINT_new(grp), *r = EC_POINT_new(grp);
+    BIGNUM *px = BN_bin2bn(p_x, 32, NULL), *bd = BN_bin2bn(d, 32, NULL);
+    BIGNUM *x = BN_new();
+    bool ok = EC_POINT_set_compressed_coordinates(grp, p, px, 0, ctx) == 1 &&
+              EC_POINT_mul(grp, r, NULL, p, bd, ctx) == 1 &&
+              !EC_POINT_is_at_infinity(grp, r) &&
+              EC_POINT_get_affine_coordinates(grp, r, x, NULL, ctx) == 1;
+    if (ok) BN_bn2binpad(x, out_x, 32);
+    BN_free(px); BN_free(bd); BN_free(x);
+    EC_POINT_free(p); EC_POINT_free(r); BN_CTX_free(ctx);
     return ok;
 }
 
@@ -344,6 +364,34 @@ static bool xs_sc_valid(const uint8_t d[32])
     mbedtls_mpi_free(&bd);
     return ok;
 }
+
+/* d·P with the private scalar, so it goes through mbedtls_ecp_mul, which
+ * blinds with the RNG, and never through the unblinded muladd a verifier
+ * uses on public values. */
+static bool xs_mul_p(const uint8_t d[32], const uint8_t p_x[32],
+                     uint8_t out_x[32])
+{
+    mbedtls_ecp_group *grp = xs_group();
+    if (!grp) return false;
+    mbedtls_ecp_point R, P;
+    mbedtls_mpi bd;
+    mbedtls_ecp_point_init(&R); mbedtls_ecp_point_init(&P);
+    mbedtls_mpi_init(&bd);
+    int rc = 0;
+    const char *step = "";
+#define XS_STEP(what, call) do { step = what; if ((rc = (call)) != 0) goto done; } while (0)
+    XS_STEP("read d", mbedtls_mpi_read_binary(&bd, d, 32));
+    XS_STEP("lift P", xs_lift_x(grp, &P, p_x));
+    XS_STEP("mul", mbedtls_ecp_mul(grp, &R, &bd, &P, xs_rng, NULL));
+    XS_STEP("write x", mbedtls_mpi_write_binary(&R.MBEDTLS_PRIVATE(X), out_x, 32));
+#undef XS_STEP
+done:
+    if (rc != 0)
+        xs_log_fail(step, rc);
+    mbedtls_ecp_point_free(&R); mbedtls_ecp_point_free(&P);
+    mbedtls_mpi_free(&bd);
+    return rc == 0;
+}
 #endif
 
 /* ── Tagged hash: sha256(sha256(tag) || sha256(tag) || msg) ─────────────── */
@@ -468,6 +516,17 @@ bool xprssig_generate(uint8_t priv[XPRSSIG_KEY_LEN])
         if (xs_sc_valid(priv)) return true;
     }
     return false;
+}
+
+/* XPRS.md 6.2: the key a sealed body is under is the X coordinate of our
+ * scalar times their point. X is the same for P and -P, so lifting the peer
+ * with even y costs nothing, and both ends get the same 32 bytes. */
+bool xprssig_ecdh_x(const uint8_t priv[XPRSSIG_KEY_LEN],
+                    const uint8_t peer_x[XPRSSIG_KEY_LEN],
+                    uint8_t out_x[XPRSSIG_KEY_LEN])
+{
+    if (!xs_sc_valid(priv)) return false;
+    return xs_mul_p(priv, peer_x, out_x);
 }
 
 /* ── base85 (§4.3) ──────────────────────────────────────────────────────── */
