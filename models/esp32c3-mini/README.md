@@ -61,11 +61,11 @@ two minutes on the LAN side, it airs `q:owner` with its own key (XPRS.md
 owner*; from there it is claimed, given a WiFi network (the password sealed
 to the board's key), a name and a time zone, and its stats read (11.10).
 
-Over Bluetooth the phone has to be within the board's own range: a claim
-relayed by another station carries `via:` and is refused, as 11.9 requires.
-On the bench this board's weak antenna put the phone at the edge of that
-range (-95 dBm), so the flow below was run over the board's hotspot, which
-is also how a board without Bluetooth is set up:
+Over Bluetooth the claim has to come from the phone itself: a claim relayed
+by another station carries `via:` and is refused, as 11.9 requires. The
+setup below was run over the board's hotspot, which is also how a board
+without Bluetooth is set up. What the Bluetooth leg showed on this bench is
+further down.
 
 | Step, 2026-09-11 | What happened |
 |---|---|
@@ -81,6 +81,22 @@ the board restarted every half second (a connect for an empty network name
 made the channel set fail, and that was fatal), and once the board had joined
 a network its broadcasts stopped reaching the phone on its hotspot, so every
 answer to a LAN command now also goes straight to the address it came from.
+
+**The Bluetooth leg, 2026-09-11.** The phone hears this board: it listed the
+board from its Bluetooth ask and relayed that ask onward (`via:X1ARKL`). The
+board does not hear the phone. In four minutes it decoded 67 Bluetooth frames,
+every one aired by the e-paper station X3MEAV at -95 to -99 dBm and none by
+the phone, so the phone's claim reached it only as X3MEAV's relayed copy and
+was refused. The ESP-NOW frames it hears arrive at -90 dBm as well, so this
+board receives everything weakly, whichever radio.
+
+One fault on the board's side was found and fixed: it asked for the short
+Bluetooth scan window (21% of the time, `ble_scan_light`) from boot, to keep
+a weak WiFi link's pages fast, and so listened at a quarter of the time even
+with no WiFi at all, which is exactly when a fresh board is set up. The short
+window now applies only while the board has a WiFi link. Bluetooth frames
+heard went from about 4 a minute to about 22 with ESP-NOW on and 40 with it
+off.
 
 ## What had to change for this chip
 

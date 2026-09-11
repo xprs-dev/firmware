@@ -2343,9 +2343,31 @@ static char s_ip_str[20];                 /* empty until GOT_IP */
  * what this station is for. A board that cannot do one of them leaves the
  * hook NULL and simply saves nothing there.
  */
+static bool s_pwr_scan_low;              /* the gauge asked for the short window */
+
+/*
+ * Which scan window Bluetooth listens with, decided in one place.
+ *
+ * A board that asks for the short window (xapp_board_t.ble_scan_light) asks
+ * for it on its WiFi link's behalf, so it is taken only while there is a
+ * link to protect. With none, Bluetooth is how the station is reached at all,
+ * and a freshly flashed one above everything: its owner's claim and setup
+ * arrive as adverts (11.9, 11.10). On the C3, with no WiFi, the short
+ * window from boot heard about 4 Bluetooth frames a minute and the long one
+ * about 22 (ESP-NOW on, 2026-09-11). The gauge's saving still wins when the
+ * cell is draining.
+ */
+static void ble_duty_apply(void)
+{
+    bool low = s_pwr_scan_low ||
+               (s_board && s_board->ble_scan_light && s_ip_str[0]);
+    xprsble_scan_duty(low);
+}
+
 static void pwr_ble_scan_duty(bool low)
 {
-    xprsble_scan_duty(low);
+    s_pwr_scan_low = low;
+    ble_duty_apply();
 }
 
 static bool pwr_sta_up(void)
@@ -5165,6 +5187,7 @@ static void idx_task(void *arg)
          * five caught one ask in several (seen on the C3 on a four-station
          * bench, 2026-09-11). The LAN and ESP-NOW keep two minutes.
          */
+        ble_duty_apply();                   /* a no-op unless the link moved */
         if (!pol_owned() && now_s >= 15 &&
             (!last_claimask_s || now_s - last_claimask_s >= 30)) {
             bool all = !last_claimask_all_s || now_s - last_claimask_all_s >= 120;
@@ -6837,9 +6860,8 @@ void xapp_run(const xapp_board_t *board)
         heap_mark("before ble");
         if (xprsble_start(s_call) == ESP_OK) {
             xprsble_set_rx_cb(on_ble);
-            /* One radio shared with a weak WiFi link: the board asks for
-             * the short scan window from the start (xapp_board_t). */
-            if (board->ble_scan_light) xprsble_scan_duty(true);
+            /* The long window until there is a WiFi link to share the radio
+             * with: ble_duty_apply(), from idx_task. */
         } else {
             ESP_LOGE(TAG, "BLE5 failed to start -- carrying on without");
         }
