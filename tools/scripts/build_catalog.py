@@ -510,10 +510,11 @@ a{color:var(--accent)}
   line-height:1.45; color:var(--ink-dim)}
 .jobs b{display:block; font-family:Archivo,"Helvetica Neue",Arial,sans-serif;
   font-size:14px; font-weight:700; color:var(--ink); margin-bottom:3px}
-.film{margin:0}
+/* At the screen's own 320x240 plus the bezel, never stretched past it. */
+.film{margin:0; width:100%; max-width:340px; justify-self:center}
 .film img{display:block; width:100%; height:auto; aspect-ratio:4/3;
   background:#000; border:10px solid var(--bezel); border-radius:14px;
-  box-shadow:var(--shadow)}
+  box-shadow:var(--shadow); image-rendering:pixelated}
 .film figcaption{font-size:12.5px; line-height:1.5; color:var(--ink-dim);
   margin-top:10px}
 .top-in.boards-head{padding-top:34px; position:relative}
@@ -621,7 +622,7 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
   .hero{display:flex; flex-direction:column; align-items:stretch; gap:0}
   .hero-text{display:contents}
   .hero .eyebrow{order:1} .hero h1{order:2} .hero-text p:not(.eyebrow){order:3}
-  .film{order:4; max-width:560px; margin:24px 0 6px}
+  .film{order:4; margin:24px 0 6px}
   .jobs{order:5}
 }
 @media (max-width:640px){
@@ -629,6 +630,7 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
   .wrap{padding:0 14px 64px}
   .hero{padding:28px 14px 26px}
   .jobs{grid-template-columns:minmax(0,1fr); gap:12px}
+  .film{max-width:332px}
   .film img{border-width:6px; border-radius:10px}
   .boards-head::before{left:14px; right:14px}
   .top-in{padding:28px 14px 22px; gap:16px}
@@ -780,7 +782,7 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash \\
 
 
 def hero(embed):
-    # The film is 1.7 MB: an embedded page links it from the repository
+    # The film is 0.8 MB: an embedded page links it from the repository
     # rather than carrying it as a data: URI.
     base = f"{RAW_URL}/" if embed else ""
     film, still = f"{base}docs/images/tdeck-film.gif", f"{base}docs/images/tdeck-radar.png"
@@ -813,7 +815,7 @@ def hero(embed):
   <figure class="film">
     <picture>
       <source media="(prefers-reduced-motion: reduce)" srcset="{still}">
-      <img src="{film}" width="640" height="480" fetchpriority="high"
+      <img src="{film}" width="320" height="240" fetchpriority="high"
         alt="A T-Deck screen: a green radar sweeps over the stations in reach, then the chat, stats, reachable, traffic, this-device and settings panels.">
     </picture>
     <figcaption>A T-Deck running this firmware: the radar of who is in reach, then
