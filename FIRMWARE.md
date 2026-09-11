@@ -36,8 +36,8 @@ There are three kinds of firmware in the tree:
 
 | Kind | Boards | Where |
 |---|---|---|
-| **Own project** | `tdongle-s3`, `m5stack-core`, `tdeck`, `epaper-1in54`, `esp32c3-mini`, `sensecap-p1-pro` | `models/<board>/firmware/` |
-| **`multiboard` target** | `heltec-v3`, `kv4p`, `esp32c3-mini` and `epaper-1in54` (the old builds), `generic` | `multiboard/` builds them |
+| **Own project** | `tdongle-s3`, `m5stack-core`, `tdeck`, `epaper-1in54`, `esp32c3-mini`, `generic`, `sensecap-p1-pro` | `models/<board>/firmware/` |
+| **`multiboard` target** | `heltec-v3`, `kv4p`, and the old builds of `esp32c3-mini`, `epaper-1in54` and `generic` | `multiboard/` builds them |
 | **Not an ESP32** | `sensecap-p1-pro` | Nordic nRF52840, Arduino/Adafruit core |
 
 The shared code reaches an ESP-IDF board as an IDF **component** and reaches the
@@ -115,7 +115,7 @@ Two things about bearers are worth knowing up front:
 
 - **BLE5 needs an extended advert.** An XPRS beacon is 112–173 bytes; the
   original ESP32 and other BLE 4.2 parts only do 31-byte legacy adverts, so
-  they have **no BLE5 bearer** (`m5stack-core`, `kv4p`). BLE 5 parts
+  they have **no BLE5 bearer** (`m5stack-core`, `generic`, `kv4p`). BLE 5 parts
   (all the S3 boards, the nRF52) do.
 - **A bearer's task pumps the others.** On the ESP32 station the LAN bearer's
   task is what drives every bearer's re-air queue and beacon timer. A board
@@ -383,9 +383,16 @@ flash leaves no room for an archive, so it lives on the microSD card
 (`xapp_board_t.storage_mount`). The older `multiboard` target for this board
 still exists and is not the one to use.
 
-### generic — `models/generic/` · legacy · multiboard
-A plain ESP32 devkit with no screen and no radio module — for exercising the
-bearers and the shared code on the cheapest possible hardware.
+### generic: `models/generic/`, own project
+Any plain board with an original ESP32 and 4 MB of flash (ESP32-DevKitC,
+DOIT DevKit V1, the many WROOM-32 boards), for people who want to try XPRS
+without buying a particular model. Runs the full `xprs_app` on **ESP-NOW and
+the LAN**, with the API and the walk-up hotspot with its chat page; no BLE,
+because the original ESP32 only has 31-byte legacy adverts, and no archive,
+because 4 MB leaves less than one index segment. It drives no pin at all, so
+the one image is safe on whatever a board has wired up. The M5Stack Core's
+proven configuration, with the C3's headless shape (`common/xprs_ui_none`).
+The older `multiboard` target still exists and is not the one to use.
 
 ### SenseCAP Solar Node P1-Pro — `models/sensecap-p1-pro/` · shipping · own project
 **Not an ESP32.** Nordic **nRF52840** under the Adafruit Arduino core, solar +

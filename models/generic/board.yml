@@ -1,23 +1,28 @@
 # One board's facts, for a program to read. Schema and rules: docs/catalog.md.
 #
-# Pins and modules are from common/xprs_model_generic/model_config.h and
-# the env in multiboard/platformio.ini; memory from the sdkconfig fragment and
-# the chip datasheet. Anything null has not been measured on this bench.
+# The firmware is models/generic/firmware, built 2026-09-11. No bare ESP32
+# devkit is on the bench, so every bearer and role below is "untested" on
+# this board even where the M5Stack Core, the same chip running the same
+# station, has shown it working. Anything null has not been measured.
 
 id: generic
-name: ESP32-DevKitC (esp32dev)
-vendor: Espressif
+name: Any ESP32 board
+vendor: Espressif DevKitC and its clones
 sku: null
 product_url: https://www.espressif.com/en/products/devkits/esp32-devkitc
 manual_url: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32/esp32-devkitc/user_guide.html
-tagline: "Plain ESP32 devkit. No screen, no radio module; for trying bearers."
+tagline: "Try XPRS on the ESP32 board you already have: ESP-NOW, LAN and the walk-up chat hotspot."
 summary: >-
-  Espressif ESP32-DevKitC: WROOM-32 module (dual-core 240 MHz, 520 KB RAM, 4
-  MB flash), EN and BOOT buttons, micro-USB via CP2102. No screen, no radio
-  module, no battery. Radios: WiFi 2.4 GHz, Bluetooth 4.2. A bare devkit for
-  trying a bearer before it goes on a real board; multiboard target, fails at
-  link today.
-status: legacy
+  For any board built on an original ESP32 with 4 MB of flash or more: the
+  Espressif ESP32-DevKitC, the DOIT DevKit V1, and the many WROOM-32 boards
+  sold under other names (dual-core 240 MHz, 520 KB RAM, WiFi 2.4 GHz,
+  Bluetooth 4.2, USB through a CP210x or CH340). Runs the shared station on
+  ESP-NOW and the LAN, with the HTTP API and the walk-up hotspot whose chat
+  page is how a person uses a board with no screen. It drives no pin, so the
+  one image is safe whatever a board has wired up. No BLE bearer (Bluetooth
+  4.2 adverts are too short for an XPRS beacon) and no archive (4 MB leaves
+  less room than one index segment).
+status: shipping
 
 silicon:
   mcu: ESP32
@@ -28,7 +33,7 @@ silicon:
   flash_mb: 4
 
 radios:
-  bluetooth: {version: "4.2 LE", extended_advertising: false, note: "original ESP32: 31-byte legacy advertising only"}
+  bluetooth: {version: "4.2 LE", extended_advertising: false, note: "original ESP32: 31-byte legacy advertising only; the firmware leaves Bluetooth off"}
   wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
   lora: null
   other: []
@@ -39,54 +44,50 @@ bearers:
   lora: "no"
   lora_note: No LoRa radio.
   lan: "untested"
-  lan_note: The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.
+  lan_note: "Working on the M5Stack Core, the same chip and station; not yet run on a bare devkit."
   espnow: "untested"
-  espnow_note: Same -- the radio can, the legacy build does not.
+  espnow_note: "Working on the M5Stack Core, the same chip and station; not yet run on a bare devkit."
 
-# The multiboard build predates xprs_app: it is the older station (SoftAP +
-# web chat over ESP-Mesh-Lite, APRS-IS iGate, telnet/SSH console) and carries
-# no XPRS bearer. Nothing below has been measured since the tree moved, and
-# multiboard/README.md says which targets even compile.
 xprs:
-  beacon: "no"
-  beacon_note: multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.
-  digipeater: "no"
-  digipeater_note: No XPRS bearers in the legacy build.
-  bridge: "no"
-  bridge_note: No XPRS bearers in the legacy build.
+  beacon: "untested"
+  beacon_note: Not yet run on a bare devkit.
+  digipeater: "untested"
+  digipeater_note: Not yet run on a bare devkit.
+  bridge: "untested"
+  bridge_note: Between ESP-NOW and the LAN; not yet run on a bare devkit.
   igate: "untested"
-  igate_note: The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.
+  igate_note: The LAN leg is on by default (igate_on).
   hotspot: "untested"
-  hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
+  hotspot_note: "On by default, named XPRS- and the callsign; with no network set, it is how a phone reaches the chat page."
   api: "untested"
-  api_note: Legacy xprs_http station API; not run since the move.
+  api_note: Not yet run on a bare devkit.
   indexer: "no"
-  indexer_note: xprs_index is an xprs_app thing.
+  indexer_note: "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept."
   share: "no"
-  share_note: xprs_app only.
+  share_note: No archive to share.
   reticulum: "no"
-  reticulum_note: xprs_app only.
+  reticulum_note: CONFIG_XPRS_BEARER_RNS is not set in this build.
   ota: "untested"
-  ota_note: Legacy xprs_updates path; unsigned, not run since the move.
-  gossip: "no"
-  gossip_note: xprs_app only.
+  ota_note: Two 1.5 MB app slots and the push door.
+  gossip: "untested"
+  gossip_note: The gossip store needs the archive's directory, which this build does not have.
   dashboard: "no"
-  dashboard_note: No screen.
+  dashboard_note: No screen (common/xprs_ui_none).
   chat: "no"
-  chat_note: Nothing to type on.
+  chat_note: Nothing to type on; the hotspot's chat page is the way to chat.
   mesh_session: "no"
-  mesh_session_note: BLE mesh session is xprs_app / tinynimble; not in the legacy build.
+  mesh_session_note: No BLE on this build.
   vhf: "no"
   vhf_note: No SA818.
-  note: "Fails at link today (multiboard/README.md)."
+  note: "The M5Stack Core's station without the screen: xprs_app on ESP-NOW and the LAN, headless like the C3."
 
 io:
   screen: null
   buttons:
-    - {name: boot, pin: GPIO0, note: "the strap pin"}
+    - {name: boot, pin: GPIO0, note: "the strap pin; not used by the firmware"}
   leds: []
   gnss: null
-  connectors: [{name: micro-USB}]
+  connectors: [{name: USB, note: "micro-USB or USB-C through a CP210x or CH340 bridge, depending on the board"}]
   sensors: []
 
 physical:
@@ -98,16 +99,15 @@ physical:
 
 firmware:
   toolchain: esp-idf
-  project: multiboard
-  env: esp32_generic
-  version: null
-  artifact: null
+  project: models/generic/firmware
+  env: generic
+  version: 0.1.0
+  artifact: models/generic/prebuilt/firmware.bin
   flash_port: usb-serial
-  flashing: "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload"
+  flashing: "esptool over the CP210x / CH340 USB-serial port; the BOOT button if the board does not enter the bootloader by itself"
 
 docs:
   - {title: "Board README", url: "models/generic/README.md"}
-  - {title: "The shared build, and which targets compile", url: "multiboard/README.md"}
 
 images:
   - file: hardware/images/annotated.png

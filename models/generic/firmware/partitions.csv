@@ -1,0 +1,19 @@
+# Name,   Type, SubType, Offset,   Size
+# 4 MB, the smallest flash an ESP32 devkit ships with, so one image fits
+# every one of them; a board with 8 or 16 MB leaves the rest unused. The
+# bootloader sits at 0x1000 on this chip, the table at 0x8000. NVS at the
+# standard 0x9000 like every other board, so the identity and the WiFi
+# credentials survive a reflash.
+nvs,      data, nvs,     0x9000,   0x6000
+otadata,  data, ota,     0xf000,   0x2000
+phy_init, data, phy,     0x11000,  0x1000
+# Two app slots, because a station updates over the air or not at all
+# (XPRS.md 25.8). 1.5 MB each; see the build log for how full they are.
+ota_0,    app,  ota_0,   0x20000,  0x180000
+ota_1,    app,  ota_1,   0x1A0000, 0x180000
+# What is left is a wear-levelled FAT of 832 KB for the log, the statistics
+# and the conversation. No archive: one index segment is 1.3 MB, more than
+# the whole volume (storage_mount in src/main.c).
+storage,  data, fat,     0x320000, 0xD0000
+# Where a panic writes its last words, read into the log at the next boot.
+coredump, data, coredump, 0x3F0000, 0x10000

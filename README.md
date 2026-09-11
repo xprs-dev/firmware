@@ -53,7 +53,7 @@ them for download or, served over HTTPS in Chrome, flashes them directly.
 | [`kv4p`](models/kv4p/) | ESP32 | `multiboard` -- VHF handheld via SA818 |
 | [`esp32c3-mini`](models/esp32c3-mini/) | ESP32-C3 | own project, headless: BLE5, ESP-NOW, LAN, the chat hotspot; one core |
 | [`epaper-1in54`](models/epaper-1in54/) | ESP32-S3 | own project, 200x200 e-paper: room climate, who is in reach, messages |
-| [`generic`](models/generic/) | ESP32 | `multiboard` -- plain devkit |
+| [`generic`](models/generic/) | ESP32 | own project, any plain ESP32 board with 4 MB: ESP-NOW, LAN, the chat hotspot |
 | [`sensecap-p1-pro`](models/sensecap-p1-pro/) | **nRF52840** | none yet -- solar outdoor node; LoRa + BLE5, no WiFi, not an ESP32 |
 
 ## Building

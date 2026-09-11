@@ -1,0 +1,59 @@
+# A plain ESP32 devkit: original ESP32 (dual-core Xtensa LX6), 520 KB of
+# RAM, no PSRAM, 4 MB of flash, a USB-serial bridge, nothing on the pins.
+# The M5Stack Core is the same chip running the same station with a screen,
+# so its settings are the ones proven on this silicon, and most of what
+# follows is theirs.
+CONFIG_XPRS_BOARD_GENERIC=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+# UART0 through the board's CP210x or CH340 is the console, and the one the
+# `cfg` lines arrive on.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# A station that modem-sleeps misses ESP-NOW frames.
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# No Bluetooth. The original ESP32 has only 31-byte legacy advertising and
+# an XPRS beacon does not fit in it (docs/esp32.md, "Radio capability per
+# chip"); the controller would only take RAM and airtime from WiFi.
+CONFIG_BT_ENABLED=n
+
+# The index names files seg_<10 digits>.bin, longer than 8.3; the log and
+# the statistics live on the same volume.
+CONFIG_FATFS_LFN_HEAP=y
+# Open files on /idx, ~4 KB of internal RAM each on a board with no PSRAM.
+# There is no archive here (see storage_mount in src/main.c), so the three
+# the index holds open by itself never happen: the log, a stats or chat
+# save, and an HTTP handler reading the log are the most at once.
+CONFIG_SDCARD_MAX_FILES=4
+# Phone browsers send >512 B of headers.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# The crash summary. Not optional: xprs_app and xprs_api read it through
+# esp_core_dump_get_summary(), which only exists with both of these, and a
+# core dump is how a watchdog reset names its task at the next boot.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+# Two app slots; an image that cannot come up is replaced by the one that
+# could, and the 90 s panicking watchdog is what turns a hang into that.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y
+# The image is authenticated by its signature over the xprsfw1 line
+# (XPRS.md 25.8), checked before a byte reaches flash, so the carrier is
+# plain HTTP; the stream is hashed in the decrypt callback, which runs
+# before each write. The M5Stack's reasons, unchanged.
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+CONFIG_ESP_HTTPS_OTA_DECRYPT_CB=y
+
+# ── A board with no PSRAM must survive its own updates ──────────────────
+# The WiFi driver's dynamic buffers come from the one internal heap. On the
+# M5Stack the defaults let a fast firmware push swallow it while the
+# signature was being checked, and a valid image was refused as unsigned
+# (the long note in the M5Stack's sdkconfig.defaults). The same caps here.
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
