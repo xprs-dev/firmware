@@ -1,8 +1,22 @@
 # Making the ESP32-C3-mini a full XPRS station
 
-**Status: planned, not started.** Nothing in here has been implemented. It is
-written down now because the firmware tree is being worked on elsewhere and this
-board's work must not collide with it — see "Sequencing" at the end.
+**Status, 2026-09-11: Stage 2 is done, and not the way this plan expected.**
+The board runs `xprs_app` from `models/esp32c3-mini/firmware/`, with BLE5,
+ESP-NOW, the LAN, the API and the hotspot; the README has the measurements.
+What turned out differently: Stage 1 was skipped (the multiboard target still
+does not compile, and nothing needs it); the image is 1.22 MB, well inside a
+1.5 MB slot, because the chat page is now 22 KB and there is no mesh-lite;
+there is no archive (832 KB of storage is less than one segment); the
+single-core aborts were six sites, fixed once with `XPRS_WORK_CORE`; and the
+risks that bit were RAM (IRAM shares the heap's SRAM on a C3) and one radio
+under a weak WiFi signal, fixed with a short BLE scan and 536-byte TCP
+segments. docs/esp32.md, "The ESP32-C3", is the record. Stage 4 (scripts) is
+not started. The rest of this document is the plan as written.
+
+**Original status: planned, not started.** Nothing in here has been
+implemented. It is written down now because the firmware tree is being
+worked on elsewhere and this board's work must not collide with it: see
+"Sequencing" at the end.
 
 ## What this board is to become
 

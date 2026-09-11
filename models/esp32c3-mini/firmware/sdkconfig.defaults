@@ -1,0 +1,122 @@
+# The ESP32-C3 mini: single-core RISC-V, 400 KB of RAM, no PSRAM, 4 MB of
+# flash, native USB, no screen. On a C3 the board choice has one visible
+# option; named anyway, so nothing depends on a default.
+CONFIG_XPRS_BOARD_ESP32C3_MINI=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+# The only port on the board is the chip's own USB. The multiboard config
+# made the UART primary, and getchar() reads only the primary console, so
+# the `cfg` lines never arrived. USB-JTAG is the console here.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# A station that modem-sleeps misses ESP-NOW frames.
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# The index names files seg_<10 digits>.bin, longer than 8.3; the log and
+# the statistics live on the same volume.
+CONFIG_FATFS_LFN_HEAP=y
+# Open files on /idx, ~4 KB of internal RAM each on a board with no PSRAM.
+# There is no archive here (see storage_mount in src/main.c), so the three
+# the index holds open by itself never happen: the log, a stats or chat
+# save, and an HTTP handler reading the log are the most at once.
+CONFIG_SDCARD_MAX_FILES=4
+# Phone browsers send >512 B of headers.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# The crash summary. Not optional: xprs_app and xprs_api read it through
+# esp_core_dump_get_summary(), which only exists with both of these, and a
+# core dump is how a watchdog reset names its task at the next boot.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+# Two app slots; an image that cannot come up is replaced by the one that
+# could, and the 90 s panicking watchdog is what turns a hang into that.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# ── BLE5: broadcast and listen, never connect ─────────────────────────────
+# The C3 has BLE 5 with extended advertising, and IDF 5.2 builds its
+# controller from the same source as the S3's (bt/controller/esp32c3), so
+# the T-Deck and T-Dongle configuration applies: tinynimble on the bare
+# controller, no NimBLE host.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_CONTROLLER_ENABLED=y
+CONFIG_BT_CONTROLLER_ONLY=y
+CONFIG_BT_NIMBLE_ENABLED=n
+CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
+# One advertising set and one scan.
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+# XPRS beacons are meant to repeat. With the controller's duplicate filter on,
+# a phone with a fixed address is reported once per boot and never again.
+CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
+# WiFi and BLE share one radio.
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+
+# ── mbedTLS: the T-Deck's trim, same reasons ─────────────────────────────
+# SAE is what drags RSA and the PSA layer in. WPA2 is unaffected.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_PKCS7_C=n
+CONFIG_MBEDTLS_ECP_DP_SECP192R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP521R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP192K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP256R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP512R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
+
+# No self-fetching updater (its TLS stack is what the trim above removed);
+# the push door, POST /api/update, is the way in.
+CONFIG_XPRS_OTA_PULL=n
+
+# Frequency scaling, no light sleep: WiFi stays at WIFI_PS_NONE and BLE
+# scans, so there is never a window to sleep in.
+CONFIG_PM_ENABLE=y
+
+# ── RAM: this chip has none to spare ─────────────────────────────────────
+#
+# The first boot on this board (2026-09-11) went 114,652 bytes of internal
+# heap before BLE, 75,584 after it, 18,564 after WiFi and the API, and 1,612
+# after the hotspot, and then panicked: `wifi:alloc eb len=752 fail`, Load
+# access fault. The C3 has one SRAM and everything comes out of it: static
+# data, the heap, AND the code placed in IRAM (95 KB of it in that build).
+# So on this chip, code moved from IRAM to flash is heap handed back. These
+# are ESP-IDF's own "minimizing RAM" switches, each a small speed cost
+# against memory the station was dying for.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+# WiFi's static receive buffers are claimed at init, 1.6 KB each: 10 by
+# default. Six still carries a station and a softAP; the dynamic pools grow
+# only under load, and are capped where the M5Stack caps them.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
+# ── Small TCP segments: the fix that made the web work with BLE on ───────
+#
+# With BLE up, this board answered pings and served the 375-byte /api/diag,
+# but the 22 KB chat page stalled after its headers every time (0 bytes in
+# 30 s), while the same page came in 0.16 s with BLE off. Heap was not it
+# (58 KB free by then). The link is: -84 to -92 dBm on the bench, so WiFi
+# runs at its lowest rates, where a 1,500-byte frame is about 12 ms on the
+# air, longer than the gaps BLE leaves between its scan windows and adverts
+# on the one radio. Small frames got through, full ones never did. 536-byte
+# segments (about 4 ms each) fit between them. Measured, BLE on, short scan:
+#
+#   MSS 1440   page stalls, pings 133 of 180
+#   MSS 536    page in 0.22 to 0.41 s, pings 172 of 180
+#
+# Preferring WiFi in the coexistence scheduler instead did not fix the page
+# (headers, then nothing), so it is not set.
+CONFIG_LWIP_TCP_MSS=536
