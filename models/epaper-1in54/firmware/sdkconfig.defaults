@@ -1,0 +1,163 @@
+# Say which board this is. The choice in common/xprs_common/Kconfig.projbuild
+# defaults to the LEGACY e-paper build on any ESP32-S3, and several old
+# components switch themselves on for that one (xprs_lvgl's e-paper port,
+# xprs_shtc3, xprs_epaper_1in54). This project is the same hardware running
+# xprs_app, with its own panel and sensor code, so it names its own choice.
+CONFIG_XPRS_BOARD_EPAPER_STATION=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+# The console is the S3's own USB (USB-JTAG); there are no UART pins out.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+# A station that modem-sleeps misses ESP-NOW frames.
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# 4 MB: the V1 module (ESP32-S3FH4R2). The V2's 8 MB runs this image too.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# ── LVGL, for one black-and-white page (common/xprs_ui_paper) ─────────────
+# The faces the page uses. 14 is the Kconfig default; 32 is the temperature.
+CONFIG_LV_FONT_MONTSERRAT_12=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
+CONFIG_LV_BUILD_EXAMPLES=n
+# The page is labels and plain objects. Everything else is compiled for
+# nothing (the same trim as the T-Deck's, plus the table and chart it uses
+# and this page does not).
+# CONFIG_LV_USE_ARC is not set
+# CONFIG_LV_USE_BAR is not set
+# CONFIG_LV_USE_BTN is not set
+# CONFIG_LV_USE_BTNMATRIX is not set
+# CONFIG_LV_USE_CANVAS is not set
+# CONFIG_LV_USE_CHECKBOX is not set
+# CONFIG_LV_USE_DROPDOWN is not set
+# CONFIG_LV_USE_ROLLER is not set
+# CONFIG_LV_USE_SLIDER is not set
+# CONFIG_LV_USE_SWITCH is not set
+# CONFIG_LV_USE_TEXTAREA is not set
+# CONFIG_LV_USE_TABLE is not set
+# CONFIG_LV_USE_ANIMIMG is not set
+# CONFIG_LV_USE_CALENDAR is not set
+# CONFIG_LV_USE_CHART is not set
+# CONFIG_LV_USE_COLORWHEEL is not set
+# CONFIG_LV_USE_IMGBTN is not set
+# CONFIG_LV_USE_KEYBOARD is not set
+# CONFIG_LV_USE_LED is not set
+# CONFIG_LV_USE_LIST is not set
+# CONFIG_LV_USE_MENU is not set
+# CONFIG_LV_USE_METER is not set
+# CONFIG_LV_USE_MSGBOX is not set
+# CONFIG_LV_USE_SPAN is not set
+# CONFIG_LV_USE_SPINBOX is not set
+# CONFIG_LV_USE_SPINNER is not set
+# CONFIG_LV_USE_TABVIEW is not set
+# CONFIG_LV_USE_TILEVIEW is not set
+# CONFIG_LV_USE_WIN is not set
+# CONFIG_LV_USE_SNAPSHOT is not set
+# LVGL's pool from PSRAM through common/tinylv_mem (see CMakeLists.txt).
+CONFIG_LV_MEM_CUSTOM=y
+
+# The index names segments seg_<10 digits>.bin, longer than 8.3.
+CONFIG_FATFS_LFN_HEAP=y
+# Phone browsers send >512 B of headers.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# A task-watchdog freeze keeps the culprit's name for the next boot.
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+# Two app slots (partitions.csv); an image that cannot come up is replaced
+# by the one that could. The 90 s panicking watchdog is what turns a hang
+# into that reset.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# Open files on /idx, ~4 KB of sector cache each, from PSRAM below. The
+# T-Deck's count, for the T-Deck's reason: the index alone holds three open.
+CONFIG_SDCARD_MAX_FILES=6
+
+# ── PSRAM: 2 MB, quad, in the package ────────────────────────────────────
+#
+# The T-Deck block (models/tdeck/firmware/sdkconfig.defaults) with its
+# measurements, and docs/esp32.md "PSRAM does not mean more memory". Quad
+# because that is what the S3FH4R2 carries; it shares the flash's pins
+# inside the package, so nothing in board.h is claimed.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_MEMTEST=y
+# Boot without it rather than panic, and SAY so.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=y
+# CAPS_ALLOC, not USE_MALLOC: USE_MALLOC forces WiFi onto static TX buffers
+# in internal RAM (esp_wifi/Kconfig), which the T-Deck measured as a 57 KB
+# loss. Here PSRAM is reached only through heap_caps_malloc(SPIRAM).
+CONFIG_SPIRAM_USE_CAPS_ALLOC=y
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER=y
+# The queue CONFIG_SPIRAM turns on behind your back defaults to 32 copies of
+# a packet; 16 is the floor, and on the T-Deck 32 cost the screen.
+CONFIG_ESP_WIFI_CACHE_TX_BUFFER_NUM=16
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+# Task stacks stay internal: OTA and coredump write flash with the cache off.
+# CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY is not set
+CONFIG_ESP32S3_DATA_CACHE_32KB=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_32B=y
+
+# ── BLE5: broadcast and listen, never connect (docs/ble5.md) ─────────────
+# The T-Deck's configuration, which is sized for exactly that: tinynimble
+# instead of the NimBLE host, one advertising set, one scan.
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_EXT_ADV=y
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_MAX_BONDS=1
+CONFIG_BT_NIMBLE_MAX_CCCDS=1
+CONFIG_BT_NIMBLE_GATT_MAX_PROCS=1
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=23
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT=8
+CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT=4
+CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=3
+CONFIG_BT_NIMBLE_ACL_BUF_COUNT=2
+CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT=4
+CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=2
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120
+CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
+CONFIG_BT_CTRL_BLE_MAX_ACT=2
+CONFIG_BT_CTRL_ADV_DUP_FILT_MAX=5
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
+CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
+CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
+# CONFIG_BT_NIMBLE_ENABLED is not set
+
+# ── mbedTLS: the T-Deck's trim, same reasons ─────────────────────────────
+# SAE is what drags RSA and the PSA layer in. WPA2 is unaffected.
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_PKCS7_C=n
+CONFIG_MBEDTLS_ECP_DP_SECP192R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP521R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP192K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP256R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP512R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
+
+# No self-fetching updater (its TLS stack is what the trim above removed);
+# the push door, POST /api/update, is the way in.
+CONFIG_XPRS_OTA_PULL=n
+
+# Frequency scaling, no light sleep: WiFi stays at WIFI_PS_NONE and BLE
+# scans, so there is never a window to sleep in (the T-Deck's reasoning).
+CONFIG_PM_ENABLE=y

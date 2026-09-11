@@ -1,94 +1,97 @@
 # One board's facts, for a program to read. Schema and rules: docs/catalog.md.
 #
-# Pins and modules are from common/xprs_model_epaper_1in54/model_config.h and
-# the env in multiboard/platformio.ini; memory from the sdkconfig fragment and
-# the chip datasheet. Anything null has not been measured on this bench.
+# Pins are from Waveshare's own examples (waveshareteam/ESP32-S3-ePaper-1.54)
+# and firmware/src/board.h. Measurements are from the bench board, a V1
+# (B8:F8:62:D8:BF:20), on 2026-09-11. Anything null has not been measured.
 
 id: epaper-1in54
 name: ESP32-S3-ePaper-1.54
 vendor: Waveshare
 sku: null
 product_url: https://www.waveshare.com/product/displays/e-paper/esp32-s3-epaper-1.54.htm
-manual_url: https://www.waveshare.com/wiki/ESP32-S3-ePaper-1.54
-tagline: "ESP32-S3 with a 200x200 e-paper panel, RTC and sensors. Legacy build."
+manual_url: https://docs.waveshare.com/ESP32-S3-ePaper-1.54
+tagline: "E-paper station: room climate, who is in reach and the newest messages. BLE5, LAN, ESP-NOW."
 summary: >-
-  Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (dual-core 240 MHz, 512 KB RAM,
-  PSRAM, 4 MB flash) behind a 1.54" 200x200 black-and-white e-paper panel in a
-  white case, with a PCF85063 RTC, SHTC3 temperature/humidity sensor, microSD
-  and a battery. Radios: WiFi 2.4 GHz, Bluetooth 5. The panel keeps its image
-  with the power off, so it suits a status display that updates rarely.
-  Primary target of the old tree; multiboard build, not retested.
-status: legacy
+  Waveshare ESP32-S3-ePaper-1.54: ESP32-S3 (dual-core 240 MHz, 512 KB RAM;
+  V1 with 4 MB flash and 2 MB PSRAM, V2 with 8 MB and 8 MB) behind a 1.54"
+  200x200 black-and-white e-paper panel in a white case, with an SHTC3
+  temperature and humidity sensor, a PCF85063 RTC, microSD, an ES8311 audio
+  codec with microphone and speaker, and a battery. Radios: WiFi 2.4 GHz,
+  Bluetooth 5. Runs the shared station on BLE5, the LAN and ESP-NOW, keeps
+  its archive on the card, and shows one page that refreshes only when it
+  changes: the room's temperature and humidity, who is in reach, the newest
+  messages and the network.
+status: shipping
 
 silicon:
   mcu: ESP32-S3
   family: esp32s3
   core: Xtensa LX7 dual @ 240 MHz
   ram_kb: 512
-  psram_mb: null  # CONFIG_SPIRAM=y in the fragment; size not recorded
-  flash_mb: 4
+  psram_mb: 2   # V1 (ESP32-S3FH4R2), quad, in the package; the V2 has 8
+  flash_mb: 4   # V1; the V2 has 8. The firmware is laid out for 4.
 
 radios:
-  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "the chip can; the legacy build does not enable BT"}
+  bluetooth: {version: "5.0 LE", extended_advertising: true, note: "ESP32-S3 controller"}
   wifi: {standards: "802.11 b/g/n", band_ghz: "2.4", modes: "STA, SoftAP"}
   lora: null
   other: []
 
 bearers:
-  ble5: "untested"
-  ble5_note: The S3 has extended advertising; this build leaves CONFIG_BT_ENABLED off and carries no BLE bearer.
+  ble5: "yes"
+  ble5_note: "An S3, tinynimble backend like the T-Deck. Heard and digipeated on the bench."
   lora: "no"
   lora_note: No LoRa radio.
-  lan: "untested"
-  lan_note: The multiboard build predates xprs_bearer_lan; the chip has WiFi, the code here does not use it as an XPRS bearer.
-  espnow: "untested"
-  espnow_note: Same -- the radio can, the legacy build does not.
+  lan: "yes"
+  lan_note: null
+  espnow: "yes"
+  espnow_note: null
 
-# The multiboard build predates xprs_app: it is the older station (SoftAP +
-# web chat over ESP-Mesh-Lite, APRS-IS iGate, telnet/SSH console) and carries
-# no XPRS bearer. Nothing below has been measured since the tree moved, and
-# multiboard/README.md says which targets even compile.
 xprs:
-  beacon: "no"
-  beacon_note: multiboard/src/main.cpp does not run xprs_app; no XPRS beacon.
-  digipeater: "no"
-  digipeater_note: No XPRS bearers in the legacy build.
-  bridge: "no"
-  bridge_note: No XPRS bearers in the legacy build.
+  beacon: "yes"
+  digipeater: "yes"
+  bridge: "yes"
   igate: "untested"
-  igate_note: The legacy APRS-IS iGate (xprs_aprsis) is in main.cpp; not run since the move.
+  igate_note: The LAN leg is on by default (igate_on); not checked separately on this board.
   hotspot: "untested"
-  hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
-  api: "untested"
-  api_note: Legacy xprs_http station API; not run since the move.
-  indexer: "no"
-  indexer_note: xprs_index is an xprs_app thing.
-  share: "no"
-  share_note: xprs_app only.
+  hotspot_note: "On by default. Verified up with no LAN, the LAN retried once a minute so the AP keeps its channel; not yet joined from a phone."
+  api: "yes"
+  indexer: "yes"
+  indexer_note: On the microSD card. Without a card there is no archive, because 4 MB of flash leaves less room than one index segment.
+  share: "yes"
+  share_note: "Answered a cmd:history from X1ARKL on the first boot: 9 packets replayed over the LAN."
   reticulum: "no"
-  reticulum_note: xprs_app only.
+  reticulum_note: CONFIG_XPRS_BEARER_RNS is not set in this build.
   ota: "untested"
-  ota_note: Legacy xprs_updates path; unsigned, not run since the move.
-  gossip: "no"
-  gossip_note: xprs_app only.
-  dashboard: "untested"
-  dashboard_note: xprs_ui_epaper on LVGL; not run since the move.
+  ota_note: Two app slots of 1.5 MB and the push door; no update pushed to this board yet.
+  gossip: "untested"
+  gossip_note: The gossip store opens on the card; an exchange with a peer has not been watched.
+  dashboard: "yes"
+  dashboard_note: One e-paper page (common/xprs_ui_paper), refreshed only when it changes.
   chat: "no"
-  chat_note: Nothing to type on.
+  chat_note: Shows the newest messages; nothing to type on.
   mesh_session: "no"
-  mesh_session_note: BLE mesh session is xprs_app / tinynimble; not in the legacy build.
+  mesh_session_note: Broadcasts and listens; never connects.
   vhf: "no"
   vhf_note: No SA818.
-  note: "The primary target of the old tree (docs/summary.md). Not retested since the move; vendor and part number of the carrier not recorded."
+  note: "Reports the room every minute as a signed t:observation (intemp:, inhum:), and shows it on its screen."
 
 io:
   screen: {controller: "1.54in e-paper (SSD1681 class)", width: 200, height: 200}
   buttons:
-    - {name: boot, pin: GPIO0, note: "the strap pin"}
-  leds: []
+    - {name: boot, pin: GPIO0, note: "the strap pin; a press turns the page 90 degrees"}
+    - {name: pwr, pin: GPIO18, note: "power, and a press turns the page 90 degrees; GPIO17 high keeps the board on battery"}
+  leds: [{name: led, pin: GPIO3, note: "active low, held off"}]
   gnss: null
-  connectors: [{name: USB-C}, {name: microSD}]
-  sensors: [{name: SHTC3, note: "temperature and humidity, I2C"}, {name: PCF85063, note: "RTC, I2C"}]
+  connectors:
+    - {name: USB-C, note: "native USB-JTAG CDC"}
+    - {name: microSD, note: "SDMMC 1-bit; holds the archive"}
+    - {name: speaker, note: "MX1.25; not used yet"}
+    - {name: battery, note: "MX1.25 LiPo"}
+  sensors:
+    - {name: SHTC3, note: "temperature and humidity, I2C 0x70; reads 11.4 C warm inside the case, corrected, and humidity carried to room temperature"}
+    - {name: PCF85063, note: "RTC, I2C 0x51; not used yet"}
+    - {name: ES8311, note: "audio codec with microphone; not used yet"}
 
 physical:
   dimensions_mm: null
@@ -99,17 +102,15 @@ physical:
 
 firmware:
   toolchain: esp-idf
-  project: multiboard
-  env: esp32s3_epaper_1in54
-  version: null
-  artifact: null
+  project: models/epaper-1in54/firmware
+  env: epaper
+  version: 0.1.0
+  artifact: models/epaper-1in54/prebuilt/firmware.bin
   flash_port: native-usb
-  flashing: "esptool over the USB-serial port, pio run -e esp32s3_epaper_1in54 -t upload"
+  flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
 
 docs:
   - {title: "Board README", url: "models/epaper-1in54/README.md"}
-  - {title: "The shared build, and which targets compile", url: "multiboard/README.md"}
-  - {title: "Firmware summary, written for this board", url: "docs/summary.md"}
 
 images:
   - file: hardware/images/product-front.png
@@ -122,4 +123,6 @@ images:
     caption: 'Third view.'
     credit: "Waveshare product photography, waveshare.com"
 
-screenshots: []
+screenshots:
+  - file: docs/screen-home.png
+    caption: 'The page on the glass, captured from the bench board: room climate, four stations in reach, the newest message, the network and the clock.'
