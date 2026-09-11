@@ -457,6 +457,7 @@ esp-web-install-button{--esp-tools-button-color:var(--accent);
   --ground:#f1eeea; --raised:#fbf9f7; --sunk:#e7e2dc;
   --ink:#1c1815; --ink-dim:#6b6259; --rule:#dcd5cc;
   --ok:#4e7d3c; --absent:#8a827a; --partial:#a9761a;
+  --bezel:#1b1b1b;
   --shadow:0 1px 2px rgba(28,24,21,.06),0 8px 24px -12px rgba(28,24,21,.18);
 }
 @media (prefers-color-scheme:dark){ :root:not([data-theme="light"]){
@@ -464,6 +465,7 @@ esp-web-install-button{--esp-tools-button-color:var(--accent);
   --ground:#101010; --raised:#1b1b1b; --sunk:#161616;
   --ink:#f0f0f0; --ink-dim:#948c84; --rule:#2e2b28;
   --ok:#86c06c; --absent:#7a7570; --partial:#e0a836;
+  --bezel:#2e2b28;
   --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
 }}
 :root[data-theme="dark"]{
@@ -471,6 +473,7 @@ esp-web-install-button{--esp-tools-button-color:var(--accent);
   --ground:#101010; --raised:#1b1b1b; --sunk:#161616;
   --ink:#f0f0f0; --ink-dim:#948c84; --rule:#2e2b28;
   --ok:#86c06c; --absent:#7a7570; --partial:#e0a836;
+  --bezel:#2e2b28;
   --shadow:0 1px 2px rgba(0,0,0,.5),0 10px 30px -14px rgba(0,0,0,.8);
 }
 *{box-sizing:border-box}
@@ -495,6 +498,29 @@ a{color:var(--accent)}
 
 /* ── Masthead ─────────────────────────────────────────────────────────── */
 .top{border-bottom:1px solid var(--rule); background:var(--raised)}
+/* What XPRS is and what a station does, beside a board doing it. The film
+   is real screen captures (tools/scripts/framedump.py), not a mock-up. */
+.hero{max-width:1080px; margin:0 auto; padding:48px 24px 40px;
+  display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:40px;
+  align-items:center}
+.hero-text p{margin:14px 0 0; max-width:60ch}
+.jobs{list-style:none; padding:0; margin:22px 0 0; display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 24px}
+.jobs li{border-top:2px solid var(--accent); padding-top:9px; font-size:14.5px;
+  line-height:1.45; color:var(--ink-dim)}
+.jobs b{display:block; font-family:Archivo,"Helvetica Neue",Arial,sans-serif;
+  font-size:14px; font-weight:700; color:var(--ink); margin-bottom:3px}
+.film{margin:0}
+.film img{display:block; width:100%; height:auto; aspect-ratio:4/3;
+  background:#000; border:10px solid var(--bezel); border-radius:14px;
+  box-shadow:var(--shadow)}
+.film figcaption{font-size:12.5px; line-height:1.5; color:var(--ink-dim);
+  margin-top:10px}
+.top-in.boards-head{padding-top:34px; position:relative}
+.boards-head::before{content:""; position:absolute; top:0; left:24px; right:24px;
+  border-top:1px solid var(--rule)}
+.boards-head h2{font-size:clamp(24px,3.4vw,32px); font-weight:800;
+  letter-spacing:-.015em; line-height:1.1}
 .top-in{max-width:1080px; margin:0 auto; padding:44px 24px 34px;
   display:flex; flex-wrap:wrap; gap:28px; align-items:flex-end;
   justify-content:space-between}
@@ -589,9 +615,22 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
   color:var(--ink-dim)}
 .legend b{font-weight:700; font-style:normal}
 .foot{color:var(--ink-dim); font-size:13px; padding-top:16px; max-width:70ch}
+@media (max-width:860px){
+  /* One column: what XPRS is, then the film, then the four jobs, so the film
+     is not pushed below all four of them on a phone. */
+  .hero{display:flex; flex-direction:column; align-items:stretch; gap:0}
+  .hero-text{display:contents}
+  .hero .eyebrow{order:1} .hero h1{order:2} .hero-text p:not(.eyebrow){order:3}
+  .film{order:4; max-width:560px; margin:24px 0 6px}
+  .jobs{order:5}
+}
 @media (max-width:640px){
   body{font-size:16px}
   .wrap{padding:0 14px 64px}
+  .hero{padding:28px 14px 26px}
+  .jobs{grid-template-columns:minmax(0,1fr); gap:12px}
+  .film img{border-width:6px; border-radius:10px}
+  .boards-head::before{left:14px; right:14px}
   .top-in{padding:28px 14px 22px; gap:16px}
   h1{font-size:28px}
   .counts{gap:18px}
@@ -740,6 +779,51 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash \\
 """
 
 
+def hero(embed):
+    # The film is 1.7 MB: an embedded page links it from the repository
+    # rather than carrying it as a data: URI.
+    base = f"{RAW_URL}/" if embed else ""
+    film, still = f"{base}docs/images/tdeck-film.gif", f"{base}docs/images/tdeck-radar.png"
+    return f"""<section class="hero" aria-labelledby="about">
+  <div class="hero-text">
+    <p class="eyebrow">xprs-dev/firmware</p>
+    <h1 id="about">Firmware for XPRS stations</h1>
+    <p><a href="https://xprs.dev/spec">XPRS</a> is an open packet format for radio
+      and mesh networks, a successor to APRS: short text packets of at most 250
+      bytes carrying messages, observations, files and commands, each signed by
+      the station that wrote it. It is not tied to one radio. This firmware turns
+      inexpensive ESP32 and nRF52 boards into stations that carry the same packets
+      over Bluetooth&nbsp;5, ESP-NOW, WiFi, LoRa and VHF, with a callsign derived
+      from the station's own key so a receiver can check who said what. One board
+      usually does several of these jobs at once.</p>
+    <ul class="jobs">
+      <li><b>Digipeater (repeater)</b>Re-airs what it hears so a packet reaches stations beyond
+        the sender's range, within a hop budget, and holds back when a neighbour
+        has already repeated it.</li>
+      <li><b>Bridge</b>Joins the radios it has into one network: what it hears on
+        Bluetooth, LoRa or ESP-NOW it passes to the others and to the LAN.</li>
+      <li><b>iGate (internet gateway)</b>Passes what the radios hear onto the network over
+        WiFi, and what arrives from there back onto the air, so a message is not
+        limited to radio range.</li>
+      <li><b>Hotspot (portable chat)</b>Opens its own WiFi access point: a phone
+        joins, the chat page opens by itself, and nobody needs an app or an
+        account. The T-Deck's keyboard lets it chat on its own.</li>
+    </ul>
+  </div>
+  <figure class="film">
+    <picture>
+      <source media="(prefers-reduced-motion: reduce)" srcset="{still}">
+      <img src="{film}" width="640" height="480" fetchpriority="high"
+        alt="A T-Deck screen: a green radar sweeps over the stations in reach, then the chat, stats, reachable, traffic, this-device and settings panels.">
+    </picture>
+    <figcaption>A T-Deck running this firmware: the radar of who is in reach, then
+      chat, stats, reachable stations, traffic, this device and settings. Every
+      frame is a capture of the board's own screen; the radar is a time-lapse, so
+      its clock runs fast.</figcaption>
+  </figure>
+</section>"""
+
+
 def build(embed):
     boards = load_boards()
     fams = sorted({(b.get("silicon") or {}).get("family") for b in boards} - {None})
@@ -762,10 +846,11 @@ def build(embed):
 <style>{CSS}</style>
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
 
-<header class="top"><div class="top-in">
+<header class="top">
+{hero(embed)}
+<div class="top-in boards-head">
   <div>
-    <p class="eyebrow">xprs-dev/firmware</p>
-    <h1>Supported boards</h1>
+    <h2>Supported boards</h2>
     <p class="blurb">Each card is one folder under <span class="mono">models/</span>:
       what the board is, which XPRS bearers it carries, what the station on it
       does, how to build and flash it. Filter by bearer or by hardware.</p>
