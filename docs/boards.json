@@ -118,6 +118,7 @@
       "flash_port": "native-usb",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdeck/firmware",
+      "image": "tdeck_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin"
     },
     "docs": [
@@ -302,6 +303,7 @@
       "flash_port": "native-usb",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/epaper-1in54/firmware",
+      "image": "epaper_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/prebuilt/firmware.bin"
     },
     "docs": [
@@ -452,6 +454,7 @@
       "flash_port": "native-usb",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/esp32c3-mini/firmware",
+      "image": "esp32c3_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/prebuilt/firmware.bin"
     },
     "docs": [
@@ -606,6 +609,7 @@
       "flash_port": "usb-serial",
       "flashing": "esptool over the CP2102 USB-serial port at 921600; an S3, so the bootloader goes at 0x0. The stub works here; none of the T-Dongle's --no-stub caveats apply.",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3/firmware",
+      "image": "heltec_v3_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt/firmware.bin"
     },
     "docs": [
@@ -748,6 +752,7 @@
       "flash_port": "native-usb",
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdongle-s3/firmware",
+      "image": "tdongle_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
     },
     "docs": [
@@ -908,6 +913,7 @@
       "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x USB-serial port",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/m5stack-core/firmware",
+      "image": "m5stack_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin"
     },
     "docs": [
@@ -1282,6 +1288,7 @@
       "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x / CH340 USB-serial port; the BOOT button if the board does not enter the bootloader by itself",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/generic/firmware",
+      "image": "esp32_generic_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/prebuilt/firmware.bin"
     },
     "docs": [
@@ -1435,7 +1442,8 @@
       "artifact": null,
       "flash_port": "usb-serial",
       "flashing": "esptool over the CP210x / CH340 USB-serial port, pio run -e <env> -t upload",
-      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard"
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/multiboard",
+      "image": "xprs"
     },
     "docs": [
       {

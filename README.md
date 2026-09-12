@@ -42,6 +42,12 @@ and which XPRS roles (digipeater, iGate, hotspot, indexer, ...) it fills.
 `tools/scripts/collect_prebuilt.py` copies each built image into
 `models/<board>/prebuilt/` with a web-flasher manifest, and the page offers
 them for download or, served over HTTPS in Chrome, flashes them directly.
+The XPRS app reads the same `boards.json` and manifests: its Firmwares
+wapp's Flash tab lists these boards, identifies a board plugged in over USB
+(an OTG cable on the phone), suggests the image whose project name it
+finds on the chip, downloads it and writes it, verified by the ROM's MD5.
+`firmware.image` in `boards.json` is that project name, read off each
+project's `CMakeLists.txt` when the catalogue is built.
 
 
 | Board | Chip | Firmware |

@@ -35,6 +35,7 @@ DESIGN NOTES, so the next person changing the CSS knows what was deliberate:
   callsign, because half the facts here are log lines.
 """
 import os
+import re
 import sys
 import glob
 import json
@@ -143,6 +144,16 @@ def load_boards():
     return sorted(boards, key=score)
 
 
+def cmake_project_name(path):
+    """The name in `project(<name>)` of an ESP-IDF project, or None."""
+    try:
+        with open(path) as f:
+            m = re.search(r"^\s*project\(\s*([A-Za-z0-9_\-]+)", f.read(), re.M)
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
 def to_json(b):
     """One board as the catalogue JSON: board.yml verbatim, plus what a
     program outside this tree cannot derive -- where the folder is on GitHub
@@ -154,6 +165,12 @@ def to_json(b):
     fw = out.get("firmware") or {}
     if fw.get("project"):
         fw["project_url"] = f"{REPO_URL}/tree/main/{fw['project']}"
+        # The CMake project name is what esp_app_desc_t.project_name says on
+        # a flashed chip: the app's flasher reads it back to name the board
+        # that is plugged in. Written once in CMakeLists.txt, copied here.
+        name = cmake_project_name(os.path.join(ROOT, fw["project"], "CMakeLists.txt"))
+        if name:
+            fw["image"] = name
     if fw.get("artifact"):
         fw["artifact_url"] = f"{RAW_URL}/{fw['artifact']}"
     for key in ("images", "screenshots"):
