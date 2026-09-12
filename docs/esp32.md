@@ -1634,6 +1634,48 @@ a running BLE controller takes the radio from an *unassociated* station; a
 SoftAP, which sends its own beacons, keeps the WiFi side scheduled the way
 association does.
 
+### This board's receiver is thirty decibels down, and the trace that proved it (2026-09-12)
+
+The C3 listed a phone from its own Bluetooth adverts and never took the
+phone's claim. Three days of plausible theories (range, the scan duty, the
+phone's Bluetooth stack, chained reports) ended with one table:
+
+```
+tnrx 22bfd862f8f8 sid=0 evt=0000 n=109 ok=62 more=44 trunc=3 rssi=-97 maxlen=229
+tnrx 68664d77c9d6 sid=4 evt=0000 n=8   ok=5  more=2  trunc=1 rssi=-100 maxlen=229
+tnrx 0fdb9a3eea01 sid=255 evt=0013 n=139 ok=139 ...            rssi=-100 maxlen=27
+```
+
+`-DXPRSBLE_RX_TRACE` (tinynimble, `tn_hci_trace_dump()` every 30 s from
+idx_task) counts every advertising report the controller delivers, by
+advertiser, before the bearer sees it. Every one of them, from every
+device in the room, arrived at -96 to -103 dBm: the e-paper station whose
+ESP-NOW the T-Dongle hears at -56, the phone whose adverts the dongle hears
+at -49, legacy adverts from whatever else was on. The loss is symmetric
+(the dongle hears this board's ESP-NOW at -83, this board hears the
+dongle's at -80), so it is the antenna, not the firmware, and neither
+erasing the PHY calibration data nor a full recalibration moved a number.
+Two consequences:
+
+- **A bench C3 SuperMini cannot be claimed over Bluetooth** by a phone
+  that is not touching it: a 248-byte advert is two pieces that both have
+  to land at the floor. Its transmit side is fine (the phone hears it at
+  -46), so it lists and beacons like any station. It is set up over its
+  hotspot, which was measured working end to end: the phone joined
+  `XPRS-X30Y64`, the chat page loaded in a few seconds, a message posted
+  from it was signed by the page's key, aired on the hotspot's subnet and
+  reached the phone's app as a Local room notification, and the Station and
+  Stats tabs rendered.
+- **Read the RSSI column before the protocol.** A receiver that reports
+  everything at the floor is a receiver problem, and the trace is a few
+  hundred bytes of `.bss` under a define that is off in every build.
+
+The hotspot chat is what the short scan window exists for, and the window
+now follows who WiFi is serving: a link to the router, or a phone on the
+hotspot (`ble_duty_apply()`, `pwr_ap_clients()`), and otherwise Bluetooth
+listens the whole time. Seen on the console: `window 80/96` at boot,
+`window 20/96` the moment the phone joined.
+
 ### `ble_on` was a key nobody read
 
 `config.ini [ble] enabled` (key `ble_on`) was declared, rendered and
@@ -1674,6 +1716,12 @@ this is the same bug from the other side.
 - **"Every subsystem is up" does not include the screen.** `xprs_health`'s
   roster covers what has been `xh_expect()`ed, and the UI task is not in it, so
   `station up: ...` is silent about a dark panel. Do not read it as one.
+- **The e-paper board's controller was filtering scan duplicates by address**
+  (`CONFIG_BT_CTRL_BLE_SCAN_DUPL=y`, `SCAN_DUPL_TYPE_DEVICE`, in its
+  generated sdkconfig and nowhere in its defaults): a fixed-address phone
+  reported once per boot, then never. Off now, like every other board, and
+  the default is written down in `sdkconfig.defaults` where a regenerated
+  file cannot lose it.
 - **A tinynimble board that hears every station and no phone is not out of
   range.** 2026-09-05: X3DCK0 sat next to X1VCVM at -42 dBm for a day and
   never listed it, while the M5Stack across the room did. An HCI LE Extended

@@ -98,15 +98,24 @@ window now applies only while the board has a WiFi link. Bluetooth frames
 heard went from about 4 a minute to about 22 with ESP-NOW on and 40 with it
 off.
 
-**2026-09-12, with the long window.** Still no frame aired by the phone was
-decoded: every Bluetooth frame this board logged arrived at -96 to -100 dBm
-and every one was another station's relay. The T-Dongle-S3 on the same desk
-heard the same phone at -49 dBm and took its claim, name, stats and a sealed
-WiFi password over Bluetooth without a miss. So this is the board: its
-antenna puts every neighbour at the edge of its receiver, and a phone's
-248-byte advertisement arrives as two pieces that both have to land. Set a
-C3 up over its hotspot, or from a desktop on its network; the Firmwares
-screen lists it either way.
+**2026-09-12, diagnosed.** A receive trace (`-DXPRSBLE_RX_TRACE`,
+docs/esp32.md) showed every advertising report the controller delivers,
+from every device in the room, at -96 to -103 dBm, the phone's included, and
+the loss symmetric with what other boards hear from this one. Neither a
+fresh PHY calibration nor any scan setting changed it: this SuperMini's
+antenna puts every neighbour at the edge of its receiver, while its
+transmitter is heard fine (the phone at -46 dBm). A 248-byte advertisement
+is two pieces that both have to land, so a claim over Bluetooth does not.
+Set a C3 up over its hotspot, or from a desktop on its network; the
+Firmwares screen lists it either way.
+
+**The hotspot chat, measured the same day.** The phone joined
+`XPRS-X30Y64`, the page loaded in a few seconds, a message typed into it
+was signed by the page's own key, aired on the hotspot's subnet and arrived
+in the phone's app as a Local room notification; the Station and Stats tabs
+rendered. The moment the phone joined, the Bluetooth scan dropped to its
+short window (`window 20/96`) so the pages stay quick, and went back to the
+long one when it left.
 
 ## What had to change for this chip
 

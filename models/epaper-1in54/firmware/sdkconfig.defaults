@@ -161,3 +161,7 @@ CONFIG_XPRS_OTA_PULL=n
 # Frequency scaling, no light sleep: WiFi stays at WIFI_PS_NONE and BLE
 # scans, so there is never a window to sleep in (the T-Deck's reasoning).
 CONFIG_PM_ENABLE=y
+# The controller's own duplicate filter drops a fixed-address phone after its
+# first advertisement of a boot (docs/esp32.md, Known gaps): every XPRS frame
+# is a new packet under the same address. Off, like every other board.
+CONFIG_BT_CTRL_BLE_SCAN_DUPL=n

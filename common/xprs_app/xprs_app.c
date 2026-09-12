@@ -2468,6 +2468,7 @@ static char s_ip_str[20];                 /* empty until GOT_IP */
  * hook NULL and simply saves nothing there.
  */
 static bool s_pwr_scan_low;              /* the gauge asked for the short window */
+static int  pwr_ap_clients(void);        /* with the power policy, below */
 
 /*
  * Which scan window Bluetooth listens with, decided in one place.
@@ -2483,8 +2484,13 @@ static bool s_pwr_scan_low;              /* the gauge asked for the short window
  */
 static void ble_duty_apply(void)
 {
+    /* The short window whenever WiFi has somebody to serve: a link to the
+     * router, or a phone on the hotspot reading the chat page (which is
+     * what the window was shortened for, docs/esp32.md). Neither, and
+     * Bluetooth listens the whole time. */
+    bool serving = s_ip_str[0] || pwr_ap_clients() > 0;
     bool low = s_pwr_scan_low ||
-               (s_board && s_board->ble_scan_light && s_ip_str[0]);
+               (s_board && s_board->ble_scan_light && serving);
     xprsble_scan_duty(low);
 }
 
@@ -5482,6 +5488,13 @@ no_announce:
             }
         }
 
+#ifdef XPRSBLE_RX_TRACE
+        {
+            extern void tn_hci_trace_dump(void);
+            static uint32_t last_tr;
+            if (now_s - last_tr >= 30) { last_tr = now_s; tn_hci_trace_dump(); }
+        }
+#endif
         /* A key binding heard on the air, checked here (identity_heard). */
         if (s_ident.pending) {
             identity_apply();

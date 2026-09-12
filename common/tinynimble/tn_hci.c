@@ -28,6 +28,7 @@
 #endif
 
 #include <string.h>
+#include <stdio.h>
 
 /* Little-endian writers. Everything on the HCI wire is little-endian. */
 static void w8 (uint8_t **p, uint8_t v)  { *(*p)++ = v; }
@@ -312,10 +313,45 @@ static void reasm_append(reasm_t *m, const tn_adv_report_t *r)
     m->len = (uint16_t)(m->len + r->data_len);
 }
 
+#ifdef XPRSBLE_RX_TRACE
+/* Bench only: every report the controller delivers, by advertiser, so a
+ * frame that never reaches the bearer can be told from one never heard. */
+static struct { uint8_t addr[6]; uint8_t sid; uint16_t evt; uint32_t n, complete, more, trunc; int8_t rssi; uint8_t maxlen; } s_tr[12];
+static void trace_report(const tn_adv_report_t *r)
+{
+    unsigned status = (r->evt_type >> 5) & 0x3;
+    int slot = -1;
+    for (int i = 0; i < 12; i++) {
+        if (s_tr[i].n && memcmp(s_tr[i].addr, r->addr, 6) == 0) { slot = i; break; }
+        if (slot < 0 && !s_tr[i].n) slot = i;
+    }
+    if (slot < 0) return;
+    memcpy(s_tr[slot].addr, r->addr, 6);
+    s_tr[slot].sid = r->sid; s_tr[slot].evt = r->evt_type;
+    s_tr[slot].n++;
+    if (status == 0) s_tr[slot].complete++; else if (status == 1) s_tr[slot].more++; else s_tr[slot].trunc++;
+    s_tr[slot].rssi = r->rssi;
+    if (r->data_len > s_tr[slot].maxlen) s_tr[slot].maxlen = r->data_len;
+}
+void tn_hci_trace_dump(void)
+{
+    for (int i = 0; i < 12; i++) {
+        if (!s_tr[i].n) continue;
+        printf("tnrx %02x%02x%02x%02x%02x%02x sid=%u evt=%04x n=%lu ok=%lu more=%lu trunc=%lu rssi=%d maxlen=%u\n",
+               s_tr[i].addr[5], s_tr[i].addr[4], s_tr[i].addr[3], s_tr[i].addr[2], s_tr[i].addr[1], s_tr[i].addr[0],
+               s_tr[i].sid, s_tr[i].evt, (unsigned long)s_tr[i].n, (unsigned long)s_tr[i].complete,
+               (unsigned long)s_tr[i].more, (unsigned long)s_tr[i].trunc, s_tr[i].rssi, s_tr[i].maxlen);
+    }
+}
+#endif
+
 /* Deliver [r], joined to whatever earlier pieces its advertiser has here.
  * Returns whether the caller was called. */
 static int reasm_feed(tn_adv_report_t *r, tn_report_cb_t cb, void *ctx)
 {
+#ifdef XPRSBLE_RX_TRACE
+    trace_report(r);
+#endif
     unsigned status = (r->evt_type >> 5) & 0x3;   /* Data_Status */
     if (status == 0) {                             /* complete */
         reasm_t *m = reasm_find(r);
