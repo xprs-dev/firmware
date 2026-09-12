@@ -13,6 +13,13 @@
  *
  * Only opening lives here. A station has nothing it needs to seal yet, and
  * code that is never called on the device is code nobody has tested there.
+ *
+ * There is no MAC. AES-CBC on its own does not authenticate, and the padding
+ * check tells a wrong key from a right one, which is a padding oracle in
+ * shape. What makes it safe is the packet's signature: a station opens `x:`
+ * only after the command verified under its owner's key (xprs_app.c,
+ * cmdset_apply), so the only party who can put ciphertext in front of this
+ * function is the party who sealed it. Never call it on an unsigned path.
  */
 
 #ifndef XPRS_SEAL_H
@@ -35,7 +42,9 @@ extern "C" {
  * @param peer_x   the sender's x-only public key
  * @param x        the `x:` value, base64url without padding
  * @param xlen     its length
- * @param out      the plaintext, NUL-terminated on success
+ * @param out      the plaintext, NUL-terminated on success. May be the same
+ *                 buffer as @p x: the value is read whole before anything is
+ *                 written, and the plaintext is shorter than its base64url.
  * @param cap      size of @p out; the plaintext is at most xlen * 3 / 4 - 16
  * @return the plaintext length, or -1 when the value does not open: bad
  *         base64url, not whole blocks, a key that is not on the curve, or

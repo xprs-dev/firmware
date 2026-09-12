@@ -46,30 +46,6 @@ static struct {
     int      code;
 } s_seen[8];
 
-/* Do two callsigns name the SAME KEY?
- *
- * A callsign is a prefix plus characters derived from the key (section 3):
- * X1 for a person, X3 for a station, X4 for a device, X5 for a nameless
- * one. The same npub therefore yields X1Q3Q5 on a phone and X3Q3Q5 on a
- * board, and an allow-list that compared the whole string would refuse the
- * very operator it was written for. What the key decides is everything
- * after the prefix, so that is what is compared -- and the device suffix
- * (X1QZ3N-7 is X1QZ3N's tablet, 3.1) is ignored on both sides. */
-static bool key_eq(const char *a, const char *b)
-{
-    if (!a || !b) return false;
-    if (a[0] == 'X' || a[0] == 'x') a += 2;    /* skip the kind digit */
-    if (b[0] == 'X' || b[0] == 'x') b += 2;
-    while (*a && *b && *a != '-' && *b != '-') {
-        char ca = *a, cb = *b;
-        if (ca >= 'a' && ca <= 'z') ca -= 32;
-        if (cb >= 'a' && cb <= 'z') cb -= 32;
-        if (ca != cb) return false;
-        a++; b++;
-    }
-    return (*a == 0 || *a == '-') && (*b == 0 || *b == '-');
-}
-
 /* The base callsign: X1QZ3N-7 is X1QZ3N's device (3.1). */
 static bool base_eq(const char *a, const char *b)
 {
@@ -123,15 +99,38 @@ static const char *owner_npub(int i)
     return xcfg_get(keys[i], "");
 }
 
+/*
+ * Section 3: everything after the prefix is the first characters of the
+ * key's bech32 body, and a callsign may take two to five of them (the
+ * phones' kMinCallsignLength..kMaxCallsignLength). So the callsign says how
+ * many to compare; deriving a fixed four would refuse X3AB or X3ABCDE for
+ * a key they do derive from. The device suffix (-7) is not part of it.
+ */
+bool xauth_call_matches_npub(const char *call, const char *npub)
+{
+    if (!call || !npub || strncmp(npub, "npub1", 5) != 0) return false;
+    if ((call[0] != 'X' && call[0] != 'x') || !call[1]) return false;
+    const char *suffix = call + 2;
+    int n = 0;
+    while (suffix[n] && suffix[n] != '-') n++;
+    if (n < 2 || n > 5) return false;
+    for (int i = 0; i < n; i++) {
+        char a = suffix[i], b = npub[5 + i];
+        if (!b) return false;
+        if (a >= 'a' && a <= 'z') a -= 32;
+        if (b >= 'a' && b <= 'z') b -= 32;
+        if (a != b) return false;
+    }
+    return true;
+}
+
 bool xauth_is_owner(const char *call)
 {
     if (!call || !call[0]) return false;
     for (int i = 0; i < XAUTH_OWNERS_MAX; i++) {
         const char *npub = owner_npub(i);
         if (!npub[0]) continue;
-        char derived[NOSTR_CALLSIGN_LEN] = "";
-        if (nostr_keys_derive_callsign(npub, derived) != ESP_OK) continue;
-        if (key_eq(derived, call)) return true;
+        if (xauth_call_matches_npub(call, npub)) return true;
     }
     return false;
 }
@@ -149,9 +148,7 @@ static bool owner_key(const char *call, uint8_t out[32])
     for (int i = 0; i < XAUTH_OWNERS_MAX; i++) {
         const char *npub = owner_npub(i);
         if (!npub[0]) continue;
-        char derived[NOSTR_CALLSIGN_LEN] = "";
-        if (nostr_keys_derive_callsign(npub, derived) != ESP_OK) continue;
-        if (!key_eq(derived, call)) continue;
+        if (!xauth_call_matches_npub(call, npub)) continue;
         char hrp[8] = "";
         uint8_t buf[64];
         size_t n = sizeof buf;
@@ -173,13 +170,6 @@ uint32_t xauth_ts_epoch(const char *ts)
     return ts_epoch(ts);
 }
 
-bool xauth_call_matches_npub(const char *call, const char *npub)
-{
-    if (!call || !call[0] || !npub || strncmp(npub, "npub1", 5) != 0) return false;
-    char derived[NOSTR_CALLSIGN_LEN] = "";
-    if (nostr_keys_derive_callsign(npub, derived) != ESP_OK) return false;
-    return key_eq(derived, call);
-}
 
 void xauth_remember(const char *id, int code)
 {

@@ -86,13 +86,16 @@ int xprsseal_open(const uint8_t my_priv[32], const uint8_t peer_x[32],
     uint8_t blob[XPRSSEAL_X_MAX * 3 / 4];
     uint8_t key[32];
     int rc = -1;
+    size_t ctlen = 0;
 
     if (!my_priv || !peer_x || !x || !out || xlen > XPRSSEAL_X_MAX) return -1;
+    /* Every byte of x is read here, before anything is written to out: a
+     * caller may pass the same buffer as both (xprsseal.h). */
     int n = b64u_decode(x, xlen, blob, sizeof blob);
     /* An IV and at least one block, and whole blocks after it. */
-    if (n < 32 || (n - 16) % 16 != 0) return -1;
-    size_t ctlen = (size_t)n - 16;
-    if (cap < ctlen) return -1;
+    if (n < 32 || (n - 16) % 16 != 0) goto done;
+    ctlen = (size_t)n - 16;
+    if (cap < ctlen) goto done;
 
     if (!xprssig_ecdh_x(my_priv, peer_x, key)) goto done;
     if (!xs_cbc_decrypt(key, blob, blob + 16, ctlen, out)) goto done;
@@ -112,6 +115,6 @@ int xprsseal_open(const uint8_t my_priv[32], const uint8_t peer_x[32],
 done:
     memset(key, 0, sizeof key);
     memset(blob, 0, sizeof blob);
-    if (rc < 0) memset(out, 0, cap < ctlen ? cap : ctlen);
+    if (rc < 0 && ctlen) memset(out, 0, cap < ctlen ? cap : ctlen);
     return rc;
 }

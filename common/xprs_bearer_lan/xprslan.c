@@ -97,6 +97,7 @@ static uint32_t xl_random(void) { return esp_random(); }
  * socket's datagrams by their source address. */
 static volatile uint32_t s_extra_bcast;
 static int s_fd_ap = -1;
+static xb_t s_lan;                       /* defined with the bearer, below */
 
 /* One datagram to everyone on the wire. */
 static bool xl_air(void *ctx, const char *wire, int len)
@@ -139,6 +140,7 @@ bool xprslan_unicast(uint32_t ip, const char *wire, int len)
     };
     xl_lock(NULL);
     int n = sendto(s_fd, wire, (size_t)len, 0, (struct sockaddr *)&to, sizeof to);
+    if (n == len) s_lan.tx_count++;     /* counted like any other datagram */
     xl_unlock(NULL);
     return n == len;
 }
@@ -158,9 +160,13 @@ void xprslan_set_extra_bcast(uint32_t addr, uint32_t src)
                                       .sin_addr.s_addr = src };
             if (bind(fd, (struct sockaddr *)&me, sizeof me) == 0) s_fd_ap = fd;
             else { XL_LOGW("hotspot socket: bind failed, errno %d", errno); close(fd); }
+        } else {
+            XL_LOGW("hotspot socket: socket() failed, errno %d", errno);
         }
     }
-    s_extra_bcast = addr;
+    /* Without a socket of its own the subnet send would leave by the default
+     * route, the very fault this socket exists to stop: better not at all. */
+    s_extra_bcast = s_fd_ap >= 0 ? addr : 0;
     xl_unlock(NULL);
 }
 
@@ -168,7 +174,6 @@ void xprslan_set_extra_bcast(uint32_t addr, uint32_t src)
 
 /* ── This bearer ────────────────────────────────────────────────────────── */
 
-static xb_t s_lan;
 static xprslan_rx_cb_t s_rx_cb;
 
 /* The core speaks of a peer as an opaque 64-bit number so a MAC fits; on this

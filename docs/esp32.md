@@ -764,6 +764,11 @@ the first lookup (`getaddrinfo` and the socket calls). It is 4 KB now, with
 
 ### A new REQUIRES needs the project reconfigured by hand
 
+The same applies to a new file in a component's SRCS (`xprs_setup.c`,
+`xprsseal.c`, 2026-09-11): the cached graph does not know the object, and the
+incremental build fails at the link with `undefined reference to
+xsetup_lines` rather than at the compile with a missing header. Same cure.
+
 Adding a component to a shared component's REQUIRES (`xprs_tz` to
 `xprs_app`, `xprs_station` to `xprs_ui_paper`) broke every incremental build
 with `fatal error: xprs_tz.h: No such file or directory`, although the
@@ -1711,6 +1716,33 @@ this is the same bug from the other side.
   firmware, 0/70 with the STA failing to associate (reasons 202/205). Whether
   that is the access point or a late regression is unresolved -- re-measure
   before trusting a single run.
+
+### Setting a station up over the air: what the receive path may do (2026-09-12)
+
+A `cmd:set` is a secp256k1 verify before it is anything else, and the
+verify runs on idx_task. Three rules, each from a fault:
+
+- **The receive path parks; it never verifies.** `identity_heard()` used to
+  run `xprsid_verify` on the bearer callback that heard the `t:identity`,
+  which on Bluetooth is the NimBLE host task with its 5 KB stack. It parks
+  one identity now (`s_ident`) and `identity_apply()` checks it on idx_task.
+- **A sender whose commands do not verify stops being parked.** Anyone can
+  air `t:command d:<us> cmd:set` and make idx_task do a curve operation per
+  packet; six unverifiable ones from one callsign in ten minutes and the
+  next is dropped on the receive path (`s_setbad`). An owner's commands
+  verify and cost no strike, however often the phone re-airs them.
+- **Measure the stack you added to.** `cmdset_apply` is the deepest frame
+  idx_task has (parse, open the sealed body, verify, sign, answer). The
+  high-water mark is read after each one and printed on the `alive` line as
+  `idx=`: 2,400 bytes of 8,192 never used after a claim on the T-Dongle.
+  Its 592-byte field table is a static owned by the task, not a local.
+
+And the one that is about the owner rather than the attacker: **keep the
+network that worked until the new one joins.** A wrong password sent over
+the LAN replaced the working credentials, and the `500` left by a link the
+board no longer had. `s_wjoin` keeps the previous ssid and password while a
+join runs, goes back to them after three failures or thirty seconds, and
+answers from there.
 
 ### Diagnostics over the air, rehearsed
 

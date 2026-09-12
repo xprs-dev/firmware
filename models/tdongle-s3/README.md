@@ -39,6 +39,27 @@ reaches every board that uses it without copying.
 The older `tdongle_s3` target in `../../multiboard` still exists and is the
 legacy BLE APRS build. It is not what ships here.
 
+## Setting it up from a phone or a desktop
+
+The published image has no owner and no network. From fifteen seconds after
+it starts it airs `q:owner` with its own key, every half minute on
+Bluetooth and every two minutes on the LAN (XPRS.md 11.9), and the XPRS
+app's **Firmwares** screen lists it under *Waiting for an owner*. Both
+lanes were run on the bench, 2026-09-12:
+
+| Lane | What happened |
+|---|---|
+| desktop X16JK8 over the LAN | listed within a minute; claim `200 owner:X16JK8`; stats (`q:policy` answered to anybody, `cmd:zdiag` to its owner); name and zone; a wrong WiFi password answered `500 ... m:wrong password` with the board back on the network it had; the right one `202 wifi:joining` then `200 wifi:up ip:192.168.178.102`; a crash report (`cmd:zcore`); `key:new` followed through the restart to X3R8DC |
+| phone X1ARKL over Bluetooth, -49 dBm | claim, stats, name and a sealed WiFi password, each answered on the first airing |
+
+**A wrong password no longer strands the board.** It used to replace the
+working network with the new one and try it; reached over that very
+network, it then aired its `500` on a link it no longer had, and stayed
+gone. It keeps the last network that had an address until the new one
+joins, goes back to it after three failures or thirty seconds, and answers
+from there: the `500` carries `wifi:up ip:<the old address>` and the reason
+the new one failed.
+
 ## The station is not in this project
 
 `firmware/src/main.c` is about 190 lines and contains no station logic: it is

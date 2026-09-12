@@ -98,6 +98,16 @@ window now applies only while the board has a WiFi link. Bluetooth frames
 heard went from about 4 a minute to about 22 with ESP-NOW on and 40 with it
 off.
 
+**2026-09-12, with the long window.** Still no frame aired by the phone was
+decoded: every Bluetooth frame this board logged arrived at -96 to -100 dBm
+and every one was another station's relay. The T-Dongle-S3 on the same desk
+heard the same phone at -49 dBm and took its claim, name, stats and a sealed
+WiFi password over Bluetooth without a miss. So this is the board: its
+antenna puts every neighbour at the edge of its receiver, and a phone's
+248-byte advertisement arrives as two pieces that both have to land. Set a
+C3 up over its hotspot, or from a desktop on its network; the Firmwares
+screen lists it either way.
+
 ## What had to change for this chip
 
 **One core.** Six places in the shared code pinned tasks to core 1, and on
