@@ -2951,6 +2951,9 @@ static void on_lora(const char *wire, int len, int rssi)
  * not fit, silently, and 36.9.4 says an unsigned claim feeds no gossip. A
  * beacon that grew past the room for its own signature used to become a
  * statement nobody was allowed to believe. */
+static uint32_t lifetime_s(void);       /* with the rest of 15.5, below */
+static int      s_mail_held;            /* the last count, for the beacons */
+
 static int observation_beacon(const char *bearer, char *out, int cap,
                               int sign_room)
 {
@@ -2960,9 +2963,18 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     /* What the header costs, before it is written. peers: is charged three
      * digits because the count is not known until the list has been built,
      * and one spare byte is cheaper than rendering twice. */
+    /* 15.5's stability account rides every beacon, so a station screen
+     * has it without asking: the spec's own example is
+     * `t:observation f:X3RLY7 link:ble peers:4 mail:3 uptime:26h lifetime:38day`. */
+    char up[12], life[12], acct[48];
+    xdiag_qty_word((uint32_t)(esp_timer_get_time() / 1000000), up, sizeof up);
+    xdiag_qty_word(lifetime_s(), life, sizeof life);
+    int an = snprintf(acct, sizeof acct, " uptime:%s lifetime:%s", up, life);
+    if (s_mail_held > 0 && an > 0 && an < (int)sizeof acct)
+        an += snprintf(acct + an, sizeof acct - (size_t)an, " mail:%d", s_mail_held);
     int fixed = (int)(sizeof "t:observation f:" - 1) + (int)strlen(s_call)
               + (int)(sizeof " link:" - 1) + (int)strlen(bearer)
-              + (int)(sizeof " peers:" - 1) + 3;
+              + (int)(sizeof " peers:" - 1) + 3 + an;
     int budget = room - fixed - sign_room;
 
     char hears[208];
@@ -2971,8 +2983,8 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     int hn = xst_hears_render(bearer, 600, budget, hears, sizeof hears,
                               &total, q, sizeof q);
 
-    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d",
-                     s_call, bearer, total);
+    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s",
+                     s_call, bearer, total, acct);
     if (hn > 0 && n > 0 && n < cap)
         n += snprintf(out + n, (size_t)(cap - n), " hears:%s", hears);
     if (hn > 0 && q[0] && n > 0 && n < cap)
@@ -5133,6 +5145,37 @@ static bool     s_keyres_due;
 static char     s_keyres[48];            /* "<id> <owner> <bearer> <old call>" */
 
 
+/*
+ * 15.5: `uptime:` resets at every restart on purpose; `lifetime:` is the
+ * service time accumulated across them. Kept in NVS (a write every ten
+ * minutes, so a power pull loses at most that) and aired on every beacon
+ * with the uptime, so a phone's station screen has both without asking.
+ */
+static uint32_t s_life_base_s;          /* what the earlier boots added up to */
+
+static uint32_t lifetime_s(void)
+{
+    return s_life_base_s + (uint32_t)(esp_timer_get_time() / 1000000);
+}
+
+static void life_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprskey", NVS_READWRITE, &h) != ESP_OK) return;
+    uint32_t v = 0;
+    if (nvs_get_u32(h, "life_s", &v) == ESP_OK) s_life_base_s = v;
+    nvs_close(h);
+}
+
+static void life_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprskey", NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u32(h, "life_s", lifetime_s());
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 static void keyres_load(void)
 {
     nvs_handle_t h;
@@ -5270,6 +5313,7 @@ static void idx_task(void *arg)
     esp_task_wdt_add(NULL);   /* a wedged storage task becomes a logged reboot */
 
     uint32_t last_announce_s = 0;
+    uint32_t last_life_save_s = 0;
     uint32_t last_claimask_s = 0;
     uint32_t last_claimask_all_s = 0;
     uint32_t last_logflush_s = 0;
@@ -5358,8 +5402,11 @@ static void idx_task(void *arg)
             }
         }
 
+        /* The first one twenty seconds in: a phone setting a fresh station
+         * up wants its firmware and its archive size now, not in ten
+         * minutes. Then every ten minutes. */
         if (s_index && xcfg_get_bool("index_on", true) &&
-            now_s - last_announce_s >= 600) {
+            (last_announce_s ? now_s - last_announce_s >= 600 : now_s >= 20)) {
             last_announce_s = now_s;
             xprsidx_stats_t st;
             xprsindex_stats(s_index, &st);
@@ -5369,6 +5416,7 @@ static void idx_task(void *arg)
              * count: the field is a hint, and 99 is as much as a hint needs
              * to carry. Omitted when there is nothing, as the section says. */
             int held = xprsindex_mail_count(s_index, NULL, 99);
+            s_mail_held = held;             /* for the beacons, read here only */
             /* 25.9: the owner may say what this station announces it does.
              * Unset is the default, and `none` is a station that announces
              * nothing -- still a good citizen by 31.2. */
@@ -5399,6 +5447,10 @@ static void idx_task(void *arg)
             n = sign_wire(w, n, sizeof w);
             xprsnow_send(w, n);
             xprslan_send(w, n);
+            /* And on Bluetooth: a phone setting this station up may hear it
+             * nowhere else, and fw: and count: ride this packet alone. Once
+             * every ten minutes is a beacon's cost, not a relay's. */
+            if (xprsble_is_active()) xprsble_send(w, n);
             /* And where the internet can hear it. Without this the service
              * beacon reaches ESP-NOW and the LAN only -- the two transports
              * whose listeners are, by definition, already in the room. A
@@ -5969,6 +6021,10 @@ named_done:
         if (xst_epoch_now() && now_s - last_stats_save_s >= 600) {
             last_stats_save_s = now_s;
             xst_stats_save("/idx/stats.bin");
+        }
+        if (now_s - last_life_save_s >= 600) {
+            last_life_save_s = now_s;
+            life_save();
         }
 
         /* The heartbeat esp32.md prescribes: a writer that stops is visible
@@ -6912,6 +6968,7 @@ void xapp_run(const xapp_board_t *board)
     }
     /* A key changed by its owner over the air has an answer owed (11.10). */
     keyres_load();
+    life_load();
 
     /* The indexer's writer/replayer, pinned to core 1 (flash work off the
      * radio cores) and created HERE, before WiFi and the bearers carve up

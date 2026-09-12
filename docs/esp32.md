@@ -1737,6 +1737,15 @@ verify runs on idx_task. Three rules, each from a fault:
   `idx=`: 2,400 bytes of 8,192 never used after a claim on the T-Dongle.
   Its 592-byte field table is a static owned by the task, not a local.
 
+**Every beacon carries the stability account.** `t:observation` on every
+bearer now says `uptime:` and `lifetime:` (and `mail:` when any is held),
+the way XPRS.md 15.5's own example does, so a phone's station screen has
+them from the first beacon rather than from a `cmd:zdiag` only its owner may
+send. `lifetime:` is service time across restarts, kept in NVS (`xprskey`,
+`life_s`) and written every ten minutes, and the first `t:service` (firmware,
+records) goes out twenty seconds after boot instead of ten minutes in. One
+rendering for both, `xdiag_qty_word()`: `45m`, `26h`, `9d`.
+
 And the one that is about the owner rather than the attacker: **keep the
 network that worked until the new one joins.** A wrong password sent over
 the LAN replaced the working credentials, and the `500` left by a link the

@@ -79,6 +79,10 @@ void xdiag_pump(uint32_t now_ms);
 /** Appends " uptime:6h zh:3f/3f[ zc:...]" to a beacon; returns bytes
  *  written, 0 when there was no room. The leading space is included. */
 int  xdiag_beacon_fields(char *buf, int cap);
+/* A duration as XPRS.md's coarse qty ("26h", "9d", "45m"): the one
+ * rendering every beacon and answer on a station uses for uptime: and
+ * lifetime:, so a reader parses one shape. */
+void xdiag_qty_word(uint32_t seconds, char *out, int cap);
 
 /** Feed from the board's own log hook: one formatted line, any task. */
 void xdiag_log_line(const char *line, int n);

@@ -292,12 +292,16 @@ void xdiag_init(const xdiag_cfg_t *cfg)
 
 /* ── Helpers shared by the frames ───────────────────────────────────────── */
 
-static void uptime_word(char *out, int cap)
+void xdiag_qty_word(uint32_t s, char *out, int cap)
 {
-    uint32_t s = (uint32_t)(esp_timer_get_time() / 1000000);
     if (s < 3600)              snprintf(out, cap, "%lum", (unsigned long)(s / 60));
     else if (s < 48 * 3600)    snprintf(out, cap, "%luh", (unsigned long)(s / 3600));
     else                       snprintf(out, cap, "%lud", (unsigned long)(s / 86400));
+}
+
+static void uptime_word(char *out, int cap)
+{
+    xdiag_qty_word((uint32_t)(esp_timer_get_time() / 1000000), out, cap);
 }
 
 static int ts_now(char *out, int cap)
