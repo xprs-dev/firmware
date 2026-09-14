@@ -3,7 +3,7 @@
  * @brief APRS-IS iGate — bridges APRS-IS <-> BLE on the T-Dongle.
  *
  * Protocol logic (passcode, TNC2 parse/build) mirrors the XPRS app desktop/
- * Android client (wapps/aprs/aprs.c); transport is lwip BSD sockets.
+ * Android client (apps/aprs/aprs.c); transport is lwip BSD sockets.
  */
 
 #include "aprsis.h"
