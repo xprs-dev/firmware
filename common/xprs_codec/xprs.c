@@ -17,7 +17,7 @@
 
 static bool key_ok(const char *k, int n)
 {
-    if (n < 1 || n > 8) return false;
+    if (n < 1 || n > 16) return false;   /* section 4: 1 to 16 characters */
     if (!(k[0] >= 'a' && k[0] <= 'z')) return false;
     for (int i = 1; i < n; i++) {
         char c = k[i];
