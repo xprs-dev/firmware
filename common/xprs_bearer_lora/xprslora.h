@@ -1,25 +1,29 @@
 /**
  * @file xprslora.h
- * @brief XPRS over LoRa: the third bearer, and the first with real range.
+ * @brief XPRS over LoRa, on Meshtastic's channel.
  *
- * The wire is the wire: the same <=250-byte ASCII packet every other bearer
- * carries, as the LoRa payload, no framing around it. 250 bytes fits the
- * SX1262's 255-byte buffer with room left over, which is not a coincidence --
- * the format's size limit was chosen for radios like this one.
+ * Since 2026-09 the radio runs Meshtastic's LongFast modulation (SF11,
+ * 250 kHz, CR 4/5, preamble 16, sync word 0x2B) on Meshtastic's frequency
+ * slot for the region, so one radio hears both networks (docs/meshtastic.md).
  *
- * All the bearer discipline -- re-air jitter, the 13.2.1 cancel, duplicate
- * rings, beacons -- is xprs_bearer, shared with ESP-NOW and the LAN.
- * What this file adds is only the radio: an SX1262 behind the five function
- * pointers, receiving into a queue from the DIO1 interrupt's wake and airing
- * with the airtime respect a shared band demands.
+ * The wire is still the wire, inside a wrapper: every XPRS packet rides as
+ * the payload of a Meshtastic Data frame on XPRS's own clear channel and
+ * private portnum (xprs_meshtastic/mt.h), one frame up to 233 bytes, two
+ * above that. The xb_* half never sees the wrapper; what it hands this
+ * file and what this file hands back are plain XPRS wires, as on every
+ * other bearer.
  *
- * ON AIRTIME. 250 bytes at SF7/125 kHz is 390 ms on the air, and the band
- * is shared with a duty-cycle obligation -- 10% in band g3 (869.4-869.65,
- * where the fleet now sits), 1% in g1. Since 2026-08-31 the arithmetic is
- * DONE: a duty ledger (xb_set_duty) charges every transmission its real
- * time-on-air against a rolling hour, holds ordinary traffic when the
- * budget is spent, and keeps a reserve so an sos still leaves. Periodic
- * traffic is still not free -- it spends the same hour.
+ * Every frame that is NOT XPRS goes to xprs_meshtastic's repeater and
+ * bridge (mt_mesh), which relays Meshtastic traffic under Meshtastic's own
+ * flood rules and translates LongFast text to and from XPRS messages.
+ *
+ * ON AIRTIME. A full 255-byte frame at SF11/250 kHz is 2.1 s on the air,
+ * five and a half times what the fleet's SF7 cost. The band is shared with
+ * a duty-cycle obligation -- 10% in band g3 (869.4-869.65), which is the
+ * one EU_868 slot Meshtastic has too -- and the duty ledger (xb_set_duty)
+ * charges every transmission, XPRS and Meshtastic alike (xb_spend), against
+ * one rolling hour. Before a transmission the radio listens: a packet
+ * already arriving, or channel activity detection, holds it back.
  */
 #ifndef XPRS_BEARER_LORA_H
 #define XPRS_BEARER_LORA_H
@@ -28,6 +32,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "xprsbearer.h"
+#include "mt_mesh.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,19 +47,21 @@ typedef struct {
     int8_t tx_power_dbm;     /* 0 = a polite 14 dBm */
     bool use_tcxo;           /* module has a TCXO on DIO3 (the T-Deck does) */
     bool use_dio2_rf_switch; /* DIO2 drives the RF switch (the T-Deck too) */
-    uint8_t sf;              /* 0 = SF7 (the fleet); 9 = the `far` profile */
+    const char *region;      /* lora_region; NULL = entry 0 (`eu`) */
 } xprslora_cfg_t;
 
 /**
  * Where in the spectrum this station is allowed to be, and what it owes.
  *
- * The band moved on 2026-08-31: 868.000 MHz put half of a 125 kHz channel
- * BELOW band g1's floor while paying g1's price -- 1% duty and 14 dBm.
- * ERC 70-03 band g3 (869.40-869.65 MHz) allows 10% and up to 27 dBm
- * e.r.p., ten times the airtime and twice the range, so `eu` centres at
- * 869.5 MHz where the whole channel fits with margin. `eu-g1` remains for
- * an operator who must stay in the old sub-band. The US and AU 900 MHz
- * regimes cap the length of one transmission (dwell) rather than the hour.
+ * The frequency is Meshtastic's: its slot rule over the region's band for
+ * the channel name LongFast (mt_slot_freq_hz), which is 869.525 MHz in
+ * Europe. `eu-g1` (868.2 MHz) went with the move: Meshtastic has no channel
+ * there, and a station alone on it would hear nobody.
+ *
+ * The US and AU rows used to cap one transmission at 400 ms (dwell). No
+ * SF11 frame fits that, and Meshtastic, whose channel this now is, applies
+ * no such cap on those bands: whether it binds a given installation is the
+ * operator's question, and `lora_duty_ms` / a dwell can still be set.
  */
 typedef struct {
     const char *name;        /* what lora_region selects */
@@ -114,15 +121,16 @@ void xprslora_set_pace(uint32_t per_packet_ms);
 uint32_t xprslora_owed_ms(void);
 
 /**
- * Six seconds, which is section 31.1's own order of magnitude for one packet
- * at SF9 -- strict enough that a busy LAN cannot pour traffic onto the radio,
- * loose enough that a bench stays usable. The same figure the Flutter station
- * uses for its LoRa bearer, so the two implementations agree.
+ * Ten seconds between our own XPRS transmissions. It was six at SF7, where
+ * a packet was 0.4 s; at SF11 a typical 150-byte packet is 1.3 s, so the
+ * same spacing would have put this station on the one shared channel a
+ * fifth of the time in a burst. Ten keeps a burst near a tenth, which is
+ * also what band g3 allows over the hour.
  *
  * The pace is a collision spacer; the ledger below is the accountant. Both
  * apply, and they are deliberately not one number.
  */
-#define XPRSLORA_PACE_DEFAULT_MS 6000u
+#define XPRSLORA_PACE_DEFAULT_MS 10000u
 
 /** This radio's airtime for [len] bytes at the SF/BW/CR xprslora_start()
  *  set -- the number the duty ledger charges. 0 before start. */
@@ -141,6 +149,45 @@ const xprslora_region_t *xprslora_region(void);
 /** RX/TX/cancelled/dupes counters, any may be NULL. */
 void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
                     uint32_t *dupes);
+
+/* ── Meshtastic: the repeater and the bridge ─────────────────────────── */
+
+/** What the station provides the bridge. Called on the bearer task, with
+ *  the bridge's lock held (it is recursive: calling back into
+ *  xprslora_mt_offer from here is safe). */
+typedef struct {
+    /* A translated wire for every bearer but LoRa and for the local UI;
+     * [sign] = sign it as this station first (a gateway receipt). */
+    void (*deliver)(const char *wire, int len, bool sign);
+    /* The time field, "ts:..." (seconds zeroed when [to_minute]) or
+     * "epoch:..."; returns its length. */
+    int  (*stamp)(char *out, int cap, bool to_minute);
+    /* A verified nick for an XPRS callsign. */
+    bool (*nick_of)(const char *call, char *out, int cap);
+} xprslora_mt_hooks_t;
+
+/**
+ * Start the repeater and the bridge on the running radio. Allocates the
+ * bridge's state once (about 9 KB, PSRAM where there is some); without it
+ * the radio still carries XPRS, and says so in the log.
+ */
+esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
+                            const mt_mesh_cfg_t *cfg, const char *nick);
+
+/** Every XPRS packet this station hears (MT_XPRS_HEARD) or originates
+ *  (MT_XPRS_OWN), on any bearer and any task. Cheap: a parse and maybe a
+ *  queued frame. */
+void xprslora_mt_offer(const char *wire, int len, int origin);
+
+/** The bridge's counters; false when it is not running. */
+bool xprslora_mt_stats(mt_mesh_stats_t *out);
+
+/** Meshtastic nodes heard, freshest first is not promised; [i] 0..n-1 into
+ *  [out] (a copy). Returns how many there are. */
+int xprslora_mt_node(int i, mt_node_t *out);
+
+/** The station's nick changed (announced at the next NodeInfo). */
+void xprslora_mt_set_nick(const char *nick);
 
 #ifdef __cplusplus
 }

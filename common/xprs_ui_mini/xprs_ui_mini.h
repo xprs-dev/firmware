@@ -18,6 +18,10 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+#ifndef XPRS_CALL_LEN
+#define XPRS_CALL_LEN 12   /* as xprs_codec/xprs.h */
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -51,7 +55,7 @@ int  xum_view(void);
 void xum_set_held(bool held);
 
 typedef struct {
-    char call[10];
+    char call[XPRS_CALL_LEN];
     char bearer[7];
     int  dist_m;                 /* -1 = unknown on this link */
     int  age_s;
@@ -64,7 +68,7 @@ void xum_stats(const uint16_t *dev, const uint16_t *rx, const uint16_t *tx,
                int n, const char *suffix);
 
 typedef struct {
-    char    from[10];
+    char    from[XPRS_CALL_LEN];
     char    text[64];
     uint8_t kind;                /* 0 global, 1 local, 2 direct */
 } xum_chat_t;

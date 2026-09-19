@@ -95,6 +95,16 @@ static cfg_entry_t s_cfg[] = {
     { "lora_duty_ms", {0}, false },
     { "lora_resv_ms", {0}, false },
     { "lora_profile", {0}, false },
+    /* 9.11.1: whether this station's LoRa counts as a local bearer (a
+     * building's own mesh) and may carry scope:local; default no. */
+    { "lora_local",   {0}, false },
+    /* Meshtastic on the same radio (docs/meshtastic.md): the repeater, the
+     * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
+     * and how often this station's node re-announces itself. */
+    { "mt_repeat",    {0}, false },
+    { "mt_bridge",    {0}, false },
+    { "mt_bcast_hr",  {0}, false },
+    { "mt_ni_min",    {0}, false },
     { "echo_on",       {0}, false },
     { "echo_quiet_ms", {0}, false },
     { "echo_gap_ms",   {0}, false },
@@ -215,14 +225,22 @@ int xcfg_ini_render(char *buf, size_t cap)
         "enabled = %s\n"
         "\n"
         "[lora]\n"
-        "; Region preset: eu (869.5 MHz, 10%% duty), eu-g1 (868.2, 1%%),\n"
-        "; us, au. Empty keys take the preset's own figures.\n"
+        "; Meshtastic's LongFast channel for the region: eu (869.525 MHz,\n"
+        "; 10%% duty), us (906.875), au (919.875). Empty keys take the\n"
+        "; region's own figures. local = yes lets scope:local on LoRa.\n"
         "region = %s\n"
         "frequency = %s\n"
         "duty_ms = %s\n"
         "reserve_ms = %s\n"
         "pace_ms = %s\n"
-        "profile = %s\n"
+        "local = %s\n"
+        "\n"
+        "[meshtastic]\n"
+        "; Relay Meshtastic traffic, and translate messages both ways.\n"
+        "repeat = %s\n"
+        "bridge = %s\n"
+        "broadcasts_per_hour = %s\n"
+        "nodeinfo_min = %s\n"
         "\n"
         "[igate]\n"
         "; Carry ESP-NOW traffic onto the LAN (toward the internet side).\n"
@@ -303,7 +321,11 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("lora_duty_ms", ""),
         xcfg_get("lora_resv_ms", ""),
         xcfg_get("lora_pace_ms", ""),
-        xcfg_get("lora_profile", ""),
+        xcfg_get_bool("lora_local", false) ? "yes" : "no",
+        xcfg_get_bool("mt_repeat", true) ? "yes" : "no",
+        xcfg_get_bool("mt_bridge", true) ? "yes" : "no",
+        xcfg_get("mt_bcast_hr", ""),
+        xcfg_get("mt_ni_min", ""),
         xcfg_get_bool("igate_on", true) ? "yes" : "no",
         xcfg_get_bool("index_on", true) ? "yes" : "no",
         xcfg_get_bool("share_on", false) ? "yes" : "no",
@@ -359,7 +381,11 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "lora",    "pace_ms",  "lora_pace_ms" },
     { "lora",    "duty_ms",  "lora_duty_ms" },
     { "lora",    "reserve_ms","lora_resv_ms" },
-    { "lora",    "profile",  "lora_profile" },
+    { "lora",    "local",    "lora_local" },
+    { "meshtastic", "repeat", "mt_repeat" },
+    { "meshtastic", "bridge", "mt_bridge" },
+    { "meshtastic", "broadcasts_per_hour", "mt_bcast_hr" },
+    { "meshtastic", "nodeinfo_min", "mt_ni_min" },
     { "echo",    "enabled",  "echo_on" },
     { "echo",    "quiet_ms", "echo_quiet_ms" },
     { "echo",    "gap_ms",   "echo_gap_ms" },

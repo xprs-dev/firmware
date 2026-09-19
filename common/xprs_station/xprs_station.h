@@ -38,7 +38,7 @@ extern "C" {
 #define XST_SBDAY_N   30         /* daily buckets: one month    */
 
 typedef struct {
-    char     call[10];
+    char     call[XPRS_CALL_LEN];
     char     bearer[7];          /* "espnow", "lan", "ble" ... */
     int      rssi;               /* 0 when the bearer has none (LAN) */
     uint8_t  hops;               /* via: entries when last heard; 0 = direct.
@@ -53,8 +53,8 @@ typedef struct {
 } xst_dev_t;
 
 typedef struct {
-    char     from[10];
-    char     to[10];             /* d:, empty on a broadcast. Without it a
+    char     from[XPRS_CALL_LEN];
+    char     to[XPRS_CALL_LEN];             /* d:, empty on a broadcast. Without it a
                                   * 1:1 cannot say which conversation it
                                   * belongs to -- only that it was one. */
     char     text[120];
@@ -182,10 +182,10 @@ int  xst_chat_find(const char *id, xst_chat_t *out);
 /* The people this station has a 1:1 history with: distinct base callsigns of
  * `kind == 2` rows where [self] is the sender or the recipient, most-recent
  * exchange first, then sorted alphabetically so the order never depends on
- * who spoke last. Returns the count written to [out] (each `char[10]`), at
+ * who spoke last. Returns the count written to [out] (each `char[XPRS_CALL_LEN]`), at
  * most [max]. This is the chat rail's PEOPLE list -- who we have talked to,
  * not everyone the radio has heard. */
-int  xst_chat_peers(const char *self, char out[][10], int max);
+int  xst_chat_peers(const char *self, char out[][XPRS_CALL_LEN], int max);
 
 /* Is [call] (base match, case-insensitive) a station we have heard on any
  * bearer within [in_range_sec]? The chat's green/grey presence dot. */

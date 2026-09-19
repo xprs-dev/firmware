@@ -75,6 +75,11 @@ typedef struct {
     bool crc_on;            // Enable CRC
     bool use_tcxo;          // Enable TCXO via DIO3 (Heltec V3 requires this)
     bool use_dio2_rf_switch;// Use DIO2 as RF switch (Heltec V3 requires this)
+    /* The one-byte LoRa sync word as RadioLib and every datasheet quote it
+     * (0x12 private, 0x34 LoRaWAN, 0x2B Meshtastic). 0 leaves the chip's
+     * reset value, which is 0x12: the fleet ran on that by accident until
+     * it moved to Meshtastic's channel and had to say so on purpose. */
+    uint8_t sync_word;
 } sx1262_lora_config_t;
 
 /**
@@ -156,6 +161,46 @@ esp_err_t sx1262_start_receive(sx1262_handle_t handle, sx1262_rx_callback_t call
  */
 esp_err_t sx1262_get_packet(sx1262_handle_t handle, uint8_t *buf, uint8_t buf_len,
                              sx1262_rx_info_t *info);
+
+/**
+ * @brief Start a transmission and return at once.
+ *
+ * An SF11 frame is two seconds on the air, and the task that calls this
+ * pumps every other bearer too; blocking it for the whole airtime is what
+ * sx1262_send() does and what a busy shared channel cannot afford. Poll
+ * sx1262_tx_poll() until it is no longer 0, then start receiving again.
+ */
+esp_err_t sx1262_tx_start(sx1262_handle_t handle, const uint8_t *data,
+                          uint8_t len, uint32_t timeout_ms);
+
+/**
+ * @brief Where the transmission sx1262_tx_start() began stands.
+ * @return 0 still on the air, 1 done, -1 failed or timed out (the radio is
+ *         back in standby either way once this is not 0).
+ */
+int sx1262_tx_poll(sx1262_handle_t handle);
+
+/** @brief True while a transmission started by sx1262_tx_start() runs. */
+bool sx1262_tx_active(sx1262_handle_t handle);
+
+/**
+ * @brief Channel activity detection: is somebody transmitting LoRa at our
+ * modulation right now?
+ *
+ * Two symbols of CAD (AN1200.48, what Meshtastic uses on this chip), about
+ * 20 ms at SF11/250 kHz. Leaves the radio in standby: the caller transmits
+ * or goes back to receive. Returns ESP_OK with [busy] set.
+ */
+esp_err_t sx1262_cad(sx1262_handle_t handle, bool *busy);
+
+/** @brief The IRQ status register, read without clearing anything. */
+uint16_t sx1262_irq_status(sx1262_handle_t handle);
+
+/** @brief Clear the given IRQ status bits. */
+esp_err_t sx1262_irq_clear(sx1262_handle_t handle, uint16_t mask);
+
+#define SX1262_IRQ_PREAMBLE    (1 << 2)
+#define SX1262_IRQ_HEADER_OK   (1 << 4)
 
 /**
  * @brief Set radio to standby mode

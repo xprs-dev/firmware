@@ -371,22 +371,22 @@ CONFIG_PARTITION_TABLE_MD5=y
 # end of Partition Table
 
 #
-# Geogram Board Selection
+# XPRS Board Selection
 #
 # CONFIG_XPRS_BOARD_HELTEC_V2 is not set
 # CONFIG_XPRS_BOARD_HELTEC_V1 is not set
 CONFIG_XPRS_BOARD_KV4P=y
 # CONFIG_XPRS_BOARD_GENERIC is not set
-# end of Geogram Board Selection
+# end of XPRS Board Selection
 
 #
-# Geogram Mesh Networking
+# XPRS Mesh Networking
 #
 CONFIG_XPRS_MESH_ENABLED=y
 CONFIG_XPRS_MESH_CHANNEL=1
 CONFIG_XPRS_MESH_MAX_LAYER=6
 CONFIG_XPRS_MESH_EXTERNAL_AP_MAX_CONN=4
-# end of Geogram Mesh Networking
+# end of XPRS Mesh Networking
 
 #
 # Compiler options
@@ -1899,6 +1899,37 @@ CONFIG_WIFI_PROV_BLE_SEC_CONN=y
 CONFIG_WIFI_PROV_STA_ALL_CHANNEL_SCAN=y
 # CONFIG_WIFI_PROV_STA_FAST_SCAN is not set
 # end of Wi-Fi Provisioning Manager
+
+#
+# XPRS over BLE5
+#
+# CONFIG_XPRSBLE_BACKEND_TINYNIMBLE is not set
+# end of XPRS over BLE5
+
+#
+# XPRS over Reticulum
+#
+# CONFIG_XPRS_BEARER_RNS is not set
+# end of XPRS over Reticulum
+
+#
+# XPRS station storage
+#
+CONFIG_SDCARD_MAX_FILES=5
+# end of XPRS station storage
+
+#
+# XPRS firmware updates
+#
+CONFIG_XPRS_OTA_PULL=y
+# end of XPRS firmware updates
+
+#
+# libssh
+#
+# CONFIG_LIBSSH_SNTRUP761 is not set
+# CONFIG_LIBSSH_MLKEM is not set
+# end of libssh
 
 #
 # CMake Utilities

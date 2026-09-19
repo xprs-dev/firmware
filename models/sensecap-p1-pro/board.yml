@@ -64,7 +64,10 @@ bearers:
     packets are first-class on the network and not merely audible.
     Driven by RadioLib rather than a port of common/xprs_sx1262, which is
     ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which
-    MUST stay equal to xprslora.c or the two radios are deaf to each other.
+    MUST stay equal to xprslora.c or the two radios are deaf to each other --
+    and since 2026-09-19 it does not: the ESP32 fleet moved to Meshtastic's
+    LongFast (SF11 / BW250 / sync 0x2B at 869.525 MHz, docs/meshtastic.md),
+    and this board is deaf to it until it is ported.
   lan: "no"
   lan_note: >-
     nRF52840 has no WiFi radio, so there is no LAN and there never will be

@@ -676,6 +676,19 @@ void xb_set_duty(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime, void *ctx,
     b->duty = d;
 }
 
+bool xb_spend(xb_t *b, uint32_t air_ms, bool prio)
+{
+    if (!b || !b->active) return false;
+    if (!b->duty) return true;
+    uint32_t now = b->ops.now_ms();
+    xb_duty_roll(b->duty, now);
+    if (b->duty->dwell_ms && air_ms > b->duty->dwell_ms) return false;
+    if (!xb_afford(b->duty, air_ms, prio)) return false;
+    xb_duty_charge(b->duty, air_ms);
+    b->last_ms = now;
+    return true;
+}
+
 void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out)
 {
     if (!out) return;

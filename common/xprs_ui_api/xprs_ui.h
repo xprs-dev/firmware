@@ -38,6 +38,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#ifndef XPRS_CALL_LEN
+#define XPRS_CALL_LEN 12   /* as xprs_codec/xprs.h */
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -209,8 +213,8 @@ void xui_show_table(bool show);
 #define XUI_FLOW_ROWS XUI_TAB_ROWS
 
 typedef struct {
-    char     from[10];
-    char     to[10];       /* "" = broadcast, drawn as "all" */
+    char     from[XPRS_CALL_LEN];
+    char     to[XPRS_CALL_LEN];   /* "" = broadcast, drawn as "all" */
     char     type[13];
     char     link[7];      /* "espnow", "lan", "ble", ... */
     float    dist_m;       /* estimated distance; < 0 = unknown */
@@ -266,7 +270,7 @@ typedef struct {
 } xui_room_t;
 
 typedef struct {
-    char from[10];           /* empty on our own saying                     */
+    char from[XPRS_CALL_LEN]; /* empty on our own saying                    */
     char text[120];
     char when[8];            /* "09:24", or an age like "5m"                */
     bool outgoing;           /* right-aligned, no name, time underneath     */

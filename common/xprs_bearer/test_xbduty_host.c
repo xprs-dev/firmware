@@ -387,6 +387,31 @@ static void test_dwell_cap(void)
      * path is exercised through the queue drop in xb_pump instead. */
 }
 
+/* Raw frames of another protocol on the same radio (xprs_meshtastic) spend
+ * the same hour: charged when they may go, refused and uncharged when not,
+ * and the reserve is theirs only when they are priority. */
+static void test_spend_shares_the_ledger(void)
+{
+    setup();
+    xb_set_duty(&g_b, &g_d, f_airtime, NULL, 10000, 2000, 0);
+    CHECK(xb_spend(&g_b, 7000, false), "7 s of an 8 s ordinary share");
+    CHECK(!xb_spend(&g_b, 2000, false), "past the ordinary share");
+    xb_duty_report_t r;
+    xb_duty_report(&g_b, g_now, &r);
+    CHECK(r.spent_ms == 7000, "a refused spend is not charged: %lu",
+          (unsigned long)r.spent_ms);
+    CHECK(xb_spend(&g_b, 2000, true), "priority reaches into the reserve");
+    CHECK(!xb_spend(&g_b, 2000, true), "and no further");
+    /* Once spent by frames, an XPRS packet waits like any other. */
+    CHECK(xb_send_ex(&g_b, W_ORD, (int)strlen(W_ORD)) == XB_QUEUED,
+          "the shared budget binds XPRS too");
+    xb_set_duty(&g_b, &g_d, f_airtime, NULL, 0, 0, 400);
+    CHECK(!xb_spend(&g_b, 2100, false), "a 2.1 s frame against a 400 ms dwell");
+    xb_t off;
+    xb_init(&off, &k_ops, "X1TEST");
+    CHECK(xb_spend(&off, 99999, false), "unmetered says yes");
+}
+
 int main(void)
 {
     test_airtime_matches_an1200();
@@ -404,6 +429,7 @@ int main(void)
     test_clock_wrap();
     test_pace_and_duty_are_independent();
     test_dwell_cap();
+    test_spend_shares_the_ledger();
     if (g_fail) { printf("%d FAILURES\n", g_fail); return 1; }
     printf("OK: all checks passed\n");
     return 0;

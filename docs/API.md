@@ -561,32 +561,34 @@ relayed immediately and then joins the ring.
 
 ### The hour and the reserve
 
-The LoRa radio accounts for its real airtime (Semtech AN1200.13: a full
-250-byte packet is 390 ms at SF7/125 kHz) over a rolling hour, per region:
+The LoRa radio accounts for its real airtime (Semtech AN1200.13) over a
+rolling hour, per region. Since 2026-09-19 it runs Meshtastic's LongFast
+(SF11, 250 kHz) on Meshtastic's slot, where a full frame is about 2.1 s, and
+Meshtastic frames it relays or sends spend the same ledger
+(docs/meshtastic.md):
 
 | `lora_region` | channel | budget | reserve | note |
 |---|---|---|---|---|
-| `eu` (default) | 869.5 MHz | 10% = 360 s/h | 6 s | ERC 70-03 band g3, up to 27 dBm e.r.p. |
-| `eu-g1` | 868.2 MHz | 1% = 36 s/h | 6 s | the old sub-band, 14 dBm |
-| `us` / `au` | 903.9 / 917.0 MHz | none | -- | 400 ms dwell cap per transmission instead |
+| `eu` (default) | 869.525 MHz | 10% = 360 s/h | 21 s | ERC 70-03 band g3, up to 27 dBm e.r.p. |
+| `us` / `au` | 906.875 / 919.875 MHz | none | -- | no dwell cap: no SF11 frame fits 400 ms, and Meshtastic applies none |
 
 When the hour is spent, everything waits -- including this station's own
 traffic, which queues at the front and goes when the window rolls -- except
 `t:sos`, `t:warning` and `urg:urgent`, which may spend the reserve. Priority
 packets also leave the queue first and are never evicted by ordinary ones.
 Relays held too long are dropped (2 min ordinary, 10 min priority): a stale
-repeat is not worth 390 ms of a shared band.
+repeat is not worth two seconds of a shared band.
 
 `/api/status` carries the ledger:
-`"lora":{"region":"eu","freq_hz":869500000,"duty_ms":360000,"spent_ms":...,`
-`"free_ms":...,"reserve_ms":6000,"held":...,"deferred":...,"next_free_ms":...}`
+`"lora":{"region":"eu","freq_hz":869525000,"duty_ms":360000,"spent_ms":...,`
+`"free_ms":...,"reserve_ms":21000,"held":...,"deferred":...,"next_free_ms":...}`
 -- and the strip's top bar reads `held 41s` instead of `LoRa quiet` when the
 budget, not the band, is what is silent. Config: `lora_region`,
-`lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`, `lora_pace_ms` (all under
-`[lora]` in config.ini), and `lora_profile far` selects SF9 -- +5 dB a hop
-for 4x the airtime, a deployment decision because every station on a link
-must share it. The frequency moved from 868.0 on 2026-08-31: a 125 kHz
-channel there straddled band g1's floor while paying its 1%.
+`lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`, `lora_pace_ms`, `lora_local`
+(all under `[lora]` in config.ini), and the Meshtastic keys under
+`[meshtastic]` (docs/meshtastic.md). `eu-g1` and `lora_profile far` went with
+the move: Meshtastic has no channel at 868.2 MHz, and every station on a
+channel shares one modulation.
 
 ### Which station repeats
 

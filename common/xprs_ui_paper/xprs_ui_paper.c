@@ -35,6 +35,10 @@
 
 #include "esp_heap_caps.h"
 #include "esp_memory_utils.h"
+
+#ifndef XPRS_CALL_LEN
+#define XPRS_CALL_LEN 12   /* as xprs_codec/xprs.h */
+#endif
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -150,7 +154,7 @@ typedef struct { char call[12]; int8_t step, pend; } pdev_t;
 static pdev_t s_dev[XUI_BLIP_MAX];
 static int   s_dev_n, s_reach = -1;
 
-typedef struct { char from[10]; char when[8]; char text[120]; } pmsg_t;
+typedef struct { char from[XPRS_CALL_LEN]; char when[8]; char text[120]; } pmsg_t;
 static pmsg_t s_tab[XUP_MSGS];  /* parked from the last table pass */
 static int   s_tab_n;
 static pmsg_t s_msg[XUP_MSGS];  /* the chat panel's, once one was seen */
@@ -700,7 +704,7 @@ void xui_table_rows(const xui_row_t *rows, int n)
     if (n > XUP_MSGS) n = XUP_MSGS;
     for (int i = 0; i < n; i++) {
         pmsg_t *m = &s_tab[i];
-        snprintf(m->from, sizeof m->from, "%.9s", rows[i].cell[0]);
+        snprintf(m->from, sizeof m->from, "%.11s", rows[i].cell[0]);
         snprintf(m->when, sizeof m->when, "%.7s", rows[i].cell[2]);
         const char *txt = rows[i].detail;
         size_t fl = strlen(m->from);
@@ -719,7 +723,7 @@ void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header)
     int k = 0;
     for (int i = n - 1; i >= 0 && k < XUP_MSGS; i--, k++) {
         pmsg_t *m = &s_tab[k];
-        snprintf(m->from, sizeof m->from, "%.9s", msgs[i].from[0] ? msgs[i].from : "me");
+        snprintf(m->from, sizeof m->from, "%.11s", msgs[i].from[0] ? msgs[i].from : "me");
         snprintf(m->when, sizeof m->when, "%.7s", msgs[i].when);
         snprintf(m->text, sizeof m->text, "%.119s", msgs[i].text);
     }

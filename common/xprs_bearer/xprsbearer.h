@@ -300,6 +300,16 @@ void xb_set_duty(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime, void *ctx,
 
 void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out);
 
+/**
+ * Spend [air_ms] of this bearer's hour on something that is NOT an XPRS
+ * packet -- a Meshtastic frame on the same radio (xprs_meshtastic). The same
+ * ledger, the same reserve rule ([prio] may spend it) and the same dwell
+ * cap, so the radio has one budget whoever is talking. Charges and returns
+ * true when it may go now; returns false and charges nothing when it may
+ * not. Unmetered bearers always say yes.
+ */
+bool xb_spend(xb_t *b, uint32_t air_ms, bool prio);
+
 /** One queued packet, for "why is my packet waiting". Returns how many are
  *  queued in total; [i] indexes them 0..n-1 in no particular order. Any out
  *  pointer may be NULL. */

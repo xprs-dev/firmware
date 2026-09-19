@@ -2140,8 +2140,9 @@ esp_err_t sa818_radio_send_aprs_message(sa818_radio_handle_t handle,
     // bridge relaying what phones sent. An X1-X5 callsign was issued by
     // nobody, so it identifies nobody on the air (XPRS section 6.4.1), and a
     // relayed frame would go out under this station's operator's licence.
-    if (xprs_is_self_generated(from_callsign, (int)strlen(from_callsign))) {
-        ESP_LOGW(TAG, "APRS TX refused: %s is self-generated, and only an issued "
+    // Nor was a Meshtastic node's MT callsign, which a LoRa bridge writes.
+    if (xprs_is_unissued(from_callsign, (int)strlen(from_callsign))) {
+        ESP_LOGW(TAG, "APRS TX refused: %s was issued by no authority, and only an issued "
                       "callsign may transmit on licensed spectrum", from_callsign);
         return ESP_ERR_NOT_ALLOWED;
     }

@@ -68,6 +68,10 @@ static const char *TAG = "sx1262";
 
 // OCP register for current limit
 #define SX1262_REG_OCP                      0x08E7
+// LoRa sync word, two bytes (AN1200.x: MSB at 0x0740, LSB at 0x0741)
+#define SX1262_REG_LORA_SYNC                0x0740
+#define SX1262_CMD_SET_CAD_PARAMS           0x88
+#define SX1262_CMD_SET_CAD                  0xC5
 
 struct sx1262_dev {
     bool bus_owned;              /* we initialised SPI2, so we free it */
@@ -78,6 +82,8 @@ struct sx1262_dev {
     void *rx_user_data;
     SemaphoreHandle_t tx_done_sem;
     bool initialized;
+    bool tx_active;              /* sx1262_tx_start() began, not yet polled done */
+    TickType_t tx_deadline;
 };
 
 // ============================================================================
@@ -174,6 +180,30 @@ static esp_err_t sx1262_read_command(sx1262_handle_t handle, uint8_t cmd,
         memcpy(result, &rx[2], nresult);
     }
     return ret;
+}
+
+static esp_err_t sx1262_write_register(sx1262_handle_t handle, uint16_t addr,
+                                        const uint8_t *data, uint8_t n)
+{
+    uint8_t args[2 + 8];
+    if (n > 8) return ESP_ERR_INVALID_ARG;
+    args[0] = (uint8_t)(addr >> 8);
+    args[1] = (uint8_t)addr;
+    memcpy(&args[2], data, n);
+    return sx1262_write_command(handle, SX1262_CMD_WRITE_REGISTER, args,
+                                (uint8_t)(2 + n));
+}
+
+/* The one-byte sync word into the SX126x's two-byte register, the way
+ * RadioLib does it: each nibble becomes the high nibble of a byte whose low
+ * nibble is 4. So 0x12 -> 0x1424 (the reset value) and 0x2B -> 0x24B4. */
+static esp_err_t sx1262_set_sync_word(sx1262_handle_t handle, uint8_t sw)
+{
+    uint8_t reg[2] = {
+        (uint8_t)((sw & 0xF0) | 0x04),
+        (uint8_t)(((sw & 0x0F) << 4) | 0x04),
+    };
+    return sx1262_write_register(handle, SX1262_REG_LORA_SYNC, reg, 2);
 }
 
 static esp_err_t sx1262_set_standby(sx1262_handle_t handle)
@@ -515,17 +545,30 @@ esp_err_t sx1262_init(sx1262_handle_t handle, const sx1262_lora_config_t *config
     ret = sx1262_set_packet_params(handle, config->preamble_len, config->crc_on, 0xFF);
     if (ret != ESP_OK) return ret;
 
-    // Configure DIO1 IRQs: TX done + RX done + timeout
-    uint16_t irq_mask = SX1262_IRQ_TX_DONE | SX1262_IRQ_RX_DONE | SX1262_IRQ_RX_TX_TIMEOUT;
-    ret = sx1262_set_dio_irq_params(handle, irq_mask, irq_mask);
+    if (config->sync_word) {
+        ret = sx1262_set_sync_word(handle, config->sync_word);
+        if (ret != ESP_OK) return ret;
+    }
+
+    // Configure DIO1 IRQs: TX done + RX done + timeout + CAD done. Header
+    // valid and preamble detected are latched in the status register too
+    // (not routed to DIO1), which is how "a packet is arriving right now"
+    // is told apart from an idle channel before transmitting.
+    uint16_t dio1_mask = SX1262_IRQ_TX_DONE | SX1262_IRQ_RX_DONE |
+                         SX1262_IRQ_RX_TX_TIMEOUT | SX1262_IRQ_CAD_DONE;
+    uint16_t irq_mask = dio1_mask | SX1262_IRQ_CAD_ACTIVITY_DETECTED |
+                        SX1262_IRQ_HEADER_VALID | SX1262_IRQ_PREAMBLE_DETECTED |
+                        SX1262_IRQ_CRC_ERR | SX1262_IRQ_HEADER_ERR;
+    ret = sx1262_set_dio_irq_params(handle, irq_mask, dio1_mask);
     if (ret != ESP_OK) return ret;
 
     // Clear any pending IRQs
     sx1262_clear_irq_status(handle, 0xFFFF);
 
     handle->initialized = true;
-    ESP_LOGI(TAG, "SX1262 initialized: freq=%luHz, SF%d, BW=%d, power=%ddBm",
-             config->frequency_hz, config->sf, config->bw, config->tx_power_dbm);
+    ESP_LOGI(TAG, "SX1262 initialized: freq=%luHz, SF%d, BW=%d, power=%ddBm, sync 0x%02X",
+             config->frequency_hz, config->sf, config->bw, config->tx_power_dbm,
+             config->sync_word ? config->sync_word : 0x12);
     return ESP_OK;
 }
 
@@ -649,7 +692,7 @@ esp_err_t sx1262_start_receive(sx1262_handle_t handle, sx1262_rx_callback_t call
     ret = sx1262_write_command(handle, SX1262_CMD_SET_RX, rx_args, 3);
     if (ret != ESP_OK) return ret;
 
-    ESP_LOGI(TAG, "Continuous receive started");
+    ESP_LOGD(TAG, "Continuous receive started");
     return ESP_OK;
 }
 
@@ -668,8 +711,11 @@ esp_err_t sx1262_get_packet(sx1262_handle_t handle, uint8_t *buf, uint8_t buf_le
         return ESP_ERR_NOT_FOUND;
     }
 
-    // Clear RX done IRQ
-    sx1262_clear_irq_status(handle, SX1262_IRQ_RX_DONE | SX1262_IRQ_CRC_ERR);
+    // Clear RX done, and the latches this packet raised on its way in
+    sx1262_clear_irq_status(handle, SX1262_IRQ_RX_DONE | SX1262_IRQ_CRC_ERR |
+                                    SX1262_IRQ_HEADER_VALID | SX1262_IRQ_HEADER_ERR |
+                                    SX1262_IRQ_PREAMBLE_DETECTED |
+                                    SX1262_IRQ_SYNC_WORD_VALID);
 
     if (irq & SX1262_IRQ_CRC_ERR) {
         ESP_LOGW(TAG, "RX CRC error");
@@ -721,6 +767,119 @@ esp_err_t sx1262_get_packet(sx1262_handle_t handle, uint8_t *buf, uint8_t buf_le
 
     ESP_LOGD(TAG, "RX: %d bytes, RSSI=%d, SNR=%d", info->len, info->rssi, info->snr);
     return ESP_OK;
+}
+
+/* Everything sx1262_send() does up to SetTx, then back to the caller. */
+esp_err_t sx1262_tx_start(sx1262_handle_t handle, const uint8_t *data,
+                          uint8_t len, uint32_t timeout_ms)
+{
+    if (!handle || !data || len == 0) return ESP_ERR_INVALID_ARG;
+    if (!handle->initialized) return ESP_ERR_INVALID_STATE;
+    if (handle->tx_active) return ESP_ERR_INVALID_STATE;
+
+    esp_err_t ret = sx1262_set_standby(handle);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_set_packet_params(handle, handle->lora_config.preamble_len,
+                                    handle->lora_config.crc_on, len);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_wait_busy(handle);
+    if (ret != ESP_OK) return ret;
+
+    uint8_t hdr[2] = { SX1262_CMD_WRITE_BUFFER, 0x00 };
+    sx1262_cs_low(handle);
+    spi_transaction_t t1 = {};
+    t1.length = 16;
+    t1.tx_buffer = hdr;
+    spi_device_polling_transmit(handle->spi, &t1);
+    spi_transaction_t t2 = {};
+    t2.length = len * 8;
+    t2.tx_buffer = data;
+    spi_device_polling_transmit(handle->spi, &t2);
+    sx1262_cs_high(handle);
+
+    sx1262_clear_irq_status(handle, 0xFFFF);
+    xSemaphoreTake(handle->tx_done_sem, 0);
+
+    uint32_t timeout_ticks = (uint32_t)((uint64_t)timeout_ms * 64);
+    uint8_t tx_args[3] = {
+        (uint8_t)((timeout_ticks >> 16) & 0xFF),
+        (uint8_t)((timeout_ticks >> 8) & 0xFF),
+        (uint8_t)(timeout_ticks & 0xFF),
+    };
+    ret = sx1262_write_command(handle, SX1262_CMD_SET_TX, tx_args, 3);
+    if (ret != ESP_OK) return ret;
+    handle->tx_active = true;
+    handle->tx_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms + 500);
+    return ESP_OK;
+}
+
+int sx1262_tx_poll(sx1262_handle_t handle)
+{
+    if (!handle || !handle->tx_active) return 1;
+    bool fired = xSemaphoreTake(handle->tx_done_sem, 0) == pdTRUE;
+    if (!fired && (int32_t)(xTaskGetTickCount() - handle->tx_deadline) < 0)
+        return 0;
+    uint8_t st[2] = { 0 };
+    sx1262_read_command(handle, SX1262_CMD_GET_IRQ_STATUS, st, 2);
+    uint16_t irq = ((uint16_t)st[0] << 8) | st[1];
+    if (!(irq & SX1262_IRQ_TX_DONE) && fired &&
+        (int32_t)(xTaskGetTickCount() - handle->tx_deadline) < 0)
+        return 0;        /* some other DIO1 edge; still sending */
+    sx1262_clear_irq_status(handle, 0xFFFF);
+    handle->tx_active = false;
+    if (irq & SX1262_IRQ_TX_DONE) return 1;
+    ESP_LOGW(TAG, "TX ended without TX_DONE (irq 0x%04X)", irq);
+    sx1262_set_standby(handle);
+    return -1;
+}
+
+bool sx1262_tx_active(sx1262_handle_t handle)
+{
+    return handle && handle->tx_active;
+}
+
+esp_err_t sx1262_cad(sx1262_handle_t handle, bool *busy)
+{
+    if (!handle || !busy) return ESP_ERR_INVALID_ARG;
+    if (!handle->initialized || handle->tx_active) return ESP_ERR_INVALID_STATE;
+    *busy = false;
+    esp_err_t ret = sx1262_set_standby(handle);
+    if (ret != ESP_OK) return ret;
+    /* Two symbols; detection peak sf + 13 and minimum 10, RadioLib's
+     * defaults from AN1200.48; CAD_ONLY exit (back to standby). */
+    uint8_t args[7] = { 0x01, (uint8_t)(handle->lora_config.sf + 13), 10,
+                        0x00, 0x00, 0x00, 0x00 };
+    ret = sx1262_write_command(handle, SX1262_CMD_SET_CAD_PARAMS, args, 7);
+    if (ret != ESP_OK) return ret;
+    sx1262_clear_irq_status(handle, 0xFFFF);
+    xSemaphoreTake(handle->tx_done_sem, 0);
+    ret = sx1262_write_command(handle, SX1262_CMD_SET_CAD, NULL, 0);
+    if (ret != ESP_OK) return ret;
+    /* 2.5 symbols is 20 ms at SF11/250 kHz; allow for SF12/125 kHz. */
+    xSemaphoreTake(handle->tx_done_sem, pdMS_TO_TICKS(150));
+    uint8_t st[2] = { 0 };
+    sx1262_read_command(handle, SX1262_CMD_GET_IRQ_STATUS, st, 2);
+    uint16_t irq = ((uint16_t)st[0] << 8) | st[1];
+    sx1262_clear_irq_status(handle, 0xFFFF);
+    if (!(irq & SX1262_IRQ_CAD_DONE)) {
+        sx1262_set_standby(handle);
+        return ESP_ERR_TIMEOUT;
+    }
+    *busy = (irq & SX1262_IRQ_CAD_ACTIVITY_DETECTED) != 0;
+    return ESP_OK;
+}
+
+uint16_t sx1262_irq_status(sx1262_handle_t handle)
+{
+    uint8_t st[2] = { 0 };
+    if (!handle) return 0;
+    sx1262_read_command(handle, SX1262_CMD_GET_IRQ_STATUS, st, 2);
+    return ((uint16_t)st[0] << 8) | st[1];
+}
+
+esp_err_t sx1262_irq_clear(sx1262_handle_t handle, uint16_t mask)
+{
+    return handle ? sx1262_clear_irq_status(handle, mask) : ESP_ERR_INVALID_ARG;
 }
 
 esp_err_t sx1262_standby(sx1262_handle_t handle)

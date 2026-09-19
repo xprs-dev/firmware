@@ -164,7 +164,7 @@ static void heap_mark(const char *stage)
 /* This station. Derived from the MAC so two boards never collide, unless NVS
  * carries one an operator chose. X5 marks it as an experimental station rather
  * than claiming an X1/X3 form that means something. */
-static char s_call[10];
+static char s_call[XPRS_CALL_LEN];
 
 static void derive_callsign(void)
 {
@@ -189,7 +189,7 @@ static void derive_callsign(void)
  * that starts with
  * being able to remember who is asking. 42 bytes an entry. */
 #define PEERKEYS_MAX 32
-static struct { char call[10]; uint8_t pub[32]; } s_peers[PEERKEYS_MAX];
+static struct { char call[XPRS_CALL_LEN]; uint8_t pub[32]; } s_peers[PEERKEYS_MAX];
 static int s_peers_n;
 
 static const uint8_t *peer_key(const char *call)
@@ -222,7 +222,7 @@ static uint32_t s_idx_stack_free;
 
 static void identity_heard(const xprs_t *p, const char *wire, int len)
 {
-    char call[10], npub[80];
+    char call[XPRS_CALL_LEN], npub[80];
     if (!xprs_get_str(p, "f", call, sizeof call)) return;
     if (!xprs_get_str(p, "k", npub, sizeof npub)) return;
     if (strncmp(npub, "npub1", 5) != 0 || peer_key(call)) return;
@@ -238,7 +238,7 @@ static void identity_heard(const xprs_t *p, const char *wire, int len)
 static void identity_apply(void)
 {
     xprs_t p;
-    char call[10], npub[80];
+    char call[XPRS_CALL_LEN], npub[80];
     if (!xprs_parse(s_ident.wire, s_ident.len, &p)) return;
     if (!xprs_get_str(&p, "f", call, sizeof call)) return;
     if (!xprs_get_str(&p, "k", npub, sizeof npub)) return;
@@ -535,14 +535,14 @@ static int index_verifier(const char *wire, int len, const char *from)
 static uint32_t s_heard_count;
 
 static uint32_t s_last_rx_ms;
-static char s_last_call[10];
+static char s_last_call[XPRS_CALL_LEN];
 
 /* The flow: the last packets heard, newest first, for the screen. Type and
  * origin only -- the screen never shows message content. */
 #define FLOW_MAX 9
 typedef struct {
-    char     call[10];
-    char     to[10];           /* d: recipient; empty = broadcast */
+    char     call[XPRS_CALL_LEN];
+    char     to[XPRS_CALL_LEN];           /* d: recipient; empty = broadcast */
     char     type[13];
     char     link[7];
     int      rssi;
@@ -811,7 +811,7 @@ static uint32_t xprs_qty_seconds(const char *v)
 
 #define CU_PEERS 6
 typedef struct {
-    char     call[10];
+    char     call[XPRS_CALL_LEN];
     char     bearer[7];
     uint32_t interval_s;      /* what the ladder says, for this peer */
     uint32_t next_ask_s;      /* uptime seconds; 0 = never asked */
@@ -830,7 +830,7 @@ static cu_peer_t s_cu_peers[CU_PEERS];
 
 /* The one ask waiting for idx_task, which owns the signing stack. */
 static struct {
-    char call[10];
+    char call[XPRS_CALL_LEN];
     char bearer[7];
     uint32_t since;
     uint32_t until;
@@ -1032,7 +1032,7 @@ have:
 }
 
 static struct {
-    char to[10];
+    char to[XPRS_CALL_LEN];
     char bearer[8];
     volatile bool pending;
 } s_qpol;                      /* a q:policy to answer */
@@ -1106,8 +1106,8 @@ static volatile bool s_qid_pending;
  * so a second asker inside the same tick is answered on their next ask
  * rather than queued. */
 static struct {
-    char call[10];       /* whose mail was asked about, empty = the total */
-    char to[10];         /* who asked */
+    char call[XPRS_CALL_LEN];       /* whose mail was asked about, empty = the total */
+    char to[XPRS_CALL_LEN];         /* who asked */
     char bearer[8];
     volatile bool pending;
 } s_qmail;
@@ -1116,7 +1116,7 @@ static struct {
  * deliver (XPRS.md 36.8.1). Parked like every other job that costs storage
  * or curve time: the radio task decides WHETHER, idx_task does the work. */
 static struct {
-    char call[10];
+    char call[XPRS_CALL_LEN];
     char bearer[8];
     volatile bool pending;
 } s_rel;
@@ -1218,7 +1218,7 @@ static bool acked_has(const char *id)
  * acknowledged -- it is what establishes the pair -- and every one after it
  * is. A ring, because a board does not correspond with the world. */
 #define EXCH_MAX 12
-static char s_exch[EXCH_MAX][10];
+static char s_exch[EXCH_MAX][XPRS_CALL_LEN];
 static uint8_t s_exch_pos;
 
 static bool exchanged_with(const char *call)
@@ -1270,7 +1270,7 @@ static struct {
 #define REL_MORE_SEC      45     /* while there is more to hand over */
 #define REL_PAGE           4     /* messages per sighting */
 static struct {
-    char     call[10];
+    char     call[XPRS_CALL_LEN];
     uint32_t at_s;
     uint32_t until_s;
     uint32_t wait_s;
@@ -1963,7 +1963,7 @@ static void ota_answer(const char *to, const char *bearer, const char *id,
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
     xprs_t sp;
-    char call[10];
+    char call[XPRS_CALL_LEN];
     if (!xprs_parse(wire, len, &sp)) return;
     if (!xprs_get_str(&sp, "f", call, sizeof call)) return;
     if (strcasecmp(call, s_call) == 0) return;   /* our own echo */
@@ -2104,7 +2104,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
             strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
         if (s_qmail.pending) break;              /* one at a time */
-        char asker[10] = "";
+        char asker[XPRS_CALL_LEN] = "";
         if (!xprs_get_str(&sp, "f", asker, sizeof asker) || !asker[0]) break;
         snprintf((char *)s_qmail.to, sizeof s_qmail.to, "%s", asker);
         snprintf((char *)s_qmail.bearer, sizeof s_qmail.bearer, "%s", bearer);
@@ -2125,7 +2125,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
             strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
         if (s_qpol.pending) break;
-        char asker[10] = "";
+        char asker[XPRS_CALL_LEN] = "";
         if (!xprs_get_str(&sp, "f", asker, sizeof asker) || !asker[0]) break;
         snprintf((char *)s_qpol.to, sizeof s_qpol.to, "%s", asker);
         snprintf((char *)s_qpol.bearer, sizeof s_qpol.bearer, "%s", bearer);
@@ -2201,9 +2201,10 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
      * The trigger is the packet itself, never a poll. Cheap here (a ring
      * compare); the index query and the paced re-air run on idx_task. */
     do {
-        /* call[10]: the ring rows are 10 wide, and a callsign that long is
-         * already past section 3's shape -- truncate at parse, not at copy. */
-        char from[10] = "", via[8];
+        /* XPRS_CALL_LEN wide, as the ring rows are: a callsign longer than
+         * that is past any shape section 3 gives -- truncate at parse, not
+         * at copy. */
+        char from[XPRS_CALL_LEN] = "", via[8];
         if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
         if (strcasecmp(from, s_call) == 0) break;
         if (xprs_get_str(&sp, "via", via, sizeof via)) break; /* direct only */
@@ -2257,7 +2258,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
          * gossip store ever saw it -- the truncation happened HERE, silently,
          * after the sender had already paid to transmit the whole thing.
          * Matches the render buffer at the beacon end, which is 208. */
-        char type[16], from[10], hears[208], link[8];
+        char type[16], from[XPRS_CALL_LEN], hears[208], link[8];
         xprs_type(&sp, type, sizeof type);
         if (strcmp(type, "observation") != 0) break;
         if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
@@ -2359,7 +2360,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
      * is still awaiting an answer. Count the rows and keep the oldest ts:
      * that ts is the `until:` a 206 continues from. */
     do {
-        char rfrom[10];
+        char rfrom[XPRS_CALL_LEN];
         if (!xprs_get_str(&sp, "f", rfrom, sizeof rfrom) || !rfrom[0]) break;
         const uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
 
@@ -2367,7 +2368,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         xprs_type(&sp, rtype, sizeof rtype);
         if (strcmp(rtype, "result") == 0) {
             /* The answer to our own ask, addressed to us. */
-            char rto[10], code[8];
+            char rto[XPRS_CALL_LEN], code[8];
             cu_peer_t *r = cu_find(rfrom, false);
             if (!r || !r->await) break;
             if (!xprs_get_str(&sp, "d", rto, sizeof rto)) break;
@@ -2621,6 +2622,9 @@ static void echo_keep(const char *wire, int len)
     if (s_echo_n < ECHO_N) s_echo_n++;
 }
 
+static bool wire_scope_local(const char *wire, int len);
+static bool lora_worth(const char *wire, int len);
+
 /* One step of the carousel, called about once a second from status_task. */
 static void echo_tick(void)
 {
@@ -2656,6 +2660,14 @@ static void echo_tick(void)
          * just been heard by everybody present. */
         int slot = s_echo_cursor % s_echo_n;
         s_echo_cursor = (s_echo_cursor + 1) % s_echo_n;
+        /* 9.11.1: a Local-room packet heard on Bluetooth is not LoRa's to
+         * repeat -- the carousel re-aired one onto the radio band twenty
+         * seconds after boot (2026-09-19, heard back through a Meshtastic
+         * router) because only bridge_out knew the rule. */
+        if (i == 2 && ((wire_scope_local(s_echo[slot].wire, s_echo[slot].len) &&
+                        !xcfg_get_bool("lora_local", false)) ||
+                       !lora_worth(s_echo[slot].wire, s_echo[slot].len)))
+            continue;
         static const char *const names[4] = { "lan", "espnow", "lora", "ble" };
         ESP_LOGI(TAG, "echo   %6s %3dB  %s", names[i], s_echo[slot].len,
                  s_echo[slot].wire);
@@ -2689,6 +2701,8 @@ static void echo_tick(void)
  *   digi_ble_on(default yes) the same for Bluetooth, kept separate because
  *              BLE is cheap and local where LoRa is duty-cycled
  */
+/* A Meshtastic message the LoRa bridge translated does not come through
+ * here: it is the gateway's own packet, and leaves by mesh_out. */
 typedef enum { FROM_LAN, FROM_NOW, FROM_LORA, FROM_BLE, FROM_RNS } from_t;
 
 /*
@@ -2771,6 +2785,47 @@ static bool command_to_us(const char *wire, int len)
     return false;
 }
 
+/* scope:local (XPRS.md 9.11.1) by a token walk, the way command_to_us
+ * reads: this runs for every packet heard, on radio tasks. */
+static bool wire_scope_local(const char *wire, int len)
+{
+    static const char k[] = " scope:local";
+    const int kl = (int)sizeof k - 1;
+    for (int i = 0; i + kl <= len; i++) {
+        if (wire[i] != ' ') continue;
+        if (i + 3 < len && wire[i + 1] == 'm' && wire[i + 2] == ':') break;
+        if (memcmp(wire + i, k, (size_t)kl) == 0 &&
+            (i + kl == len || wire[i + kl] == ' '))
+            return true;
+    }
+    return false;
+}
+
+/* Is this worth a LoRa transmission when it is not our own? Since the move
+ * to Meshtastic's LongFast a frame is one to two seconds on the one EU
+ * channel both networks share, and XPRS.md 30.1 binds unsolicited traffic
+ * to the strictest bearer a station transmits on. A bench of BLE and LAN
+ * stations beaconing every minute, bridged onto that channel, kept two
+ * stations at their full 10% and the channel busy enough that a Meshtastic
+ * node's DM never got through (2026-09-19). So LoRa carries what somebody
+ * is waiting for -- a message, a receipt, a call for help, a command and its
+ * result, a key to verify them with -- and leaves presence to the bearers
+ * that are cheap. A token walk: t: is always first. */
+static bool lora_worth(const char *wire, int len)
+{
+    static const char *const carried[] = {
+        "message", "sos", "warning", "receipt", "reaction", "command",
+        "result", "identity", "mailbox", "file", "request",
+    };
+    if (len < 3 || wire[0] != 't' || wire[1] != ':') return false;
+    int n = 0;
+    while (2 + n < len && wire[2 + n] != ' ') n++;
+    for (size_t i = 0; i < sizeof carried / sizeof carried[0]; i++)
+        if ((int)strlen(carried[i]) == n && memcmp(wire + 2, carried[i], (size_t)n) == 0)
+            return true;
+    return false;
+}
+
 static void bridge_out(const char *wire, int len, from_t from)
 {
     if (command_to_us(wire, len)) return;
@@ -2778,19 +2833,33 @@ static void bridge_out(const char *wire, int len, from_t from)
 
     bool bridge = xcfg_get_bool("bridge_on", true);
     bool igate  = xcfg_get_bool("igate_on", true);
+    /* 9.11.1: local names bearers -- Bluetooth, WiFi, a local network --
+     * and never a radio band or the internet. LoRa counts as local only
+     * where the operator says so ([lora] local = yes). This was not checked
+     * here at all until Meshtastic traffic arrived with it: a node that
+     * did not consent to MQTT is scope:local in XPRS, and must not reach
+     * Reticulum through this station. */
+    bool local = wire_scope_local(wire, len);
+    bool lora_ok = (!local || xcfg_get_bool("lora_local", false)) &&
+                   lora_worth(wire, len);
 
     /* Onto the other bearers. */
     if (from != FROM_LAN  && igate)  xprslan_offer(wire, len);
     if (from != FROM_NOW  && bridge) xprsnow_offer(wire, len);
-    if (from != FROM_LORA && bridge) xprslora_offer(wire, len);
+    if (from != FROM_LORA && bridge && lora_ok)
+        xprslora_offer(wire, len);
     if (from != FROM_BLE  && bridge) xprsble_offer(wire, len);
-    if (from != FROM_RNS  && bridge) xprsrns_send(wire, len);
+    if (from != FROM_RNS  && bridge && !local) xprsrns_send(wire, len);
+    /* And to Meshtastic, which decides for itself what it can carry (a
+     * message or a like, not sealed, not local) and never takes back what
+     * came from it. */
+    xprslora_mt_offer(wire, len, MT_XPRS_HEARD);
 
     /* And again on the one it came from, for stations past the sender's
      * reach but inside ours. */
     if (from == FROM_NOW  && xcfg_get_bool("digi_on", true))
         xprsnow_digipeat(wire, len);
-    if (from == FROM_LORA && xcfg_get_bool("digi_on", true))
+    if (from == FROM_LORA && xcfg_get_bool("digi_on", true) && lora_ok)
         xprslora_digipeat(wire, len);
     if (from == FROM_BLE  && xcfg_get_bool("digi_ble_on", true))
         xprsble_digipeat(wire, len);
@@ -2933,6 +3002,105 @@ static void on_lora(const char *wire, int len, int rssi)
      * has -- the LAN, ESP-NOW, Bluetooth -- and back onto LoRa itself when
      * this station digipeats. */
     bridge_out(wire, len, FROM_LORA);
+}
+
+/* ── Meshtastic, through the LoRa bridge (xprs_meshtastic) ──────────────
+ *
+ * A translation arrives on the bearer task, like on_lora's packets, and
+ * reaches the index and the chat the same way; it leaves on the other
+ * bearers as this gateway's own packet (mesh_out). Nothing of that happens
+ * here: mesh_deliver runs inside mt_mesh_on_frame, on the LoRa task and
+ * under the bridge's mutex, and the bearers' sends can wait (Reticulum's
+ * for up to 2.5 s on its lock, then its pace). Every other bearer's task
+ * waits on that same mutex to offer the bridge a packet, the Bluetooth host
+ * among them. So a translation is parked, like a gateway receipt (which also
+ * needs a secp256k1 signature), and idx_task, on core 1, does the rest
+ * (docs/esp32.md, the receive path parks). */
+#define MESHQ_N 3
+static struct {
+    volatile bool full;
+    bool sign;
+    int len;
+    char wire[XPRS_MAX_WIRE + 1];
+} s_meshq[MESHQ_N];
+
+/* A translation is this gateway's own composition: XPRS.md 9.11.5 has its
+ * `via:` name the gateway. The relay path (bridge_out, xb_offer) refuses a
+ * wire whose `via:` already names this station, as a packet it has relayed
+ * before, so it dropped every translation on the station that made it; the
+ * only copies that got anywhere were the echo carousel's, minutes later
+ * (2026-09-19, a DM from the Meshtastic phone app that the bridge acked and
+ * nobody on XPRS ever saw). So it leaves the way our own packets leave, on
+ * the same gates bridge_out applies: never onto LoRa as XPRS (every LoRa
+ * station translates for itself), never back to Meshtastic, and scope:local
+ * never onto the internet. idx_task only. */
+static void mesh_out(const char *wire, int len)
+{
+    echo_keep(wire, len);
+    bool bridge = xcfg_get_bool("bridge_on", true);
+    bool local = wire_scope_local(wire, len);
+    if (xcfg_get_bool("igate_on", true)) xprslan_send(wire, len);
+    if (bridge && xcfg_get_bool("espnow_on", true)) xprsnow_send(wire, len);
+    if (bridge && xprsble_is_active()) xprsble_send(wire, len);
+    if (bridge && !local && xprsrns_is_up()) xprsrns_send(wire, len);
+}
+
+/* The LoRa task, under the bridge's mutex: a copy and a flag, nothing else. */
+static void mesh_deliver(const char *wire, int len, bool sign)
+{
+    if (len <= 0 || len > XPRS_MAX_WIRE) return;
+    for (int i = 0; i < MESHQ_N; i++) {
+        if (s_meshq[i].full) continue;
+        memcpy(s_meshq[i].wire, wire, (size_t)len);
+        s_meshq[i].wire[len] = 0;
+        s_meshq[i].len = len;
+        s_meshq[i].sign = sign;
+        s_meshq[i].full = true;            /* last: idx_task reads the rest */
+        return;
+    }
+    ESP_LOGW(TAG, "mesh: %s dropped, %d still waiting to go out",
+             sign ? "receipt" : "translation", MESHQ_N);
+}
+
+/* The time field for a translation. To the minute, so two bridges hearing
+ * the same Meshtastic frame compose the same packet and the same section 5
+ * identifier; a station with no clock says epoch:, which cannot be shared
+ * and does not need to be (docs/meshtastic.md). */
+static int mesh_stamp(char *out, int cap, bool to_minute)
+{
+    time_field(out, cap);
+    int n = (int)strlen(out);
+    if (to_minute && strncmp(out, "ts:", 3) == 0 && n == 22) {
+        out[20] = '0';
+        out[21] = '0';
+    }
+    return n;
+}
+
+static bool api_send_wire(const char *wire, int len, const char *bearer,
+                          char *took, size_t took_cap);
+
+/* idx_task: send what mesh_deliver parked; sign a gateway receipt first. */
+static void mesh_drain(void)
+{
+    for (int i = 0; i < MESHQ_N; i++) {
+        if (!s_meshq[i].full) continue;
+        char w[XPRS_MAX_WIRE + 1];
+        int n = s_meshq[i].len;
+        bool sign = s_meshq[i].sign;
+        memcpy(w, s_meshq[i].wire, (size_t)n + 1);
+        s_meshq[i].full = false;
+        if (!sign) {
+            s_heard_count++;
+            seen_note(w, n, "lora", 0);
+            ESP_LOGI(TAG, "mesh   %3dB  %s", n, w);
+            mesh_out(w, n);
+            continue;
+        }
+        if (n + SIG_ROOM <= XPRS_MAX_WIRE) n = sign_wire(w, n, sizeof w);
+        if (n > 0 && n <= XPRS_MAX_WIRE && api_send_wire(w, n, NULL, NULL, 0))
+            ESP_LOGI(TAG, "mesh: gateway receipt %.60s", w);
+    }
 }
 
 /* ── What we say ────────────────────────────────────────────────────────── */
@@ -3141,7 +3309,7 @@ static uint32_t boot_epoch(void) { return s_boot_epoch; }
 
 static bool verified(const xprs_t *p)
 {
-    char from[10];
+    char from[XPRS_CALL_LEN];
     if (!xprs_get_str(p, "f", from, sizeof from)) return false;
     const uint8_t *k = peer_key(from);
     return k && xprsid_verify(p, k);
@@ -3709,14 +3877,14 @@ static bool chat_active(void)   /* the interactive panel, not the table */
 }
 
 static int  s_room;                       /* 0..2 fixed, else a peer index */
-static char s_peer[CHAT_PEERS_MAX][10];   /* callsigns offered for a 1:1  */
+static char s_peer[CHAT_PEERS_MAX][XPRS_CALL_LEN];   /* callsigns offered for a 1:1  */
 static int  s_peer_n;
 /* The open conversation, remembered BY CALLSIGN, not by index -- an index
  * into a list that is rebuilt names a different person the moment the list
  * changes, which is the "callsigns keep moving under me" bug. Empty when a
  * fixed room is open. While it is set the peer list is frozen: nothing is
  * added, moved or taken away under the person being read. */
-static char s_open_call[10];
+static char s_open_call[XPRS_CALL_LEN];
 /* A 1:1 arrived from someone not on the (frozen) rail: the bell goes on the
  * PEOPLE heading until the list is next rebuilt and they appear. */
 static bool s_people_unread;
@@ -3741,7 +3909,7 @@ static int  s_compose_n;
 static struct {
     volatile bool full;
     char text[121];
-    char to[10];        /* empty unless a 1:1 */
+    char to[XPRS_CALL_LEN];        /* empty unless a 1:1 */
     uint8_t kind;       /* room_kind_t for the fixed rooms, RM_FIXED = dm */
 } s_outbox;
 
@@ -3760,7 +3928,7 @@ static int room_of(const xst_chat_t *c)
 {
     if (c->kind == 3) return RM_SOCIAL;
     if (c->kind == 2) {
-        char me[10], f[10], t[10];
+        char me[XPRS_CALL_LEN], f[XPRS_CALL_LEN], t[XPRS_CALL_LEN];
         base_call(s_call, me, sizeof me);
         base_call(c->from, f, sizeof f);
         base_call(c->to, t, sizeof t);
@@ -3812,7 +3980,7 @@ static void chat_note_unread(const xprs_t *p)
     if (!xprs_get_str(p, "f", c.from, sizeof c.from)) return;
     char dst[16], sc[12];
     bool direct = xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#';
-    if (direct) snprintf(c.to, sizeof c.to, "%.9s", dst);
+    if (direct) snprintf(c.to, sizeof c.to, "%.11s", dst);
     c.kind = status ? 3 : direct ? 2
            : (xprs_get_str(p, "scope", sc, sizeof sc) &&
               strcmp(sc, "local") == 0) ? 1 : 0;
@@ -4366,13 +4534,13 @@ static void ui_render(void)
                                           sizeof(xst_chat_t) * XST_CHAT_MAX);
         int cn = rows ? xst_chat(rows, XST_CHAT_MAX) : 0;
         uint32_t nowep = xst_epoch_now();
-        char me[10];
+        char me[XPRS_CALL_LEN];
         base_call(s_call, me, sizeof me);
         int mn = 0;
         for (int i = cn - 1; i >= 0 && mn < XUI_CHAT_MSGS; i--) {
             if (room_of(&rows[i]) != s_room) continue;
             xui_msg_t *m = &mm[mn++];
-            char f[10];
+            char f[XPRS_CALL_LEN];
             base_call(rows[i].from, f, sizeof f);
             m->outgoing = strcasecmp(f, me) == 0;
             snprintf(m->from, sizeof m->from, "%s", rows[i].from);
@@ -4478,7 +4646,7 @@ static void ui_render(void)
                 const char *ptext = have ? parent.text : NULL;
                 if (ptext)
                     snprintf(r->detail, sizeof r->detail,
-                             "%s replying to %s (\"%.30s\"): %.90s",
+                             "%s replying to %s (\"%.30s\"): %.86s",
                              c->from, pfrom, ptext, c->text);
                 else
                     snprintf(r->detail, sizeof r->detail,
@@ -5435,8 +5603,12 @@ static void idx_task(void *arg)
              * a word only this project's own receivers understood, while
              * `count:` and `uptime:` on the very same beacon already carry
              * the depth and the wakefulness a reader needs. */
+            mt_mesh_stats_t mts;
+            bool mt_bridge = xprslora_mt_stats(&mts) &&
+                             xcfg_get_bool("mt_bridge", true);
             if (!serve[0])
-                snprintf(sbuf, sizeof sbuf, "archive");
+                snprintf(sbuf, sizeof sbuf, "archive%s",
+                         mt_bridge ? ",meshtastic" : "");
             else
                 snprintf(sbuf, sizeof sbuf, "%s", serve);
             if (strcmp(sbuf, "none") == 0) { last_announce_s = now_s; goto no_announce; }
@@ -5473,7 +5645,7 @@ no_announce:
 
         /* 25.9: the policy this station's owner set, on request. */
         if (s_qpol.pending) {
-            char to[10], bearer[8];
+            char to[XPRS_CALL_LEN], bearer[8];
             snprintf(to, sizeof to, "%s", (const char *)s_qpol.to);
             snprintf(bearer, sizeof bearer, "%s", (const char *)s_qpol.bearer);
             s_qpol.pending = false;
@@ -5583,7 +5755,7 @@ no_announce:
          * much is held. Zero is answered rather than met with silence --
          * "nothing for you" and "did not hear you" are different facts. */
         if (s_qmail.pending) {
-            char call[10], to[10], bearer[8];
+            char call[XPRS_CALL_LEN], to[XPRS_CALL_LEN], bearer[8];
             snprintf(call, sizeof call, "%s", (const char *)s_qmail.call);
             snprintf(to, sizeof to, "%s", (const char *)s_qmail.to);
             snprintf(bearer, sizeof bearer, "%s", (const char *)s_qmail.bearer);
@@ -5612,7 +5784,7 @@ no_announce:
             s_rcpt_in.pending = false;
             esp_task_wdt_reset();
             xprs_t rp;
-            char r[XPRS_ID_LEN] = "", from[10] = "";
+            char r[XPRS_ID_LEN] = "", from[XPRS_CALL_LEN] = "";
             if (xprs_parse(s_rcpt_in.wire, s_rcpt_in.len, &rp) &&
                 xprs_get_str(&rp, "r", r, sizeof r) &&
                 xprs_get_str(&rp, "f", from, sizeof from)) {
@@ -5637,7 +5809,7 @@ no_announce:
             s_rcpt_out.pending = false;
             esp_task_wdt_reset();
             xprs_t mp;
-            char from[10] = "", id[XPRS_ID_LEN] = "";
+            char from[XPRS_CALL_LEN] = "", id[XPRS_ID_LEN] = "";
             if (xprs_parse(s_rcpt_out.wire, s_rcpt_out.len, &mp) &&
                 xprs_get_str(&mp, "f", from, sizeof from) &&
                 xprs_id_of(s_rcpt_out.wire, s_rcpt_out.len, id)) {
@@ -5666,7 +5838,7 @@ no_announce:
          * and does nothing with them. Until that is built, held mail stops
          * being re-aired because time passed, not because it arrived. */
         if (s_rel.pending && s_index && xcfg_get_bool("index_on", true)) {
-            char rcall[10], rbearer[8];
+            char rcall[XPRS_CALL_LEN], rbearer[8];
             snprintf(rcall, sizeof rcall, "%s", (const char *)s_rel.call);
             snprintf(rbearer, sizeof rbearer, "%s", (const char *)s_rel.bearer);
             s_rel.pending = false;
@@ -5882,7 +6054,7 @@ no_announce:
             s_named_at = nows ? nows : 1;
             const char *list = xcfg_get("archivers", "");
             if (!list[0]) list = xcfg_get("supers", "");  /* the old key */
-            char one[10];
+            char one[XPRS_CALL_LEN];
             int w = 0;
             for (const char *c = list; ; c++) {
                 if (*c && *c != ',' && w < (int)sizeof one - 1) {
@@ -6022,6 +6194,7 @@ named_done:
             }
             s_outbox.full = false;
         }
+        mesh_drain();
 
         /* A saying is worth a write of its own: they are rare, and losing
          * the last one to a power pull is exactly the complaint this store
@@ -6229,9 +6402,18 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
     #define WANT(name) (!bearer || strcmp(bearer, name) == 0)
     bool lan = WANT("lan")    && xprslan_send(wire, len);
     bool now = WANT("espnow") && xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
-    bool lra = WANT("lora")   && xprslora_is_active() && xprslora_send(wire, len);
+    /* 9.11.1 again: our own Local room stays off the radio band and the
+     * internet, unless the operator made this LoRa a local bearer. */
+    bool local = wire_scope_local(wire, len);
+    bool lora_ok = !local || xcfg_get_bool("lora_local", false);
+    bool lra = WANT("lora")   && lora_ok && xprslora_is_active() &&
+               xprslora_send(wire, len);
+    /* A message of ours, or one a phone handed us, reaches Meshtastic users
+     * too; a sealed one addressed to one is refused out loud (mt_mesh). */
+    if (WANT("lora")) xprslora_mt_offer(wire, len, MT_XPRS_OWN);
     bool ble = WANT("ble")    && xprsble_is_active() && xprsble_send(wire, len);
-    bool rns = WANT("rns")    && xprsrns_is_up() && xprsrns_send(wire, len);
+    bool rns = WANT("rns")    && !local && xprsrns_is_up() &&
+               xprsrns_send(wire, len);
     #undef WANT
     if (took && took_cap) {
         int n = 0;
@@ -6261,11 +6443,11 @@ static int api_lora_json(char *buf, size_t cap)
     xb_duty_report_t r;
     xprslora_duty(&r);
     const xprslora_region_t *reg = xprslora_region();
-    return snprintf(buf, cap,
+    int n = snprintf(buf, cap,
         "\"lora\":{\"region\":\"%s\",\"freq_hz\":%lu,"
         "\"duty_ms\":%lu,\"spent_ms\":%lu,\"free_ms\":%lu,"
         "\"reserve_ms\":%lu,\"held\":%lu,\"deferred\":%lu,"
-        "\"stale\":%lu,\"next_free_ms\":%lu}",
+        "\"stale\":%lu,\"next_free_ms\":%lu",
         reg->name,
         (unsigned long)(s_board->lora->freq_hz ? s_board->lora->freq_hz
                                                : reg->freq_hz),
@@ -6273,6 +6455,26 @@ static int api_lora_json(char *buf, size_t cap)
         (unsigned long)r.free_ms, (unsigned long)r.reserve_ms,
         (unsigned long)r.held, (unsigned long)r.deferred,
         (unsigned long)r.stale, (unsigned long)r.next_free_ms);
+    /* The Meshtastic repeater and bridge (docs/meshtastic.md), counted, so
+     * what it did is read off the board rather than out of a serial log. */
+    mt_mesh_stats_t mt;
+    if (n > 0 && (size_t)n < cap && xprslora_mt_stats(&mt))
+        n += snprintf(buf + n, cap - (size_t)n,
+            ",\"mt\":{\"rx\":%lu,\"decoded\":%lu,\"relayed\":%lu,"
+            "\"text_in\":%lu,\"text_out\":%lu,\"dm_acked\":%lu,"
+            "\"dm_rekeyed\":%lu,\"dm_not_here\":%lu,\"receipts\":%lu,"
+            "\"key_asks\":%lu,\"pki_fail\":%lu,\"dropped\":%lu}",
+            (unsigned long)mt.rx_frames, (unsigned long)mt.rx_decoded,
+            (unsigned long)mt.relayed, (unsigned long)mt.text_in,
+            (unsigned long)mt.text_out, (unsigned long)mt.dm_acked,
+            (unsigned long)mt.dm_rekeyed, (unsigned long)mt.dm_not_here,
+            (unsigned long)mt.receipts, (unsigned long)mt.key_asks,
+            (unsigned long)mt.pki_fail, (unsigned long)mt.dropped);
+    if (n > 0 && (size_t)n + 1 < cap) {
+        buf[n++] = '}';
+        buf[n] = 0;
+    }
+    return n;
 }
 
 static int api_features_json(char *buf, size_t cap)
@@ -7236,11 +7438,22 @@ void xapp_run(const xapp_board_t *board)
                 for (int i = 0; i < nreg; i++)
                     if (strcasecmp(regs[i].name, rn) == 0) { reg = &regs[i]; break; }
             }
+            if (rn && rn[0] && reg == &regs[0] && strcasecmp(rn, reg->name) != 0)
+                ESP_LOGW(TAG, "lora_region %s is not a Meshtastic region -- "
+                              "using %s", rn, reg->name);
+            lc.region = reg->name;
             if (!lc.freq_hz) lc.freq_hz = reg->freq_hz;
             const char *fq = xcfg_get("lora_freq_hz", NULL);
-            if (fq && fq[0]) lc.freq_hz = (uint32_t)strtoul(fq, NULL, 10);
-            const char *pf = xcfg_get("lora_profile", NULL);
-            if (pf && strcasecmp(pf, "far") == 0) lc.sf = 9;
+            if (fq && fq[0]) {
+                lc.freq_hz = (uint32_t)strtoul(fq, NULL, 10);
+                if (lc.freq_hz != reg->freq_hz)
+                    ESP_LOGW(TAG, "lora_freq_hz %lu is off Meshtastic's slot "
+                                  "(%lu): no Meshtastic node will hear this "
+                                  "station", (unsigned long)lc.freq_hz,
+                             (unsigned long)reg->freq_hz);
+            }
+            /* lora_profile (`far`, SF9) went with the move to LongFast:
+             * every station on a channel has to share one modulation. */
             if (xprslora_start(s_call, &lc) == ESP_OK) {
                 xprslora_set_rx_cb(on_lora);
                 uint32_t duty = reg->duty_ms, resv = reg->reserve_ms,
@@ -7256,6 +7469,24 @@ void xapp_run(const xapp_board_t *board)
                  * always answered NULL. Registered now. */
                 if ((v = xcfg_get("lora_pace_ms", NULL)) && v[0])
                     xprslora_set_pace((uint32_t)strtoul(v, NULL, 10));
+                /* Meshtastic: the repeater and the bridge (docs/meshtastic.md). */
+                mt_mesh_cfg_t mc = {
+                    .repeat = xcfg_get_bool("mt_repeat", true),
+                    .bridge = xcfg_get_bool("mt_bridge", true),
+                    .bcast_per_hour = 12,
+                    .nodeinfo_min = 180,
+                };
+                if ((v = xcfg_get("mt_bcast_hr", NULL)) && v[0])
+                    mc.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
+                if ((v = xcfg_get("mt_ni_min", NULL)) && v[0])
+                    mc.nodeinfo_min = (uint16_t)strtoul(v, NULL, 10);
+                static const xprslora_mt_hooks_t hooks = {
+                    .deliver = mesh_deliver,
+                    .stamp = mesh_stamp,
+                    .nick_of = NULL,
+                };
+                if (mc.repeat || mc.bridge)
+                    xprslora_mt_start(&hooks, &mc, xcfg_get("nick", ""));
             }
         }
         if (!xprslora_is_active())

@@ -39,7 +39,7 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 #define UNLOCK() portEXIT_CRITICAL(&s_mux)
 #endif
 
-static char s_call[10];
+static char s_call[XPRS_CALL_LEN];
 static int  s_tz_off;
 static bool s_tz_known;     /* false: nobody has said, and s_tz_off is 0 */
 
@@ -175,7 +175,7 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
 
 void xst_chat_note(const xprs_t *p)
 {
-    char from[10], text[120];
+    char from[XPRS_CALL_LEN], text[120];
     char type[16];
     xprs_type(p, type, sizeof type);
     /* A status (section 27) is a published saying rather than a
@@ -195,7 +195,7 @@ void xst_chat_note(const xprs_t *p)
     if (!xprs_get_str(p, "r", row.r, sizeof row.r)) row.r[0] = 0;
     char sc[12], dst[16];
     bool direct = xprs_get_str(p, "d", dst, sizeof dst) && dst[0] != '#';
-    if (direct) snprintf(row.to, sizeof row.to, "%.9s", dst);
+    if (direct) snprintf(row.to, sizeof row.to, "%.11s", dst);
     if (status)
         row.kind = 3;                                  /* a publication */
     else if (direct)
@@ -207,7 +207,7 @@ void xst_chat_note(const xprs_t *p)
         row.kind = 0;                                  /* global, default */
     row.ep = xst_epoch_now();
     {   /* XPRS 13.5: what a carrier sorts by when the store is full. */
-        char u[10];
+        char u[XPRS_CALL_LEN];
         row.urg = 1;                                   /* normal by default */
         if (xprs_get_str(p, "urg", u, sizeof u)) {
             if (strcmp(u, "low") == 0) row.urg = 0;
@@ -260,7 +260,7 @@ void xst_chat_note(const xprs_t *p)
 
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
 {
-    char call[10];
+    char call[XPRS_CALL_LEN];
     if (!xprs_get_str(p, "f", call, sizeof call)) return false;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return false;
 
@@ -540,10 +540,10 @@ static void xst_base(const char *in, char *out, int cap)
     out[i] = 0;
 }
 
-int xst_chat_peers(const char *self, char out[][10], int max)
+int xst_chat_peers(const char *self, char out[][XPRS_CALL_LEN], int max)
 {
     if (!out || max <= 0) return 0;
-    char me[10];
+    char me[XPRS_CALL_LEN];
     xst_base(self, me, sizeof me);
     int n = 0;
     /* Newest exchange first: walk the ring by seq (xst_chat already does),
@@ -570,7 +570,7 @@ int xst_chat_peers(const char *self, char out[][10], int max)
     int cn = xst_chat(rows, XST_CHAT_MAX);
     for (int i = 0; i < cn && n < max; i++) {
         if (rows[i].kind != 2) continue;
-        char f[10], t[10];
+        char f[XPRS_CALL_LEN], t[XPRS_CALL_LEN];
         xst_base(rows[i].from, f, sizeof f);
         xst_base(rows[i].to, t, sizeof t);
         const char *peer = strcasecmp(t, me) == 0 ? f
@@ -579,20 +579,20 @@ int xst_chat_peers(const char *self, char out[][10], int max)
         bool seen = false;
         for (int j = 0; j < n; j++)
             if (strcasecmp(out[j], peer) == 0) { seen = true; break; }
-        if (!seen) snprintf(out[n++], 10, "%s", peer);
+        if (!seen) snprintf(out[n++], XPRS_CALL_LEN, "%s", peer);
     }
     /* Insertion sort, case-insensitive; n <= max <= a handful. memmove, not
      * snprintf, because the slots overlap and -Werror=restrict rejects a
      * copy between them. */
     for (int i = 1; i < n; i++) {
-        char v[10];
-        memcpy(v, out[i], 10);
+        char v[XPRS_CALL_LEN];
+        memcpy(v, out[i], XPRS_CALL_LEN);
         int j = i - 1;
         while (j >= 0 && strcasecmp(out[j], v) > 0) {
-            memmove(out[j + 1], out[j], 10);
+            memmove(out[j + 1], out[j], XPRS_CALL_LEN);
             j--;
         }
-        memcpy(out[j + 1], v, 10);
+        memcpy(out[j + 1], v, XPRS_CALL_LEN);
     }
     return n;
 }
@@ -600,14 +600,14 @@ int xst_chat_peers(const char *self, char out[][10], int max)
 bool xst_heard(const char *call, int in_range_sec)
 {
     if (!call || !call[0]) return false;
-    char want[10];
+    char want[XPRS_CALL_LEN];
     xst_base(call, want, sizeof want);
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     bool fresh = false;
     LOCK();
     for (int i = 0; i < XST_SEEN_MAX; i++) {
         if (!s_seen[i].call[0]) continue;
-        char b[10];
+        char b[XPRS_CALL_LEN];
         xst_base(s_seen[i].call, b, sizeof b);
         if (strcasecmp(b, want) != 0) continue;
         if ((now - s_seen[i].last_ms) / 1000 < (uint32_t)in_range_sec) {
@@ -812,7 +812,7 @@ int xst_stats_series(int view, uint16_t *dev, uint16_t *rx, uint16_t *tx,
 /* 36.10: one ask per peer per absence. The last-heard side lives in the
  * devices ring; this adds only "when did we last ask". */
 #define XST_ASK_MAX 8
-static struct { char call[10]; uint32_t asked_ms; } s_ask[XST_ASK_MAX];
+static struct { char call[XPRS_CALL_LEN]; uint32_t asked_ms; } s_ask[XST_ASK_MAX];
 
 bool xst_catchup_due(const char *call, int absent_sec)
 {

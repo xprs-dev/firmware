@@ -175,6 +175,15 @@ int main(void)
     CHECK(!xprs_is_self_generated("XE1ABC", 6), "XE1ABC (Mexico) is not");
     CHECK(!xprs_is_self_generated("X6ABC", 5), "X6 is not an XPRS prefix");
     CHECK(!xprs_is_self_generated("X", 1), "one character is not a callsign");
+    CHECK(xprs_is_foreign_call("MT0C39F654", 10), "a Meshtastic node");
+    CHECK(xprs_is_foreign_call("MCA1B2C3D4", 10), "a MeshCore node");
+    CHECK(!xprs_is_foreign_call("MT0c39f654", 10), "lowercase hex is not one");
+    CHECK(!xprs_is_foreign_call("MT0C39F65", 9), "matched whole: nine digits");
+    CHECK(!xprs_is_foreign_call("MT0C39F6541", 11), "matched whole: eleven");
+    CHECK(!xprs_is_foreign_call("M0XYZ", 5), "a UK callsign is not one");
+    CHECK(xprs_is_unissued("MT0C39F654", 10) && xprs_is_unissued("X1QZ3N", 6) &&
+          !xprs_is_unissued("CT1ABC-9", 8), "unissued: foreign or X1 to X5");
+    CHECK(xprs_is_station("MT0C39F654", 10), "a foreign node is a station, not a group");
 
     /* 4b. uptime:/lifetime: are ordinary qty fields — parse, survive a
      * round-trip, and never disturb the identifier derivation. */

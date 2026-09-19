@@ -40,6 +40,12 @@ extern "C" {
 #define XPRS_MAX_FIELDS 32
 /* An identifier: 6 lowercase hex characters + NUL. */
 #define XPRS_ID_LEN     7
+/* A callsign buffer, NUL included. Callsigns have no fixed length (section
+ * 3), and the stored ones used to be 10 wide, which cut a Meshtastic node's
+ * `MT` + 8 hex digits to nine and addressed every reply to somebody else.
+ * 12 holds that, an X callsign of five characters with a -99 suffix, and
+ * CT1ABC-10. */
+#define XPRS_CALL_LEN   12
 
 typedef struct {
     const char *key;   /* into the caller's buffer */
@@ -153,6 +159,16 @@ bool xprs_is_station(const char *addr, int len);
  * an issued callsign. Nothing can tell whether any OTHER callsign was really
  * issued (section 6.4.2); this answers only the question the rule asks. */
 bool xprs_is_self_generated(const char *call, int len);
+
+/* Is [call] a node of another network, written as an XPRS callsign by a
+ * gateway: `MT` (Meshtastic) or `MC` (MeshCore, reserved) followed by
+ * exactly eight uppercase hexadecimal digits of the node number, matched
+ * whole (docs/meshtastic.md)? Nobody issued it, nobody can sign for it. */
+bool xprs_is_foreign_call(const char *call, int len);
+
+/* Self-generated (X1 to X5) or foreign: no radio authority issued it, so
+ * it may never be originated onto licensed spectrum (section 6.4.1). */
+bool xprs_is_unissued(const char *call, int len);
 
 /* Rebuild [wire] with [self] appended to via: (created before m: when absent),
  * which is what a relay transmits (section 13). Neither the identifier nor a

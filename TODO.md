@@ -2,6 +2,41 @@
 
 Work this firmware needs, written down with enough context to be picked up cold.
 
+## Meshtastic: what is left after the ESP32 half (2026-09-19)
+
+**Status: the ESP32 boards run it and it is bench-validated both ways against
+a stock Meshtastic 2.7.26 node and the Meshtastic Android app
+(docs/meshtastic.md, "Measured on the bench"). Anything new here follows
+docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
+
+1. **Port the P1-Pro.** It still runs SF7 and is deaf to the fleet. RadioLib's
+   `begin()` on LongFast (SF11, 250 kHz, CR 5, sync 0x2B, preamble 16, at
+   `mt_slot_freq_hz()`), `scanChannel()` for listen-before-talk, the
+   `xprs_meshtastic` component by symlink into `firmware/lib` (its
+   `library.json` is ready), and `mt_aes_encrypt_block()` over the CC310
+   (`Adafruit_nRFCrypto`) or mbedtls's `aes.c`, since `lib/mbedtls_ecp` has no
+   AES. Flash it by cable: once the rest of the fleet is on LongFast, nothing
+   can reach it over the air.
+2. **The app on a phone.** Done in the app and the chat wapp, host-tested, and
+   checked on the desktop against the bench (app/docs/meshtastic.md section
+   5). Not yet seen on a phone, and not yet seen on any screen: the chat's
+   Meshtastic room notes and the finder's "via Meshtastic" row were tested in
+   the chat harness only. The bundled chat (0.7.28) and archiver (0.7.6) are
+   rebuilt in `assets/wapps`.
+3. **Soak the Heltec's heap.** With the bridge on, free heap is steady at
+   11.8 KB but the minimum ever reached 5.0 KB after 90 s and was still
+   falling slowly. Run it for a day and read `min=` on the alive line; if it
+   reaches three digits, shrink `MT_SMALL` further or give something else up.
+4. **The witness T-Deck** (`DC:DA:0C:39:F6:54`) is on stock Meshtastic. Its
+   XPRS identity (callsign X3S7S8) is backed up outside the repository, key
+   included, as `~/xprs-nvs-backups/2026-09-19/tdeck2_X3S7S8_nvs_backup.bin`
+   (NVS, 0x9000, 24 KB): to restore, flash the T-Deck image by the three-write
+   move (docs/esp32.md) and write the NVS back.
+5. **kv4p (multiboard) does not build**, and did not before this work:
+   `xprs_api.c` calls `esp_core_dump_get_summary()` and the kv4p sdkconfig has
+   `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` unset (docs/esp32.md says it is not
+   optional on any board). The SA818 gate now also refuses `MT`/`MC` senders.
+
 ## Measure the long-range PHY
 
 **Status: the code is written and has never been proven to do anything.**
@@ -178,8 +213,8 @@ Fixed the same day:
 
 ## Flash the P1-Pro once by cable, then prove the no-cable update
 
-**Status: everything is built and half of it is proven; one physical action
-blocks the rest.**
+**Status: step 1 is done (2026-09-05, by cable, 0.2.0 running); step 2 is
+the open one.**
 
 The remote-update feature (`models/sensecap-p1-pro/firmware/src/update.{h,cpp}`,
 `tools/push_firmware_p1.py`, commit bc960b6) was tested over the air on
@@ -193,11 +228,15 @@ which a pole unit does not have.
 
 ### The steps
 
-1. Plug the P1-Pro into USB-C (or double-tap reset for the UF2 volume) and
-   flash the already-built 0.2.0: `cd models/sensecap-p1-pro/firmware &&
-   pio run -t upload`. This one image carries the broadcast intake, the
-   869.5 MHz move (the unit is currently deaf to the fleet's LoRa, still on
-   868.0) and the duty ledger.
+1. ~~Plug the P1-Pro into USB-C and flash 0.2.0.~~ **Done 2026-09-05.**
+   `~/.pio-venv/bin/pio run -t upload --upload-port /dev/serial/by-id/usb-Seeed_Studio_8044_61022839E75C91AE-if00`
+   from `models/sensecap-p1-pro/firmware` (the 0.1.6 image enumerated under
+   that `8044` name, not the pinned `XIAO_nRF52840` one; 0.2.0 enumerates
+   under the pinned name again). Key and callsign survived (`X3S7S8`, boot
+   36), no probation on a cable flash. Both directions to the T-Deck were
+   measured before and after -- see the P1-Pro README, "Measured … 2026-09-05".
+   The earlier "deaf on 868.0" note was wrong for this unit: 0.1.6 already
+   sat on 869.5 and exchanged LoRa with the T-Deck.
 2. Bump `version.txt` to 0.2.1, `pio run`, then the real test with no cable
    anywhere:
    `tools/push_firmware_p1.py --gateway <tdeck-ip> --to <callsign>

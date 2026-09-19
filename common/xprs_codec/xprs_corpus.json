@@ -50,6 +50,16 @@
 "id": "6ad6e3"
 },
 {
+"wire": "t:message f:MTA1B2C3D4 ts:2026-09-19_12:04:00 zmid:a1b2c3d44683c668 via:X3DCK0 m:anyone on the XPRS side?",
+"bytes": 105,
+"id": "7ceae7"
+},
+{
+"wire": "t:message f:X1QZ3N d:MTA1B2C3D4 ts:2026-09-19_12:05:10 m:yes, on the quay",
+"bytes": 73,
+"id": "7108b6"
+},
+{
 "wire": "t:message f:X1QZ3N d:LISBOA ts:2026-08-08_14:26:40 tag:vacation m:back on Monday, radio off until then",
 "bytes": 102,
 "id": "e95a5d"
@@ -168,6 +178,11 @@
 "wire": "t:identity f:X1QZ3N ts:2026-08-08_14:26:40 k:npub1qz3n7fu9j9uenmyva7ha6x9eqwymytv2847ccv4vxdmn45y50q7h7k5f nick:joao sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 181,
 "id": "5c2ef9"
+},
+{
+"wire": "t:identity f:MTA1B2C3D4 ts:2026-09-19_12:04:00 scope:local nick:Maria-boat zmid:a1b2c3d41581bdbe via:X3DCK0",
+"bytes": 107,
+"id": "560357"
 },
 {
 "wire": "t:identity f:X1QZ3N ts:2026-08-08_14:26:40 nick:joao file:nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:sailing the Algarve coast",
@@ -440,6 +455,11 @@
 "id": "d1718d"
 },
 {
+"wire": "t:receipt f:X3DCK0 d:X1QZ3N ts:2026-09-19_12:05:14 r:7108b6 s:ack sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 130,
+"id": "ee607c"
+},
+{
 "wire": "t:message f:X3RLY7 ts:2026-08-08_14:26:40 dest:38.72,-9.14 near:30km urg:high until:2026-08-15_00:00:00 m:water is off in the old town until Friday",
 "bytes": 147,
 "id": "fd1224"
@@ -493,6 +513,11 @@
 "wire": "t:warning f:X3RLY7 pos:41.8012,-6.7543 rad:9km kind:fire sev:danger scope:PT,ES ts:2026-08-08_14:26:40",
 "bytes": 102,
 "id": "b42027"
+},
+{
+"wire": "t:message f:MTA1B2C3D4 d:X1QZ3N ts:2026-09-19_12:06:00 scope:local r:7108b6 zmid:a1b2c3d4bc4c2495 via:X3DCK0 m:thanks, see you there",
+"bytes": 132,
+"id": "282e61"
 },
 {
 "wire": "t:mailbox f:X1QZ3N ts:2026-08-08_14:26:40 hold:X3RLY7,X32DVA sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
@@ -753,6 +778,36 @@
 "wire": "t:result f:X4PL3M d:X1A67X ts:2026-08-19_18:41:02 r:44df54 code:200 state:on sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 141,
 "id": "c587af"
+},
+{
+"wire": "t:identity f:X4DR7K k:npub1pl3m7fu9j9uenmyva7ha6x9eqwymytv2847ccv4vxdmn45y50q7h7k5f nick:frontdoor url:http://192.168.1.9/door/snapshot.jpg ts:2026-08-19_18:40:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 227,
+"id": "ca7933"
+},
+{
+"wire": "t:observation f:X4DR7K state:pressed url:http://192.168.1.9/door/snapshot.jpg ts:2026-08-19_18:40:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 165,
+"id": "4921b5"
+},
+{
+"wire": "t:observation f:X4DR7K state:motion url:http://192.168.1.9/door/snapshot.jpg ts:2026-08-19_18:40:03 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 164,
+"id": "5ac17a"
+},
+{
+"wire": "t:observation f:X4DR7K state:clear ts:2026-08-19_18:40:33 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 122,
+"id": "09e7f5"
+},
+{
+"wire": "t:observation f:X4DR7K d:X1A67X r:44df54 s:snapshot url:http://192.168.1.9/door/snapshot.jpg ts:2026-08-19_18:40:11 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 180,
+"id": "77df29"
+},
+{
+"wire": "t:observation f:X4DR7K d:X1A67X r:5ab0c3 s:stream url:http://192.168.1.9/door/stream.mjpeg ts:2026-08-19_18:40:21 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 178,
+"id": "fb5725"
 },
 {
 "wire": "t:command f:X1RD89 d:X3P7QK ts:2026-08-20_14:26:40 cmd:update sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
@@ -1018,6 +1073,16 @@
 "wire": "t:receipt f:X1RD89 d:X1QZ3N r:d8b7be s:no sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:no espnow hardware",
 "bytes": 127,
 "id": "92f1c3"
+},
+{
+"wire": "t:channel f:X3DCK0 freq:869.525MHz mode:lora bw:250kHz ch:longfast power:14dBm kind:gateway ts:2026-09-19_12:00:00",
+"bytes": 114,
+"id": "b36dc4"
+},
+{
+"wire": "t:service f:X3DCK0 serve:archive,meshtastic count:212 ts:2026-09-19_12:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 141,
+"id": "0c5d1a"
 },
 {
 "wire": "t:observation f:X1BOA3 pos:38.6902,-9.4012 spd:6kt dir:275deg o:262degm type:boat ts:2026-08-08_14:26:40",

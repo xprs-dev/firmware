@@ -133,7 +133,7 @@ void xui_radar_blips(const xui_blip_t *blips, int n)
     if (n > XUM_DEV_ROWS) n = XUM_DEV_ROWS;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
-        snprintf(s_dev[i].call, sizeof s_dev[i].call, "%.9s", blips[i].label);
+        snprintf(s_dev[i].call, sizeof s_dev[i].call, "%.11s", blips[i].label);
         s_dev[i].bearer[0] = 0;
         s_dev[i].dist_m = blips[i].meters < 0 ? -1
                                               : (int)(blips[i].meters + 0.5f);
@@ -195,7 +195,7 @@ void xui_table_rows(const xui_row_t *rows, int n)
 {
     int nd = n > XUM_DEV_ROWS ? XUM_DEV_ROWS : (n < 0 ? 0 : n);
     for (int i = 0; i < nd; i++) {
-        snprintf(s_dev[i].call, sizeof s_dev[i].call, "%.9s", rows[i].cell[0]);
+        snprintf(s_dev[i].call, sizeof s_dev[i].call, "%.11s", rows[i].cell[0]);
         snprintf(s_dev[i].bearer, sizeof s_dev[i].bearer, "%.6s",
                  rows[i].cell[1]);
         /* "~123m" in the distance column, "-" when the link cannot say. */
@@ -209,7 +209,7 @@ void xui_table_rows(const xui_row_t *rows, int n)
     for (int i = 0; i < nc; i++) {
         uint8_t kind;
         const char *text = chat_kind_split(rows[i].cell[1], &kind);
-        snprintf(s_chat[i].from, sizeof s_chat[i].from, "%.9s", rows[i].cell[0]);
+        snprintf(s_chat[i].from, sizeof s_chat[i].from, "%.11s", rows[i].cell[0]);
         snprintf(s_chat[i].text, sizeof s_chat[i].text, "%.63s", text);
         s_chat[i].kind = kind;
     }
@@ -228,7 +228,7 @@ void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header)
      * reverses them itself. */
     for (int i = 0; i < n; i++) {
         const xui_msg_t *m = &msgs[n - 1 - i];
-        snprintf(s_chat[i].from, sizeof s_chat[i].from, "%.9s",
+        snprintf(s_chat[i].from, sizeof s_chat[i].from, "%.11s",
                  m->from[0] ? m->from : "me");
         snprintf(s_chat[i].text, sizeof s_chat[i].text, "%.63s", m->text);
         s_chat[i].kind = m->outgoing ? 2 : 0;

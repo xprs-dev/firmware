@@ -54,7 +54,16 @@ ET=~/.platformio/packages/tool-esptoolpy/esptool.py
 # 2026-09-02 holding only the IDF tools, and this script then failed every
 # chunk with "No such file or directory" -- the one failure mode the retry
 # loop cannot fix. esptool needs only pyserial, which the system python has.
-PY=${PY:-$(ls ~/.platformio/penv/bin/python 2>/dev/null || command -v python3)}
+# And when penv DOES exist it may lack pyserial (2026-09-19: every chunk
+# failed with an empty reason, ModuleNotFoundError: serial), so take the
+# first interpreter that can actually import it.
+if [ -z "${PY:-}" ]; then
+    for c in ~/.platformio/penv/bin/python ~/.pio-venv/bin/python \
+             ~/.espressif/python_env/*/bin/python "$(command -v python3)"; do
+        [ -x "$c" ] && "$c" -c 'import serial' 2>/dev/null && { PY=$c; break; }
+    done
+fi
+PY=${PY:?no python with pyserial found; set PY=}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 

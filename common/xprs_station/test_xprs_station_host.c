@@ -371,7 +371,7 @@ static void test_chat_peers(void)
     chat_msg(SELF, "X1ALPHA", "hi to alpha");     /* outgoing */
     chat_msg("X1ALPHA-2", SELF, "same person, suffix");  /* base collapses */
 
-    char peers[8][10];
+    char peers[8][XPRS_CALL_LEN];
     int n = xst_chat_peers(SELF, peers, 8);
     CHECK(n == 2, "two exchanged peers, got %d", n);
     CHECK(strcmp(peers[0], "X1ALPHA") == 0, "alphabetical first, got %s", peers[0]);

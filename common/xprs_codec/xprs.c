@@ -389,6 +389,22 @@ bool xprs_is_self_generated(const char *call, int len)
            call[1] >= '1' && call[1] <= '5';
 }
 
+bool xprs_is_foreign_call(const char *call, int len)
+{
+    if (!call || len != 10 || call[0] != 'M' || (call[1] != 'T' && call[1] != 'C'))
+        return false;
+    for (int i = 2; i < 10; i++) {
+        char c = call[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) return false;
+    }
+    return true;
+}
+
+bool xprs_is_unissued(const char *call, int len)
+{
+    return xprs_is_self_generated(call, len) || xprs_is_foreign_call(call, len);
+}
+
 int xprs_append_via(const char *wire, int len, const char *self,
                     char *out, int cap)
 {

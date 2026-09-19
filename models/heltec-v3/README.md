@@ -234,6 +234,12 @@ this board on LoRa.
 
 ## The radio's manners
 
+**Since 2026-09-19 the radio runs Meshtastic's LongFast** (SF11, 250 kHz,
+sync 0x2B) at 869.525 MHz, repeats Meshtastic traffic and bridges messages
+both ways; see docs/meshtastic.md. The Meshtastic bridge costs this board
+6.7 KB of internal heap, which it got from LVGL's pool (16 KB, measured 8.2 KB
+used, now 12). The paragraphs below describe the SF7 radio before that.
+
 Since 2026-08-31 the fleet sits at **869.5 MHz** -- ERC 70-03 band g3
 (869.40-869.65), 10% duty cycle and up to 27 dBm e.r.p. -- where 868.0 had a
 125 kHz channel straddling band g1's floor while paying g1's 1%. The bearer

@@ -96,6 +96,18 @@ counter (10.7) since it has no clock.
 (Earlier rows say `X54W6W`: that was the FICR-derived `X5` callsign this
 board wore before it had a key. `X5` is a group prefix, not a station's.)
 
+**Measured again 2026-09-05, before and after the cable flash 0.1.6 → 0.2.0,
+against the T-Deck `X3DCK0` (this station is `X3S7S8`):**
+
+| | BLE | LoRa |
+|---|---|---|
+| T-Deck → P1-Pro | direct, 14 beacons in 200 s at −43..−69 dBm (0.1.6: 9 in 180 s) | 3 of 3 bearer-pinned `t:message … m:lora check n` from `/api/xprs/send` heard direct at −26 dBm and bridged on as `via:X3S7S8`; the T-Deck's own beacons arrive by BLE first and their LoRa copy is swallowed by the duplicate ring, as expected |
+| P1-Pro → T-Deck | `/api/xprs/devices` on the T-Deck lists `X3S7S8` at `hops:0`, `age_s:0` within 15 s of the reboot | the LoRa-only `t:observation … link:lora peers:1` beacon of the new image reached the T-Dongle as `via:X3DCK0`, on BLE (−69 dBm) and from the T-Deck's LAN address -- the T-Dongle has no LoRa, so the T-Deck carried it |
+
+Key, callsign and boot counter survived the flash (boot 36); a cable flash
+does not start probation. Nothing on the console but `rx`/`aired` and the
+`alive` line: no `tn: adv configure`, no `lora: … failed`.
+
 That last line is the one worth having. A packet this chip composed went out
 on LoRa, was picked up by an ESP32, digipeated with two callsigns appended
 to `via:`, and put on the LAN. The shared codec and the shared bearer

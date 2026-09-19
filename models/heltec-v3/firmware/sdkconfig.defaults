@@ -117,7 +117,15 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # has a 320x240 dashboard using ~20 KB and a 32->24 KB trim there starved
 # the renderer into a 70-second reboot loop. The number is per board and
 # per screen, and it is measured every time.
-CONFIG_LV_MEM_SIZE_KILOBYTES=6
+#
+# 2026-09-19: this said 6 while the generated sdkconfig.heltec_v3 said 16,
+# and the generated file is what built (docs/esp32.md: a default fills only
+# keys the generated file lacks). Measured at 16 KB: `lvmem free=8208
+# used=50%`, so the screen now needs about 8.2 KB and 6 would not hold it.
+# 12 keeps a third spare and returns 4 KB to the heap, which the Meshtastic
+# bridge's 6 KB needed: with the bridge on and the pool at 16, free heap
+# was 7.9 KB and BLE advertising failed (BLE_INIT: Malloc failed).
+CONFIG_LV_MEM_SIZE_KILOBYTES=12
 
 # The NimBLE reclaim, restored. docs/esp32.md measured this table ON THIS
 # BOARD and recorded the result: free heap after BLE init 11,432 -> 29,408,
