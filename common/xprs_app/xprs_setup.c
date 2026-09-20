@@ -3,11 +3,13 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "xprs_tz.h"
 
 static const char *const k_keys[] = {
     "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora",
+    "freq", "region",
 };
 
 bool xsetup_is_key(const char *key)
@@ -118,6 +120,46 @@ const char *xsetup_check(const char *key, const char *val)
             strcmp(val, "meshcore") == 0)
             return NULL;
         return "lora: xprs, meshtastic or meshcore";
+    }
+    if (strcmp(key, "freq") == 0) {
+        /* 14.8: the channel, in MHz (433.9) or in Hz (433900000), and
+         * `preset` to go back to the region's own. Not every board is an
+         * 868 MHz board, and a 433 community picks its own channel. The
+         * station answers what its radio can tune (code:400 outside
+         * 150-960 MHz); whether it is legal where it stands is the
+         * operator's to answer, as the power ceiling already is. */
+        if (strcmp(val, "preset") == 0) return NULL;
+        if (n < 1) return "freq: MHz, Hz, or preset";
+        /* The same shape section 14 writes a frequency in, `145.500MHz`,
+         * with the suffix optional and hertz allowed. */
+        size_t digits = n;
+        if (n > 3 && (val[n - 3] == 'M' || val[n - 3] == 'm') &&
+            (val[n - 2] == 'H' || val[n - 2] == 'h') &&
+            (val[n - 1] == 'z' || val[n - 1] == 'Z'))
+            digits = n - 3;
+        if (!digits) return "freq: MHz, Hz, or preset";
+        int dots = 0;
+        for (size_t i = 0; i < digits; i++) {
+            char c = val[i];
+            if (c == '.') { if (++dots > 1) return "freq: one decimal point"; }
+            else if (c < '0' || c > '9') return "freq: digits, or preset";
+        }
+        double v = atof(val);
+        double hz = v > 10000.0 ? v : v * 1000000.0;
+        if (hz < 150000000.0 || hz > 960000000.0)
+            return "freq: 150 to 960 MHz is what the radio can tune";
+        return NULL;
+    }
+    if (strcmp(key, "region") == 0) {
+        /* A preset of the running mode (14.8). Which rows exist is the
+         * station's answer (code:501), not the grammar's. */
+        if (n < 2 || n > 8) return "region: a preset name, like eu or eu-433";
+        for (size_t i = 0; i < n; i++) {
+            char c = val[i];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'))
+                return "region: lowercase letters, digits and -";
+        }
+        return NULL;
     }
     if (strcmp(key, "nick") == 0) {
         /* 6.3.1: one to sixteen ASCII letters, digits, - and _. */

@@ -632,6 +632,29 @@ each keeps its turn. The exception is a node somebody is writing to right
 now, whose advert goes ahead of the queue, because a direct message that
 overtakes its own key is unreadable.
 
+**The channel is a setting, and every board is not an 868 MHz board.**
+The same SX1262 is sold matched for 433, 868 and 915 MHz, so the frequency
+is set rather than assumed: `[lora] frequency` in config, `cfg freq
+433.900` (or hertz) and `cfg region eu-433` on the console, the T-Deck's
+"LoRa channel" Settings row, which walks the running mode's presets, and
+an owner's `cmd:set freq:` / `region:` from the app. All of them are taken
+at once, with the same retune a mode change uses, and the station's answer
+carries `freq:` and `region:` so the owner reads back where it landed.
+`freq:preset` gives the region's own channel back.
+
+The presets each mode carries: `eu`, `eu-g1` and `eu-433` plus `us` and
+`au` for XPRS's own channel; `eu`, `eu-433`, `us` and `au` for Meshtastic
+(the 433 slot, 433.875, is Meshtastic's own rule applied to its EU_433
+band rather than a number typed in); and for MeshCore `eu`, `us` and `au`,
+because its 433 communities each pick their own channel, which is what
+`freq:` is for.
+
+What a station cannot answer is whether a channel is legal where it
+stands. It meters against the region it was given, it says in the log when
+a frequency sits outside that region's band and that the hour and the
+ceiling it is still metering against were written for another one, and the
+rest belongs to the operator, exactly as the power ceiling does.
+
 **Following a channel this firmware has no preset for.** MeshCore's
 presets are regional and they move: 869.618 MHz at SF8/62.5 kHz here,
 SF7 on the same bandwidth in the US, and whole regions changed during

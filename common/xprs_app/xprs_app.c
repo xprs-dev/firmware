@@ -593,6 +593,8 @@ static void settings_ok(int row);
 static void mesh_deliver(const char *wire, int len, bool sign);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
+static esp_err_t lora_apply_freq(uint32_t hz);
+static esp_err_t lora_apply_region(const char *name);
 
 /* The repeater and bridge of whichever network the radio is on, from
  * config. Idempotent: the bearer answers ESP_OK when it is already running,
@@ -662,6 +664,39 @@ static bool lora_console(const char *line)
         }
         return true;
     }
+    if (strncmp(p, "freq", 4) == 0 && (p[4] == ' ' || p[4] == 0)) {
+        const char *w = p + 4;
+        while (*w == ' ') w++;
+        if (!*w) {
+            printf("lora freq=%lu Hz (region %s)\n",
+                   (unsigned long)xprslora_freq(), xprslora_region()->name);
+            return true;
+        }
+        /* MHz or Hz, whichever the operator typed: 433.9, 433900000. */
+        double v = atof(w);
+        uint32_t hz = v > 10000.0 ? (uint32_t)v : (uint32_t)(v * 1000000.0 + 0.5);
+        esp_err_t e = lora_apply_freq(hz);
+        printf("lora freq=%lu Hz (%s)\n", (unsigned long)xprslora_freq(),
+               e == ESP_OK ? "now" : esp_err_to_name(e));
+        return true;
+    }
+    if (strncmp(p, "region", 6) == 0 && (p[6] == ' ' || p[6] == 0)) {
+        const char *w = p + 6;
+        while (*w == ' ') w++;
+        if (!*w) {
+            int n = 0;
+            const xprslora_region_t *r = xprslora_regions(xprslora_mode(), &n);
+            printf("lora region=%s (", xprslora_region()->name);
+            for (int i = 0; i < n; i++) printf("%s%s", i ? ", " : "", r[i].name);
+            printf(")\n");
+            return true;
+        }
+        esp_err_t e = lora_apply_region(w);
+        printf("lora region=%s freq=%lu (%s)\n", xprslora_region()->name,
+               (unsigned long)xprslora_freq(),
+               e == ESP_OK ? "now" : esp_err_to_name(e));
+        return true;
+    }
     if (strncmp(p, "survey", 6) == 0 && (p[6] == ' ' || p[6] == 0)) {
         const char *w = p + 6;
         while (*w == ' ') w++;
@@ -683,6 +718,30 @@ static bool lora_console(const char *line)
  * start the mode's bridge if it has one and has never run. Called by the
  * console, the Settings panel and an owner's cmd:set, so all three do the
  * same thing and only this one knows the order. */
+/* A frequency of the operator's own, now and at the next start (14.8).
+ * Zero goes back to the region's channel. */
+static esp_err_t lora_apply_freq(uint32_t hz)
+{
+    if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
+    esp_err_t err = xprslora_set_freq(hz);
+    if (err != ESP_OK) return err;
+    char buf[16] = "";
+    if (hz) snprintf(buf, sizeof buf, "%lu", (unsigned long)hz);
+    xcfg_set("lora_freq_hz", buf);
+    return ESP_OK;
+}
+
+/* A region preset of the running mode, now and at the next start. */
+static esp_err_t lora_apply_region(const char *name)
+{
+    if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
+    esp_err_t err = xprslora_set_region(name);
+    if (err != ESP_OK) return err;
+    xcfg_set("lora_region", name);
+    xcfg_set("lora_freq_hz", "");        /* the preset brings its channel */
+    return ESP_OK;
+}
+
 static esp_err_t lora_apply_mode(xprslora_mode_t mode)
 {
     if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
@@ -1592,8 +1651,14 @@ static int64_t s_tz_next_s;             /* defined with the time zone, below */
 
 /* The keys of 11.9 and 11.10 a cmd:set may carry in the clear. */
 static const char *const k_pol_keys[] = { "owner", "use", "first", "serve" };
+/* The setup keys a cmd:set may carry IN THE CLEAR (11.4): everything but
+ * a password and a private key. A key missing from this list is a command
+ * the station reads, verifies, and then silently ignores -- which is how
+ * `freq:` and `region:` first behaved on the bench, answering nothing at
+ * all. Add a key here when it is added to xprs_setup's vocabulary. */
 static const char *const k_setup_clear[] = {
-    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora"
+    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora",
+    "freq", "region"
 };
 
 static bool has_any(const xprs_t *p, const char *const *keys, int n)
@@ -1627,9 +1692,21 @@ static int setup_state(char *out, int cap)
     /* The LoRa mode (14.8), which is the one running: a change is taken
      * when it is asked for. Before nick: and zone:, which a long result
      * sheds first. */
-    if (s_board && s_board->lora && n < cap)
+    if (s_board && s_board->lora && n < cap) {
         n += snprintf(out + n, cap - n, " lora:%s",
                       xprslora_mode_name(xprslora_mode()));
+        /* And the channel it is on, in MHz with three decimals: an owner
+         * who has just moved a 433 board needs to read back where it
+         * landed, not trust that it heard them (14.8). */
+        uint32_t hz = xprslora_freq();
+        if (hz && n < cap)
+            n += snprintf(out + n, cap - n, " freq:%lu.%03luMHz",
+                          (unsigned long)(hz / 1000000u),
+                          (unsigned long)((hz % 1000000u) / 1000u));
+        if (n < cap)
+            n += snprintf(out + n, cap - n, " region:%s",
+                          xprslora_region()->name);
+    }
     const char *nick = xcfg_get("name", "");
     if (nick[0] && n < cap) n += snprintf(out + n, cap - n, " nick:%s", nick);
     const char *tz = xcfg_get("tz", "");
@@ -1716,7 +1793,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
 {
     const char *ssid = NULL, *pass = NULL, *nsec = NULL, *wifi = NULL;
     const char *nick = NULL, *zone = NULL, *ap = NULL, *key = NULL;
-    const char *lora = NULL;
+    const char *lora = NULL, *freq = NULL, *region = NULL;
     for (int i = 0; i < n; i++) {
         const char *k = kv[i].key, *v = kv[i].val;
         if (!xsetup_is_key(k)) {
@@ -1740,6 +1817,8 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         else if (!strcmp(k, "ap"))   ap = v;
         else if (!strcmp(k, "key"))  key = v;
         else if (!strcmp(k, "lora")) lora = v;
+        else if (!strcmp(k, "freq")) freq = v;
+        else if (!strcmp(k, "region")) region = v;
     }
     if (nsec && key) { snprintf(why, why_cap, "key:new or nsec:, not both"); return 400; }
     /* 14.8, decided before anything is written: a mode this firmware does
@@ -1782,6 +1861,40 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         }
     } else if (lora) {
         xcfg_set("lora_mode", xprslora_mode_name(lmode));
+    }
+
+    /* The channel, the same way and in the same breath: a region preset
+     * first (it brings its own frequency), then an explicit one if the
+     * owner gave both. Not every board is an 868 MHz board (14.8). */
+    if ((freq || region) && !s_board->lora) {
+        snprintf(why, why_cap, "no LoRa radio on this station");
+        return 400;
+    }
+    if (region) {
+        esp_err_t rerr = lora_apply_region(region);
+        if (rerr == ESP_ERR_NOT_FOUND) {
+            snprintf(why, why_cap, "%s is not a region of %s mode", region,
+                     xprslora_mode_name(xprslora_mode()));
+            return 501;
+        }
+        if (rerr != ESP_OK) {
+            snprintf(why, why_cap, "could not take region %s: %s", region,
+                     esp_err_to_name(rerr));
+            return 500;
+        }
+    }
+    if (freq) {
+        uint32_t hz = 0;
+        if (strcmp(freq, "preset") != 0) {
+            double v = atof(freq);
+            hz = v > 10000.0 ? (uint32_t)v : (uint32_t)(v * 1000000.0 + 0.5);
+        }
+        esp_err_t ferr = lora_apply_freq(hz);
+        if (ferr != ESP_OK) {
+            snprintf(why, why_cap, "could not tune to %s: %s", freq,
+                     esp_err_to_name(ferr));
+            return ferr == ESP_ERR_INVALID_ARG ? 400 : 500;
+        }
     }
 
     bool join = false;
@@ -4606,6 +4719,30 @@ static void ui_render(void)
                   "XPRS: its own channel. XPRS+Meshtastic: Meshtastic's, "
                   "bridged. Other modes are not heard on LoRa. %s "
                   "switches at once.", ok_key());
+            {   /* 14.8: the channel. Not every board is an 868 MHz board
+                 * -- the same chip is sold matched for 433 and 915 -- so
+                 * this row walks the running mode's presets, each taken at
+                 * once, and an exact frequency comes from config or from
+                 * an owner's cmd:set freq:. */
+                char fval[sizeof tr[0].cell[1]];
+                char fdet[160];
+                if (!s_board->lora) {
+                    snprintf(fval, sizeof fval, "--");
+                    snprintf(fdet, sizeof fdet, "No LoRa radio on this board.");
+                } else {
+                    uint32_t hz = xprslora_freq();
+                    snprintf(fval, sizeof fval, "%lu.%03lu %s",
+                             (unsigned long)(hz / 1000000u),
+                             (unsigned long)((hz % 1000000u) / 1000u),
+                             xprslora_region()->name);
+                    snprintf(fdet, sizeof fdet,
+                             "The channel, in MHz, and the preset it came "
+                             "from. %s takes the next preset of this mode; "
+                             "an exact frequency is cfg freq or an owner's "
+                             "cmd:set freq:.", ok_key());
+                }
+                SROW("LoRa channel", fval, fdet);
+            }
             {   /* Who is out there, before choosing: a listen-only sweep. */
                 char sval[sizeof tr[0].cell[1]];
                 char sdet[160];
@@ -6564,13 +6701,32 @@ static void settings_ok(int row)
         }
         break;
     case 9:
+        /* The next preset of the running mode, taken at once: the row is
+         * how a 433 MHz board is put on a 433 channel without a cable
+         * (14.8). An exact frequency is cfg freq or an owner's cmd:set. */
+        if (s_board->lora && !xprslora_survey_active()) {
+            int nreg = 0;
+            const xprslora_region_t *regs =
+                xprslora_regions(xprslora_mode(), &nreg);
+            const char *now = xprslora_region()->name;
+            int at = 0;
+            for (int i = 0; i < nreg; i++)
+                if (strcmp(regs[i].name, now) == 0) at = i;
+            const char *next = regs[(at + 1) % (nreg ? nreg : 1)].name;
+            esp_err_t e = lora_apply_region(next);
+            if (e != ESP_OK)
+                ESP_LOGW(TAG, "LoRa region %s refused: %s", next,
+                         esp_err_to_name(e));
+        }
+        break;
+    case 10:
         if (s_board->lora)
             xprslora_survey_start((uint32_t)atoi(xcfg_get("lora_survey_s", "60")));
         break;
-    case 12:
+    case 13:
         s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
         break;
-    case 13:
+    case 14:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -6693,8 +6849,11 @@ static int api_lora_json(char *buf, size_t cap)
         "\"reserve_ms\":%lu,\"held\":%lu,\"deferred\":%lu,"
         "\"stale\":%lu,\"next_free_ms\":%lu,\"sf\":%d,\"bw_hz\":%lu",
         xprslora_mode_name(xprslora_mode()), reg->name,
-        (unsigned long)(s_board->lora->freq_hz ? s_board->lora->freq_hz
-                                               : reg->freq_hz),
+        /* What the radio is ON, not what config asked for at boot: the
+         * frequency is changed live (14.8) and a status that reported the
+         * boot value had the bench chasing a radio that had already
+         * moved. */
+        (unsigned long)xprslora_freq(),
         (unsigned long)r.budget_ms, (unsigned long)r.spent_ms,
         (unsigned long)r.free_ms, (unsigned long)r.reserve_ms,
         (unsigned long)r.held, (unsigned long)r.deferred,

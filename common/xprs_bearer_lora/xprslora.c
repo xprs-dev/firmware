@@ -44,6 +44,18 @@ static uint32_t s_self;                /* our Meshtastic node number */
 static int8_t   s_tx_power = 14;       /* what start() was given */
 static char     s_region_want[12];     /* the region name the operator chose */
 static bool     s_far;                 /* the `far` profile, xprs mode only */
+/*
+ * A frequency the operator set by hand, which outranks the region's.
+ *
+ * NOT EVERY BOARD IS AN 868 MHz BOARD. The same SX1262 is sold matched for
+ * 433, 868 and 915 MHz, MeshCore's 433 communities each pick their own
+ * channel, and a band this firmware has no preset for is still a band
+ * somebody is on. So the frequency is a setting of its own (`lora_freq_hz`,
+ * `cfg freq`, the Settings panel, an owner's `cmd:set freq:`), applied the
+ * moment it is given. Picking a region afterwards clears it: choosing a
+ * preset means taking its channel.
+ */
+static uint32_t s_freq_want;
 static uint8_t  s_sf_want;             /* lora_sf, 0 = the mode's own */
 static uint16_t s_bw_want;             /* lora_bw_khz, 0 = the mode's own */
 
@@ -64,11 +76,20 @@ static uint16_t s_bw_want;             /* lora_bw_khz, 0 = the mode's own */
 static const xprslora_region_t k_regions_xprs[] = {
     { "eu",    869500000u, 360000u, 6000u,    0, 27 },
     { "eu-g1", 868200000u,  36000u, 6000u,    0, 14 },
+    /* 433 MHz, for the modules sold for that band: ERC 70-03's
+     * 433.05-434.79 MHz, 10% and 10 mW e.r.p. The channel is ours to
+     * choose and 433.900 is far enough from Meshtastic's 433 slot
+     * (433.875) not to sit on top of it. */
+    { "eu-433", 433900000u, 360000u, 6000u,   0, 10 },
     { "us",    903900000u,       0,     0, 400u, 30 },
     { "au",    917000000u,       0,     0, 400u, 30 },
 };
 static const xprslora_region_t k_regions_mt[] = {
     { "eu", 869525000u, 360000u, 21000u, 0, 27 },
+    /* Meshtastic's EU_433 band (433.0-434.0, 10%, 10 dBm); the LongFast
+     * slot in it is 433.875 by Meshtastic's own rule, which the host test
+     * checks with mt_slot_freq_hz rather than trusting this number. */
+    { "eu-433", 433875000u, 360000u, 21000u, 0, 10 },
     { "us", 906875000u,       0,     0, 0, 30 },
     { "au", 919875000u,       0,     0, 0, 30 },
 };
@@ -660,6 +681,7 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
      * stays `eu`). A `lora_freq_hz` override is a start-time thing and is
      * not carried across: another mode is another channel. */
     s_tx_power = cfg->tx_power_dbm ? cfg->tx_power_dbm : 14;
+    s_freq_want = cfg->freq_hz;
     snprintf(s_region_want, sizeof s_region_want, "%s",
              cfg->region ? cfg->region : "");
     s_far = cfg->far;
@@ -761,7 +783,7 @@ static sx1262_lora_config_t lr_modem(const lr_mode_def_t *d,
     lr_bw_of(s_bw_want, &bw, &bw_hz);
     if (sf_n) *sf_n = (int)sf;
     sx1262_lora_config_t lora = {
-        .frequency_hz = reg->freq_hz,
+        .frequency_hz = s_freq_want ? s_freq_want : reg->freq_hz,
         .sf = sf,
         .bw = bw,
         .cr = SX1262_CR_4_5,
@@ -866,6 +888,90 @@ static esp_err_t lr_tune_mode(xprslora_mode_t mode, bool say)
                  d->name, (unsigned long)lora.frequency_hz, sf_n,
                  (unsigned long)(d->bw_hz / 1000u), lora.sync_word, reg->name);
     return ESP_OK;
+}
+
+/* What the SX1262 can be tuned to at all (its datasheet: 150-960 MHz).
+ * Whether a frequency is LEGAL where the station stands is the operator's
+ * to answer, as the power ceiling already is, and the log says what was
+ * asked for so the answer is on the record. */
+#define LR_FREQ_MIN 150000000u
+#define LR_FREQ_MAX 960000000u
+
+esp_err_t xprslora_set_freq(uint32_t hz)
+{
+    if (!s_radio || !s_lora) return ESP_ERR_INVALID_STATE;
+    if (s_survey.active) return ESP_ERR_INVALID_STATE;
+    if (hz && (hz < LR_FREQ_MIN || hz > LR_FREQ_MAX)) return ESP_ERR_INVALID_ARG;
+
+    uint32_t was = s_freq_want;
+    s_freq_want = hz;
+    lr_lock(NULL);
+    esp_err_t err = lr_tune_mode(s_mode, true);
+    lr_unlock(NULL);
+    if (err != ESP_OK) {
+        s_freq_want = was;                 /* nothing moved, nothing kept */
+        return err;
+    }
+    const xprslora_region_t *reg = xprslora_region();
+    if (hz) {
+        /* A frequency away from the region's own channel is not refused --
+         * a 433 MHz board on a 433 community's channel is exactly what
+         * this exists for -- but the hour and the ceiling this station
+         * meters against are still that region's, and they were written
+         * for another band. Say it plainly rather than imply that 27 dBm
+         * is fine at 433 MHz. */
+        uint32_t d = hz > reg->freq_hz ? hz - reg->freq_hz : reg->freq_hz - hz;
+        if (d > 10000000u)
+            ESP_LOGW(TAG, "LoRa frequency set by hand: %lu Hz, which is not "
+                          "in the %s preset's band. Its hour (%lus) and its "
+                          "%d dBm ceiling are what this station still meters "
+                          "against, and they were written for %lu Hz: what "
+                          "is allowed here is the operator's to answer",
+                     (unsigned long)hz, reg->name,
+                     (unsigned long)(reg->duty_ms / 1000u), reg->max_dbm,
+                     (unsigned long)reg->freq_hz);
+        else
+            ESP_LOGW(TAG, "LoRa frequency set by hand: %lu Hz (the %s "
+                          "region's hour and its %d dBm ceiling apply)",
+                     (unsigned long)hz, reg->name, reg->max_dbm);
+    } else {
+        ESP_LOGI(TAG, "LoRa frequency back to the %s preset: %lu Hz",
+                 reg->name, (unsigned long)reg->freq_hz);
+    }
+    return ESP_OK;
+}
+
+uint32_t xprslora_freq(void)
+{
+    if (!s_radio) return 0;
+    return s_freq_want ? s_freq_want : xprslora_region()->freq_hz;
+}
+
+esp_err_t xprslora_set_region(const char *name)
+{
+    if (!s_radio || !s_lora || !name || !name[0]) return ESP_ERR_INVALID_STATE;
+    if (s_survey.active) return ESP_ERR_INVALID_STATE;
+    bool known = false;
+    for (int i = 0; i < s_def->nregions; i++)
+        if (strcasecmp(s_def->regions[i].name, name) == 0) known = true;
+    if (!known) return ESP_ERR_NOT_FOUND;
+
+    char was[sizeof s_region_want];
+    snprintf(was, sizeof was, "%s", s_region_want);
+    uint32_t was_freq = s_freq_want;
+    snprintf(s_region_want, sizeof s_region_want, "%s", name);
+    s_freq_want = 0;                     /* a preset brings its own channel */
+    lr_lock(NULL);
+    esp_err_t err = lr_tune_mode(s_mode, true);
+    if (err == ESP_OK) {
+        xb_set_duty(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
+                    s_region->reserve_ms, s_region->dwell_ms);
+    } else {
+        snprintf(s_region_want, sizeof s_region_want, "%s", was);
+        s_freq_want = was_freq;
+    }
+    lr_unlock(NULL);
+    return err;
 }
 
 esp_err_t xprslora_set_mode(xprslora_mode_t mode)

@@ -107,6 +107,26 @@ static void test_values(void)
 
     CHECK(!xsetup_check("lora", "xprs") && !xsetup_check("lora", "meshtastic") &&
           !xsetup_check("lora", "meshcore"), "the three LoRa modes");
+
+    /* 14.8: the channel itself, because not every board is an 868 MHz
+     * board and a 433 community picks its own. */
+    CHECK(!xsetup_check("freq", "433.9"), "MHz with a decimal point");
+    CHECK(!xsetup_check("freq", "869618000"), "or plain Hz");
+    CHECK(!xsetup_check("freq", "preset"), "or back to the region's own");
+    CHECK(!xsetup_check("freq", "433.900MHz"),
+          "and the shape section 14 writes a frequency in");
+    CHECK(xsetup_check("freq", "MHz"), "a suffix on its own is not one");
+    CHECK(xsetup_check("freq", "70"), "70 MHz is not something it can tune");
+    CHECK(xsetup_check("freq", "2400"), "nor 2.4 GHz");
+    CHECK(xsetup_check("freq", "433,9"), "a comma is not a decimal point");
+    CHECK(xsetup_check("freq", "433.9.1"), "nor two points");
+    CHECK(xsetup_check("freq", ""), "and something must be said");
+    CHECK(!xsetup_check("region", "eu-433"), "a preset name");
+    CHECK(!xsetup_check("region", "eu"), "a short one");
+    CHECK(xsetup_check("region", "EU"), "lowercase, as the table has it");
+    CHECK(xsetup_check("region", "e"), "and long enough to mean something");
+    CHECK(xsetup_is_key("freq") && xsetup_is_key("region"),
+          "both are setup keys");
     CHECK(xsetup_check("lora", "lorawan") && xsetup_check("lora", "XPRS"),
           "not a LoRa mode");
     CHECK(xsetup_is_key("lora") && !xsetup_is_secret("lora"), "lora is a clear key");

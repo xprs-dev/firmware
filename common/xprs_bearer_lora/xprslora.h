@@ -217,6 +217,28 @@ void xprslora_set_duty(uint32_t budget_ms, uint32_t reserve_ms,
 /** The ledger's report; zeroed when the radio is down or unmetered. */
 void xprslora_duty(xb_duty_report_t *out);
 
+/**
+ * Point the radio at a frequency of the operator's choosing, now: the same
+ * retune the mode switch uses, and the station keeps its uptime.
+ *
+ * NOT EVERY BOARD IS AN 868 MHz BOARD -- the same SX1262 is sold matched
+ * for 433, 868 and 915 MHz, and a MeshCore community on 433 picks its own
+ * channel -- so this is a setting rather than a table lookup. 0 goes back
+ * to the region's own channel. ESP_ERR_INVALID_ARG outside what the chip
+ * can tune (150-960 MHz); whether it is legal where the station stands is
+ * the operator's to answer, as the power ceiling already is. The region's
+ * hourly budget and its ceiling still apply.
+ */
+esp_err_t xprslora_set_freq(uint32_t hz);
+
+/** What the radio is on now: the operator's frequency, else the region's. */
+uint32_t xprslora_freq(void);
+
+/** Take a region preset of the running mode, now, and with it its channel,
+ *  its hour and its ceiling. ESP_ERR_NOT_FOUND when the mode has no such
+ *  row. Clears a frequency set by hand: a preset brings its own. */
+esp_err_t xprslora_set_region(const char *name);
+
 /** The region the radio was started with (never NULL after start). */
 const xprslora_region_t *xprslora_region(void);
 

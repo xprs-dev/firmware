@@ -183,10 +183,12 @@ void xui_radar_blips(const xui_blip_t *blips, int n);
 
 /* ---- Generic selectable table ------------------------------------------- */
 
-/* The Settings panel's rows set this: fourteen since the LoRa mode and
- * survey rows (xprs_app.c render case 6). Every row costs one xui_row_t in
- * the render scratch and in xprs_ui.c's tables (PSRAM where there is some). */
-#define XUI_TAB_ROWS 14
+/* The Settings panel's rows set this: fifteen since the LoRa mode, channel
+ * and survey rows (xprs_app.c render case 6). Every row costs one xui_row_t
+ * in the render scratch and in xprs_ui.c's tables (PSRAM where there is
+ * some), and settings_ok()'s cases are numbered by this order: a row added
+ * in the middle moves every case below it. */
+#define XUI_TAB_ROWS 15
 #define XUI_TAB_COLS 5
 
 typedef struct {

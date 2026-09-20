@@ -591,6 +591,10 @@ repeat is not worth two seconds of a shared band.
 
 The mode is changed live, with no restart: `cfg lora <mode>` on the console,
 the T-Deck's Settings row, or an owner's `cmd:set lora:` (XPRS.md 11.10).
+So is the channel: `cfg freq 433.900` (MHz or hertz) and `cfg region
+eu-433`, the T-Deck's "LoRa channel" row, or an owner's `cmd:set freq:` /
+`region:`. `lora.freq_hz` in the status is what the radio is on, not what
+config asked for at boot.
 `cfg survey [seconds]` listens on every mode in turn and reports who is
 there, transmitting nothing while it runs.
 

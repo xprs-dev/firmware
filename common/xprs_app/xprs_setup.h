@@ -33,8 +33,10 @@
 extern "C" {
 #endif
 
-/** Setup fields one command may carry. The widest real one is five. */
-#define XSETUP_KV_MAX   9
+/** Setup fields one command may carry. The widest real one is five, and
+ *  the vocabulary is eleven: a cap below it turns a legitimate command
+ *  into a parse error. */
+#define XSETUP_KV_MAX   11
 /** The longest value: a WPA2 passphrase or an nsec, 63, and the NUL. */
 #define XSETUP_VAL_MAX  66
 
@@ -43,7 +45,7 @@ typedef struct {
     char val[XSETUP_VAL_MAX];
 } xsetup_kv_t;
 
-/** One of the eight keys above? */
+/** One of the keys above? */
 bool xsetup_is_key(const char *key);
 
 /** A key that may only arrive inside `x:`. */

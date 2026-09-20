@@ -367,6 +367,7 @@ uint32_t mt_djb2(const char *s)
  * Values are the firmware's own (RadioInterface.cpp, RDEF) in kHz. The
  * `xprs` column is what this tree's lora_region setting has always said. */
 static const mt_region_t k_regions[] = {
+    { "EU_433", "eu-433", 433000, 434000, 10, 10 },
     { "EU_868", "eu", 869400, 869650, 10, 27 },
     { "US",     "us", 902000, 928000, 100, 30 },
     { "ANZ",    "au", 915000, 928000, 100, 30 },
