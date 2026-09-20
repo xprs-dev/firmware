@@ -1,0 +1,13 @@
+{
+  "name": "xprs_loracrypto",
+  "version": "1.0.0",
+  "description": "The curve and cipher primitives the LoRa networks share: X25519 (RFC 7748), Ed25519 (RFC 8032), HMAC-SHA256, and a callsign's derived seed. Platform-independent; the target supplies xlc_aes_encrypt_block() and xlc_sha512() (xlc_aes_idf.c and xlc_sha512_idf.c on ESP-IDF, xlc_sha512_sw.c elsewhere).",
+  "keywords": "xprs, lora, crypto",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*"},
+  "build": {
+    "srcFilter": ["+<xlc_x25519.c>", "+<xlc_ed25519.c>", "+<xlc_hmac.c>", "+<xlc_sha512_sw.c>"],
+    "flags": ["-I."]
+  }
+}

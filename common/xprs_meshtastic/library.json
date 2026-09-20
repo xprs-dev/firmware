@@ -1,11 +1,11 @@
 {
   "name": "xprs_meshtastic",
   "version": "1.0.0",
-  "description": "Meshtastic on the XPRS LoRa radio: the header and messages, XPRS framing on the shared channel, the repeater and the bridge. Platform-independent; the target supplies mt_aes_encrypt_block() (mt_aes_idf.c on ESP-IDF).",
+  "description": "Meshtastic on the XPRS LoRa radio: the header and messages, XPRS framing on the shared channel, the repeater and the bridge. Platform-independent; the curve and cipher primitives come from xprs_loracrypto.",
   "keywords": "xprs, meshtastic, lora",
   "frameworks": "*",
   "platforms": "*",
-  "dependencies": {"xprs_codec": "*"},
+  "dependencies": {"xprs_codec": "*", "xprs_loracrypto": "*"},
   "build": {
     "srcFilter": ["+<mt_wire.c>", "+<mt_xprs.c>", "+<mt_mesh.c>", "+<mt_pki.c>"],
     "flags": ["-I."]

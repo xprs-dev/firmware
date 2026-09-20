@@ -14,13 +14,14 @@
 #include <string.h>
 
 #include "mt.h"
+#include "xlc.h"
 #include "mt_mesh.h"
 #include "xprs.h"
 
 static int g_fail;
 #define CHECK(c) do { if (!(c)) { printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); g_fail++; } } while (0)
 
-bool mt_aes_encrypt_block(const uint8_t *key, int key_len,
+bool xlc_aes_encrypt_block(const uint8_t *key, int key_len,
                           const uint8_t in[16], uint8_t out[16])
 {
     EVP_CIPHER_CTX *c = EVP_CIPHER_CTX_new();
@@ -264,7 +265,7 @@ static void test_pki(void)
     unhex("a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4", k);
     unhex("e6db6867583030db3594c1a424b15f7c726624ec26b3353b10a903a6d0ab1c4c", u);
     unhex("c3da55379de9c6908e94ea4df28d084f32eccf03491c71f754b4075577a28552", want);
-    mt_x25519(got, k, u);
+    xlc_x25519(got, k, u);
     CHECK(memcmp(got, want, 32) == 0);
 
     /* The derived pair of X3DCK0, and a Meshtastic node's, as Python's
@@ -279,7 +280,7 @@ static void test_pki(void)
     mt_node_keys("x3dck0-4", 8, xp2, NULL);                  /* bare, folded */
     CHECK(memcmp(xp2, xpriv, 32) == 0);
     unhex("0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20", mpriv);
-    mt_x25519_base(mpub, mpriv);
+    xlc_x25519_base(mpub, mpriv);
     unhex("07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c", want);
     CHECK(memcmp(mpub, want, 32) == 0);
 

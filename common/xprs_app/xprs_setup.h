@@ -34,7 +34,7 @@ extern "C" {
 #endif
 
 /** Setup fields one command may carry. The widest real one is five. */
-#define XSETUP_KV_MAX   8
+#define XSETUP_KV_MAX   9
 /** The longest value: a WPA2 passphrase or an nsec, 63, and the NUL. */
 #define XSETUP_VAL_MAX  66
 

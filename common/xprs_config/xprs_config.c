@@ -89,6 +89,10 @@ static cfg_entry_t s_cfg[] = {
      * once fired -- a key must exist HERE, in s_ini_map and in the ini
      * template, or it is dead. Same lesson for the echo and BLE-digipeat
      * keys below. NVS caps a key at 15 characters. */
+    /* Which LoRa network the radio shares a channel with: xprs,
+     * meshtastic (the default) or meshcore. Read at start, and changed
+     * live afterwards (`cfg lora <mode>`). */
+    { "lora_mode",    {0}, false },
     { "lora_region",  {0}, false },
     { "lora_freq_hz", {0}, false },
     { "lora_pace_ms", {0}, false },
@@ -98,6 +102,8 @@ static cfg_entry_t s_cfg[] = {
     /* 9.11.1: whether this station's LoRa counts as a local bearer (a
      * building's own mesh) and may carry scope:local; default no. */
     { "lora_local",   {0}, false },
+    /* Seconds the survey listens on each mode (14.8): `cfg survey`. */
+    { "lora_survey_s",{0}, false },
     /* Meshtastic on the same radio (docs/meshtastic.md): the repeater, the
      * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
      * and how often this station's node re-announces itself. */
@@ -105,6 +111,13 @@ static cfg_entry_t s_cfg[] = {
     { "mt_bridge",    {0}, false },
     { "mt_bcast_hr",  {0}, false },
     { "mt_ni_min",    {0}, false },
+    /* The same four for MeshCore, read when `lora_mode` is `meshcore`.
+     * Separate keys because the two bridges are separate: a station may
+     * repeat on one network and only bridge on the other. */
+    { "mc_repeat",    {0}, false },
+    { "mc_bridge",    {0}, false },
+    { "mc_bcast_hr",  {0}, false },
+    { "mc_advert_min",{0}, false },
     { "echo_on",       {0}, false },
     { "echo_quiet_ms", {0}, false },
     { "echo_gap_ms",   {0}, false },
@@ -225,15 +238,27 @@ int xcfg_ini_render(char *buf, size_t cap)
         "enabled = %s\n"
         "\n"
         "[lora]\n"
-        "; Meshtastic's LongFast channel for the region: eu (869.525 MHz,\n"
-        "; 10%% duty), us (906.875), au (919.875). Empty keys take the\n"
-        "; region's own figures. local = yes lets scope:local on LoRa.\n"
+        "; mode: which LoRa network this radio shares a channel with, read\n"
+        ";   at start. xprs = XPRS's own channel (SF7, 125 kHz: eu 869.5,\n"
+        ";   eu-g1 868.2, us 903.9, au 917.0 MHz). meshtastic = Meshtastic's\n"
+        ";   LongFast, repeating and bridging Meshtastic (eu 869.525, us\n"
+        ";   906.875, au 919.875 MHz). meshcore = MeshCore's channel, same\n"
+        ";   modulation on sync word 0x12 (eu 869.525, us 910.525, au\n"
+        ";   915.8 MHz), carrying XPRS as a RAW_CUSTOM payload.\n"
+        ";   Stations in different modes do not hear each other on LoRa.\n"
+        "; profile = far: SF9, xprs mode only. Empty keys take the region's\n"
+        "; own figures. local = yes lets scope:local on LoRa.\n"
+        "mode = %s\n"
+        "profile = %s\n"
         "region = %s\n"
         "frequency = %s\n"
         "duty_ms = %s\n"
         "reserve_ms = %s\n"
         "pace_ms = %s\n"
         "local = %s\n"
+        "; survey_s: seconds `cfg survey` listens on each mode before it\n"
+        ";   says who is out there. Nothing is transmitted while it runs.\n"
+        "survey_s = %s\n"
         "\n"
         "[meshtastic]\n"
         "; Relay Meshtastic traffic, and translate messages both ways.\n"
@@ -241,6 +266,15 @@ int xcfg_ini_render(char *buf, size_t cap)
         "bridge = %s\n"
         "broadcasts_per_hour = %s\n"
         "nodeinfo_min = %s\n"
+        "\n"
+        "[meshcore]\n"
+        "; The same, on MeshCore's channel, when [lora] mode = meshcore.\n"
+        "; advert_min: how often an XPRS callsign this station speaks for\n"
+        ";   re-advertises itself, which is how a MeshCore user finds it.\n"
+        "repeat = %s\n"
+        "bridge = %s\n"
+        "broadcasts_per_hour = %s\n"
+        "advert_min = %s\n"
         "\n"
         "[igate]\n"
         "; Carry ESP-NOW traffic onto the LAN (toward the internet side).\n"
@@ -316,16 +350,23 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("espnow_on", true) ? "yes" : "no",
         xcfg_get_bool("digi_on", true) ? "yes" : "no",
         xcfg_get_bool("bridge_on", true) ? "yes" : "no",
+        xcfg_get("lora_mode", "meshtastic"),
+        xcfg_get("lora_profile", ""),
         xcfg_get("lora_region", "eu"),
         xcfg_get("lora_freq_hz", ""),
         xcfg_get("lora_duty_ms", ""),
         xcfg_get("lora_resv_ms", ""),
         xcfg_get("lora_pace_ms", ""),
         xcfg_get_bool("lora_local", false) ? "yes" : "no",
+        xcfg_get("lora_survey_s", "60"),
         xcfg_get_bool("mt_repeat", true) ? "yes" : "no",
         xcfg_get_bool("mt_bridge", true) ? "yes" : "no",
         xcfg_get("mt_bcast_hr", ""),
         xcfg_get("mt_ni_min", ""),
+        xcfg_get_bool("mc_repeat", true) ? "yes" : "no",
+        xcfg_get_bool("mc_bridge", true) ? "yes" : "no",
+        xcfg_get("mc_bcast_hr", ""),
+        xcfg_get("mc_advert_min", ""),
         xcfg_get_bool("igate_on", true) ? "yes" : "no",
         xcfg_get_bool("index_on", true) ? "yes" : "no",
         xcfg_get_bool("share_on", false) ? "yes" : "no",
@@ -376,16 +417,23 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "rns",     "pace_ms",  "rns_pace_ms" },
     /* The radio's region decides the channel, the hourly airtime budget and
      * the slice held back for sos -- see docs/API.md. */
+    { "lora",    "mode",     "lora_mode" },
+    { "lora",    "profile",  "lora_profile" },
     { "lora",    "region",   "lora_region" },
     { "lora",    "frequency","lora_freq_hz" },
     { "lora",    "pace_ms",  "lora_pace_ms" },
     { "lora",    "duty_ms",  "lora_duty_ms" },
     { "lora",    "reserve_ms","lora_resv_ms" },
     { "lora",    "local",    "lora_local" },
+    { "lora",    "survey_s", "lora_survey_s" },
     { "meshtastic", "repeat", "mt_repeat" },
     { "meshtastic", "bridge", "mt_bridge" },
     { "meshtastic", "broadcasts_per_hour", "mt_bcast_hr" },
     { "meshtastic", "nodeinfo_min", "mt_ni_min" },
+    { "meshcore", "repeat", "mc_repeat" },
+    { "meshcore", "bridge", "mc_bridge" },
+    { "meshcore", "broadcasts_per_hour", "mc_bcast_hr" },
+    { "meshcore", "advert_min", "mc_advert_min" },
     { "echo",    "enabled",  "echo_on" },
     { "echo",    "quiet_ms", "echo_quiet_ms" },
     { "echo",    "gap_ms",   "echo_gap_ms" },

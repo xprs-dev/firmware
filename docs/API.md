@@ -562,10 +562,20 @@ relayed immediately and then joins the ring.
 ### The hour and the reserve
 
 The LoRa radio accounts for its real airtime (Semtech AN1200.13) over a
-rolling hour, per region. Since 2026-09-19 it runs Meshtastic's LongFast
-(SF11, 250 kHz) on Meshtastic's slot, where a full frame is about 2.1 s, and
-Meshtastic frames it relays or sends spend the same ledger
-(docs/meshtastic.md):
+rolling hour, per region. The regions depend on the station's LoRa mode
+(`lora_mode`, docs/meshtastic.md "LoRa modes"), because each mode is a
+different channel. In `meshtastic` mode Meshtastic frames the station relays
+or sends spend the same ledger.
+
+`xprs` mode (SF7, 125 kHz, a full packet about 0.4 s):
+
+| `lora_region` | channel | budget | reserve | note |
+|---|---|---|---|---|
+| `eu` (default) | 869.5 MHz | 10% = 360 s/h | 6 s | ERC 70-03 band g3, up to 27 dBm e.r.p. |
+| `eu-g1` | 868.2 MHz | 1% = 36 s/h | 6 s | band g1, up to 14 dBm |
+| `us` / `au` | 903.9 / 917.0 MHz | none | -- | 400 ms dwell per transmission |
+
+`meshtastic` mode (LongFast, SF11, 250 kHz, a full frame about 2.1 s):
 
 | `lora_region` | channel | budget | reserve | note |
 |---|---|---|---|---|
@@ -579,16 +589,32 @@ packets also leave the queue first and are never evicted by ordinary ones.
 Relays held too long are dropped (2 min ordinary, 10 min priority): a stale
 repeat is not worth two seconds of a shared band.
 
-`/api/status` carries the ledger:
-`"lora":{"region":"eu","freq_hz":869525000,"duty_ms":360000,"spent_ms":...,`
-`"free_ms":...,"reserve_ms":21000,"held":...,"deferred":...,"next_free_ms":...}`
--- and the strip's top bar reads `held 41s` instead of `LoRa quiet` when the
-budget, not the band, is what is silent. Config: `lora_region`,
-`lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`, `lora_pace_ms`, `lora_local`
-(all under `[lora]` in config.ini), and the Meshtastic keys under
-`[meshtastic]` (docs/meshtastic.md). `eu-g1` and `lora_profile far` went with
-the move: Meshtastic has no channel at 868.2 MHz, and every station on a
-channel shares one modulation.
+The mode is changed live, with no restart: `cfg lora <mode>` on the console,
+the T-Deck's Settings row, or an owner's `cmd:set lora:` (XPRS.md 11.10).
+`cfg survey [seconds]` listens on every mode in turn and reports who is
+there, transmitting nothing while it runs.
+
+`/api/status` carries the mode, the ledger, and the last survey:
+`"lora":{"mode":"meshtastic","region":"eu","freq_hz":869525000,"duty_ms":360000,`
+`"spent_ms":...,"free_ms":...,"reserve_ms":21000,"held":...,"deferred":...,`
+`"next_free_ms":...,"mt":{...},"survey":{...}}` -- `mt` is the Meshtastic
+bridge's counters and `mt_nodes` the names of up to six nodes it has heard,
+both present only while Meshtastic is the running mode; `mc` and `mc_nodes`
+are the same for MeshCore (`rx`, `opened`, `relayed`, `text_in`,
+`text_out`, `dm_acked`, `dm_not_here`, `receipts`, `adverts_in`,
+`adverts_out`, `unnamed`, `dropped`, `inbox_full` -- the last being packets
+the worker never got to, which should stay at zero); and `survey` is `{"running":bool,"modes":{"<mode>":{"frames":n,"heard":[...]}}}`
+once a survey has run. The strip's top bar reads `held 41s`
+instead of `LoRa quiet` when the budget, not the band, is what is silent.
+Config, all under `[lora]` in config.ini: `lora_mode` (`xprs`, `meshtastic`
+or `meshcore`; the mode the station comes up in, changed live afterwards),
+`lora_profile` (`far`: SF9, `xprs` mode
+only), `lora_region`, `lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`,
+`lora_pace_ms`, `lora_local`, `lora_survey_s`; the Meshtastic keys under
+`[meshtastic]` (`repeat`, `bridge`, `broadcasts_per_hour`, `nodeinfo_min`)
+and the MeshCore ones under `[meshcore]` (`repeat`, `bridge`,
+`broadcasts_per_hour`, `advert_min`), each read when its network is the
+running mode (docs/meshtastic.md).
 
 ### Which station repeats
 

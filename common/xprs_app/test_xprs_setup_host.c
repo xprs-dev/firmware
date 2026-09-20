@@ -105,6 +105,12 @@ static void test_values(void)
     CHECK(xsetup_check("zone", "Europe/Berlin"), "a zone name is not an offset");
     CHECK(xsetup_check("zone", "+15:00"), "past +14:00");
 
+    CHECK(!xsetup_check("lora", "xprs") && !xsetup_check("lora", "meshtastic") &&
+          !xsetup_check("lora", "meshcore"), "the three LoRa modes");
+    CHECK(xsetup_check("lora", "lorawan") && xsetup_check("lora", "XPRS"),
+          "not a LoRa mode");
+    CHECK(xsetup_is_key("lora") && !xsetup_is_secret("lora"), "lora is a clear key");
+
     CHECK(xsetup_check("owner", "X1QZ3N"), "not a setup key");
 }
 

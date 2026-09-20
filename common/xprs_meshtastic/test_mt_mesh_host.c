@@ -8,6 +8,7 @@
 
 #include "mt.h"
 #include "mt_mesh.h"
+#include "xlc.h"
 #include "xprs.h"
 
 void mt_test_fail(const char *file, int line, const char *what);
@@ -252,7 +253,7 @@ static int find_heard_text(const char *t)
 void test_mesh(void)
 {
     for (int i = 0; i < 32; i++) g_npriv[i] = (uint8_t)(i + 1);
-    mt_x25519_base(g_npub, g_npriv);
+    xlc_x25519_base(g_npub, g_npriv);
     static const char *calls[NB] = { "X3AAAA", "X3BBBB" };
     for (int i = 0; i < NB; i++) {
         mt_mesh_ops_t ops = { .air = t_air, .now_ms = t_now, .random = t_rand,

@@ -26,7 +26,7 @@
  * No ESP-IDF in the core files, so the P1-Pro (nRF52, Arduino) can take this
  * component by symlink the way it takes xprs_codec and xprs_bearer, and the
  * host harness (test_mt_host.sh) can run all of it. The two platform hooks
- * are mt_aes_encrypt_block() (mt_aes_idf.c on the ESP32) and xprs_sha256()
+ * are xprs_loracrypto's xlc_aes_encrypt_block() and xprs_sha256()
  * (xprs_codec).
  */
 #ifndef XPRS_MT_H
@@ -173,10 +173,10 @@ uint32_t mt_slot_freq_hz(const mt_region_t *r, const char *channel_name,
 
 /* ── Encryption ───────────────────────────────────────────────────────── */
 
-/* Platform hook: one AES block, ECB, key 16 or 32 bytes. mt_aes_idf.c on the
- * ESP32; the host harness links its own. Returns false on failure. */
-bool mt_aes_encrypt_block(const uint8_t *key, int key_len,
-                          const uint8_t in[16], uint8_t out[16]);
+/* The AES block, X25519 and the callsign seed live in xprs_loracrypto
+ * (xlc.h) since MeshCore wanted the same three. What stays here is what is
+ * Meshtastic's: the CTR stream, the CCM of a direct message, and the rule
+ * that turns a callsign into a node number. */
 
 /* Meshtastic channel encryption: AES-CTR, nonce = packet id (u64 LE) ||
  * from (u32 LE) || four zero bytes, counter in the last four bytes. The same
@@ -192,9 +192,6 @@ bool mt_crypt(const uint8_t *key, int key_len, uint32_t from, uint32_t id,
  * channel hash 0. A DM on the channel key is refused and rejected. */
 
 #define MT_PKI_OVERHEAD 12
-
-void mt_x25519(uint8_t out[32], const uint8_t scalar[32], const uint8_t point[32]);
-void mt_x25519_base(uint8_t pub[32], const uint8_t priv[32]);
 
 bool mt_ccm_encrypt(const uint8_t *key, int key_len, const uint8_t nonce[13],
                     const uint8_t *plain, int len, uint8_t *out, uint8_t tag8[8]);

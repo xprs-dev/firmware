@@ -590,6 +590,121 @@ static struct { const char *txt; int act; } s_bar[3];
 static void set_bar(void);
 static void settings_ok(int row);
 
+static void mesh_deliver(const char *wire, int len, bool sign);
+static int  mesh_stamp(char *out, int cap, bool to_minute);
+static esp_err_t lora_apply_mode(xprslora_mode_t mode);
+
+/* The repeater and bridge of whichever network the radio is on, from
+ * config. Idempotent: the bearer answers ESP_OK when it is already running,
+ * which is what a second switch into this mode gets. */
+static void lora_start_bridge(void)
+{
+    static const xprslora_mt_hooks_t hooks = {
+        .deliver = mesh_deliver,
+        .stamp = mesh_stamp,
+        .nick_of = NULL,
+    };
+    const char *v;
+    if (xprslora_mode() == XPRSLORA_MODE_MESHCORE) {
+        mc_mesh_cfg_t mc = {
+            .repeat = xcfg_get_bool("mc_repeat", true),
+            .bridge = xcfg_get_bool("mc_bridge", true),
+            .bcast_per_hour = 12,
+            .advert_min = 180,
+        };
+        if ((v = xcfg_get("mc_bcast_hr", NULL)) && v[0])
+            mc.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
+        if ((v = xcfg_get("mc_advert_min", NULL)) && v[0])
+            mc.advert_min = (uint16_t)strtoul(v, NULL, 10);
+        if (mc.repeat || mc.bridge)
+            xprslora_mc_start(&hooks, &mc, xcfg_get("name", ""));
+        return;
+    }
+    mt_mesh_cfg_t mt = {
+        .repeat = xcfg_get_bool("mt_repeat", true),
+        .bridge = xcfg_get_bool("mt_bridge", true),
+        .bcast_per_hour = 12,
+        .nodeinfo_min = 180,
+    };
+    if ((v = xcfg_get("mt_bcast_hr", NULL)) && v[0])
+        mt.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
+    if ((v = xcfg_get("mt_ni_min", NULL)) && v[0])
+        mt.nodeinfo_min = (uint16_t)strtoul(v, NULL, 10);
+    if (mt.repeat || mt.bridge)
+        xprslora_mt_start(&hooks, &mt, xcfg_get("name", ""));
+}
+
+/* `cfg lora <mode>` and `cfg survey [seconds]` on the serial console: the
+ * two acts that belong to the radio rather than to the config file, and the
+ * only way to drive them from a cable. True when the line was one of them. */
+static bool lora_console(const char *line)
+{
+    if (!line || strncmp(line, "cfg ", 4) != 0) return false;
+    const char *p = line + 4;
+    while (*p == ' ') p++;
+    if (strncmp(p, "lora", 4) == 0 && (p[4] == ' ' || p[4] == 0)) {
+        const char *w = p + 4;
+        while (*w == ' ') w++;
+        if (!*w) {
+            printf("lora mode=%s (xprs, meshtastic, meshcore)\n",
+                   xprslora_mode_name(xprslora_mode()));
+            return true;
+        }
+        xprslora_mode_t m;
+        if (!xprslora_mode_parse(w, &m)) {
+            printf("lora: xprs, meshtastic or meshcore\n");
+        } else if (!xprslora_mode_available(m)) {
+            printf("lora: %s is not in this firmware\n", w);
+        } else {
+            esp_err_t e = lora_apply_mode(m);
+            printf("lora mode=%s (%s)\n", xprslora_mode_name(m),
+                   e == ESP_OK ? "now" : esp_err_to_name(e));
+        }
+        return true;
+    }
+    if (strncmp(p, "survey", 6) == 0 && (p[6] == ' ' || p[6] == 0)) {
+        const char *w = p + 6;
+        while (*w == ' ') w++;
+        uint32_t secs = *w ? (uint32_t)strtoul(w, NULL, 10)
+                           : (uint32_t)atoi(xcfg_get("lora_survey_s", "60"));
+        esp_err_t e = xprslora_survey_start(secs);
+        if (e != ESP_OK) {
+            printf("survey: %s\n", esp_err_to_name(e));
+        } else {
+            printf("survey: started, %lus on each mode\n",
+                   (unsigned long)secs);
+        }
+        return true;
+    }
+    return false;
+}
+
+/* Switch the radio's LoRa mode now (14.8): retune, remember the choice, and
+ * start the mode's bridge if it has one and has never run. Called by the
+ * console, the Settings panel and an owner's cmd:set, so all three do the
+ * same thing and only this one knows the order. */
+static esp_err_t lora_apply_mode(xprslora_mode_t mode)
+{
+    if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
+    esp_err_t err = xprslora_set_mode(mode);
+    if (err != ESP_OK) return err;
+    xcfg_set("lora_mode", xprslora_mode_name(mode));
+    if (mode == XPRSLORA_MODE_MESHTASTIC || mode == XPRSLORA_MODE_MESHCORE)
+        lora_start_bridge();
+    return ESP_OK;
+}
+
+/* What a person reads for a mode: what runs on the channel. */
+static const char *lora_mode_label(xprslora_mode_t m)
+{
+    switch (m) {
+    case XPRSLORA_MODE_XPRS:       return "XPRS";
+    case XPRSLORA_MODE_MESHTASTIC: return "XPRS+Meshtastic";
+    case XPRSLORA_MODE_MESHCORE:   return "XPRS+MeshCore";
+    default:                       return "?";
+    }
+}
+
 /* What the user must press to change the selected setting. A board with a
  * keyboard says "Enter", because there a trackball click is too easy to make
  * by accident; a board with only buttons says "OK", which is its middle
@@ -971,6 +1086,11 @@ static void ota_quiesce(bool quiet)
         }
     }
 
+    /* And the LoRa bridge's worker, which is six kilobytes of stack doing
+     * nothing an install needs (docs/esp32.md, "Quiesce means hand
+     * resources back"). */
+    xprslora_mc_pause(quiet);
+
     if (quiet) ESP_LOGW(TAG, "storage paused: an update is being installed");
     else       ESP_LOGI(TAG, "storage resumed");
 }
@@ -1074,9 +1194,13 @@ static struct {
 /* The hotspot, switched by an owner, after the answer has gone out on it. */
 static volatile int s_ap_want = -1;   /* -1 nothing to do, 0 off, 1 on */
 
-/* A new key waiting for the restart that takes it (11.10). */
+/* A restart an owner's command asked for (11.10), taken once its answer has
+ * had the four seconds it needs to leave: a new key, or a new LoRa mode. */
 static volatile bool s_rekey_reboot;
 static uint32_t      s_rekey_at_ms;
+static const char   *s_restart_why = "the new key";
+
+
 
 /* A repeat of the command that changed the key, still addressed to the old
  * callsign: the phone re-sends until it hears the 200, and on a weak link the
@@ -1469,7 +1593,7 @@ static int64_t s_tz_next_s;             /* defined with the time zone, below */
 /* The keys of 11.9 and 11.10 a cmd:set may carry in the clear. */
 static const char *const k_pol_keys[] = { "owner", "use", "first", "serve" };
 static const char *const k_setup_clear[] = {
-    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key"
+    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora"
 };
 
 static bool has_any(const xprs_t *p, const char *const *keys, int n)
@@ -1500,6 +1624,12 @@ static int setup_state(char *out, int cap)
      * may be leaving by it (11.10): what was asked is what the answer says. */
     if (s_ap_want >= 0) ap = s_ap_want == 1;
     if (n < cap) n += snprintf(out + n, cap - n, " ap:%s", ap ? "on" : "off");
+    /* The LoRa mode (14.8), which is the one running: a change is taken
+     * when it is asked for. Before nick: and zone:, which a long result
+     * sheds first. */
+    if (s_board && s_board->lora && n < cap)
+        n += snprintf(out + n, cap - n, " lora:%s",
+                      xprslora_mode_name(xprslora_mode()));
     const char *nick = xcfg_get("name", "");
     if (nick[0] && n < cap) n += snprintf(out + n, cap - n, " nick:%s", nick);
     const char *tz = xcfg_get("tz", "");
@@ -1586,6 +1716,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
 {
     const char *ssid = NULL, *pass = NULL, *nsec = NULL, *wifi = NULL;
     const char *nick = NULL, *zone = NULL, *ap = NULL, *key = NULL;
+    const char *lora = NULL;
     for (int i = 0; i < n; i++) {
         const char *k = kv[i].key, *v = kv[i].val;
         if (!xsetup_is_key(k)) {
@@ -1608,16 +1739,50 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         else if (!strcmp(k, "zone")) zone = v;
         else if (!strcmp(k, "ap"))   ap = v;
         else if (!strcmp(k, "key"))  key = v;
+        else if (!strcmp(k, "lora")) lora = v;
     }
     if (nsec && key) { snprintf(why, why_cap, "key:new or nsec:, not both"); return 400; }
+    /* 14.8, decided before anything is written: a mode this firmware does
+     * not have changes nothing and says so. */
+    xprslora_mode_t lmode = xprslora_mode();
+    if (lora) {
+        if (!s_board->lora) {
+            snprintf(why, why_cap, "no LoRa radio on this station");
+            return 400;
+        }
+        if (!xprslora_mode_parse(lora, &lmode) || !xprslora_mode_available(lmode)) {
+            snprintf(why, why_cap, "%s is not in this firmware", lora);
+            return 501;
+        }
+    }
 
-    if (nick) xcfg_set("name", nick);
+    if (nick) {
+        xcfg_set("name", nick);
+        /* The name a bridge wears on the other network is this one, and it
+         * is announced, so a change has to reach the bridge rather than
+         * wait for a restart (XPRS.md 6.3.1). */
+        xprslora_mt_set_nick(nick);
+        xprslora_mc_set_nick(nick);
+    }
     if (zone) {
         if (!strcmp(zone, "auto")) { xcfg_set("tz", ""); xcfg_set_bool("tz_auto", true); }
         else                        xcfg_set("tz", zone);
         s_tz_next_s = 0;                  /* tz_tick applies it within a minute */
     }
     if (ap) s_ap_want = !strcmp(ap, "on");
+    /* The mode is taken NOW: the radio retunes, the ledger follows it and
+     * the station stays up (14.8). It is true by the time this answer
+     * leaves, so the answer is a 200 and says which mode it is. */
+    if (lora && lmode != xprslora_mode()) {
+        esp_err_t lerr = lora_apply_mode(lmode);
+        if (lerr != ESP_OK) {
+            snprintf(why, why_cap, "could not switch to %s: %s",
+                     xprslora_mode_name(lmode), esp_err_to_name(lerr));
+            return 500;
+        }
+    } else if (lora) {
+        xcfg_set("lora_mode", xprslora_mode_name(lmode));
+    }
 
     bool join = false;
     char old_ssid[33], old_pass[64];
@@ -1700,6 +1865,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         }
         snprintf(extra, extra_cap, "k:%s", npub);
         s_rekey_at_ms = now_ms() + 4000;
+        s_restart_why = "the new key";
         s_rekey_reboot = true;
         ESP_LOGW(TAG, "new key %.16s... taken at the restart in 4 s (11.10)", npub);
         return 202;
@@ -1783,7 +1949,9 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
      * with what IS now, and not refused as a replay (11.10). */
     if (s_cmdset_last.id[0] && !strcmp(id, s_cmdset_last.id)) {
         char st[160];
-        if (xprs_get(&p, "x", &vl) || has_any(&p, k_setup_clear, 8))
+        if (xprs_get(&p, "x", &vl) || has_any(&p, k_setup_clear,
+                                                (int)(sizeof k_setup_clear /
+                                                      sizeof k_setup_clear[0])))
             setup_state(st, sizeof st);
         else
             snprintf(st, sizeof st, "%s", pol_keys());
@@ -2147,7 +2315,9 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         bool sealed = !has_cmd && xprs_get(&sp, "x", &vl);
         if (!sealed) {
             if (!has_cmd || strcmp(cmd, "set") != 0) break;
-            if (!has_any(&sp, k_pol_keys, 4) && !has_any(&sp, k_setup_clear, 8))
+            if (!has_any(&sp, k_pol_keys, 4) && !has_any(&sp, k_setup_clear,
+                                                        (int)(sizeof k_setup_clear /
+                                                              sizeof k_setup_clear[0])))
                 break;                  /* a device cmd:set, not ours */
         }
         if (len > XPRS_MAX_WIRE) break;
@@ -2810,9 +2980,14 @@ static bool wire_scope_local(const char *wire, int len)
  * node's DM never got through (2026-09-19). So LoRa carries what somebody
  * is waiting for -- a message, a receipt, a call for help, a command and its
  * result, a key to verify them with -- and leaves presence to the bearers
- * that are cheap. A token walk: t: is always first. */
+ * that are cheap. A token walk: t: is always first.
+ *
+ * On XPRS's own channel (`lora_mode xprs`: SF7, a frame a fifth of the
+ * airtime, nobody else's traffic) LoRa carries everything, as it always did
+ * there. */
 static bool lora_worth(const char *wire, int len)
 {
+    if (xprslora_mode() == XPRSLORA_MODE_XPRS) return true;
     static const char *const carried[] = {
         "message", "sos", "warning", "receipt", "reaction", "command",
         "result", "identity", "mailbox", "file", "request",
@@ -2850,10 +3025,12 @@ static void bridge_out(const char *wire, int len, from_t from)
         xprslora_offer(wire, len);
     if (from != FROM_BLE  && bridge) xprsble_offer(wire, len);
     if (from != FROM_RNS  && bridge && !local) xprsrns_send(wire, len);
-    /* And to Meshtastic, which decides for itself what it can carry (a
-     * message or a like, not sealed, not local) and never takes back what
-     * came from it. */
+    /* And to the other network on this radio, whichever it is: each
+     * decides for itself what it can carry (a message, not sealed, not
+     * local) and never takes back what came from it. Only the running
+     * mode's bridge is listening. */
     xprslora_mt_offer(wire, len, MT_XPRS_HEARD);
+    xprslora_mc_offer(wire, len, MC_XPRS_HEARD);
 
     /* And again on the one it came from, for stations past the sender's
      * reach but inside ours. */
@@ -4417,6 +4594,41 @@ static void ui_render(void)
         SROWF("Hotspot", xcfg_get_bool("ap_on", true) ? "On" : "Off",
              "The walk-up WiFi: an open network whose sign-in page is the "
              "chat. %s toggles; applies after restart.", ok_key());
+        {
+            /* 14.8: which LoRa network the radio shares a channel with.
+             * Always a row, so the rows below keep their numbers on a board
+             * without a radio. */
+            char lval[sizeof tr[0].cell[1]];
+            if (!s_board->lora)                 snprintf(lval, sizeof lval, "No radio");
+            else if (xprslora_survey_active())  snprintf(lval, sizeof lval, "Surveying");
+            else snprintf(lval, sizeof lval, "%s", lora_mode_label(xprslora_mode()));
+            SROWF("LoRa mode", lval,
+                  "XPRS: its own channel. XPRS+Meshtastic: Meshtastic's, "
+                  "bridged. Other modes are not heard on LoRa. %s "
+                  "switches at once.", ok_key());
+            {   /* Who is out there, before choosing: a listen-only sweep. */
+                char sval[sizeof tr[0].cell[1]];
+                char sdet[160];
+                if (!s_board->lora) {
+                    snprintf(sval, sizeof sval, "--");
+                    snprintf(sdet, sizeof sdet, "No LoRa radio on this board.");
+                } else if (xprslora_survey_active()) {
+                    snprintf(sval, sizeof sval, "Running");
+                    snprintf(sdet, sizeof sdet,
+                             "Listening on each mode in turn; nothing is "
+                             "transmitted until it ends.");
+                } else {
+                    char js[256];
+                    int jn = xprslora_survey_json(js, sizeof js);
+                    snprintf(sval, sizeof sval, "%s", jn > 0 ? "Done" : "--");
+                    snprintf(sdet, sizeof sdet,
+                             "Listen on every LoRa mode in turn and say who "
+                             "is there. %s starts it; nothing is aired while "
+                             "it runs.", ok_key());
+                }
+                SROW("LoRa survey", sval, sdet);
+            }
+        }
         SROW("Name", xcfg_get("name", "--"),
              "The device's friendly name. Set it through the config "
              "share above.");
@@ -5604,11 +5816,17 @@ static void idx_task(void *arg)
              * `count:` and `uptime:` on the very same beacon already carry
              * the depth and the wakefulness a reader needs. */
             mt_mesh_stats_t mts;
-            bool mt_bridge = xprslora_mt_stats(&mts) &&
-                             xcfg_get_bool("mt_bridge", true);
+            mc_mesh_stats_t mcs;
+            /* The network word rides only while that bridge is the running
+             * one, so `serve:` says what this station can do for somebody
+             * NOW (XPRS.md 14.8). */
+            const char *mesh_word = "";
+            if (xprslora_mt_stats(&mts) && xcfg_get_bool("mt_bridge", true))
+                mesh_word = ",meshtastic";
+            else if (xprslora_mc_stats(&mcs) && xcfg_get_bool("mc_bridge", true))
+                mesh_word = ",meshcore";
             if (!serve[0])
-                snprintf(sbuf, sizeof sbuf, "archive%s",
-                         mt_bridge ? ",meshtastic" : "");
+                snprintf(sbuf, sizeof sbuf, "archive%s", mesh_word);
             else
                 snprintf(sbuf, sizeof sbuf, "%s", serve);
             if (strcmp(sbuf, "none") == 0) { last_announce_s = now_s; goto no_announce; }
@@ -5742,10 +5960,10 @@ no_announce:
             ap_apply(want == 1);
         }
 
-        /* 11.10: a new key is taken at a restart, once the old key's 202
-         * has had the four seconds it needs to leave. */
+        /* 11.10: a new key or a new LoRa mode is taken at a restart, once
+         * the 202 has had the four seconds it needs to leave. */
         if (s_rekey_reboot && (int32_t)(now_ms() - s_rekey_at_ms) >= 0) {
-            ESP_LOGW(TAG, "restarting to take the new key");
+            ESP_LOGW(TAG, "restarting to take %s", s_restart_why);
             vTaskDelay(pdMS_TO_TICKS(200));
             esp_restart();
         }
@@ -6330,10 +6548,29 @@ static void settings_ok(int row)
     case 7:
         xcfg_set_bool("ap_on", !xcfg_get_bool("ap_on", true));
         break;
-    case 10:
+    case 8:
+        /* The next available LoRa mode after the running one (14.8), taken
+         * at once. */
+        if (s_board->lora && !xprslora_survey_active()) {
+            xprslora_mode_t m = xprslora_mode();
+            for (int i = 0; i < XPRSLORA_MODE_COUNT; i++) {
+                m = (xprslora_mode_t)((m + 1) % XPRSLORA_MODE_COUNT);
+                if (xprslora_mode_available(m)) break;
+            }
+            esp_err_t e = lora_apply_mode(m);
+            if (e != ESP_OK)
+                ESP_LOGW(TAG, "LoRa mode %s refused: %s",
+                         xprslora_mode_name(m), esp_err_to_name(e));
+        }
+        break;
+    case 9:
+        if (s_board->lora)
+            xprslora_survey_start((uint32_t)atoi(xcfg_get("lora_survey_s", "60")));
+        break;
+    case 12:
         s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
         break;
-    case 11:
+    case 13:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -6408,9 +6645,13 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
     bool lora_ok = !local || xcfg_get_bool("lora_local", false);
     bool lra = WANT("lora")   && lora_ok && xprslora_is_active() &&
                xprslora_send(wire, len);
-    /* A message of ours, or one a phone handed us, reaches Meshtastic users
-     * too; a sealed one addressed to one is refused out loud (mt_mesh). */
-    if (WANT("lora")) xprslora_mt_offer(wire, len, MT_XPRS_OWN);
+    /* A message of ours, or one a phone handed us, reaches the other
+     * network's users too; a sealed one addressed to one is refused out
+     * loud (mt_mesh, mc_mesh). */
+    if (WANT("lora")) {
+        xprslora_mt_offer(wire, len, MT_XPRS_OWN);
+        xprslora_mc_offer(wire, len, MC_XPRS_OWN);
+    }
     bool ble = WANT("ble")    && xprsble_is_active() && xprsble_send(wire, len);
     bool rns = WANT("rns")    && !local && xprsrns_is_up() &&
                xprsrns_send(wire, len);
@@ -6444,11 +6685,11 @@ static int api_lora_json(char *buf, size_t cap)
     xprslora_duty(&r);
     const xprslora_region_t *reg = xprslora_region();
     int n = snprintf(buf, cap,
-        "\"lora\":{\"region\":\"%s\",\"freq_hz\":%lu,"
+        "\"lora\":{\"mode\":\"%s\",\"region\":\"%s\",\"freq_hz\":%lu,"
         "\"duty_ms\":%lu,\"spent_ms\":%lu,\"free_ms\":%lu,"
         "\"reserve_ms\":%lu,\"held\":%lu,\"deferred\":%lu,"
         "\"stale\":%lu,\"next_free_ms\":%lu",
-        reg->name,
+        xprslora_mode_name(xprslora_mode()), reg->name,
         (unsigned long)(s_board->lora->freq_hz ? s_board->lora->freq_hz
                                                : reg->freq_hz),
         (unsigned long)r.budget_ms, (unsigned long)r.spent_ms,
@@ -6470,6 +6711,56 @@ static int api_lora_json(char *buf, size_t cap)
             (unsigned long)mt.dm_rekeyed, (unsigned long)mt.dm_not_here,
             (unsigned long)mt.receipts, (unsigned long)mt.key_asks,
             (unsigned long)mt.pki_fail, (unsigned long)mt.dropped);
+    /* Who is out there, by the name that network gave them: the counters
+     * say how much crossed, this says with whom. Six is a status page, not
+     * a node list. */
+    if (n > 0 && (size_t)n < cap && xprslora_mt_stats(&mt)) {
+        n += snprintf(buf + n, cap - (size_t)n, ",\"mt_nodes\":[");
+        mt_node_t nd;
+        int have = xprslora_mt_node(0, &nd), shown = 0;
+        for (int i = 0; i < have && shown < 6 && (size_t)n < cap; i++) {
+            if (!xprslora_mt_node(i, &nd) || !nd.long_name[0]) continue;
+            n += snprintf(buf + n, cap - (size_t)n, "%s\"%.20s\"",
+                          shown ? "," : "", nd.long_name);
+            shown++;
+        }
+        if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]");
+    }
+    /* The MeshCore side, the same way and only while it is the running
+     * mode, so a reader never sees two bridges at once. */
+    mc_mesh_stats_t mc;
+    if (n > 0 && (size_t)n < cap && xprslora_mc_stats(&mc))
+        n += snprintf(buf + n, cap - (size_t)n,
+            ",\"mc\":{\"rx\":%lu,\"opened\":%lu,\"relayed\":%lu,"
+            "\"text_in\":%lu,\"text_out\":%lu,\"dm_acked\":%lu,"
+            "\"dm_not_here\":%lu,\"receipts\":%lu,\"adverts_in\":%lu,"
+            "\"adverts_out\":%lu,\"unnamed\":%lu,\"dropped\":%lu,"
+            "\"inbox_full\":%lu,\"bcast_capped\":%lu,\"rx_dupes\":%lu,"
+            "\"relay_skipped\":%lu,\"paths_in\":%lu}",
+            (unsigned long)mc.rx_frames, (unsigned long)mc.rx_opened,
+            (unsigned long)mc.relayed, (unsigned long)mc.text_in,
+            (unsigned long)mc.text_out, (unsigned long)mc.dm_acked,
+            (unsigned long)mc.dm_not_here, (unsigned long)mc.receipts,
+            (unsigned long)mc.adverts_in, (unsigned long)mc.adverts_out,
+            (unsigned long)mc.grp_unnamed, (unsigned long)mc.dropped,
+            (unsigned long)mc.inbox_full, (unsigned long)mc.bcast_capped,
+            (unsigned long)mc.rx_dupes, (unsigned long)mc.relay_skipped,
+            (unsigned long)mc.paths_in);
+    if (n > 0 && (size_t)n < cap && xprslora_mc_stats(&mc)) {
+        n += snprintf(buf + n, cap - (size_t)n, ",\"mc_nodes\":[");
+        mc_node_t nd;
+        int have = xprslora_mc_node(0, &nd), shown = 0;
+        for (int i = 0; i < have && shown < 6 && (size_t)n < cap; i++) {
+            if (!xprslora_mc_node(i, &nd) || !nd.name[0]) continue;
+            n += snprintf(buf + n, cap - (size_t)n, "%s\"%.20s\"",
+                          shown ? "," : "", nd.name);
+            shown++;
+        }
+        if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]");
+    }
+    char sv[320];
+    if (n > 0 && (size_t)n < cap && xprslora_survey_json(sv, sizeof sv) > 0)
+        n += snprintf(buf + n, cap - (size_t)n, ",\"survey\":%s", sv);
     if (n > 0 && (size_t)n + 1 < cap) {
         buf[n++] = '}';
         buf[n] = 0;
@@ -6913,7 +7204,8 @@ static void ui_task(void *arg)
                 if (ch == '\n' || ch == '\r') {
                     cfgline[cfgn] = 0;
                     if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0 &&
-                        !xdiag_console(cfgline)) xcfg_console(cfgline);
+                        !lora_console(cfgline) && !xdiag_console(cfgline))
+                        xcfg_console(cfgline);
                     cfgn = -1;
                     ch = 0;
                 } else if (cfgn < (int)sizeof cfgline - 1) {
@@ -7424,14 +7716,31 @@ void xapp_run(const xapp_board_t *board)
      * whose task is what pumps this one's queue too. */
     if (board->lora) {
         splash_step("radio");
-        /* The operator's region, frequency and profile, read BEFORE the
-         * radio starts because they are what it starts AS. The defaults
-         * live in the bearer's region table (xprslora_regions); config
-         * only tightens or knowingly loosens. */
+        /* The operator's mode, region, frequency and profile, read BEFORE
+         * the radio starts because they are what it starts AS. The defaults
+         * live in the bearer's tables (xprslora_regions); config only
+         * chooses, tightens or knowingly loosens. This is the mode the
+         * station COMES UP in; it changes live afterwards (`cfg lora`,
+         * docs/meshtastic.md, "LoRa modes"). */
         xprslora_cfg_t lc = *board->lora;
         {
+            xprslora_mode_t mode = XPRSLORA_MODE_DEFAULT;
+            const char *mw = xcfg_get("lora_mode", NULL);
+            if (mw && mw[0]) {
+                xprslora_mode_t want;
+                if (!xprslora_mode_parse(mw, &want))
+                    ESP_LOGW(TAG, "lora_mode %s is not a LoRa mode (xprs, "
+                                  "meshtastic, meshcore) -- using %s",
+                             mw, xprslora_mode_name(mode));
+                else if (!xprslora_mode_available(want))
+                    ESP_LOGW(TAG, "lora_mode %s is not in this firmware -- "
+                                  "using %s", mw, xprslora_mode_name(mode));
+                else
+                    mode = want;
+            }
+            lc.mode = mode;
             int nreg = 0;
-            const xprslora_region_t *regs = xprslora_regions(&nreg);
+            const xprslora_region_t *regs = xprslora_regions(mode, &nreg);
             const xprslora_region_t *reg = &regs[0];
             const char *rn = xcfg_get("lora_region", NULL);
             if (rn && rn[0]) {
@@ -7439,21 +7748,28 @@ void xapp_run(const xapp_board_t *board)
                     if (strcasecmp(regs[i].name, rn) == 0) { reg = &regs[i]; break; }
             }
             if (rn && rn[0] && reg == &regs[0] && strcasecmp(rn, reg->name) != 0)
-                ESP_LOGW(TAG, "lora_region %s is not a Meshtastic region -- "
-                              "using %s", rn, reg->name);
+                ESP_LOGW(TAG, "lora_region %s is not a region of %s mode -- "
+                              "using %s", rn, xprslora_mode_name(mode), reg->name);
             lc.region = reg->name;
             if (!lc.freq_hz) lc.freq_hz = reg->freq_hz;
             const char *fq = xcfg_get("lora_freq_hz", NULL);
             if (fq && fq[0]) {
                 lc.freq_hz = (uint32_t)strtoul(fq, NULL, 10);
                 if (lc.freq_hz != reg->freq_hz)
-                    ESP_LOGW(TAG, "lora_freq_hz %lu is off Meshtastic's slot "
-                                  "(%lu): no Meshtastic node will hear this "
-                                  "station", (unsigned long)lc.freq_hz,
-                             (unsigned long)reg->freq_hz);
+                    ESP_LOGW(TAG, "lora_freq_hz %lu is off the %s channel "
+                                  "(%lu): no station in %s mode will hear this "
+                                  "one", (unsigned long)lc.freq_hz,
+                             reg->name, (unsigned long)reg->freq_hz,
+                             xprslora_mode_name(mode));
             }
-            /* lora_profile (`far`, SF9) went with the move to LongFast:
-             * every station on a channel has to share one modulation. */
+            /* `far` (SF9): +5 dB a hop for 4x the airtime, a deployment
+             * decision because every station on a link must share it. XPRS's
+             * own channel only: a shared channel has one modulation. */
+            const char *pf = xcfg_get("lora_profile", NULL);
+            lc.far = pf && strcasecmp(pf, "far") == 0 &&
+                     mode == XPRSLORA_MODE_XPRS;
+            if (pf && strcasecmp(pf, "far") == 0 && mode != XPRSLORA_MODE_XPRS)
+                ESP_LOGW(TAG, "lora_profile far is for xprs mode only -- ignored");
             if (xprslora_start(s_call, &lc) == ESP_OK) {
                 xprslora_set_rx_cb(on_lora);
                 uint32_t duty = reg->duty_ms, resv = reg->reserve_ms,
@@ -7469,24 +7785,11 @@ void xapp_run(const xapp_board_t *board)
                  * always answered NULL. Registered now. */
                 if ((v = xcfg_get("lora_pace_ms", NULL)) && v[0])
                     xprslora_set_pace((uint32_t)strtoul(v, NULL, 10));
-                /* Meshtastic: the repeater and the bridge (docs/meshtastic.md). */
-                mt_mesh_cfg_t mc = {
-                    .repeat = xcfg_get_bool("mt_repeat", true),
-                    .bridge = xcfg_get_bool("mt_bridge", true),
-                    .bcast_per_hour = 12,
-                    .nodeinfo_min = 180,
-                };
-                if ((v = xcfg_get("mt_bcast_hr", NULL)) && v[0])
-                    mc.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
-                if ((v = xcfg_get("mt_ni_min", NULL)) && v[0])
-                    mc.nodeinfo_min = (uint16_t)strtoul(v, NULL, 10);
-                static const xprslora_mt_hooks_t hooks = {
-                    .deliver = mesh_deliver,
-                    .stamp = mesh_stamp,
-                    .nick_of = NULL,
-                };
-                if (mc.repeat || mc.bridge)
-                    xprslora_mt_start(&hooks, &mc, xcfg_get("nick", ""));
+                /* The repeater and the bridge of whichever network this
+                 * radio came up on (docs/meshtastic.md). */
+                if (mode == XPRSLORA_MODE_MESHTASTIC ||
+                    mode == XPRSLORA_MODE_MESHCORE)
+                    lora_start_bridge();
             }
         }
         if (!xprslora_is_active())

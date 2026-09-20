@@ -6,8 +6,10 @@
 set -e
 cd "$(dirname "$0")"
 XPRS=../xprs_codec
+XLC=../xprs_loracrypto
 SHA=../xprs_index/test_sha256_host.c
-gcc -Wall -Wextra -Werror -O1 -I. -I"$XPRS" -o /tmp/test_mt \
+gcc -Wall -Wextra -Werror -O1 -I. -I"$XPRS" -I"$XLC" -o /tmp/test_mt \
     mt_wire.c mt_xprs.c mt_mesh.c mt_pki.c "$XPRS"/xprs.c \
+    "$XLC"/xlc_x25519.c "$XLC"/xlc_hmac.c \
     test_mt_host.c test_mt_mesh_host.c "$SHA" -lcrypto
 /tmp/test_mt

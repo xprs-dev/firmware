@@ -1,0 +1,13 @@
+{
+  "name": "xprs_meshcore",
+  "version": "1.0.0",
+  "description": "MeshCore on the XPRS LoRa radio: the frame and its payloads, the public channel, adverts and direct messages, and XPRS framing on the shared channel. Platform-independent; the curve and cipher primitives come from xprs_loracrypto.",
+  "keywords": "xprs, meshcore, lora",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*", "xprs_loracrypto": "*"},
+  "build": {
+    "srcFilter": ["+<mc_wire.c>", "+<mc_xprs.c>", "+<mc_mesh.c>"],
+    "flags": ["-I."]
+  }
+}

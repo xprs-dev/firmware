@@ -9,14 +9,41 @@ a stock Meshtastic 2.7.26 node and the Meshtastic Android app
 (docs/meshtastic.md, "Measured on the bench"). Anything new here follows
 docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
 
-1. **Port the P1-Pro.** It still runs SF7 and is deaf to the fleet. RadioLib's
+0. **Try the remote LoRa mode switch on the bench.** `cmd:set lora:<mode>`
+   is host-tested and in the Firmwares wapp (0.3.6), but neither bench board
+   is owned by a profile on the bench phone (X1ARKL) or desktop (X16JK8):
+   the T-Deck's owner is `npub1jk77…`, the Heltec's `npub18364…`. Run it from
+   the owner's phone: Name screen, LoRa, then watch the 200 come back and
+   the station stay up (the switch is live now; there is no restart).
+0b. **MeshCore, on the air.** `common/xprs_meshcore` is written and
+   host-tested end to end (the wire against the published layouts and
+   OpenSSL, the repeater and the bridge against two bridges and a fake
+   MeshCore node), and nothing of it has been on a radio. What is NOT
+   implemented, and is a decision rather than an omission: reactions
+   (MeshCore has no tapback), positions and telemetry, room servers, and
+   transport-routed packets.
+0c. **MeshCore on the air: done, and what it changed.** 2026-09-20, against
+   a Heltec V3 running the published MeshCore v1.17.1 (repeater, then the
+   companion build driven over USB) with a T-Deck running this firmware:
+   contacts, channel messages both ways, direct messages both ways with the
+   gateway receipt. A stock repeater does NOT relay our `RAW_CUSTOM`, so
+   XPRS on that channel is direct-range only (docs/meshtastic.md,
+   "MeshCore, measured on the air"). The bench boards are now: Heltec =
+   stock MeshCore (its XPRS identity X3H3MZ is backed up in
+   ~/xprs-nvs-backups/2026-09-19/heltec_X3H3MZ_nvs_2026-09-20.bin), T-Deck
+   = this firmware as a fresh unowned station X3HW9U, and the Meshtastic
+   witness is gone. Put them back before the next Meshtastic session.
+1. **Port the P1-Pro to `meshtastic` mode.** It runs the `xprs` LoRa mode
+   (SF7), so ESP32 stations set to `lora_mode xprs` hear it and the default
+   `meshtastic` ones do not. RadioLib's
    `begin()` on LongFast (SF11, 250 kHz, CR 5, sync 0x2B, preamble 16, at
    `mt_slot_freq_hz()`), `scanChannel()` for listen-before-talk, the
    `xprs_meshtastic` component by symlink into `firmware/lib` (its
-   `library.json` is ready), and `mt_aes_encrypt_block()` over the CC310
+   `library.json` is ready), and `xlc_aes_encrypt_block()` over the CC310
    (`Adafruit_nRFCrypto`) or mbedtls's `aes.c`, since `lib/mbedtls_ecp` has no
-   AES. Flash it by cable: once the rest of the fleet is on LongFast, nothing
-   can reach it over the air.
+   AES. It should take `lora_mode` like the ESP32s (both modes, `xprs` kept),
+   not trade one for the other. Until then, reach it over the air from a
+   station set to `xprs`.
 2. **The app on a phone.** Done in the app and the chat wapp, host-tested, and
    checked on the desktop against the bench (app/docs/meshtastic.md section
    5). Not yet seen on a phone, and not yet seen on any screen: the chat's
@@ -36,6 +63,12 @@ docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
    `xprs_api.c` calls `esp_core_dump_get_summary()` and the kv4p sdkconfig has
    `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` unset (docs/esp32.md says it is not
    optional on any board). The SA818 gate now also refuses `MT`/`MC` senders.
+6. **`common/xprs_bearer_lan/test_xprslan_host.sh` does not compile**, and
+   did not before this work: `s_lan` is declared inside the device-only
+   branch (`xprslan.c:100`, between the `#else` at :54 and the `#endif` at
+   :173), so the host build has no definition for the wrappers at :197. Move
+   the declaration above the split. Every other host test in `common/` is
+   green.
 
 ## Measure the long-range PHY
 

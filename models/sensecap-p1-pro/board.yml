@@ -64,10 +64,11 @@ bearers:
     packets are first-class on the network and not merely audible.
     Driven by RadioLib rather than a port of common/xprs_sx1262, which is
     ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which
-    MUST stay equal to xprslora.c or the two radios are deaf to each other --
-    and since 2026-09-19 it does not: the ESP32 fleet moved to Meshtastic's
-    LongFast (SF11 / BW250 / sync 0x2B at 869.525 MHz, docs/meshtastic.md),
-    and this board is deaf to it until it is ported.
+    MUST stay equal to xprslora.c's `xprs` LoRa mode or the two radios are
+    deaf to each other. This board runs the `xprs` mode only: ESP32 stations
+    set to `lora_mode xprs` hear it (verified 2026-09-19, its digipeats
+    arriving as "via:...,X3S7S8"), and ones in the default `meshtastic` mode
+    do not, until it is ported (docs/meshtastic.md, "LoRa modes").
   lan: "no"
   lan_note: >-
     nRF52840 has no WiFi radio, so there is no LAN and there never will be

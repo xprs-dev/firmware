@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "xlc.h"
 #include "xprs.h"
 
 /* ── Header ───────────────────────────────────────────────────────────── */
@@ -439,7 +440,7 @@ bool mt_crypt(const uint8_t *key, int key_len, uint32_t from, uint32_t id,
     wr32le(ctr + 8, from);
     uint8_t ks[16];
     for (int off = 0; off < len; off += 16) {
-        if (!mt_aes_encrypt_block(key, key_len, ctr, ks)) return false;
+        if (!xlc_aes_encrypt_block(key, key_len, ctr, ks)) return false;
         int n = len - off < 16 ? len - off : 16;
         for (int i = 0; i < n; i++) buf[off + i] ^= ks[i];
         /* The counter is the last four bytes, big-endian. */

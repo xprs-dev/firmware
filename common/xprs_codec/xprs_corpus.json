@@ -910,6 +910,21 @@
 "id": "8baa94"
 },
 {
+"wire": "t:command f:X1QZ3N d:X3RLY7 ts:2026-09-19_20:00:00 cmd:set lora:xprs sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 133,
+"id": "538137"
+},
+{
+"wire": "t:result f:X3RLY7 d:X1QZ3N ts:2026-09-19_20:00:01 r:5c19e2 code:200 wifi:up ip:192.168.1.40 ap:off lora:xprs nick:roof-north zone:+01:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 201,
+"id": "91eeb6"
+},
+{
+"wire": "t:result f:X3RLY7 d:X1QZ3N ts:2026-09-19_20:00:01 r:5c19e2 code:501 wifi:up ip:192.168.1.40 ap:off lora:meshtastic nick:roof-north zone:+01:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meshcore is not in this firmware",
+"bytes": 242,
+"id": "b9d6f7"
+},
+{
 "wire": "t:command f:X1QZ3N d:X3RLY7 ts:2026-08-08_14:33:00 cmd:set key:new sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 131,
 "id": "6e945a"

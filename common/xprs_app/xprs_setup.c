@@ -7,7 +7,7 @@
 #include "xprs_tz.h"
 
 static const char *const k_keys[] = {
-    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key",
+    "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora",
 };
 
 bool xsetup_is_key(const char *key)
@@ -109,6 +109,15 @@ const char *xsetup_check(const char *key, const char *val)
     if (strcmp(key, "key") == 0) {
         if (strcmp(val, "new") == 0) return NULL;
         return "key: new";
+    }
+    if (strcmp(key, "lora") == 0) {
+        /* 14.8: the LoRa mode. The grammar names all three; whether this
+         * firmware HAS one is the station's answer, code:501, not a
+         * malformed command (a small board may be built without one). */
+        if (strcmp(val, "xprs") == 0 || strcmp(val, "meshtastic") == 0 ||
+            strcmp(val, "meshcore") == 0)
+            return NULL;
+        return "lora: xprs, meshtastic or meshcore";
     }
     if (strcmp(key, "nick") == 0) {
         /* 6.3.1: one to sixteen ASCII letters, digits, - and _. */

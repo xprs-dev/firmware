@@ -225,6 +225,19 @@ esp_err_t sx1262_sleep(sx1262_handle_t handle);
  * @param freq_hz Frequency in Hz
  * @return esp_err_t ESP_OK on success
  */
+/**
+ * @brief Point the modem at another channel and modulation, live.
+ *
+ * The frequency, power, spreading factor, bandwidth, coding rate, preamble
+ * and sync word of [config] are applied to a radio that is already up,
+ * without the hardware reset sx1262_init() begins with and without
+ * disturbing the DIO1 interrupt. This is what changing a station's LoRa
+ * mode costs (docs/meshtastic.md, "LoRa modes"): the caller holds the radio,
+ * has waited out anything in flight, and puts the radio back into receive
+ * afterwards.
+ */
+esp_err_t sx1262_retune(sx1262_handle_t handle, const sx1262_lora_config_t *config);
+
 esp_err_t sx1262_set_frequency(sx1262_handle_t handle, uint32_t freq_hz);
 
 /**

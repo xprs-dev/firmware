@@ -1,29 +1,30 @@
 /**
  * @file xprslora.h
- * @brief XPRS over LoRa, on Meshtastic's channel.
+ * @brief XPRS over LoRa, in one of the station's LoRa modes.
  *
- * Since 2026-09 the radio runs Meshtastic's LongFast modulation (SF11,
- * 250 kHz, CR 4/5, preamble 16, sync word 0x2B) on Meshtastic's frequency
- * slot for the region, so one radio hears both networks (docs/meshtastic.md).
+ * A LoRa receiver hears only the modulation and sync word it is set to, so
+ * which LoRa network a station shares a channel with is a setting, chosen at
+ * start and fixed until the next (`lora_mode`, docs/meshtastic.md "LoRa
+ * modes"):
  *
- * The wire is still the wire, inside a wrapper: every XPRS packet rides as
- * the payload of a Meshtastic Data frame on XPRS's own clear channel and
- * private portnum (xprs_meshtastic/mt.h), one frame up to 233 bytes, two
- * above that. The xb_* half never sees the wrapper; what it hands this
- * file and what this file hands back are plain XPRS wires, as on every
- * other bearer.
+ *   xprs        XPRS's own channel, as the fleet ran before 2026-09-19:
+ *               SF7 (SF9 with the `far` profile), 125 kHz, CR 4/5, preamble
+ *               8, the chip's default sync word 0x12, 869.5 MHz in Europe.
+ *               The frame IS the XPRS wire.
+ *   meshtastic  Meshtastic's LongFast (SF11, 250 kHz, CR 4/5, preamble 16,
+ *               sync word 0x2B) on Meshtastic's frequency slot. Every XPRS
+ *               packet rides as the payload of a Meshtastic Data frame on
+ *               XPRS's own clear channel and private portnum (xprs_meshtastic
+ *               /mt.h), one frame up to 233 bytes, two above that; every
+ *               other frame goes to the Meshtastic repeater and bridge
+ *               (mt_mesh). The default.
+ *   meshcore    reserved: named everywhere, not in this firmware yet.
  *
- * Every frame that is NOT XPRS goes to xprs_meshtastic's repeater and
- * bridge (mt_mesh), which relays Meshtastic traffic under Meshtastic's own
- * flood rules and translates LongFast text to and from XPRS messages.
- *
- * ON AIRTIME. A full 255-byte frame at SF11/250 kHz is 2.1 s on the air,
- * five and a half times what the fleet's SF7 cost. The band is shared with
- * a duty-cycle obligation -- 10% in band g3 (869.4-869.65), which is the
- * one EU_868 slot Meshtastic has too -- and the duty ledger (xb_set_duty)
- * charges every transmission, XPRS and Meshtastic alike (xb_spend), against
- * one rolling hour. Before a transmission the radio listens: a packet
- * already arriving, or channel activity detection, holds it back.
+ * The xb_* half never sees the difference: what it hands this file and
+ * what this file hands back are plain XPRS wires, as on every other bearer.
+ * In every mode the radio listens before it talks (a header already
+ * arriving, then channel activity detection), transmits without blocking,
+ * and charges every transmission against one duty ledger (xb_set_duty).
  */
 #ifndef XPRS_BEARER_LORA_H
 #define XPRS_BEARER_LORA_H
@@ -32,11 +33,32 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "xprsbearer.h"
+#include "mc_mesh.h"
 #include "mt_mesh.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/** The LoRa modes, in the order `lora_mode` names them. */
+typedef enum {
+    XPRSLORA_MODE_XPRS = 0,
+    XPRSLORA_MODE_MESHTASTIC,
+    XPRSLORA_MODE_MESHCORE,
+    XPRSLORA_MODE_COUNT
+} xprslora_mode_t;
+
+/** The mode a freshly flashed station runs. */
+#define XPRSLORA_MODE_DEFAULT XPRSLORA_MODE_MESHTASTIC
+
+/** "xprs", "meshtastic", "meshcore". */
+const char *xprslora_mode_name(xprslora_mode_t mode);
+
+/** The mode a word names; false for a word that names none. */
+bool xprslora_mode_parse(const char *word, xprslora_mode_t *out);
+
+/** Whether this firmware can run [mode] (meshcore: not yet). */
+bool xprslora_mode_available(xprslora_mode_t mode);
 
 /** The radio's wiring and tuning. A board that has no SX1262 simply never
  *  calls xprslora_start. */
@@ -47,21 +69,23 @@ typedef struct {
     int8_t tx_power_dbm;     /* 0 = a polite 14 dBm */
     bool use_tcxo;           /* module has a TCXO on DIO3 (the T-Deck does) */
     bool use_dio2_rf_switch; /* DIO2 drives the RF switch (the T-Deck too) */
-    const char *region;      /* lora_region; NULL = entry 0 (`eu`) */
+    const char *region;      /* lora_region; NULL = the mode's entry 0 */
+    xprslora_mode_t mode;    /* lora_mode; must be available */
+    bool far;                /* xprs mode's `far` profile: SF9 */
 } xprslora_cfg_t;
 
 /**
  * Where in the spectrum this station is allowed to be, and what it owes.
+ * Each mode has its own table, because each network has its own channels:
  *
- * The frequency is Meshtastic's: its slot rule over the region's band for
- * the channel name LongFast (mt_slot_freq_hz), which is 869.525 MHz in
- * Europe. `eu-g1` (868.2 MHz) went with the move: Meshtastic has no channel
- * there, and a station alone on it would hear nobody.
- *
- * The US and AU rows used to cap one transmission at 400 ms (dwell). No
- * SF11 frame fits that, and Meshtastic, whose channel this now is, applies
- * no such cap on those bands: whether it binds a given installation is the
- * operator's question, and `lora_duty_ms` / a dwell can still be set.
+ *   xprs        `eu` 869.5 MHz (ERC 70-03 band g3: 10%, 500 mW e.r.p.),
+ *               `eu-g1` 868.2 MHz (band g1: 1%, 25 mW), `us` 903.9 MHz and
+ *               `au` 917.0 MHz with a 400 ms dwell per transmission.
+ *   meshtastic  Meshtastic's LongFast slot for the region (mt_slot_freq_hz):
+ *               `eu` 869.525, `us` 906.875, `au` 919.875 MHz. No SF11 frame
+ *               fits a 400 ms dwell and Meshtastic applies none, so the
+ *               900 MHz rows carry none; `lora_duty_ms` and a dwell can
+ *               still be set by the operator.
  */
 typedef struct {
     const char *name;        /* what lora_region selects */
@@ -72,8 +96,52 @@ typedef struct {
     int8_t   max_dbm;        /* the region's e.r.p. ceiling, for the log */
 } xprslora_region_t;
 
-/** The table `lora_region` picks from; entry 0 (`eu`) is the default. */
-const xprslora_region_t *xprslora_regions(int *count);
+/** The table `lora_region` picks from in [mode]; entry 0 (`eu`) is the
+ *  default. NULL and 0 for a mode this firmware does not have. */
+const xprslora_region_t *xprslora_regions(xprslora_mode_t mode, int *count);
+
+/** The mode the radio is in (the default before start). */
+xprslora_mode_t xprslora_mode(void);
+
+/**
+ * Change mode on the running radio: retune, rebuild the airtime table and
+ * the ledger, and go back to listening, with no restart. What was in flight
+ * on the old channel is lost and the stations still on it can no longer
+ * hear this one, so it is an operator's decision, never an automatic one.
+ * The bridge's state is not freed: a switch back finds it, and a large
+ * block freed and re-claimed is how a small heap fragments.
+ *
+ * ESP_ERR_NOT_SUPPORTED for a mode this firmware lacks, ESP_ERR_INVALID_STATE
+ * while a survey is running, ESP_OK when already in [mode].
+ */
+esp_err_t xprslora_set_mode(xprslora_mode_t mode);
+
+/* ── The survey ─────────────────────────────────────────────────────────
+ *
+ * Listen on each available mode in turn and report what was heard, so the
+ * operator chooses on evidence. Nothing is transmitted for the duration
+ * (our own traffic waits, as it does when the hour is spent), nothing is
+ * handed to the bearer or to a bridge, and the radio goes back to the mode
+ * it started in. */
+
+#define XPRSLORA_SURVEY_NAMES    4
+#define XPRSLORA_SURVEY_NAME_LEN 20
+
+typedef struct {
+    uint32_t frames;                 /* frames heard on this mode */
+    int      names;
+    char     name[XPRSLORA_SURVEY_NAMES][XPRSLORA_SURVEY_NAME_LEN];
+} xprslora_survey_mode_t;
+
+/** Start one, [per_mode_s] on each mode (clamped to 5..300). */
+esp_err_t xprslora_survey_start(uint32_t per_mode_s);
+
+/** Whether one is running now. */
+bool xprslora_survey_active(void);
+
+/** The last survey as JSON, `{"running":bool,"modes":{...}}`; 0 when there
+ *  has not been one. */
+int xprslora_survey_json(char *buf, size_t cap);
 
 /** Bring the radio up and join the bearer fleet. Needs another bearer's task
  *  already pumping xb_tick_all() -- the LAN bearer owns that job. */
@@ -109,28 +177,22 @@ bool xprslora_is_active(void);
  * Re-airs offered while the debt stands WAIT; they are not dropped. Our own
  * transmissions are charged but never blocked.
  *
- * The default is XPRSLORA_PACE_DEFAULT_MS. It is deliberately not a legal
- * duty-cycle calculation: the real figure depends on band, spreading factor
- * and region -- at SF7 a 250-byte packet is ~400 ms, which under a 1 percent
- * duty cycle owes about 40 seconds -- and that number is the operator's to
- * set, not this library's to guess. 0 disables pacing.
+ * The default depends on the mode. Six seconds in `xprs` mode, where a
+ * full packet at SF7 is 0.4 s; ten in `meshtastic` mode, where a typical
+ * 150-byte packet at SF11 is 1.3 s and the same six seconds would have put
+ * this station on the one shared channel a fifth of the time in a burst.
+ * Ten keeps a burst near a tenth, which is also what band g3 allows over
+ * the hour. It is deliberately not a legal duty-cycle calculation: that
+ * figure depends on band and region, and is the operator's to set. 0
+ * disables pacing.
+ *
+ * The pace is a collision spacer; the ledger below is the accountant. Both
+ * apply, and they are deliberately not one number.
  */
 void xprslora_set_pace(uint32_t per_packet_ms);
 
 /** Milliseconds until the radio may transmit again; 0 when free now. */
 uint32_t xprslora_owed_ms(void);
-
-/**
- * Ten seconds between our own XPRS transmissions. It was six at SF7, where
- * a packet was 0.4 s; at SF11 a typical 150-byte packet is 1.3 s, so the
- * same spacing would have put this station on the one shared channel a
- * fifth of the time in a burst. Ten keeps a burst near a tenth, which is
- * also what band g3 allows over the hour.
- *
- * The pace is a collision spacer; the ledger below is the accountant. Both
- * apply, and they are deliberately not one number.
- */
-#define XPRSLORA_PACE_DEFAULT_MS 10000u
 
 /** This radio's airtime for [len] bytes at the SF/BW/CR xprslora_start()
  *  set -- the number the duty ledger charges. 0 before start. */
@@ -167,9 +229,10 @@ typedef struct {
 } xprslora_mt_hooks_t;
 
 /**
- * Start the repeater and the bridge on the running radio. Allocates the
- * bridge's state once (about 9 KB, PSRAM where there is some); without it
- * the radio still carries XPRS, and says so in the log.
+ * Start the repeater and the bridge on the running radio, in `meshtastic`
+ * mode only (ESP_ERR_NOT_SUPPORTED otherwise, and nothing is allocated).
+ * Allocates the bridge's state once (about 9 KB, PSRAM where there is some);
+ * without it the radio still carries XPRS, and says so in the log.
  */
 esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
                             const mt_mesh_cfg_t *cfg, const char *nick);
@@ -188,6 +251,38 @@ int xprslora_mt_node(int i, mt_node_t *out);
 
 /** The station's nick changed (announced at the next NodeInfo). */
 void xprslora_mt_set_nick(const char *nick);
+
+/* ── MeshCore: the repeater and the bridge ───────────────────────────── */
+
+/* The same five things the station provides either bridge, so a station
+ * that grows a third network writes its hooks once. */
+
+/**
+ * Start the repeater and the bridge on the running radio, in `meshcore`
+ * mode only (ESP_ERR_NOT_SUPPORTED otherwise). The state is the block the
+ * mode itself claimed on the way in (xprslora_set_mode), so this allocates
+ * nothing and cannot fail for want of memory.
+ */
+esp_err_t xprslora_mc_start(const xprslora_mt_hooks_t *hooks,
+                            const mc_mesh_cfg_t *cfg, const char *nick);
+
+/** Every XPRS packet this station hears (MC_XPRS_HEARD) or originates
+ *  (MC_XPRS_OWN), on any bearer and any task. */
+void xprslora_mc_offer(const char *wire, int len, int origin);
+
+/** The bridge's counters; false when MeshCore is not the running mode. */
+bool xprslora_mc_stats(mc_mesh_stats_t *out);
+
+/** MeshCore nodes heard; [i] 0..n-1 into [out] (a copy). Returns how many. */
+int xprslora_mc_node(int i, mc_node_t *out);
+
+/** The station's nick changed (announced at the next advert). */
+void xprslora_mc_set_nick(const char *nick);
+
+/** Stand the MeshCore worker down for an install, and back up after: it is
+ *  6 KB of stack that a 1.4 MB transfer would rather have. Nothing is
+ *  forgotten -- the bridge's own state stays. */
+void xprslora_mc_pause(bool quiet);
 
 #ifdef __cplusplus
 }

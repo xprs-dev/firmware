@@ -572,6 +572,41 @@ esp_err_t sx1262_init(sx1262_handle_t handle, const sx1262_lora_config_t *config
     return ESP_OK;
 }
 
+esp_err_t sx1262_retune(sx1262_handle_t handle, const sx1262_lora_config_t *config)
+{
+    if (!handle || !config) return ESP_ERR_INVALID_ARG;
+
+    /* Everything sx1262_init() does EXCEPT the hardware reset and the
+     * one-time wiring (TCXO, the RF switch, the regulator, the buffer bases,
+     * the IRQ routing): a station changing its LoRa mode retunes the modem
+     * and keeps its interrupt. The caller holds the radio and has made sure
+     * nothing is in flight. */
+    handle->lora_config = *config;
+
+    esp_err_t ret = sx1262_set_standby(handle);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_calibrate_image(handle, config->frequency_hz);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_set_rf_frequency(handle, config->frequency_hz);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_set_pa_config(handle, config->tx_power_dbm);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_set_modulation_params(handle, config->sf, config->bw, config->cr);
+    if (ret != ESP_OK) return ret;
+    ret = sx1262_set_packet_params(handle, config->preamble_len, config->crc_on, 0xFF);
+    if (ret != ESP_OK) return ret;
+    /* Always written: the previous mode's word is still in the register, and
+     * "the chip's default" is a value like any other (0x12). */
+    ret = sx1262_set_sync_word(handle, config->sync_word ? config->sync_word : 0x12);
+    if (ret != ESP_OK) return ret;
+
+    sx1262_clear_irq_status(handle, 0xFFFF);
+    ESP_LOGI(TAG, "SX1262 retuned: freq=%luHz, SF%d, BW=%d, power=%ddBm, sync 0x%02X",
+             config->frequency_hz, config->sf, config->bw, config->tx_power_dbm,
+             config->sync_word ? config->sync_word : 0x12);
+    return ESP_OK;
+}
+
 esp_err_t sx1262_delete(sx1262_handle_t handle)
 {
     if (!handle) return ESP_ERR_INVALID_ARG;

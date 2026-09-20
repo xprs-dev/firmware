@@ -843,6 +843,25 @@ reboot. Measured by overflowing them:
 | `xprslan` | 5120 | two SHA-256 derivations per datagram, a BLE re-air and a log line; 4096 overflowed |
 | `aprsis` | 6144 | line parsing, DNS, socket; 4096 overflowed |
 | `heartbeat` | 3072 | `ESP_LOG` with ten arguments is almost all of it; 2048 overflowed |
+| `mcwork` | 6144 | one Ed25519 verification: 3.9 KB of it, measured with `-fstack-usage` on the target compiler (2.7 KB for the verify frame, 0.7 KB for the point addition under it, the rest SHA-512 and the bridge) |
+
+**A task's stack is the reason a bridge has a task at all.** MeshCore signs
+its adverts, so reading one is an Ed25519 verification, and verifying it
+where it arrives would put 3.9 KB on `xprslan` -- which has about two
+kilobytes spare over the 5120 above. The bridge is therefore split in two
+(`mc_mesh.h`): `mc_mesh_tick` on the bearer task does queueing and airing
+and no arithmetic at all, `mc_mesh_work` on `mcwork` (core 1) does every
+signature, key exchange and derived key, and the receive path parks a
+payload rather than opening it. Measure before choosing a task:
+
+```sh
+xtensa-esp32s3-elf-gcc -c -Os -fstack-usage -I... file.c -o /tmp/f.o
+sort -t$'\t' -k2 -rn /tmp/f.su | head
+```
+
+The same measurement is what says a Meshtastic DM is fine where it is: its
+X25519 is 960 bytes and `mt_pki_decrypt` 112, so 1.4 KB on a task with two
+to spare, which is why that bridge never needed a task of its own.
 
 **`ESP_LOG` is the most stack-hungry thing a small task does.** A diagnostic
 that crashes the board is worse than no diagnostic, and this one did, twice.
