@@ -44,6 +44,8 @@ static uint32_t s_self;                /* our Meshtastic node number */
 static int8_t   s_tx_power = 14;       /* what start() was given */
 static char     s_region_want[12];     /* the region name the operator chose */
 static bool     s_far;                 /* the `far` profile, xprs mode only */
+static uint8_t  s_sf_want;             /* lora_sf, 0 = the mode's own */
+static uint16_t s_bw_want;             /* lora_bw_khz, 0 = the mode's own */
 
 /*
  * The regions, per mode (see the header).
@@ -263,6 +265,9 @@ static void survey_tick(void);
 static esp_err_t lr_claim_for(const lr_mode_def_t *d);
 static void lr_mc_release(void);
 static bool mc_worker_stop(void);
+static bool lr_bw_of(uint16_t khz, sx1262_bw_t *bw, uint32_t *hz);
+static sx1262_lora_config_t lr_modem(const lr_mode_def_t *d,
+                                     const xprslora_region_t *reg, int *sf_n);
 
 static void lr_rx_isr(void *user)
 {
@@ -665,28 +670,23 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
                 s_region = &s_def->regions[i];
 
     /* The mode's modulation, which every station and node on the channel
-     * shares. The two ends of a link agree by construction because both run
-     * these lines. The `far` profile (SF9) exists only in `xprs` mode. */
-    sx1262_sf_t sf = cfg->far ? s_def->sf_far : s_def->sf;
-    /* The enum IS the spreading factor (sx1262.h), so no table: a chain of
-     * comparisons here read SF8 as SF11 and would have charged the ledger
-     * five times what MeshCore's channel actually costs. */
-    int sf_n = (int)sf;
-    sx1262_lora_config_t lora = {
-        .frequency_hz = cfg->freq_hz ? cfg->freq_hz : s_region->freq_hz,
-        .sf = sf,
-        .bw = s_def->bw,
-        .cr = SX1262_CR_4_5,
-        .tx_power_dbm = cfg->tx_power_dbm ? cfg->tx_power_dbm : 14,
-        .preamble_len = s_def->preamble,
-        .crc_on = true,
-        .use_tcxo = cfg->use_tcxo,
-        .use_dio2_rf_switch = cfg->use_dio2_rf_switch,
-        .sync_word = s_def->sync_word,
-    };
+     * shares, unless the operator has had to follow a neighbour onto
+     * another one (cfg->sf, cfg->bw_khz). The two ends of a link agree by
+     * construction because both run these lines. The `far` profile (SF9)
+     * exists only in `xprs` mode. */
+    s_sf_want = cfg->sf;
+    s_bw_want = cfg->bw_khz;
+    int sf_n = 0;
+    sx1262_lora_config_t lora = lr_modem(s_def, s_region, &sf_n);
+    if (cfg->freq_hz) lora.frequency_hz = cfg->freq_hz;
+    lora.tx_power_dbm = cfg->tx_power_dbm ? cfg->tx_power_dbm : 14;
+    lora.use_tcxo = cfg->use_tcxo;
+    lora.use_dio2_rf_switch = cfg->use_dio2_rf_switch;
+    uint32_t bw_hz = s_def->bw_hz;
+    { sx1262_bw_t bw_tmp; lr_bw_of(s_bw_want, &bw_tmp, &bw_hz); }
     /* The airtime table is built from the SAME values the radio was just
      * given, so the ledger cannot drift from the modem. */
-    s_air = (xb_lora_air_t){ .bw_hz = s_def->bw_hz, .sf = (uint8_t)sf_n,
+    s_air = (xb_lora_air_t){ .bw_hz = bw_hz, .sf = (uint8_t)sf_n,
                              .cr = 1, .preamble = s_def->preamble,
                              .crc = true, .implicit_header = false };
     err = sx1262_init(s_radio, &lora);
@@ -730,18 +730,40 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
     return ESP_OK;
 }
 
+/* The bandwidth an operator asked for, as the chip counts it, and what it
+ * is in Hz. Anything unknown leaves the mode's own. */
+static bool lr_bw_of(uint16_t khz, sx1262_bw_t *bw, uint32_t *hz)
+{
+    switch (khz) {
+    case 62:  *bw = SX1262_BW_62_5; *hz = 62500u;  return true;
+    case 125: *bw = SX1262_BW_125;  *hz = 125000u; return true;
+    case 250: *bw = SX1262_BW_250;  *hz = 250000u; return true;
+    case 500: *bw = SX1262_BW_500;  *hz = 500000u; return true;
+    default:  return false;
+    }
+}
+
+/* The spreading factor this mode runs at, the operator's override first. */
+static sx1262_sf_t lr_sf_of(const lr_mode_def_t *d)
+{
+    if (s_sf_want >= 7 && s_sf_want <= 12) return (sx1262_sf_t)s_sf_want;
+    return (s_far && d == &k_modes[XPRSLORA_MODE_XPRS]) ? d->sf_far : d->sf;
+}
+
 /* The modem settings of [d] on [reg], built from one place so the live
  * retune and the first tuning cannot drift apart. */
 static sx1262_lora_config_t lr_modem(const lr_mode_def_t *d,
                                      const xprslora_region_t *reg, int *sf_n)
 {
-    sx1262_sf_t sf = (s_far && d == &k_modes[XPRSLORA_MODE_XPRS]) ? d->sf_far
-                                                                 : d->sf;
+    sx1262_sf_t sf = lr_sf_of(d);
+    sx1262_bw_t bw = d->bw;
+    uint32_t bw_hz = d->bw_hz;
+    lr_bw_of(s_bw_want, &bw, &bw_hz);
     if (sf_n) *sf_n = (int)sf;
     sx1262_lora_config_t lora = {
         .frequency_hz = reg->freq_hz,
         .sf = sf,
-        .bw = d->bw,
+        .bw = bw,
         .cr = SX1262_CR_4_5,
         .tx_power_dbm = s_tx_power,
         .preamble_len = d->preamble,
@@ -827,7 +849,14 @@ static esp_err_t lr_tune_mode(xprslora_mode_t mode, bool say)
     s_mode = mode;
     s_def = d;
     s_region = reg;
-    s_air = (xb_lora_air_t){ .bw_hz = d->bw_hz, .sf = (uint8_t)sf_n,
+    /* The ledger is built from what the radio was JUST given, overrides
+     * included, so it cannot drift from the modem. */
+    s_air = (xb_lora_air_t){ .bw_hz = lora.bw == SX1262_BW_62_5  ? 62500u
+                                    : lora.bw == SX1262_BW_125   ? 125000u
+                                    : lora.bw == SX1262_BW_250   ? 250000u
+                                    : lora.bw == SX1262_BW_500   ? 500000u
+                                                                 : d->bw_hz,
+                             .sf = (uint8_t)sf_n,
                              .cr = 1, .preamble = d->preamble,
                              .crc = true, .implicit_header = false };
     s_hdr_since = 0;
@@ -1090,6 +1119,12 @@ void xprslora_duty(xb_duty_report_t *out)
 bool xprslora_is_active(void)
 {
     return s_radio && s_lora && xb_is_active(s_lora);
+}
+
+void xprslora_modem(int *sf, uint32_t *bw_hz)
+{
+    if (sf) *sf = s_radio ? (int)s_air.sf : 0;
+    if (bw_hz) *bw_hz = s_radio ? s_air.bw_hz : 0;
 }
 
 void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,

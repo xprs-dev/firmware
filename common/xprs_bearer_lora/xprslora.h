@@ -72,6 +72,18 @@ typedef struct {
     const char *region;      /* lora_region; NULL = the mode's entry 0 */
     xprslora_mode_t mode;    /* lora_mode; must be available */
     bool far;                /* xprs mode's `far` profile: SF9 */
+    /* The modulation, when the operator has to match a channel this
+     * firmware does not know the preset for. 0 = the mode's own.
+     *
+     * MeshCore's presets are regional AND they move: 869.618 MHz at
+     * SF8/62.5 kHz here, SF7 on the same bandwidth in the US, and whole
+     * regions changed during 2025. A station that cannot follow its
+     * neighbours without a new firmware is a station nobody can join, so
+     * `lora_sf` and `lora_bw_khz` exist. They are the operator's own risk:
+     * a radio set to another modulation is deaf to everyone on the
+     * mode's default. */
+    uint8_t  sf;             /* 7..12 */
+    uint16_t bw_khz;         /* 62, 125, 250, 500 (62 means 62.5) */
 } xprslora_cfg_t;
 
 /**
@@ -207,6 +219,11 @@ void xprslora_duty(xb_duty_report_t *out);
 
 /** The region the radio was started with (never NULL after start). */
 const xprslora_region_t *xprslora_region(void);
+
+/** What the radio is actually set to: the spreading factor and the
+ *  bandwidth in Hz, overrides included. Zeroes when the radio is down.
+ *  An operator who set `lora_sf` reads this to see that it took. */
+void xprslora_modem(int *sf, uint32_t *bw_hz);
 
 /** RX/TX/cancelled/dupes counters, any may be NULL. */
 void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,

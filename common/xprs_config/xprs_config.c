@@ -99,6 +99,11 @@ static cfg_entry_t s_cfg[] = {
     { "lora_duty_ms", {0}, false },
     { "lora_resv_ms", {0}, false },
     { "lora_profile", {0}, false },
+    /* The modulation, for a channel whose preset this firmware does not
+     * carry: MeshCore's are regional and they change. Empty = the mode's
+     * own, which is what almost every station wants. */
+    { "lora_sf",      {0}, false },
+    { "lora_bw_khz",  {0}, false },
     /* 9.11.1: whether this station's LoRa counts as a local bearer (a
      * building's own mesh) and may carry scope:local; default no. */
     { "lora_local",   {0}, false },
@@ -242,14 +247,21 @@ int xcfg_ini_render(char *buf, size_t cap)
         ";   at start. xprs = XPRS's own channel (SF7, 125 kHz: eu 869.5,\n"
         ";   eu-g1 868.2, us 903.9, au 917.0 MHz). meshtastic = Meshtastic's\n"
         ";   LongFast, repeating and bridging Meshtastic (eu 869.525, us\n"
-        ";   906.875, au 919.875 MHz). meshcore = MeshCore's channel, same\n"
-        ";   modulation on sync word 0x12 (eu 869.525, us 910.525, au\n"
-        ";   915.8 MHz), carrying XPRS as a RAW_CUSTOM payload.\n"
+        ";   906.875, au 919.875 MHz). meshcore = MeshCore's own channel\n"
+        ";   (SF8, 62.5 kHz, sync 0x12, eu 869.618 MHz), carrying XPRS as\n"
+        ";   a RAW_CUSTOM payload their repeaters hear but do not relay.\n"
         ";   Stations in different modes do not hear each other on LoRa.\n"
         "; profile = far: SF9, xprs mode only. Empty keys take the region's\n"
         "; own figures. local = yes lets scope:local on LoRa.\n"
+        "; sf / bw_khz: the modulation, for following neighbours onto a\n"
+        ";   channel this firmware carries no preset for -- MeshCore's are\n"
+        ";   regional and they change. Empty = the mode's own, which is\n"
+        ";   what almost every station wants; a radio set to another\n"
+        ";   modulation is deaf to everyone on the default.\n"
         "mode = %s\n"
         "profile = %s\n"
+        "sf = %s\n"
+        "bw_khz = %s\n"
         "region = %s\n"
         "frequency = %s\n"
         "duty_ms = %s\n"
@@ -352,6 +364,8 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("bridge_on", true) ? "yes" : "no",
         xcfg_get("lora_mode", "meshtastic"),
         xcfg_get("lora_profile", ""),
+        xcfg_get("lora_sf", ""),
+        xcfg_get("lora_bw_khz", ""),
         xcfg_get("lora_region", "eu"),
         xcfg_get("lora_freq_hz", ""),
         xcfg_get("lora_duty_ms", ""),
@@ -419,6 +433,8 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
      * the slice held back for sos -- see docs/API.md. */
     { "lora",    "mode",     "lora_mode" },
     { "lora",    "profile",  "lora_profile" },
+    { "lora",    "sf",       "lora_sf" },
+    { "lora",    "bw_khz",   "lora_bw_khz" },
     { "lora",    "region",   "lora_region" },
     { "lora",    "frequency","lora_freq_hz" },
     { "lora",    "pace_ms",  "lora_pace_ms" },

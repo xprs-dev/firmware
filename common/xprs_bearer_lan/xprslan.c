@@ -22,6 +22,12 @@
 #include "xprs.h"
 #include "xprsbearer.h"
 
+/* The bearer itself, ABOVE the split: the device half counts datagrams on
+ * it and the wrappers at the bottom of this file are compiled on the host
+ * too, so while this lived in the device-only half the host harness did
+ * not build at all (test_xprslan_host.sh, broken until 2026-09-20). */
+static xb_t s_lan;
+
 #ifdef XPRSLAN_HOST_TEST
 
 #include <stdlib.h>
@@ -97,7 +103,6 @@ static uint32_t xl_random(void) { return esp_random(); }
  * socket's datagrams by their source address. */
 static volatile uint32_t s_extra_bcast;
 static int s_fd_ap = -1;
-static xb_t s_lan;                       /* defined with the bearer, below */
 
 /* One datagram to everyone on the wire. */
 static bool xl_air(void *ctx, const char *wire, int len)

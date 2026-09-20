@@ -610,7 +610,11 @@ Config, all under `[lora]` in config.ini: `lora_mode` (`xprs`, `meshtastic`
 or `meshcore`; the mode the station comes up in, changed live afterwards),
 `lora_profile` (`far`: SF9, `xprs` mode
 only), `lora_region`, `lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`,
-`lora_pace_ms`, `lora_local`, `lora_survey_s`; the Meshtastic keys under
+`lora_pace_ms`, `lora_local`, `lora_survey_s`, and `lora_sf` /
+`lora_bw_khz` for following neighbours onto a channel this firmware carries
+no preset for (MeshCore's are regional and they change; empty means the
+mode's own, and a radio set to another modulation is deaf to everyone on
+the default); the Meshtastic keys under
 `[meshtastic]` (`repeat`, `bridge`, `broadcasts_per_hour`, `nodeinfo_min`)
 and the MeshCore ones under `[meshcore]` (`repeat`, `bridge`,
 `broadcasts_per_hour`, `advert_min`), each read when its network is the

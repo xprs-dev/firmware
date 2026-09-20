@@ -623,6 +623,14 @@ nonce, the timestamp is the XPRS packet's own, a callsign's key is derived
 from the callsign), so two bridges translating one packet produce identical
 bytes, the same packet hash, and cancel each other.
 
+**Following a channel this firmware has no preset for.** MeshCore's
+presets are regional and they move: 869.618 MHz at SF8/62.5 kHz here,
+SF7 on the same bandwidth in the US, and whole regions changed during
+2025. `[lora] sf` and `bw_khz` set the modulation without a new firmware
+(7 to 12, and 62, 125, 250 or 500 kHz; empty means the mode's own). They
+are the operator's own risk and the log says what the radio was set to: a
+station on another modulation is deaf to everyone on the default.
+
 **What one message carries.** 171 bytes of text (`MC_TEXT_MAX`), the
 sender's name included on a channel message; longer is shortened on the
 way out, as it is on the Meshtastic side, because the whole of it is on

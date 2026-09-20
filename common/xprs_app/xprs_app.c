@@ -6684,18 +6684,22 @@ static int api_lora_json(char *buf, size_t cap)
     xb_duty_report_t r;
     xprslora_duty(&r);
     const xprslora_region_t *reg = xprslora_region();
+    int modem_sf = 0;
+    uint32_t modem_bw = 0;
+    xprslora_modem(&modem_sf, &modem_bw);
     int n = snprintf(buf, cap,
         "\"lora\":{\"mode\":\"%s\",\"region\":\"%s\",\"freq_hz\":%lu,"
         "\"duty_ms\":%lu,\"spent_ms\":%lu,\"free_ms\":%lu,"
         "\"reserve_ms\":%lu,\"held\":%lu,\"deferred\":%lu,"
-        "\"stale\":%lu,\"next_free_ms\":%lu",
+        "\"stale\":%lu,\"next_free_ms\":%lu,\"sf\":%d,\"bw_hz\":%lu",
         xprslora_mode_name(xprslora_mode()), reg->name,
         (unsigned long)(s_board->lora->freq_hz ? s_board->lora->freq_hz
                                                : reg->freq_hz),
         (unsigned long)r.budget_ms, (unsigned long)r.spent_ms,
         (unsigned long)r.free_ms, (unsigned long)r.reserve_ms,
         (unsigned long)r.held, (unsigned long)r.deferred,
-        (unsigned long)r.stale, (unsigned long)r.next_free_ms);
+        (unsigned long)r.stale, (unsigned long)r.next_free_ms, modem_sf,
+        (unsigned long)modem_bw);
     /* The Meshtastic repeater and bridge (docs/meshtastic.md), counted, so
      * what it did is read off the board rather than out of a serial log. */
     mt_mesh_stats_t mt;
@@ -7739,6 +7743,15 @@ void xapp_run(const xapp_board_t *board)
                     mode = want;
             }
             lc.mode = mode;
+            /* The modulation, when the operator has to follow neighbours
+             * onto a channel this firmware has no preset for: MeshCore's
+             * are regional and they move (docs/meshtastic.md). Empty keeps
+             * the mode's own. */
+            const char *mod;
+            if ((mod = xcfg_get("lora_sf", NULL)) && mod[0])
+                lc.sf = (uint8_t)strtoul(mod, NULL, 10);
+            if ((mod = xcfg_get("lora_bw_khz", NULL)) && mod[0])
+                lc.bw_khz = (uint16_t)strtoul(mod, NULL, 10);
             int nreg = 0;
             const xprslora_region_t *regs = xprslora_regions(mode, &nreg);
             const xprslora_region_t *reg = &regs[0];

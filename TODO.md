@@ -63,12 +63,11 @@ docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
    `xprs_api.c` calls `esp_core_dump_get_summary()` and the kv4p sdkconfig has
    `CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH` unset (docs/esp32.md says it is not
    optional on any board). The SA818 gate now also refuses `MT`/`MC` senders.
-6. **`common/xprs_bearer_lan/test_xprslan_host.sh` does not compile**, and
-   did not before this work: `s_lan` is declared inside the device-only
-   branch (`xprslan.c:100`, between the `#else` at :54 and the `#endif` at
-   :173), so the host build has no definition for the wrappers at :197. Move
-   the declaration above the split. Every other host test in `common/` is
-   green.
+6. ~~`common/xprs_bearer_lan/test_xprslan_host.sh` does not compile~~ Fixed
+   2026-09-20: `s_lan` lived inside the device-only branch, so the host
+   build had no definition for the wrappers at the bottom of the file. It
+   is now defined above the split, and the harness runs (76 checks). Every
+   host test in `common/` is green.
 
 ## Measure the long-range PHY
 
