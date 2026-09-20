@@ -419,7 +419,10 @@ void test_mesh(void)
             strcmp(g_heard[i].text, "good morning from XPRS") == 0) mirrored++;
     CHECK(mirrored == 1);                  /* the other bridge cancelled */
     CHECK(g_aired[0] + g_aired[1] > aired0);
-    /* Speaking for a callsign means advertising it first. */
+    /* Speaking for a callsign means advertising it, though not in the same
+     * breath: adverts are spaced so a busy minute does not put a dozen of
+     * them on a shared channel at once (MC_ADVERT_GAP_MS). */
+    tick_all(35000);
     CHECK(find_heard(MC_PT_ADVERT, NULL) >= 0);
 
     /* 7. Nothing goes back: the packet a bridge just delivered, handed back
@@ -439,7 +442,9 @@ void test_mesh(void)
              "t:message f:X1QZ3N d:%s ts:2026-09-20_09:00:00 m:meet at the quay",
              g_ncall);
     xprs_in(wire, MC_XPRS_OWN);
-    tick_all(4000);
+    /* Past MC_AFTER_ADVERT_MS: the sender's key goes on the air first, or
+     * the recipient has nothing to open the message with. */
+    tick_all(14000);
     int di = find_heard(MC_PT_TXT_MSG, "meet at the quay");
     CHECK(di >= 0);
     if (di >= 0) {
@@ -466,7 +471,7 @@ void test_mesh(void)
              "t:message f:X1QZ3N d:%s ts:2026-09-20_09:00:00 m:by way of a path",
              g_ncall);
     xprs_in(wire, MC_XPRS_OWN);
-    tick_all(4000);
+    tick_all(14000);
     di = find_heard(MC_PT_TXT_MSG, "by way of a path");
     CHECK(di >= 0);
     if (di >= 0) {

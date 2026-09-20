@@ -623,6 +623,15 @@ nonce, the timestamp is the XPRS packet's own, a callsign's key is derived
 from the callsign), so two bridges translating one packet produce identical
 bytes, the same packet hash, and cancel each other.
 
+**Adverts are spaced.** A station speaks for every XPRS callsign whose
+words it mirrors, and each one has to advertise before a MeshCore user can
+see it, so a busy minute could put a dozen adverts on a shared channel at
+once (eight in five minutes from ordinary bench traffic). They go one
+every thirty seconds instead (`MC_ADVERT_GAP_MS`), and none is dropped:
+each keeps its turn. The exception is a node somebody is writing to right
+now, whose advert goes ahead of the queue, because a direct message that
+overtakes its own key is unreadable.
+
 **Following a channel this firmware has no preset for.** MeshCore's
 presets are regional and they move: 869.618 MHz at SF8/62.5 kHz here,
 SF7 on the same bandwidth in the US, and whole regions changed during

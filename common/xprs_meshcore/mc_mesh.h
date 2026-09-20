@@ -136,6 +136,13 @@ typedef struct {
  * lesson Meshtastic taught with NodeInfo (MT_AFTER_NODEINFO_MS), measured
  * again here against a real client on 2026-09-20. */
 #define MC_AFTER_ADVERT_MS 8000u
+/* The shortest gap between two adverts of ours, whichever callsigns they
+ * are for. A station speaks for every XPRS callsign whose words it
+ * mirrors, and a busy minute can make a dozen of them findable at once:
+ * on a shared channel that is a burst nobody asked for. They are not
+ * dropped, only spread (measured on the bench, 2026-09-20: eight adverts
+ * in five minutes from ordinary traffic). */
+#define MC_ADVERT_GAP_MS 30000u
 
 #define MC_CALL_LEN 12
 
@@ -242,6 +249,7 @@ typedef struct {
     mc_mesh_cfg_t   cfg;
     char            call[MC_CALL_LEN];   /* this station, bare */
     char            nick[20];
+    uint32_t        last_advert_ms;      /* the last one aired, any node */
     bool            self_keyed;          /* the worker has derived ours */
     uint8_t         self_hash;
     uint8_t         self_pub3[3];        /* our hash at every hash size */

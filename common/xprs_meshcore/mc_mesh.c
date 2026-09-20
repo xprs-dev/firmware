@@ -382,16 +382,27 @@ static void advert_queue(mc_mesh_t *m, mc_vnode_t *v)
             m->vnodes_dirty = true;
         }
         v->advert_ms = now ? now : 1;
+        m->last_advert_ms = v->advert_ms;
         m->st.adverts_out++;
     }
 }
 
-static void advert_if_stale(mc_mesh_t *m, mc_vnode_t *v)
+/* [now_please]: somebody is writing to this node, so its key has to be on
+ * the air before the message and the spacing below does not apply to it. */
+static void advert_if_stale(mc_mesh_t *m, mc_vnode_t *v, bool now_please)
 {
     uint32_t now = m->ops.now_ms();
     uint32_t period = (uint32_t)m->cfg.advert_min * 60000u;
-    if (!v->advert_ms || since(now, v->advert_ms) > (int32_t)period)
-        advert_queue(m, v);
+    if (v->advert_ms && since(now, v->advert_ms) <= (int32_t)period) return;
+    /* Otherwise one at a time, whichever callsign: the channel is shared
+     * and a minute's traffic can make a dozen nodes findable at once
+     * (MC_ADVERT_GAP_MS). The rest keep their turn. */
+    if (!now_please && m->last_advert_ms &&
+        since(now, m->last_advert_ms) < (int32_t)MC_ADVERT_GAP_MS) {
+        v->advert_due = true;
+        return;
+    }
+    advert_queue(m, v);
 }
 
 /* The four bytes MeshCore acknowledges with: a checksum over the message,
@@ -423,7 +434,7 @@ static bool dm_air(mc_mesh_t *m, mc_pending_t *p)
     if (v) {
         uint32_t now_ms = m->ops.now_ms();
         if (!v->advert_ms) {
-            advert_queue(m, v);
+            advert_if_stale(m, v, true);  /* ahead of the spacing */
             return false;                 /* try again once it is out */
         }
         if (since(now_ms, v->advert_ms) < (int32_t)MC_AFTER_ADVERT_MS)
@@ -1132,12 +1143,12 @@ void mc_mesh_work(mc_mesh_t *m, uint32_t now)
     /* Our own node says who it is, soon after boot and then on the period;
      * a node about to speak for an XPRS callsign advertises first. */
     mc_vnode_t *own = vnode_by_call(m, m->call);
-    if (own && since(now, m->boot_ms) > 20000) advert_if_stale(m, own);
+    if (own && since(now, m->boot_ms) > 20000) advert_if_stale(m, own, false);
     for (int i = 0; i < MC_VNODES; i++) {
         mc_vnode_t *v = &m->vnodes[i];
         if (!v->advert_due) continue;
         v->advert_due = false;
-        advert_if_stale(m, v);
+        advert_if_stale(m, v, false);
     }
     for (int i = 0; i < MC_PENDING; i++) {
         mc_pending_t *p = &m->pend[i];
