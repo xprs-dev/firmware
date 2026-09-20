@@ -286,6 +286,7 @@ static struct {
     uint32_t        per_ms, started_ms;
     uint32_t        probe_ms;        /* airtime our own probes cost */
     uint32_t        probe_from, probe_id;   /* the Meshtastic one */
+    uint8_t         probes;          /* how many we have aired in this mode */
     uint32_t        probe_hash;              /* the MeshCore one */
     xprslora_mode_t home;
     xprslora_survey_mode_t m[XPRSLORA_MODE_COUNT];
@@ -296,6 +297,9 @@ static uint32_t s_cad_busy, s_cad_waits;
  * bearer task in lr_drain(). An ISR that touched the bus would collide with
  * whatever transfer the display has in flight. */
 static volatile bool s_rx_pending;
+
+/* How long a mode stands still before its probe goes out. */
+#define MC_SETTLE_MS 1200u
 
 static void survey_frame(const uint8_t *frame, int len);
 static void survey_tick(void);
@@ -1160,7 +1164,13 @@ static void survey_probe(void)
         h.id = lr_random() | 1u;
         h.hop_limit = MT_HOP_DEFAULT;
         h.hop_start = MT_HOP_DEFAULT;
-        h.channel = MT_CH_HASH_XPRS;
+        /* LongFast's channel, NOT the XPRS one: a station running this
+         * firmware unwraps anything on the XPRS channel as a piece of an
+         * XPRS wire, parks the piece that never completes and so never
+         * repeats it. On the bench that made every XPRS neighbour deaf to
+         * the probe while stock routers would have carried it (measured
+         * 2026-09-20). The portnum stays private, so nobody reads it. */
+        h.channel = mt_longfast_hash();
         h.relay_node = (uint8_t)s_self;
         mt_hdr_build(&h, s_frames[0]);
         mt_data_t d = { 0 };
@@ -1257,7 +1267,6 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
                                 ? XPRSLORA_MODE_XPRS
                                 : survey_next(XPRSLORA_MODE_XPRS);
     esp_err_t err = lr_tune_mode(first, false);
-    if (err == ESP_OK) survey_probe();
     lr_unlock(NULL);
     if (err != ESP_OK) {
         s_survey.active = false;
@@ -1304,12 +1313,33 @@ static void survey_tick(void)
     if (!s_survey.active) return;
     uint32_t now = lr_now_ms();
     const xprslora_survey_mode_t *cur = &s_survey.m[s_mode];
-    /* An answer ends this mode: a network that is there has already said
-     * so, and the rest of the dwell is waiting for a second opinion. Only
+    /* A repeater carrying our probe ends this mode: that is the whole
+     * question asked, and the rest of the dwell adds nothing. Hearing
+     * somebody ELSE's frame does not end it, though it proves the network
+     * is alive: on the bench a stray Meshtastic frame arrived 3.5 s in and
+     * cut the dwell off while the repeater was still inside its own
+     * backoff, which at LongFast reaches 7.6 s for a CLOSE node and so
+     * threw away the answer that mattered (measured 2026-09-20). Only
      * auto-detect leaves early -- a survey counts traffic over a window,
      * and its number means nothing if the window moves. */
-    bool answered = s_survey.probe && (cur->relayed || cur->frames);
-    if (!answered && now - s_survey.started_ms < survey_dwell_ms()) return;
+    bool answered = s_survey.probe && cur->relayed;
+    uint32_t in_mode = now - s_survey.started_ms;
+    /* The probe is not aired the instant the modem is retuned: the chip is
+     * settling and the neighbour's receiver is where the answer has to
+     * come from. It goes out once the mode has stood still for a moment,
+     * and once more halfway through, because one packet can always meet
+     * another one. */
+    if (s_survey.probe && !answered && s_def->net != LR_NET_NONE) {
+        uint32_t dwell = survey_dwell_ms();
+        if ((s_survey.probes == 0 && in_mode >= MC_SETTLE_MS) ||
+            (s_survey.probes == 1 && in_mode >= dwell / 2)) {
+            lr_lock(NULL);
+            survey_probe();
+            lr_unlock(NULL);
+            s_survey.probes++;
+        }
+    }
+    if (!answered && in_mode < survey_dwell_ms()) return;
 
     xprslora_survey_mode_t *m = &s_survey.m[s_mode];
     ESP_LOGI(TAG, "survey: %s %lu frame%s, %d named%s%s%s", s_def->name,
@@ -1321,7 +1351,8 @@ static void survey_tick(void)
     lr_lock(NULL);
     if (next < XPRSLORA_MODE_COUNT) {
         s_survey.started_ms = now;
-        if (lr_tune_mode(next, false) == ESP_OK) survey_probe();
+        s_survey.probes = 0;
+        lr_tune_mode(next, false);
         lr_unlock(NULL);
         return;
     }

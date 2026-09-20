@@ -4476,8 +4476,10 @@ static void ui_render(void)
             /* The band, for the same reason as the channel above: two
              * radios on different frequencies are simply deaf to each
              * other, and nothing else on the screen would say so. */
-            uint32_t hz = s_board->lora->freq_hz ? s_board->lora->freq_hz
-                                                 : xprslora_region()->freq_hz;
+            /* What the radio is tuned to NOW, not what the board asked
+             * for at boot: the mode, and with it the channel, changes
+             * while this screen is up. */
+            uint32_t hz = xprslora_freq();
             xb_duty_report_t dr;
             xprslora_duty(&dr);
             if (dr.budget_ms)
@@ -7949,7 +7951,12 @@ void xapp_run(const xapp_board_t *board)
                 ESP_LOGW(TAG, "lora_region %s is not a region of %s mode -- "
                               "using %s", rn, xprslora_mode_name(mode), reg->name);
             lc.region = reg->name;
-            if (!lc.freq_hz) lc.freq_hz = reg->freq_hz;
+            /* A frequency is left at 0 unless somebody ASKED for one.
+             * Filling it in from the region here looked harmless and was
+             * not: the bearer keeps what it is given as an override for
+             * every mode, so the boot mode's channel followed the radio
+             * into the other two and a sweep listened to one frequency
+             * with three modulations (measured 2026-09-20). */
             const char *fq = xcfg_get("lora_freq_hz", NULL);
             if (fq && fq[0]) {
                 lc.freq_hz = (uint32_t)strtoul(fq, NULL, 10);

@@ -64,13 +64,35 @@ That inversion in the Meshtastic rule is the whole reason the answer to
 that network. MeshCore, yes, comfortably. Meshtastic, only by giving up
 exactly the neighbours a station most wants to find.
 
-**And each mode ends the moment it has an answer.** The ceilings above are
-worst cases, not the usual cost. As soon as a mode has heard a relay of
-our probe, or any frame of that network at all, the sweep moves on. The
-common case, one MeshCore repeater and one Meshtastic repeater within
-reach, is a few seconds in total rather than the 38 the table would
-suggest. The quiet networks are the ones that spend their full ceiling,
-which is right: silence is the case that needs the waiting.
+**And each mode ends the moment a repeater carries the probe.** The
+ceilings above are worst cases, not the usual cost. Measured on the bench
+on 2026-09-20: a station in Meshtastic mode relayed the probe and the
+sweep left that mode after 6.1 s; a stock MeshCore repeater (v1.17.1,
+869.6179809 MHz) relayed it and the sweep left after 2.0 s. Only a quiet
+network spends its full ceiling, which is right: silence is the case that
+needs the waiting.
+
+Hearing somebody ELSE's frame does NOT end the dwell, although it is
+counted and reported. The first version ended on any frame, and on the
+bench a stray Meshtastic frame arrived 3.5 s in and cut the dwell off
+while the repeater was still inside its own backoff: the sweep threw away
+the very answer it had asked for. The ceilings exist for that backoff, so
+only the answer may shorten them.
+
+**Two things the bench changed in the probe itself**, both of them
+invisible in a host test:
+
+- It goes out 1.2 s after the retune, not immediately. A probe aired
+  about 30 ms after `sx1262_retune` was transmitted in full (the radio
+  reported TX_DONE after its exact airtime) and no neighbour ever
+  demodulated it, four runs out of four. A second probe goes out halfway
+  through the dwell, because one packet can always meet another.
+- The Meshtastic probe rides on the LongFast channel hash, not on XPRS's.
+  On the XPRS channel a station running this firmware unwraps it as a
+  piece of an XPRS wire, parks the piece that never completes, and so
+  never repeats it: every XPRS neighbour was deaf to the probe while
+  stock routers would have carried it. The portnum stays private, so
+  nobody reads it.
 
 `[lora] detect_s` overrides all three with one figure (5 to 300) for an
 operator who wants to say so; left empty, each network keeps its own. A
@@ -83,8 +105,8 @@ yes or no.
 | mode | probe | why that one |
 |---|---|---|
 | `xprs` | nothing | our own stations beacon every few seconds; listening is enough |
-| `meshtastic` | a Data frame on XPRS's private portnum, one byte | routers relay by the header, not by what they can read, which is the property XPRS already rides on there |
-| `meshcore` | an ACK with a checksum that matches nothing, four bytes | no crypto at all, and a type their repeaters carry; it means nothing to anybody, so nothing acts on it |
+| `meshtastic` | a Data frame on the LongFast channel, private portnum, one byte | routers relay by the header, not by what they can read; on XPRS's own channel our own stations swallow it as half a wire (see above) |
+| `meshcore` | an ACK with a checksum that matches nothing, four bytes | no crypto at all, and a type their repeaters carry (proven against a stock v1.17.1 repeater on 2026-09-20); it means nothing to anybody, so nothing acts on it |
 
 No signature and no key exchange: this runs on the bearer's task between
 retunes, where there is no room for curve arithmetic (docs/esp32.md).
