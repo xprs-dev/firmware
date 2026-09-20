@@ -43,25 +43,40 @@ mesh mode it ASKS: one small packet of the kind that network floods, and a
 repeater within reach answers by re-airing it. Hearing our own packet come
 back with a hop on it is proof of a working relay rather than a guess.
 
-**Why asking is necessary, and why twenty seconds is the right dwell.**
-Listening alone cannot answer "is anybody there", at any dwell a person
-would wait through: a MeshCore node advertises every one to four hours
-(`advert.interval`, default 2) and a Meshtastic node sends a NodeInfo
-about every three. A channel with a live repeater on it is silent for
-almost all of that time. What IS quick is the answer to a packet: a
-MeshCore repeater re-aired ours within about two seconds on this bench
-(its flood wait is `rand(0..5) * (airtime * 52 / 50) / 2`), and
-Meshtastic's CLIENT rule waits two to four. So the useful part of the
-dwell is the first five seconds, and the rest is a bonus chance of
-overhearing somebody else's traffic.
+**Why asking is necessary.** Listening alone cannot answer "is anybody
+there", at any dwell a person would wait through: a MeshCore node
+advertises every one to four hours (`advert.interval`, default 2) and a
+Meshtastic node sends a NodeInfo about every three. A channel with a live
+repeater on it is silent for almost all of that time. What IS quick is the
+answer to a packet, and each network's own contention rule says how quick.
 
-Twenty seconds per mode keeps the whole sweep near a minute, which is
-what somebody standing at a station will wait, and leaves fifteen seconds
-of listening after the probe has been answered or not. Making it longer
-buys very little: the probe has already answered, and the networks that
-are quiet are quiet for hours. Making it much shorter starts to bite when
-the channel is busy and the probe waits for a gap. The figure is a
-setting, `[lora] detect_s`, and the sweep accepts 5 to 300.
+**Why each network gets its own wait.** The rules differ by an order of
+magnitude, so one flat figure is either wasteful or wrong:
+
+| mode | the arithmetic | ceiling |
+|---|---|---|
+| `meshcore` | 6 B at SF8 / 62.5 kHz is 177 ms on air; the flood wait is `rand(0..5) * (airtime * 52 / 50) / 2`, at most 461 ms. An answer is back inside about a second and a half, CAD retries included. | 8 s |
+| `meshtastic` | 22 B at SF11 / 250 kHz is 436 ms on air; the CLIENT rule waits `2 * 8 * slot + rand(0..2^cw) * slot` with `cw = 3 + (snr + 20) * 5 / 30`, and the STRONGEST signal draws the LARGEST window. A faint repeater answers in 644 ms; the close one that matters most can take 7.6 s. | 20 s |
+| `xprs` | nothing is asked: our own stations beacon every few seconds, so this is pure listening. | 10 s |
+
+That inversion in the Meshtastic rule is the whole reason the answer to
+"can you find a repeater in under ten seconds for each type" is no for
+that network. MeshCore, yes, comfortably. Meshtastic, only by giving up
+exactly the neighbours a station most wants to find.
+
+**And each mode ends the moment it has an answer.** The ceilings above are
+worst cases, not the usual cost. As soon as a mode has heard a relay of
+our probe, or any frame of that network at all, the sweep moves on. The
+common case, one MeshCore repeater and one Meshtastic repeater within
+reach, is a few seconds in total rather than the 38 the table would
+suggest. The quiet networks are the ones that spend their full ceiling,
+which is right: silence is the case that needs the waiting.
+
+`[lora] detect_s` overrides all three with one figure (5 to 300) for an
+operator who wants to say so; left empty, each network keeps its own. A
+`cfg survey` is a different thing, listen-only, and keeps its fixed window
+on every mode because it is measuring how busy a channel is, not asking a
+yes or no.
 
 **What it puts on the air**, once per mesh mode:
 

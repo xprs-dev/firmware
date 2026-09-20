@@ -123,6 +123,15 @@ typedef struct {
     uint8_t sync_word;
     uint32_t pace_ms;
     uint32_t slot_ms;          /* backoff unit while the channel is busy */
+    /* How long auto-detect waits here before calling it empty. Each
+     * network sets its own, because each makes a relay wait differently
+     * (docs/meshtastic.md, "Auto-detect"): MeshCore answers inside about a
+     * second and a half, while Meshtastic's contention rule deliberately
+     * makes the CLOSEST node wait longest -- up to 7.6 s at LongFast -- so
+     * a short dwell there would miss exactly the repeater in the room. A
+     * network that IS there is found long before this: the sweep leaves a
+     * mode the moment it has an answer. */
+    uint32_t detect_ms;
     const xprslora_region_t *regions;
     int nregions;
 } lr_mode_def_t;
@@ -133,6 +142,7 @@ static const lr_mode_def_t k_modes[XPRSLORA_MODE_COUNT] = {
         .sf = SX1262_SF7, .sf_far = SX1262_SF9, .bw = SX1262_BW_125,
         .bw_hz = 125000u, .preamble = 8, .sync_word = 0x12,
         .pace_ms = 6000u, .slot_ms = 10u,
+        .detect_ms = 10000u,       /* no probe: its stations beacon often */
         .regions = k_regions_xprs,
         .nregions = (int)(sizeof k_regions_xprs / sizeof k_regions_xprs[0]),
     },
@@ -141,6 +151,7 @@ static const lr_mode_def_t k_modes[XPRSLORA_MODE_COUNT] = {
         .sf = SX1262_SF11, .sf_far = SX1262_SF11, .bw = SX1262_BW_250,
         .bw_hz = MT_LF_BW_HZ, .preamble = MT_LF_PREAMBLE,
         .sync_word = MT_LF_SYNC, .pace_ms = 10000u, .slot_ms = 28u,
+        .detect_ms = 20000u,       /* 7.6 s of contention, and room to spare */
         .regions = k_regions_mt,
         .nregions = (int)(sizeof k_regions_mt / sizeof k_regions_mt[0]),
     },
@@ -149,6 +160,7 @@ static const lr_mode_def_t k_modes[XPRSLORA_MODE_COUNT] = {
         .sf = SX1262_SF8, .sf_far = SX1262_SF8, .bw = SX1262_BW_62_5,
         .bw_hz = MC_BW_HZ, .preamble = MC_PREAMBLE,
         .sync_word = MC_SYNC, .pace_ms = 10000u, .slot_ms = 28u,
+        .detect_ms = 8000u,        /* it answers inside about 1.3 s */
         .regions = k_regions_mc,
         .nregions = (int)(sizeof k_regions_mc / sizeof k_regions_mc[0]),
     },
@@ -1222,8 +1234,13 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
 {
     if (!s_radio || !s_lora) return ESP_ERR_INVALID_STATE;
     if (s_survey.active) return ESP_ERR_INVALID_STATE;
-    if (per_mode_s < 5) per_mode_s = 5;
-    if (per_mode_s > 300) per_mode_s = 300;
+    /* 0 is allowed for an auto-detect and means "each network's own
+     * ceiling", which is what an operator who has not thought about it
+     * should get. A survey has no per-mode figure to fall back on. */
+    if (per_mode_s || !probe) {
+        if (per_mode_s < 5) per_mode_s = 5;
+        if (per_mode_s > 300) per_mode_s = 300;
+    }
 
     lr_lock(NULL);
     memset(&s_survey, 0, sizeof s_survey);
@@ -1248,9 +1265,17 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
                     s_region->reserve_ms, s_region->dwell_ms);
         return err;
     }
-    ESP_LOGI(TAG, "%s: %lus on each mode, starting with %s",
-             probe ? "auto-detect" : "survey", (unsigned long)per_mode_s,
-             xprslora_mode_name(first));
+    if (per_mode_s)
+        ESP_LOGI(TAG, "%s: %lus on each mode, starting with %s",
+                 probe ? "auto-detect" : "survey", (unsigned long)per_mode_s,
+                 xprslora_mode_name(first));
+    else
+        ESP_LOGI(TAG, "auto-detect: each network's own wait (xprs %lus, "
+                      "meshtastic %lus, meshcore %lus), and each ends the "
+                      "moment it answers",
+                 (unsigned long)(k_modes[XPRSLORA_MODE_XPRS].detect_ms / 1000u),
+                 (unsigned long)(k_modes[XPRSLORA_MODE_MESHTASTIC].detect_ms / 1000u),
+                 (unsigned long)(k_modes[XPRSLORA_MODE_MESHCORE].detect_ms / 1000u));
     return ESP_OK;
 }
 
@@ -1266,11 +1291,25 @@ esp_err_t xprslora_detect_start(uint32_t per_mode_s)
 
 /* On the bearer tick: move to the next mode when this one's time is up, and
  * go home when there is none left. */
+/* How long this mode gets: what the operator asked for, else the mode's
+ * own ceiling. */
+static uint32_t survey_dwell_ms(void)
+{
+    if (s_survey.per_ms) return s_survey.per_ms;
+    return s_def->detect_ms ? s_def->detect_ms : 20000u;
+}
+
 static void survey_tick(void)
 {
     if (!s_survey.active) return;
     uint32_t now = lr_now_ms();
-    if (now - s_survey.started_ms < s_survey.per_ms) return;
+    const xprslora_survey_mode_t *cur = &s_survey.m[s_mode];
+    /* An answer ends this mode: a network that is there has already said
+     * so, and the rest of the dwell is waiting for a second opinion. Only
+     * auto-detect leaves early -- a survey counts traffic over a window,
+     * and its number means nothing if the window moves. */
+    bool answered = s_survey.probe && (cur->relayed || cur->frames);
+    if (!answered && now - s_survey.started_ms < survey_dwell_ms()) return;
 
     xprslora_survey_mode_t *m = &s_survey.m[s_mode];
     ESP_LOGI(TAG, "survey: %s %lu frame%s, %d named%s%s%s", s_def->name,

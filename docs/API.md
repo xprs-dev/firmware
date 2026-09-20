@@ -597,10 +597,14 @@ eu-433`, the T-Deck's "LoRa channel" row, or an owner's `cmd:set freq:` /
 config asked for at boot.
 `cfg survey [seconds]` listens on every mode in turn and reports who is
 there, transmitting nothing while it runs. `cfg detect [seconds]`
-(default 20, the T-Deck's "LoRa auto-detect" row) does the same sweep but
+(the T-Deck's "LoRa auto-detect" row) does the same sweep but
 asks: one small packet on each mesh mode, so a repeater in reach answers
 by carrying it. Listening alone cannot find a quiet network -- MeshCore
-advertises hourly at best -- which is why auto-detect exists
+advertises hourly at best -- which is why auto-detect exists. With no
+figure each network waits by its own contention rule (meshcore 8 s,
+xprs 10 s, meshtastic 20 s, because its rule makes the CLOSEST node wait
+longest), and every mode ends the moment it has an answer, so a station
+with neighbours is done in a few seconds
 (docs/meshtastic.md, "Auto-detect"). Its `survey` block gains `asked` and
 `relayed` per mode.
 
@@ -620,7 +624,8 @@ Config, all under `[lora]` in config.ini: `lora_mode` (`xprs`, `meshtastic`
 or `meshcore`; the mode the station comes up in, changed live afterwards),
 `lora_profile` (`far`: SF9, `xprs` mode
 only), `lora_region`, `lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`,
-`lora_pace_ms`, `lora_local`, `lora_survey_s`, and `lora_sf` /
+`lora_pace_ms`, `lora_local`, `lora_survey_s`, `lora_detect_s` (empty
+means each network's own wait), and `lora_sf` /
 `lora_bw_khz` for following neighbours onto a channel this firmware carries
 no preset for (MeshCore's are regional and they change; empty means the
 mode's own, and a radio set to another modulation is deaf to everyone on

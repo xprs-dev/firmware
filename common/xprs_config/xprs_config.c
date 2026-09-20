@@ -109,6 +109,7 @@ static cfg_entry_t s_cfg[] = {
     { "lora_local",   {0}, false },
     /* Seconds the survey listens on each mode (14.8): `cfg survey`. */
     { "lora_survey_s",{0}, false },
+    /* Empty: each network waits by its own contention rule. */
     { "lora_detect_s",{0}, false },
     /* Meshtastic on the same radio (docs/meshtastic.md): the repeater, the
      * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
@@ -273,8 +274,11 @@ int xcfg_ini_render(char *buf, size_t cap)
         ";   says who is out there. Nothing is transmitted while it runs.\n"
         "; detect_s: the same for `cfg detect`, which ASKS -- one small\n"
         ";   packet on each mesh mode, so a repeater answers by carrying\n"
-        ";   it. Twenty seconds is enough for that; listening alone is\n"
-        ";   not, because those networks are quiet for hours at a time.\n"
+        ";   it (listening alone is not enough: those networks are quiet\n"
+        ";   for hours at a time). Empty means each network waits by its\n"
+        ";   own rule -- meshcore 8s, xprs 10s, meshtastic 20s because\n"
+        ";   its backoff makes the CLOSEST node wait longest -- and every\n"
+        ";   mode ends the moment it has an answer.\n"
         "survey_s = %s\n"
         "detect_s = %s\n"
         "\n"
@@ -379,7 +383,7 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("lora_pace_ms", ""),
         xcfg_get_bool("lora_local", false) ? "yes" : "no",
         xcfg_get("lora_survey_s", "60"),
-        xcfg_get("lora_detect_s", "20"),
+        xcfg_get("lora_detect_s", ""),
         xcfg_get_bool("mt_repeat", true) ? "yes" : "no",
         xcfg_get_bool("mt_bridge", true) ? "yes" : "no",
         xcfg_get("mt_bcast_hr", ""),

@@ -717,14 +717,19 @@ static bool lora_console(const char *line)
          * hours at a time. */
         const char *w = p + 6;
         while (*w == ' ') w++;
+        /* No figure means each network's own wait, which is the right
+         * default: they answer at different speeds (14.8). */
         uint32_t secs = *w ? (uint32_t)strtoul(w, NULL, 10)
-                           : (uint32_t)atoi(xcfg_get("lora_detect_s", "20"));
+                           : (uint32_t)atoi(xcfg_get("lora_detect_s", "0"));
         esp_err_t e = xprslora_detect_start(secs);
         if (e != ESP_OK) {
             printf("detect: %s\n", esp_err_to_name(e));
-        } else {
+        } else if (secs) {
             printf("detect: started, %lus on each mode, one packet asked "
                    "on each mesh\n", (unsigned long)secs);
+        } else {
+            printf("detect: started, one packet asked on each mesh; each "
+                   "mode ends when it answers\n");
         }
         return true;
     }
@@ -4776,10 +4781,10 @@ static void ui_render(void)
                     int jn = xprslora_survey_json(js, sizeof js);
                     snprintf(sval, sizeof sval, "%s", jn > 0 ? "Done" : "--");
                     snprintf(sdet, sizeof sdet,
-                             "Which networks are reachable: each mode in "
-                             "turn, one small packet asked on each mesh so "
-                             "a repeater answers. %s starts it, about a "
-                             "minute.", ok_key());
+                             "Which networks are reachable: one small "
+                             "packet asked on each mesh, each mode ending "
+                             "as soon as a repeater answers. %s starts "
+                             "it.", ok_key());
                 }
                 SROW("LoRa auto-detect", sval, sdet);
             }
@@ -6742,7 +6747,7 @@ static void settings_ok(int row)
          * the screen wants to know which networks are REACHABLE, and the
          * only quick way to know is to ask (14.8). */
         if (s_board->lora)
-            xprslora_detect_start((uint32_t)atoi(xcfg_get("lora_detect_s", "20")));
+            xprslora_detect_start((uint32_t)atoi(xcfg_get("lora_detect_s", "0")));
         break;
     case 13:
         s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
