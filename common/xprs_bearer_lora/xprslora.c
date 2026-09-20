@@ -267,10 +267,14 @@ static uint8_t s_frames[2][MT_FRAME_MAX];
 static char    s_wire[XB_WIRE_MAX + 1];
 static uint32_t s_hdr_since;           /* first saw "a header is arriving" */
 
-/* The survey: which networks are out there, listened for one at a time. */
+/* The survey: which networks are out there, listened for one at a time,
+ * and -- when it is an auto-detect -- asked. */
 static struct {
-    bool            active, done;
+    bool            active, done, probe;
     uint32_t        per_ms, started_ms;
+    uint32_t        probe_ms;        /* airtime our own probes cost */
+    uint32_t        probe_from, probe_id;   /* the Meshtastic one */
+    uint32_t        probe_hash;              /* the MeshCore one */
     xprslora_mode_t home;
     xprslora_survey_mode_t m[XPRSLORA_MODE_COUNT];
 } s_survey;
@@ -283,6 +287,8 @@ static volatile bool s_rx_pending;
 
 static void survey_frame(const uint8_t *frame, int len);
 static void survey_tick(void);
+static bool survey_echo(const uint8_t *frame, int len);
+static void survey_probe(void);
 static esp_err_t lr_claim_for(const lr_mode_def_t *d);
 static void lr_mc_release(void);
 static bool mc_worker_stop(void);
@@ -671,6 +677,20 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
     s_mode = cfg->mode;
     s_def = &k_modes[s_mode];
     err = lr_claim_for(s_def);
+    if (err == ESP_ERR_NO_MEM && s_mode != XPRSLORA_MODE_DEFAULT) {
+        /* A radio that does not start is worse than a radio on another
+         * network: this board cannot afford the mode it was asked for, so
+         * it comes up in the default one and says so in a line nobody can
+         * miss. The setting is left alone, so a board with more room -- or
+         * a smaller build -- takes it next time. */
+        ESP_LOGE(TAG, "coming up in %s mode instead of %s, which this board "
+                      "has no room for",
+                 xprslora_mode_name(XPRSLORA_MODE_DEFAULT),
+                 xprslora_mode_name(s_mode));
+        s_mode = XPRSLORA_MODE_DEFAULT;
+        s_def = &k_modes[s_mode];
+        err = lr_claim_for(s_def);
+    }
     if (err != ESP_OK) {
         sx1262_delete(s_radio);
         s_radio = NULL;
@@ -807,9 +827,43 @@ static const xprslora_region_t *lr_region_of(const lr_mode_def_t *d)
 /* The buffers a mode needs before it is entered. Claimed BEFORE the radio
  * moves, so a station that cannot afford the new mode stays in the one it
  * is in and says so, rather than sitting on a channel it cannot read. */
+/*
+ * What `meshcore` mode needs of the INTERNAL heap, over and above what it
+ * claims: the worker's 6 KB stack cannot live in PSRAM, the UI task asks
+ * for 8 KB of its own, and docs/esp32.md sets the floor this board is
+ * expected to keep at 4 KB. On the Heltec V3, which has no PSRAM, taking
+ * the state and the stack without checking left 1,920 bytes free and a
+ * reboot loop: the UI task could not start, and neither could anything
+ * else (measured 2026-09-20).
+ */
+#define LR_MC_SPARE_INTERNAL 16384u
+
 static esp_err_t lr_claim_for(const lr_mode_def_t *d)
 {
     if (d->net != LR_NET_MC || s_survey.active || s_mc) return ESP_OK;
+    /* A reading of the free heap HERE cannot answer the question: this
+     * runs early in the boot, before the screen's task, the index and the
+     * web server have taken theirs. The Heltec V3 had 48 KB free at this
+     * point, passed any such test, and ended the boot with 1,920 bytes and
+     * a reboot loop. What the board has is decided by the board, so the
+     * rule is the board's: without PSRAM there is no room for MeshCore's
+     * state AND a 6 KB stack that cannot live anywhere else. */
+    bool psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= sizeof(lr_mc_state_t);
+    if (!psram) {
+        ESP_LOGE(TAG, "MeshCore wants %u bytes of state and a %u byte stack, "
+                      "and this board has no PSRAM to put either in: "
+                      "staying in %s mode (docs/meshtastic.md, \"What it "
+                      "costs\")",
+                 (unsigned)sizeof(lr_mc_state_t), 6144u, s_def->name);
+        return ESP_ERR_NO_MEM;
+    }
+    size_t have = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (have < LR_MC_SPARE_INTERNAL + 6144u) {
+        ESP_LOGE(TAG, "MeshCore's worker needs a %u byte stack and only %u "
+                      "bytes of internal heap are free: staying in %s mode",
+                 6144u, (unsigned)have, s_def->name);
+        return ESP_ERR_NO_MEM;
+    }
     s_mc = heap_caps_calloc(1, sizeof *s_mc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_mc) s_mc = heap_caps_calloc(1, sizeof *s_mc, MALLOC_CAP_8BIT);
     if (!s_mc) {
@@ -822,30 +876,27 @@ static esp_err_t lr_claim_for(const lr_mode_def_t *d)
 }
 
 /*
- * And what the mode we left was holding. THE RADIO LOCK MUST NOT BE HELD
- * here: every other path takes the bridge's lock first and the radio lock
- * inside it (the bridge ticks, then airs), so taking them the other way
- * round is how two tasks would sit and wait for each other. The free is
- * inside the bridge's lock and the pointer is cleared there, so a task
- * that was waiting on that lock finds NULL rather than freed memory --
- * which is why every reader below tests s_mc INSIDE the lock.
+ * Leaving the mode does NOT hand the state back.
+ *
+ * It used to, on a board whose internal heap held it, and that is the
+ * pattern docs/esp32.md warns about in as many words: "freeing memory does
+ * not fix an over-committed board -- it moves the victim". A board that
+ * cannot hold this and everything else does not enter the mode at all
+ * (lr_claim_for), and a board that can keeps the block, as the Meshtastic
+ * bridge's is kept, so a switch back finds it where it was and a 10 KB
+ * hole is not opened and closed in a heap this size.
+ *
+ * The worker task is stopped, though: it is 6 KB of stack doing nothing on
+ * another network's channel, and an install wants it back
+ * (xprslora_mc_pause).
  */
 static void lr_mc_release(void)
 {
     if (s_survey.active || !s_mc) return;
     if (s_def->net == LR_NET_MC) return;
-    if (esp_ptr_external_ram(s_mc)) return;  /* PSRAM: kept, as Meshtastic's is */
-    /* The worker must be gone before the state is: it is the only other
-     * task that touches it. It leaves at the top of its own loop, which is
-     * fifty milliseconds wide. */
-    if (!mc_worker_stop()) return;       /* its state stays where it is */
-    xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
-    lr_mc_state_t *gone = s_mc;
-    s_mc = NULL;
-    heap_caps_free(gone);
-    xSemaphoreGiveRecursive(s_mt_mutex);
-    ESP_LOGI(TAG, "MeshCore: state released, %s mode has no use for it",
-             s_def->name);
+    if (mc_worker_stop())
+        ESP_LOGI(TAG, "MeshCore: worker stopped, %s mode has no use for it",
+                 s_def->name);
 }
 
 /* Point the radio at [mode]. The radio lock is held by the caller. */
@@ -1026,6 +1077,12 @@ static void survey_note(const char *name, int len)
 static void survey_frame(const uint8_t *frame, int len)
 {
     s_survey.m[s_mode].frames++;
+    if (survey_echo(frame, len)) {
+        s_survey.m[s_mode].relayed = true;
+        ESP_LOGI(TAG, "survey: %s carried our packet -- a repeater is in "
+                      "reach", s_def->name);
+        return;
+    }
     if (s_mode == XPRSLORA_MODE_XPRS) {
         if (!xprs_looks_like(frame, len)) return;
         for (int i = 0; i + 3 < len; i++) {
@@ -1066,6 +1123,92 @@ static void survey_frame(const uint8_t *frame, int len)
     }
 }
 
+/*
+ * One small packet of the kind this network floods, so that a repeater
+ * within reach answers by re-airing it. Cheap on purpose: no signature and
+ * no key exchange, because this runs on the bearer's task between retunes
+ * (docs/esp32.md, "Task stacks are heap").
+ *
+ *   meshtastic  a Data frame on XPRS's own portnum, one byte of payload.
+ *               Every router relays by the header, not by what it can
+ *               read, which is the same property XPRS rides on there.
+ *   meshcore    an ACK with a checksum that matches nothing. Four bytes,
+ *               no crypto, and the type is one their repeaters carry.
+ *   xprs        nothing: our own stations beacon every few seconds.
+ */
+static void survey_probe(void)
+{
+    if (!s_survey.probe || !s_radio) return;
+    xprslora_survey_mode_t *m = &s_survey.m[s_mode];
+    int n = 0;
+    if (s_def->net == LR_NET_MT) {
+        mt_hdr_t h = { 0 };
+        h.to = MT_BROADCAST;
+        h.from = s_self;
+        h.id = lr_random() | 1u;
+        h.hop_limit = MT_HOP_DEFAULT;
+        h.hop_start = MT_HOP_DEFAULT;
+        h.channel = MT_CH_HASH_XPRS;
+        h.relay_node = (uint8_t)s_self;
+        mt_hdr_build(&h, s_frames[0]);
+        mt_data_t d = { 0 };
+        uint8_t one = 0x01;            /* not a wrapped wire: nobody reads it */
+        d.portnum = MT_PORT_XPRS;
+        d.payload = &one;
+        d.payload_len = 1;
+        int dn = mt_data_encode(&d, s_frames[0] + MT_HDR_LEN,
+                                MT_FRAME_MAX - MT_HDR_LEN);
+        if (dn < 0) return;
+        n = MT_HDR_LEN + dn;
+        s_survey.probe_from = h.from;
+        s_survey.probe_id = h.id;
+    } else if (s_def->net == LR_NET_MC) {
+        uint8_t pl[4];
+        uint32_t r = lr_random();
+        for (int i = 0; i < 4; i++) pl[i] = (uint8_t)(r >> (8 * i));
+        mc_pkt_t p;
+        memset(&p, 0, sizeof p);
+        p.route = MC_ROUTE_FLOOD;
+        p.type = MC_PT_ACK;
+        p.hash_size = 1;
+        p.payload = pl;
+        p.payload_len = 4;
+        n = mc_build(&p, s_frames[0], MC_FRAME_MAX);
+        if (!n) return;
+        s_survey.probe_hash = mc_packet_hash(&p);
+    } else {
+        return;                        /* XPRS: its stations speak often */
+    }
+    lr_tx_wait_idle();
+    for (int t = 0; t < 4 && lr_channel_busy(); t++) {
+        lr_listen();
+        vTaskDelay(pdMS_TO_TICKS(s_def->slot_ms * (1 + esp_random() % 8)));
+    }
+    if (lr_start(s_frames[0], n)) {
+        m->probed = true;
+        s_survey.probe_ms += xb_lora_airtime_ms(&s_air, n);
+        ESP_LOGI(TAG, "survey: asked %s with %d bytes", s_def->name, n);
+    }
+}
+
+/* Is this frame the probe we just aired, carried by somebody else? */
+static bool survey_echo(const uint8_t *frame, int len)
+{
+    if (!s_survey.probe) return false;
+    if (s_def->net == LR_NET_MT) {
+        mt_hdr_t h;
+        if (!mt_hdr_parse(frame, len, &h)) return false;
+        return h.from == s_survey.probe_from && h.id == s_survey.probe_id &&
+               h.hop_limit < h.hop_start;
+    }
+    if (s_def->net == LR_NET_MC) {
+        mc_pkt_t p;
+        if (!mc_parse(frame, len, &p)) return false;
+        return mc_packet_hash(&p) == s_survey.probe_hash && p.hops > 0;
+    }
+    return false;
+}
+
 /* The next mode worth listening on, or COUNT when the sweep is done. */
 static xprslora_mode_t survey_next(xprslora_mode_t from)
 {
@@ -1075,7 +1218,7 @@ static xprslora_mode_t survey_next(xprslora_mode_t from)
     return XPRSLORA_MODE_COUNT;
 }
 
-esp_err_t xprslora_survey_start(uint32_t per_mode_s)
+static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
 {
     if (!s_radio || !s_lora) return ESP_ERR_INVALID_STATE;
     if (s_survey.active) return ESP_ERR_INVALID_STATE;
@@ -1084,6 +1227,7 @@ esp_err_t xprslora_survey_start(uint32_t per_mode_s)
 
     lr_lock(NULL);
     memset(&s_survey, 0, sizeof s_survey);
+    s_survey.probe = probe;
     s_survey.home = s_mode;
     s_survey.per_ms = per_mode_s * 1000u;
     s_survey.started_ms = lr_now_ms();
@@ -1096,6 +1240,7 @@ esp_err_t xprslora_survey_start(uint32_t per_mode_s)
                                 ? XPRSLORA_MODE_XPRS
                                 : survey_next(XPRSLORA_MODE_XPRS);
     esp_err_t err = lr_tune_mode(first, false);
+    if (err == ESP_OK) survey_probe();
     lr_unlock(NULL);
     if (err != ESP_OK) {
         s_survey.active = false;
@@ -1103,9 +1248,20 @@ esp_err_t xprslora_survey_start(uint32_t per_mode_s)
                     s_region->reserve_ms, s_region->dwell_ms);
         return err;
     }
-    ESP_LOGI(TAG, "survey: listening %lus on each mode, starting with %s",
-             (unsigned long)per_mode_s, xprslora_mode_name(first));
+    ESP_LOGI(TAG, "%s: %lus on each mode, starting with %s",
+             probe ? "auto-detect" : "survey", (unsigned long)per_mode_s,
+             xprslora_mode_name(first));
     return ESP_OK;
+}
+
+esp_err_t xprslora_survey_start(uint32_t per_mode_s)
+{
+    return survey_begin(per_mode_s, false);
+}
+
+esp_err_t xprslora_detect_start(uint32_t per_mode_s)
+{
+    return survey_begin(per_mode_s, true);
 }
 
 /* On the bearer tick: move to the next mode when this one's time is up, and
@@ -1117,14 +1273,16 @@ static void survey_tick(void)
     if (now - s_survey.started_ms < s_survey.per_ms) return;
 
     xprslora_survey_mode_t *m = &s_survey.m[s_mode];
-    ESP_LOGI(TAG, "survey: %s %lu frame%s, %d named%s%s", s_def->name,
+    ESP_LOGI(TAG, "survey: %s %lu frame%s, %d named%s%s%s", s_def->name,
              (unsigned long)m->frames, m->frames == 1 ? "" : "s", m->names,
-             m->names ? " -- " : "", m->names ? m->name[0] : "");
+             m->names ? " -- " : "", m->names ? m->name[0] : "",
+             m->relayed ? ", and a repeater carried ours"
+                        : m->probed ? ", nobody carried ours" : "");
     xprslora_mode_t next = survey_next(s_mode);
     lr_lock(NULL);
     if (next < XPRSLORA_MODE_COUNT) {
         s_survey.started_ms = now;
-        lr_tune_mode(next, false);
+        if (lr_tune_mode(next, false) == ESP_OK) survey_probe();
         lr_unlock(NULL);
         return;
     }
@@ -1135,6 +1293,13 @@ static void survey_tick(void)
                 s_region->reserve_ms, s_region->dwell_ms);
     s_survey.active = false;
     s_survey.done = true;
+    /* What the asking cost, charged to the hour now that the ledger the
+     * band owns is back: a probe is our transmission like any other. */
+    if (s_survey.probe_ms) {
+        xb_spend(s_lora, s_survey.probe_ms, false);
+        ESP_LOGI(TAG, "auto-detect: %lums of our own airtime, charged",
+                 (unsigned long)s_survey.probe_ms);
+    }
     lr_unlock(NULL);
     /* The sweep passed through MeshCore, which may have claimed its block
      * on the way; the mode we came home to decides whether it is kept.
@@ -1163,7 +1328,11 @@ int xprslora_survey_json(char *buf, size_t cap)
         for (int j = 0; j < s_survey.m[i].names && (size_t)n < cap; j++)
             n += snprintf(buf + n, cap - (size_t)n, "%s\"%s\"", j ? "," : "",
                           s_survey.m[i].name[j]);
-        if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]}");
+        if ((size_t)n < cap)
+            n += snprintf(buf + n, cap - (size_t)n,
+                          "],\"asked\":%s,\"relayed\":%s}",
+                          s_survey.m[i].probed ? "true" : "false",
+                          s_survey.m[i].relayed ? "true" : "false");
     }
     if (n > 0 && (size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "}}");
     return n;
@@ -1504,6 +1673,15 @@ static bool mc_worker_start(void)
                                 &s_mc_worker, XPRS_WORK_CORE) == pdPASS)
         return true;
     s_mc_worker = NULL;
+    /* A stack is one contiguous piece of INTERNAL heap, and a mode changed
+     * hours into a run asks for it from a heap that is no longer whole.
+     * Say what was there, because "the bridge did not start" on its own
+     * sends the next person looking at the radio (docs/esp32.md, "The boot
+     * order is the allocator"). */
+    ESP_LOGE(TAG, "MeshCore worker: 6144 bytes of stack refused, internal "
+                  "free %u, largest block %u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     return false;
 }
 

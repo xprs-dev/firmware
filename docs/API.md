@@ -596,7 +596,13 @@ eu-433`, the T-Deck's "LoRa channel" row, or an owner's `cmd:set freq:` /
 `region:`. `lora.freq_hz` in the status is what the radio is on, not what
 config asked for at boot.
 `cfg survey [seconds]` listens on every mode in turn and reports who is
-there, transmitting nothing while it runs.
+there, transmitting nothing while it runs. `cfg detect [seconds]`
+(default 20, the T-Deck's "LoRa auto-detect" row) does the same sweep but
+asks: one small packet on each mesh mode, so a repeater in reach answers
+by carrying it. Listening alone cannot find a quiet network -- MeshCore
+advertises hourly at best -- which is why auto-detect exists
+(docs/meshtastic.md, "Auto-detect"). Its `survey` block gains `asked` and
+`relayed` per mode.
 
 `/api/status` carries the mode, the ledger, and the last survey:
 `"lora":{"mode":"meshtastic","region":"eu","freq_hz":869525000,"duty_ms":360000,`

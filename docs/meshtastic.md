@@ -35,6 +35,50 @@ back finds it as it was, and a 7 KB block freed and claimed again is how a
 heap this size fragments (docs/esp32.md). A station that boots in `xprs`
 mode allocates nothing for Meshtastic at all.
 
+## Auto-detect: which networks are actually reachable
+
+`cfg detect [seconds]`, the T-Deck's "LoRa auto-detect" row, or
+`[lora] detect_s`. It walks the modes like the survey below, but on each
+mesh mode it ASKS: one small packet of the kind that network floods, and a
+repeater within reach answers by re-airing it. Hearing our own packet come
+back with a hop on it is proof of a working relay rather than a guess.
+
+**Why asking is necessary, and why twenty seconds is the right dwell.**
+Listening alone cannot answer "is anybody there", at any dwell a person
+would wait through: a MeshCore node advertises every one to four hours
+(`advert.interval`, default 2) and a Meshtastic node sends a NodeInfo
+about every three. A channel with a live repeater on it is silent for
+almost all of that time. What IS quick is the answer to a packet: a
+MeshCore repeater re-aired ours within about two seconds on this bench
+(its flood wait is `rand(0..5) * (airtime * 52 / 50) / 2`), and
+Meshtastic's CLIENT rule waits two to four. So the useful part of the
+dwell is the first five seconds, and the rest is a bonus chance of
+overhearing somebody else's traffic.
+
+Twenty seconds per mode keeps the whole sweep near a minute, which is
+what somebody standing at a station will wait, and leaves fifteen seconds
+of listening after the probe has been answered or not. Making it longer
+buys very little: the probe has already answered, and the networks that
+are quiet are quiet for hours. Making it much shorter starts to bite when
+the channel is busy and the probe waits for a gap. The figure is a
+setting, `[lora] detect_s`, and the sweep accepts 5 to 300.
+
+**What it puts on the air**, once per mesh mode:
+
+| mode | probe | why that one |
+|---|---|---|
+| `xprs` | nothing | our own stations beacon every few seconds; listening is enough |
+| `meshtastic` | a Data frame on XPRS's private portnum, one byte | routers relay by the header, not by what they can read, which is the property XPRS already rides on there |
+| `meshcore` | an ACK with a checksum that matches nothing, four bytes | no crypto at all, and a type their repeaters carry; it means nothing to anybody, so nothing acts on it |
+
+No signature and no key exchange: this runs on the bearer's task between
+retunes, where there is no room for curve arithmetic (docs/esp32.md).
+The airtime it costs is charged to the region's hour when the sweep ends,
+because a probe is a transmission like any other.
+
+`/api/status` carries `asked` and `relayed` per mode beside the frames and
+the names.
+
 **The survey**, `cfg survey [seconds]` (or the Settings row, or
 `[lora] survey_s`, default 60): the station listens on each available mode
 in turn, transmits nothing while it does, hands nothing to the bearer or to
@@ -517,6 +561,14 @@ changing the bridge.
   arithmetic in mc.h), enforced in the builders so a long message is
   shortened rather than lost, and the longest message there is now has a
   test.
+- **A free-heap reading early in the boot does not answer "will this
+  fit".** MeshCore's mode claims its state before the screen, the index
+  and the web server take theirs, so it saw 48 KB free on a board that had
+  eleven to give and reboot-looped at 1,920 bytes. The page that says
+  "whoever starts last gets the fragments" had already written this down,
+  and the answer it prescribes is the one that worked: put the budget on
+  paper, subtract, and when it does not close decide what the board is
+  for. This board does not run MeshCore.
 - **A published format is a starting point, not the answer.** Five things
   about MeshCore were wrong in code that passed every host test, because
   the tests checked this firmware against itself: the channel's modulation,
@@ -668,6 +720,16 @@ sender's name included on a channel message; longer is shortened on the
 way out, as it is on the Meshtastic side, because the whole of it is on
 XPRS where the words were said. A message arriving from MeshCore is split
 over XPRS parts instead, which XPRS has a grammar for (7.6).
+
+**A board without PSRAM cannot run this mode**, and says so rather than
+trying: the state and the worker's stack come to about thirteen kilobytes
+against the eleven the Heltec V3 has free with the Meshtastic bridge
+running, and the arithmetic does not close (docs/esp32.md, "The arithmetic
+that did not close"). Such a board refuses the switch and stays where it
+is; at boot it comes up in its default mode with a line saying why, and
+the setting is left alone for a board with room. Measured the hard way:
+the first version checked the free heap at claim time, passed with 48 KB,
+and reboot-looped with 1,920 bytes.
 
 **What it costs, and where the work runs.** The whole of `meshcore` mode
 (the bridge, the contact table and the reassembly of split XPRS wires) is

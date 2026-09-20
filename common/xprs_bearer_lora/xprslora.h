@@ -142,11 +142,35 @@ esp_err_t xprslora_set_mode(xprslora_mode_t mode);
 typedef struct {
     uint32_t frames;                 /* frames heard on this mode */
     int      names;
+    bool     relayed;                /* somebody carried our probe */
+    bool     probed;                 /* we put one on the air here */
     char     name[XPRSLORA_SURVEY_NAMES][XPRSLORA_SURVEY_NAME_LEN];
 } xprslora_survey_mode_t;
 
-/** Start one, [per_mode_s] on each mode (clamped to 5..300). */
+/** Start one, [per_mode_s] on each mode (clamped to 5..300). Listen only:
+ *  nothing is transmitted, which also means a network whose nodes happen
+ *  to be quiet looks exactly like a network that is not there. */
 esp_err_t xprslora_survey_start(uint32_t per_mode_s);
+
+/**
+ * The same sweep, but it SPEAKS once on each mesh mode: auto-detect.
+ *
+ * Listening alone cannot answer "is anybody there". MeshCore's nodes
+ * advertise every one to four hours and Meshtastic's send a NodeInfo about
+ * every three, so a quiet channel is silent for far longer than anybody
+ * will stand at a station waiting. What is quick is asking: one small
+ * packet of the kind that network floods, and a repeater within reach
+ * re-airs it within a couple of seconds (measured on the bench against a
+ * MeshCore repeater, 2026-09-20). Hearing our own packet come back with a
+ * hop on it is proof of a working relay, not a guess.
+ *
+ * XPRS's own mode is not probed: its stations beacon every few seconds, so
+ * listening is enough there.
+ *
+ * [per_mode_s] clamped to 5..300; 20 is the default and is chosen in
+ * docs/meshtastic.md, "Auto-detect".
+ */
+esp_err_t xprslora_detect_start(uint32_t per_mode_s);
 
 /** Whether one is running now. */
 bool xprslora_survey_active(void);

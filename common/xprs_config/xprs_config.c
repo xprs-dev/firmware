@@ -109,6 +109,7 @@ static cfg_entry_t s_cfg[] = {
     { "lora_local",   {0}, false },
     /* Seconds the survey listens on each mode (14.8): `cfg survey`. */
     { "lora_survey_s",{0}, false },
+    { "lora_detect_s",{0}, false },
     /* Meshtastic on the same radio (docs/meshtastic.md): the repeater, the
      * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
      * and how often this station's node re-announces itself. */
@@ -270,7 +271,12 @@ int xcfg_ini_render(char *buf, size_t cap)
         "local = %s\n"
         "; survey_s: seconds `cfg survey` listens on each mode before it\n"
         ";   says who is out there. Nothing is transmitted while it runs.\n"
+        "; detect_s: the same for `cfg detect`, which ASKS -- one small\n"
+        ";   packet on each mesh mode, so a repeater answers by carrying\n"
+        ";   it. Twenty seconds is enough for that; listening alone is\n"
+        ";   not, because those networks are quiet for hours at a time.\n"
         "survey_s = %s\n"
+        "detect_s = %s\n"
         "\n"
         "[meshtastic]\n"
         "; Relay Meshtastic traffic, and translate messages both ways.\n"
@@ -373,6 +379,7 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("lora_pace_ms", ""),
         xcfg_get_bool("lora_local", false) ? "yes" : "no",
         xcfg_get("lora_survey_s", "60"),
+        xcfg_get("lora_detect_s", "20"),
         xcfg_get_bool("mt_repeat", true) ? "yes" : "no",
         xcfg_get_bool("mt_bridge", true) ? "yes" : "no",
         xcfg_get("mt_bcast_hr", ""),
@@ -442,6 +449,7 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "lora",    "reserve_ms","lora_resv_ms" },
     { "lora",    "local",    "lora_local" },
     { "lora",    "survey_s", "lora_survey_s" },
+    { "lora",    "detect_s", "lora_detect_s" },
     { "meshtastic", "repeat", "mt_repeat" },
     { "meshtastic", "bridge", "mt_bridge" },
     { "meshtastic", "broadcasts_per_hour", "mt_bcast_hr" },

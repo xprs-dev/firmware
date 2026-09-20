@@ -22,6 +22,26 @@ docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
    implemented, and is a decision rather than an omission: reactions
    (MeshCore has no tapback), positions and telemetry, room servers, and
    transport-routed packets.
+0b1. **MeshCore mode needs PSRAM, and the Heltec V3 does not have it.**
+   The state (7,092 B) plus the worker's 6 KB stack against the ~11.8 KB
+   that board has free: the arithmetic does not close, so the mode is
+   refused there and the station comes up in its default one
+   (docs/esp32.md, "The arithmetic that did not close"). If it should run
+   on a board like that, the way in is to make it smaller -- a shared
+   worker for both bridges, or MC_SMALL tables trimmed again -- not to
+   claim the memory and hope.
+0b2. **Auto-detect has not been on the air.** `cfg detect` (and the
+   T-Deck's row) is written and every board builds, but the probe-and-echo
+   half has not been tried against a real repeater: the T-Deck's USB
+   dropped off the bus mid-session (no Espressif device present, the
+   station still answering over WiFi) and the board cannot be reflashed
+   until it is replugged. What to check when it is: `cfg detect 20` with
+   the Heltec on the MeshCore repeater build should report `meshcore ...
+   and a repeater carried ours`, and the repeater's own `log` should show
+   our four-byte ACK arriving and a TX after it. The Meshtastic leg needs
+   a Meshtastic node, which this bench no longer has, and its premise --
+   that a router relays a packet on a private portnum it cannot read -- is
+   the same one XPRS already rides on there, but it is NOT measured.
 0c. **MeshCore on the air: done, and what it changed.** 2026-09-20, against
    a Heltec V3 running the published MeshCore v1.17.1 (repeater, then the
    companion build driven over USB) with a T-Deck running this firmware:

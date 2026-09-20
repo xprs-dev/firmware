@@ -717,6 +717,34 @@ this board (`-DRNS_HUB_LINK` to restore it, and expect to lose something else).
 When the arithmetic does not close, stop moving memory and decide what the board
 is for.
 
+### The arithmetic that did not close: MeshCore on a board without PSRAM
+
+Written down the way this page asks, and it is the fourth time the answer
+was to give a feature up rather than move memory around.
+
+*Heltec V3, 2026-09-20, `lora_mode meshcore`:*
+
+| piece | cost | where it can live |
+|---|---|---|
+| the bridge's state (`lr_mc_state_t`, small tables) | 7,092 B | PSRAM, if the board has any |
+| the `mcwork` task's stack | 6,144 B | internal only: FreeRTOS stacks cannot go in PSRAM |
+| what the board had free with the Meshtastic bridge running | ~11.8 KB | |
+
+Thirteen kilobytes against eleven-point-eight. Taken anyway, because the
+first version checked the free heap AT CLAIM TIME -- 48 KB, early in the
+boot, long before the screen's 8 KB task and the index and the web server
+take theirs -- and passed. The board ended the boot with **1,920 bytes
+free, largest block 1,536**, the UI task could not start, and it
+reboot-looped. A reading of the free heap early in `app_main` cannot
+answer "will this fit": whoever starts last gets the fragments, and this
+allocation starts early and is charged to everyone after it.
+
+So `meshcore` mode asks the board, not the heap: **no PSRAM, no MeshCore.**
+The station says so with the numbers and comes up in its default mode
+rather than not at all, and the setting is left alone so a board with room
+takes it next time. The T-Deck, which has 8 MB of PSRAM, carries the state
+there and only the 6 KB stack internally.
+
 ### A boot-trace delta says what a subsystem cost, not what stopping it returns
 
 The trace shows `heap after hotspot: 30,448`, down from 139,440, so the SoftAP

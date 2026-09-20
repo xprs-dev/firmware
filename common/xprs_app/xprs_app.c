@@ -706,8 +706,25 @@ static bool lora_console(const char *line)
         if (e != ESP_OK) {
             printf("survey: %s\n", esp_err_to_name(e));
         } else {
-            printf("survey: started, %lus on each mode\n",
+            printf("survey: started, %lus on each mode, listening only\n",
                    (unsigned long)secs);
+        }
+        return true;
+    }
+    if (strncmp(p, "detect", 6) == 0 && (p[6] == ' ' || p[6] == 0)) {
+        /* 14.8: the same sweep, but it asks. A network whose nodes are
+         * quiet cannot be found by listening, and they are quiet for
+         * hours at a time. */
+        const char *w = p + 6;
+        while (*w == ' ') w++;
+        uint32_t secs = *w ? (uint32_t)strtoul(w, NULL, 10)
+                           : (uint32_t)atoi(xcfg_get("lora_detect_s", "20"));
+        esp_err_t e = xprslora_detect_start(secs);
+        if (e != ESP_OK) {
+            printf("detect: %s\n", esp_err_to_name(e));
+        } else {
+            printf("detect: started, %lus on each mode, one packet asked "
+                   "on each mesh\n", (unsigned long)secs);
         }
         return true;
     }
@@ -4752,18 +4769,19 @@ static void ui_render(void)
                 } else if (xprslora_survey_active()) {
                     snprintf(sval, sizeof sval, "Running");
                     snprintf(sdet, sizeof sdet,
-                             "Listening on each mode in turn; nothing is "
+                             "Going round the modes; only the probe is "
                              "transmitted until it ends.");
                 } else {
                     char js[256];
                     int jn = xprslora_survey_json(js, sizeof js);
                     snprintf(sval, sizeof sval, "%s", jn > 0 ? "Done" : "--");
                     snprintf(sdet, sizeof sdet,
-                             "Listen on every LoRa mode in turn and say who "
-                             "is there. %s starts it; nothing is aired while "
-                             "it runs.", ok_key());
+                             "Which networks are reachable: each mode in "
+                             "turn, one small packet asked on each mesh so "
+                             "a repeater answers. %s starts it, about a "
+                             "minute.", ok_key());
                 }
-                SROW("LoRa survey", sval, sdet);
+                SROW("LoRa auto-detect", sval, sdet);
             }
         }
         SROW("Name", xcfg_get("name", "--"),
@@ -6720,8 +6738,11 @@ static void settings_ok(int row)
         }
         break;
     case 10:
+        /* Auto-detect rather than the listening-only survey: a person at
+         * the screen wants to know which networks are REACHABLE, and the
+         * only quick way to know is to ask (14.8). */
         if (s_board->lora)
-            xprslora_survey_start((uint32_t)atoi(xcfg_get("lora_survey_s", "60")));
+            xprslora_detect_start((uint32_t)atoi(xcfg_get("lora_detect_s", "20")));
         break;
     case 13:
         s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
