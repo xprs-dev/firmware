@@ -111,7 +111,7 @@ static cfg_entry_t s_cfg[] = {
     { "lora_survey_s",{0}, false },
     /* Empty: each network waits by its own contention rule. */
     { "lora_detect_s",{0}, false },
-    /* Meshtastic on the same radio (docs/meshtastic.md): the repeater, the
+    /* Meshtastic on the same radio (docs/lora.md): the repeater, the
      * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
      * and how often this station's node re-announces itself. */
     { "mt_repeat",    {0}, false },

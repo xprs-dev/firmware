@@ -627,7 +627,7 @@ static bool names_our_node(const char *name, uint32_t num)
 }
 
 /* The receipt a gateway gives for a DM a Meshtastic node acknowledged,
- * signed by this station (docs/meshtastic.md: a gateway receipt). */
+ * signed by this station (docs/lora.md: a gateway receipt). */
 static void receipt_out(mt_mesh_t *m, const mt_pending_t *p, bool ok, int err)
 {
     char ts[40];

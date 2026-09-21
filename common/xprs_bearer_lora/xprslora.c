@@ -125,7 +125,7 @@ typedef struct {
     uint32_t slot_ms;          /* backoff unit while the channel is busy */
     /* How long auto-detect waits here before calling it empty. Each
      * network sets its own, because each makes a relay wait differently
-     * (docs/meshtastic.md, "Auto-detect"): MeshCore answers inside about a
+     * (docs/lora.md, "Auto-detect"): MeshCore answers inside about a
      * second and a half, while Meshtastic's contention rule deliberately
      * makes the CLOSEST node wait longest -- up to 7.6 s at LongFast -- so
      * a short dwell there would miss exactly the repeater in the room. A
@@ -254,7 +254,7 @@ static lr_state_t *s_st;
  * UNLESS it landed in PSRAM, where keeping it costs nothing and claiming
  * it again might fail. A board without PSRAM cannot hold this and the
  * Meshtastic bridge at once, which is why it is freed there (docs/esp32.md,
- * and docs/meshtastic.md "LoRa modes"). The survey never reassembles, so a
+ * and docs/lora.md "One radio, three networks"). The survey never reassembles, so a
  * rotation does not touch the heap. */
 typedef struct {
     mc_mesh_t  mesh;
@@ -868,7 +868,7 @@ static esp_err_t lr_claim_for(const lr_mode_def_t *d)
     if (!psram) {
         ESP_LOGE(TAG, "MeshCore wants %u bytes of state and a %u byte stack, "
                       "and this board has no PSRAM to put either in: "
-                      "staying in %s mode (docs/meshtastic.md, \"What it "
+                      "staying in %s mode (docs/lora.md, \"What it "
                       "costs\")",
                  (unsigned)sizeof(lr_mc_state_t), 6144u, s_def->name);
         return ESP_ERR_NO_MEM;

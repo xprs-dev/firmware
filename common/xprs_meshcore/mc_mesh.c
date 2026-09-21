@@ -1,7 +1,7 @@
 /* mc_mesh.c -- see mc_mesh.h. The MeshCore repeater and the bridge.
  *
  * Written against mt_mesh.c, because the rules are the same rules
- * (docs/meshtastic.md, "The rules we follow"); where the two files differ,
+ * (docs/lora.md, "The rules we follow"); where the two files differ,
  * MeshCore's own arithmetic is the reason and the comment says so.
  *
  * ONE PROPERTY IS WORTH KNOWING BEFORE READING: everything this bridge

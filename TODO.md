@@ -6,8 +6,8 @@ Work this firmware needs, written down with enough context to be picked up cold.
 
 **Status: the ESP32 boards run it and it is bench-validated both ways against
 a stock Meshtastic 2.7.26 node and the Meshtastic Android app
-(docs/meshtastic.md, "Measured on the bench"). Anything new here follows
-docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
+(docs/lora.md, "Measured on the bench"). Anything new here follows
+docs/lora.md, "The rules we follow", and reads its "Lessons learned".**
 
 0. **Try the remote LoRa mode switch on the bench.** `cmd:set lora:<mode>`
    is host-tested and in the Firmwares wapp (0.3.6), but neither bench board
@@ -42,14 +42,14 @@ docs/meshtastic.md, "The rules we follow", and reads its "Lessons learned".**
    nobody, so it now waits 1.2 s and repeats once mid-dwell; and the
    Meshtastic probe on XPRS's own channel is swallowed by our own
    stations as half a wire, so it rides LongFast's channel hash instead
-   (docs/meshtastic.md, "Auto-detect").
+   (docs/lora.md, "Auto-detect").
 
 0c. **MeshCore on the air: done, and what it changed.** 2026-09-20, against
    a Heltec V3 running the published MeshCore v1.17.1 (repeater, then the
    companion build driven over USB) with a T-Deck running this firmware:
    contacts, channel messages both ways, direct messages both ways with the
    gateway receipt. A stock repeater does NOT relay our `RAW_CUSTOM`, so
-   XPRS on that channel is direct-range only (docs/meshtastic.md,
+   XPRS on that channel is direct-range only (docs/lora.md,
    "MeshCore, measured on the air"). The bench boards are now: Heltec =
    stock MeshCore (its XPRS identity X3H3MZ is backed up in
    ~/xprs-nvs-backups/2026-09-19/heltec_X3H3MZ_nvs_2026-09-20.bin), T-Deck

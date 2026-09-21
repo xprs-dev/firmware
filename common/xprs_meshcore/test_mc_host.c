@@ -5,7 +5,7 @@
  *
  * What can be checked without a MeshCore node on the bench is checked here;
  * what cannot (whether a stock repeater carries our RAW_CUSTOM) is named in
- * docs/meshtastic.md as the first thing to try on the air.
+ * docs/lora.md as the first thing to try on the air.
  *
  * Run with test_mc_host.sh.
  */

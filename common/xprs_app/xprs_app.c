@@ -3377,7 +3377,7 @@ static void mesh_deliver(const char *wire, int len, bool sign)
 /* The time field for a translation. To the minute, so two bridges hearing
  * the same Meshtastic frame compose the same packet and the same section 5
  * identifier; a station with no clock says epoch:, which cannot be shared
- * and does not need to be (docs/meshtastic.md). */
+ * and does not need to be (docs/lora.md). */
 static int mesh_stamp(char *out, int cap, bool to_minute)
 {
     time_field(out, cap);
@@ -6887,7 +6887,7 @@ static int api_lora_json(char *buf, size_t cap)
         (unsigned long)r.held, (unsigned long)r.deferred,
         (unsigned long)r.stale, (unsigned long)r.next_free_ms, modem_sf,
         (unsigned long)modem_bw);
-    /* The Meshtastic repeater and bridge (docs/meshtastic.md), counted, so
+    /* The Meshtastic repeater and bridge (docs/lora.md), counted, so
      * what it did is read off the board rather than out of a serial log. */
     mt_mesh_stats_t mt;
     if (n > 0 && (size_t)n < cap && xprslora_mt_stats(&mt))
@@ -7912,7 +7912,7 @@ void xapp_run(const xapp_board_t *board)
          * live in the bearer's tables (xprslora_regions); config only
          * chooses, tightens or knowingly loosens. This is the mode the
          * station COMES UP in; it changes live afterwards (`cfg lora`,
-         * docs/meshtastic.md, "LoRa modes"). */
+         * docs/lora.md, "One radio, three networks"). */
         xprslora_cfg_t lc = *board->lora;
         {
             xprslora_mode_t mode = XPRSLORA_MODE_DEFAULT;
@@ -7932,7 +7932,7 @@ void xapp_run(const xapp_board_t *board)
             lc.mode = mode;
             /* The modulation, when the operator has to follow neighbours
              * onto a channel this firmware has no preset for: MeshCore's
-             * are regional and they move (docs/meshtastic.md). Empty keeps
+             * are regional and they move (docs/lora.md). Empty keeps
              * the mode's own. */
             const char *mod;
             if ((mod = xcfg_get("lora_sf", NULL)) && mod[0])
@@ -7991,7 +7991,7 @@ void xapp_run(const xapp_board_t *board)
                 if ((v = xcfg_get("lora_pace_ms", NULL)) && v[0])
                     xprslora_set_pace((uint32_t)strtoul(v, NULL, 10));
                 /* The repeater and the bridge of whichever network this
-                 * radio came up on (docs/meshtastic.md). */
+                 * radio came up on (docs/lora.md). */
                 if (mode == XPRSLORA_MODE_MESHTASTIC ||
                     mode == XPRSLORA_MODE_MESHCORE)
                     lora_start_bridge();

@@ -8,7 +8,7 @@
  * It hands back raw frames to air (ops.air, which does CAD and charges the
  * duty ledger) and translated XPRS wires to deliver (ops.deliver).
  *
- * What it does, in docs/meshtastic.md's words:
+ * What it does, in docs/lora.md's words:
  *
  *  - REPEATER. Meshtastic's managed flood: a frame not heard before, with
  *    hops left, not ours and not addressed to one of our nodes, is re-aired

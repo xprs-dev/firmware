@@ -2,8 +2,8 @@
  * @file xlc.h
  * @brief The curve and cipher primitives the LoRa networks share.
  *
- * XPRS meets two other LoRa networks on its radio (docs/meshtastic.md,
- * "LoRa modes"), and they ask for the same small set of arithmetic:
+ * XPRS meets two other LoRa networks on its radio (docs/lora.md,
+ * "One radio, three networks"), and they ask for the same small set of arithmetic:
  *
  *   Meshtastic  X25519, AES-256-CCM, SHA-256
  *   MeshCore    Ed25519 (adverts are signed), the same X25519 underneath

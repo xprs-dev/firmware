@@ -232,7 +232,7 @@ esp_err_t sx1262_sleep(sx1262_handle_t handle);
  * and sync word of [config] are applied to a radio that is already up,
  * without the hardware reset sx1262_init() begins with and without
  * disturbing the DIO1 interrupt. This is what changing a station's LoRa
- * mode costs (docs/meshtastic.md, "LoRa modes"): the caller holds the radio,
+ * mode costs (docs/lora.md, "One radio, three networks"): the caller holds the radio,
  * has waited out anything in flight, and puts the radio back into receive
  * afterwards.
  */

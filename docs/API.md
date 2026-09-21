@@ -563,7 +563,7 @@ relayed immediately and then joins the ring.
 
 The LoRa radio accounts for its real airtime (Semtech AN1200.13) over a
 rolling hour, per region. The regions depend on the station's LoRa mode
-(`lora_mode`, docs/meshtastic.md "LoRa modes"), because each mode is a
+(`lora_mode`, docs/lora.md "One radio, three networks"), because each mode is a
 different channel. In `meshtastic` mode Meshtastic frames the station relays
 or sends spend the same ledger.
 
@@ -605,7 +605,7 @@ figure each network waits by its own contention rule (meshcore 8 s,
 xprs 10 s, meshtastic 20 s, because its rule makes the CLOSEST node wait
 longest), and every mode ends the moment it has an answer, so a station
 with neighbours is done in a few seconds
-(docs/meshtastic.md, "Auto-detect"). Its `survey` block gains `asked` and
+(docs/lora.md, "Auto-detect"). Its `survey` block gains `asked` and
 `relayed` per mode.
 
 `/api/status` carries the mode, the ledger, and the last survey:
@@ -633,7 +633,7 @@ the default); the Meshtastic keys under
 `[meshtastic]` (`repeat`, `bridge`, `broadcasts_per_hour`, `nodeinfo_min`)
 and the MeshCore ones under `[meshcore]` (`repeat`, `bridge`,
 `broadcasts_per_hour`, `advert_min`), each read when its network is the
-running mode (docs/meshtastic.md).
+running mode (docs/lora.md).
 
 ### Which station repeats
 

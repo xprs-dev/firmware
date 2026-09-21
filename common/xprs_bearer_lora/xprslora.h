@@ -4,8 +4,8 @@
  *
  * A LoRa receiver hears only the modulation and sync word it is set to, so
  * which LoRa network a station shares a channel with is a setting, chosen at
- * start and fixed until the next (`lora_mode`, docs/meshtastic.md "LoRa
- * modes"):
+ * start and fixed until the next (`lora_mode`, docs/lora.md "One radio,
+ * three networks"):
  *
  *   xprs        XPRS's own channel, as the fleet ran before 2026-09-19:
  *               SF7 (SF9 with the `far` profile), 125 kHz, CR 4/5, preamble
@@ -168,7 +168,7 @@ esp_err_t xprslora_survey_start(uint32_t per_mode_s);
  * listening is enough there.
  *
  * [per_mode_s] clamped to 5..300; 20 is the default and is chosen in
- * docs/meshtastic.md, "Auto-detect".
+ * docs/lora.md, "Auto-detect".
  */
 esp_err_t xprslora_detect_start(uint32_t per_mode_s);
 

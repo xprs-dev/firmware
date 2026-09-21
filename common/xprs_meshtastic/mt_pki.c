@@ -13,7 +13,7 @@
  * callsign seed live in xprs_loracrypto now (xlc.h), because MeshCore wants
  * the same curve and the same rule.
  *
- * THE KEYS ARE NOT SECRET, by decision (docs/meshtastic.md): an XPRS
+ * THE KEYS ARE NOT SECRET, by decision (docs/lora.md): an XPRS
  * callsign's key pair is derived from the callsign, so every bridge that
  * relays for it presents the same key and can open a DM to it. That is the
  * privacy the public channel has -- none -- and the bridge turns the DM into

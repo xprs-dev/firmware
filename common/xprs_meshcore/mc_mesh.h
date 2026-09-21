@@ -3,7 +3,7 @@
  * @brief The MeshCore repeater and the XPRS <-> MeshCore bridge.
  *
  * The same shape as mt_mesh.h, because the RULES are the same
- * (docs/meshtastic.md, "The rules we follow"): one instance per LoRa radio,
+ * (docs/lora.md, "The rules we follow"): one instance per LoRa radio,
  * the bearer hands it every frame that is not XPRS, the station hands it
  * every XPRS packet it hears or sends, the bearer task ticks it, and it
  * hands back frames to air and translated wires to deliver.

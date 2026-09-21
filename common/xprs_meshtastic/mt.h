@@ -4,7 +4,7 @@
  *
  * Since 2026-09 an XPRS LoRa station runs Meshtastic's LongFast modulation
  * (SF11, 250 kHz, CR 4/5, preamble 16, sync word 0x2B) on Meshtastic's own
- * frequency slot, so one radio hears both networks. docs/meshtastic.md is
+ * frequency slot, so one radio hears both networks. docs/lora.md is
  * the design; this header is the part of it a radio needs:
  *
  *   - the 16-byte Meshtastic header, and the few protobuf messages we read

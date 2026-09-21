@@ -163,7 +163,7 @@ bool xprs_is_self_generated(const char *call, int len);
 /* Is [call] a node of another network, written as an XPRS callsign by a
  * gateway: `MT` (Meshtastic) or `MC` (MeshCore, reserved) followed by
  * exactly eight uppercase hexadecimal digits of the node number, matched
- * whole (docs/meshtastic.md)? Nobody issued it, nobody can sign for it. */
+ * whole (docs/lora.md)? Nobody issued it, nobody can sign for it. */
 bool xprs_is_foreign_call(const char *call, int len);
 
 /* Self-generated (X1 to X5) or foreign: no radio authority issued it, so

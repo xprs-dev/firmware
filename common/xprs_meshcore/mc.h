@@ -2,7 +2,7 @@
  * @file mc.h
  * @brief MeshCore on the XPRS LoRa radio: the frame, the payloads, the keys.
  *
- * The third LoRa mode (XPRS.md 14.8, docs/meshtastic.md "LoRa modes").
+ * The third LoRa mode (XPRS.md 14.8, docs/lora.md "One radio, three networks").
  * MeshCore's EU channel is 869.525 MHz, SF11, 250 kHz, CR 4/5, preamble 16,
  * which is Meshtastic's LongFast with ANOTHER SYNC WORD (0x12 against
  * 0x2B): the two networks sit on one frequency and are deaf to each other,
