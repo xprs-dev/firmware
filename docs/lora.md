@@ -780,6 +780,24 @@ And the ledger holds across a turn: 11 turns in five minutes, and
 `spent_ms` never once stepped backwards. It used to, before
 `xb_set_duty_keep` (see "Lessons learned").
 
+**A stock repeater serves a rotating station normally, on its turns.**
+Against a Heltec V3 running the published MeshCore v1.17.1 repeater build
+(869.6179809 MHz), a rotating T-Deck mirroring XPRS broadcasts onto
+MeshCore's public channel, 2026-09-21:
+
+| | |
+|---|---|
+| our channel message out, on a MeshCore turn | `mc tx type 05 route 1 hop 0 37B` |
+| the repeater carrying it, about a second later | `mc type 05 route 1 hop 1 38B -29 dBm` -- one byte longer, its hash appended to the path |
+| every MeshCore turn in the run | the same, four for four |
+| the repeater's own advert | heard during a turn (`mc type 04 route 2`) |
+| during Meshtastic's turns | nothing on that channel at all, which is the rotation doing what it says |
+
+So the repeater does not treat an intermittent neighbour differently --
+there is no session to lose, which is the one advantage of a network that
+holds nothing for anybody. What is lost is only what was aired while the
+radio was elsewhere.
+
 **The honest recommendation** is unchanged by any of it: a site that wants
 both networks reliably runs two boards, one per network, and lets XPRS
 carry between them over BLE, the LAN or ESP-NOW, where XPRS's own

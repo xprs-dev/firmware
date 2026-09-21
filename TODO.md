@@ -9,15 +9,16 @@ a stock Meshtastic 2.7.26 node and the Meshtastic Android app
 (docs/lora.md, "Measured on the bench"). Anything new here follows
 docs/lora.md, "The rules we follow", and reads its "Lessons learned".**
 
-0a0. **Taking turns on two networks: what is left.** `[lora] rotate`
-   works and is bench-proven for the radio half (turns, the ledger, the
-   worker), but two things are not measured yet: whether a MeshCore
-   repeater and a Meshtastic repeater BOTH still carry this station's
-   traffic while it rotates (one bench board can only be one network at a
-   time, so it needs two runs), and what a rotating station costs the
-   hour -- it spends one EU allowance on two networks, so the budget goes
-   roughly twice as fast, and `lora.free_ms` is where that shows. The
-   catch-up clients that would make a rotation much less lossy (a
+0a0. **Taking turns on two networks: what is left.** `[lora] rotate` is
+   bench-proven on both sides now (docs/lora.md section 10): the turns,
+   the duty ledger across them, the worker staying up, 40% against 80%
+   reception, and a stock MeshCore v1.17.1 repeater relaying this
+   station's channel messages on its MeshCore turns while hearing nothing
+   from it on the other ones. What is NOT measured: a long soak (the
+   longest run so far is four minutes) and the heap across one; and the
+   hour, which a rotating station spends on two networks from one EU
+   allowance, so `lora.free_ms` is the number to watch on a busy site.
+   The catch-up clients that would make a rotation much less lossy (a
    MeshCore room-server login with `sync_since`, a Meshtastic
    `CLIENT_HISTORY` request on return) are written up in docs/lora.md
    section 10 and not started.
