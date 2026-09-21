@@ -664,6 +664,10 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     case MT_PORT_TEXT:
         if (from_ours || !m->cfg.bridge) return;
         if (h->to != MT_BROADCAST && !ours_to) return;   /* somebody else's DM */
+        /* A direct message is an exchange somebody is waiting on, and a
+         * radio shared with another network should not walk out of it
+         * (mt_mesh_busy). A broadcast is not: the channel is never quiet. */
+        if (ours_to) m->last_dm_ms = m->ops.now_ms();
         /* text_in first: d->payload lives in m->frame, which the ack's
          * frame is built in. */
         text_in(m, h, d, ours_to ? ours_to->call : NULL);
@@ -720,6 +724,7 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
                 continue;
             }
             p->used = false;
+            m->last_dm_ms = m->ops.now_ms();
             m->st.dm_acked++;
             mlog(m, "mt: %08x acked DM %s from %s (err %d)",
                  (unsigned)h->from, p->xid, p->sender, err);
@@ -1168,6 +1173,25 @@ int mt_mesh_node(const mt_mesh_t *m, int i, const mt_node_t **out)
         n++;
     }
     return n;
+}
+
+/* See mt_mesh.h. Three reasons to stay, in the order they cost most:
+ * a frame already due to go, a direct message still inside its retry
+ * budget, and an exchange that was live a moment ago. */
+bool mt_mesh_busy(const mt_mesh_t *m, uint32_t now_ms, uint32_t recent_ms)
+{
+    if (!m) return false;
+    for (int i = 0; i < MT_TXQ; i++)
+        if (m->q[i].used && (int32_t)(now_ms - m->q[i].due_ms) >= -1000)
+            return true;
+    for (int i = 0; i < MT_PENDING; i++) {
+        const mt_pending_t *p = &m->pend[i];
+        if (!p->used) continue;
+        if (!p->aired || p->tries < MT_DM_TRIES) return true;
+    }
+    if (m->last_dm_ms && (uint32_t)(now_ms - m->last_dm_ms) < recent_ms)
+        return true;
+    return false;
 }
 
 void mt_mesh_init(mt_mesh_t *m, const mt_mesh_ops_t *ops,

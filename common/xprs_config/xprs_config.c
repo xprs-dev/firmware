@@ -111,6 +111,11 @@ static cfg_entry_t s_cfg[] = {
     { "lora_survey_s",{0}, false },
     /* Empty: each network waits by its own contention rule. */
     { "lora_detect_s",{0}, false },
+    /* Serve two networks by taking turns on the one radio: a list of
+     * modes, and how long each turn lasts at least. Empty = one network,
+     * which is what most stations want (docs/lora.md). */
+    { "lora_rotate",  {0}, false },
+    { "lora_rotate_s",{0}, false },
     /* Meshtastic on the same radio (docs/lora.md): the repeater, the
      * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
      * and how often this station's node re-announces itself. */
@@ -281,6 +286,18 @@ int xcfg_ini_render(char *buf, size_t cap)
         ";   mode ends the moment it has an answer.\n"
         "survey_s = %s\n"
         "detect_s = %s\n"
+        "; rotate: serve two networks by taking turns, e.g.\n"
+        ";   `rotate = meshtastic,meshcore`. There is ONE receiver, so a\n"
+        ";   station on one network is deaf to the other while it is\n"
+        ";   there, and neither network holds anything for a node that\n"
+        ";   was not listening. Outbound traffic and discovery survive a\n"
+        ";   rotation; an inbound direct message often does not, and a\n"
+        ";   channel message aired while we are away is gone. Two boards,\n"
+        ";   one per network, is still the reliable answer. Empty = off.\n"
+        "; rotate_s: the shortest turn, seconds (default 25, chosen from\n"
+        ";   the other networks' retry budgets -- see docs/lora.md).\n"
+        "rotate = %s\n"
+        "rotate_s = %s\n"
         "\n"
         "[meshtastic]\n"
         "; Relay Meshtastic traffic, and translate messages both ways.\n"
@@ -384,6 +401,8 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get_bool("lora_local", false) ? "yes" : "no",
         xcfg_get("lora_survey_s", "60"),
         xcfg_get("lora_detect_s", ""),
+        xcfg_get("lora_rotate", ""),
+        xcfg_get("lora_rotate_s", ""),
         xcfg_get_bool("mt_repeat", true) ? "yes" : "no",
         xcfg_get_bool("mt_bridge", true) ? "yes" : "no",
         xcfg_get("mt_bcast_hr", ""),
@@ -454,6 +473,8 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "lora",    "local",    "lora_local" },
     { "lora",    "survey_s", "lora_survey_s" },
     { "lora",    "detect_s", "lora_detect_s" },
+    { "lora",    "rotate",   "lora_rotate" },
+    { "lora",    "rotate_s", "lora_rotate_s" },
     { "meshtastic", "repeat", "mt_repeat" },
     { "meshtastic", "bridge", "mt_bridge" },
     { "meshtastic", "broadcasts_per_hour", "mt_bcast_hr" },

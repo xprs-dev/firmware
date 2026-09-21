@@ -608,13 +608,25 @@ with neighbours is done in a few seconds
 (docs/lora.md, "Auto-detect"). Its `survey` block gains `asked` and
 `relayed` per mode.
 
+`cfg rotate meshtastic,meshcore` makes one radio serve both mesh
+networks by taking turns, `cfg rotate` says what it is doing and `cfg
+rotate off` stops it where it stands (also `[lora] rotate` / `rotate_s`,
+and the T-Deck's "LoRa rotation" row). There is one receiver, so a
+station on one network is deaf to the other while it is there, and
+neither network holds anything for a node that was not listening: read
+docs/lora.md section 10 before turning it on, because what it costs is
+the point of it.
+
 `/api/status` carries the mode, the ledger, and the last survey:
 `"lora":{"mode":"meshtastic","region":"eu","freq_hz":869525000,"duty_ms":360000,`
 `"spent_ms":...,"free_ms":...,"reserve_ms":21000,"held":...,"deferred":...,`
 `"next_free_ms":...,"mt":{...},"survey":{...}}` -- `mt` is the Meshtastic
 bridge's counters and `mt_nodes` the names of up to six nodes it has heard,
 both present only while Meshtastic is the running mode; `mc` and `mc_nodes`
-are the same for MeshCore (`rx`, `opened`, `relayed`, `text_in`,
+are the same for MeshCore; `rotate` is `{"slice_s":25,"turns":11,
+"in_slice_ms":...,"modes":["meshtastic","meshcore"]}` while the station is
+taking turns, and absent when it is not, with `mode` still naming the
+network the radio is on this moment (`rx`, `opened`, `relayed`, `text_in`,
 `text_out`, `dm_acked`, `dm_not_here`, `receipts`, `adverts_in`,
 `adverts_out`, `unnamed`, `dropped`, `inbox_full` -- the last being packets
 the worker never got to, which should stay at zero); and `survey` is `{"running":bool,"modes":{"<mode>":{"frames":n,"heard":[...]}}}`
@@ -625,7 +637,9 @@ or `meshcore`; the mode the station comes up in, changed live afterwards),
 `lora_profile` (`far`: SF9, `xprs` mode
 only), `lora_region`, `lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`,
 `lora_pace_ms`, `lora_local`, `lora_survey_s`, `lora_detect_s` (empty
-means each network's own wait), and `lora_sf` /
+means each network's own wait), `lora_rotate` (empty, or a list of modes
+to take turns over) with `lora_rotate_s` (the shortest turn, 25 s), and
+`lora_sf` /
 `lora_bw_khz` for following neighbours onto a channel this firmware carries
 no preset for (MeshCore's are regional and they change; empty means the
 mode's own, and a radio set to another modulation is deaf to everyone on

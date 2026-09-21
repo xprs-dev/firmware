@@ -298,6 +298,26 @@ uint32_t xb_owed_ms(const xb_t *b);
 void xb_set_duty(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime, void *ctx,
                  uint32_t budget_ms, uint32_t reserve_ms, uint32_t dwell_ms);
 
+/**
+ * The same, but KEEPING what has already been spent: the buckets, the
+ * running sum and the window's head survive, only the limits change.
+ *
+ * This is the call for a radio that changes channel without changing
+ * hour. A LoRa station retuning from one network to another (xprslora's
+ * mode change, its region change, a survey coming home) is still the same
+ * transmitter in the same band, and the regulator's hour does not restart
+ * because our modem did. Using xb_set_duty there resets the ledger to
+ * zero, which a station that changes mode twice an hour hardly notices
+ * and one that rotates every half minute turns into a licence to transmit
+ * without limit.
+ *
+ * A move to a band with a genuinely different allowance is the case for
+ * xb_set_duty: there the old hour does not apply.
+ */
+void xb_set_duty_keep(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime,
+                      void *ctx, uint32_t budget_ms, uint32_t reserve_ms,
+                      uint32_t dwell_ms);
+
 void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out);
 
 /**

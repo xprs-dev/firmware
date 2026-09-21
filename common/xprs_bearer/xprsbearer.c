@@ -676,6 +676,26 @@ void xb_set_duty(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime, void *ctx,
     b->duty = d;
 }
 
+void xb_set_duty_keep(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime,
+                      void *ctx, uint32_t budget_ms, uint32_t reserve_ms,
+                      uint32_t dwell_ms)
+{
+    if (!b) return;
+    if (d) {
+        /* The limits, and nothing else: bucket[], spent_ms, head and
+         * head_ms are the hour already spent and they are none of this
+         * call's business. A ledger that has never been set has head_ms 0
+         * and an empty window, which is what a first call leaves anyway. */
+        d->airtime = airtime;
+        d->airtime_ctx = ctx;
+        d->budget_ms = budget_ms;
+        d->reserve_ms = reserve_ms < budget_ms ? reserve_ms : budget_ms;
+        d->dwell_ms = dwell_ms;
+        if (!d->head_ms) d->head_ms = b->ops.now_ms ? b->ops.now_ms() : 0;
+    }
+    b->duty = d;
+}
+
 bool xb_spend(xb_t *b, uint32_t air_ms, bool prio)
 {
     if (!b || !b->active) return false;

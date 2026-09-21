@@ -34,6 +34,7 @@
 #include "esp_err.h"
 #include "xprsbearer.h"
 #include "mc_mesh.h"
+#include "lr_rotate.h"
 #include "mt_mesh.h"
 
 #ifdef __cplusplus
@@ -178,6 +179,47 @@ bool xprslora_survey_active(void);
 /** The last survey as JSON, `{"running":bool,"modes":{...}}`; 0 when there
  *  has not been one. */
 int xprslora_survey_json(char *buf, size_t cap);
+
+/* ── Taking turns on two networks (docs/lora.md, "Taking turns") ─────── */
+
+/** What a rotating station is doing, for the status page and the screen. */
+typedef struct {
+    bool            active;
+    uint8_t         n;
+    xprslora_mode_t modes[XPRSLORA_MODE_COUNT];
+    xprslora_mode_t now;        /* the network it is on this moment */
+    uint32_t        slice_s;    /* the floor, in seconds */
+    uint32_t        in_slice_ms;/* how long it has been on this one */
+    uint32_t        turns;
+} xprslora_rotate_t;
+
+/**
+ * Take turns between [n] networks, [slice_s] seconds each at least.
+ *
+ * The radio is one, so this is time division: while the station is on one
+ * network it is deaf to the other, and neither Meshtastic nor MeshCore
+ * holds anything for a node that was not listening (docs/lora.md). The
+ * slice is therefore chosen against their sender-side retry budgets --
+ * three airings over 15 to 45 s there, three attempts over 20 to 25 s on
+ * MeshCore -- and a station stays put while an exchange of its own is
+ * live, up to four slices.
+ *
+ * Every mode named must be available on this board; [XPRSLORA_MODE_MESHCORE]
+ * needs PSRAM. A mode that refuses is dropped from the ring and said so.
+ * Fewer than two usable modes is ESP_ERR_INVALID_ARG: that is not a
+ * rotation, it is a mode.
+ *
+ * Bring each bridge up FIRST (the station's own mode change does that);
+ * this only moves the radio between networks that already speak.
+ */
+esp_err_t xprslora_rotate_start(const xprslora_mode_t *modes, int n,
+                                uint32_t slice_s);
+
+/** Stop taking turns and stay where the radio is now. */
+void xprslora_rotate_stop(void);
+
+/** What it is doing; false when it is not running. */
+bool xprslora_rotate_state(xprslora_rotate_t *out);
 
 /** Bring the radio up and join the bearer fleet. Needs another bearer's task
  *  already pumping xb_tick_all() -- the LAN bearer owns that job. */

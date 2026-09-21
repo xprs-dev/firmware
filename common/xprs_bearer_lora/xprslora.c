@@ -298,8 +298,25 @@ static uint32_t s_cad_busy, s_cad_waits;
  * whatever transfer the display has in flight. */
 static volatile bool s_rx_pending;
 
-/* How long a mode stands still before its probe goes out. */
-#define MC_SETTLE_MS 1200u
+/* How long a mode stands still before anything of ours goes out on it.
+ * Measured 2026-09-20: a frame aired about 30 ms after sx1262_retune is
+ * transmitted in full, TX_DONE and all, and demodulated by nobody, four
+ * runs out of four. It bounds the auto-detect probe and the first frame
+ * of a rotation slice alike. */
+#define LR_SETTLE_MS 1200u
+
+/* Taking turns on two networks (docs/lora.md). The radio is one, so the
+ * slice is the whole of what each network gets; the numbers that bound it
+ * are the OTHER networks' retry budgets, not ours. */
+static struct {
+    bool            active;
+    uint8_t         n;                       /* how many modes in the ring */
+    uint8_t         at;                      /* where in it we are */
+    xprslora_mode_t ring[XPRSLORA_MODE_COUNT];
+    uint32_t        floor_ms, ceiling_ms;
+    uint32_t        slice_ms;                /* when this slice started */
+    uint32_t        turns;                   /* slices served, for the status */
+} s_rot;
 
 static void survey_frame(const uint8_t *frame, int len);
 static void survey_tick(void);
@@ -308,6 +325,8 @@ static void survey_probe(void);
 static esp_err_t lr_claim_for(const lr_mode_def_t *d);
 static void lr_mc_release(void);
 static bool mc_worker_stop(void);
+static bool mc_worker_start(void);
+static esp_err_t lr_tune_mode(xprslora_mode_t mode, bool say);
 static bool lr_bw_of(uint16_t khz, sx1262_bw_t *bw, uint32_t *hz);
 static sx1262_lora_config_t lr_modem(const lr_mode_def_t *d,
                                      const xprslora_region_t *reg, int *sf_n);
@@ -515,6 +534,73 @@ static void lr_mt_tick(void)
     xSemaphoreGiveRecursive(s_mt_mutex);
 }
 
+/* ── Taking turns on two networks ────────────────────────────────────── */
+
+/* Is the bridge of the running mode in the middle of an exchange? */
+static bool lr_rotate_busy(uint32_t now)
+{
+    bool busy = false;
+    xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
+    if (s_def->net == LR_NET_MT && s_st && s_st->mesh_on)
+        busy = mt_mesh_busy(&s_st->mesh, now, LR_ROT_RECENT_MS);
+    else if (s_def->net == LR_NET_MC && s_mc && s_mc->mesh_on)
+        busy = mc_mesh_busy(&s_mc->mesh, now, LR_ROT_RECENT_MS);
+    xSemaphoreGiveRecursive(s_mt_mutex);
+    return busy;
+}
+
+/* On the bearer tick: move to the next network when this one's turn is
+ * over. Runs on the same task as everything else that touches the radio,
+ * so a slice can never end in the middle of airing a packet's two
+ * frames: lr_air puts both on the air inside one call. */
+static void rotate_tick(void)
+{
+    if (!s_rot.active || s_survey.active) return;
+    uint32_t now = lr_now_ms();
+    lr_rotate_in_t in = {
+        .now_ms = now,
+        .slice_ms = s_rot.slice_ms,
+        .floor_ms = s_rot.floor_ms,
+        .ceiling_ms = s_rot.ceiling_ms,
+        .n_modes = s_rot.n,
+        .busy = lr_rotate_busy(now),
+        .blocked = sx1262_tx_active(s_radio) ||
+                   (uint32_t)(now - s_rot.slice_ms) < LR_SETTLE_MS,
+    };
+    if (!lr_rotate_due(&in)) return;
+
+    uint8_t next = (uint8_t)((s_rot.at + 1) % s_rot.n);
+    xprslora_mode_t want = s_rot.ring[next];
+    lr_lock(NULL);
+    esp_err_t err = lr_tune_mode(want, false);
+    if (err == ESP_OK) {
+        xb_set_pace(s_lora, s_def->pace_ms);
+        /* The limits move with the channel; the hour already spent does
+         * not (xb_set_duty_keep). Both of these channels are in the same
+         * EU sub-band, so there is one allowance between them, and a
+         * rotation that reset it every slice would transmit without any
+         * limit at all while believing itself compliant. */
+        xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
+                         s_region->reserve_ms, s_region->dwell_ms);
+    }
+    lr_unlock(NULL);
+    if (err != ESP_OK) {
+        /* Keep the turn we have rather than spin: the mode refused itself
+         * (no room for its bridge, most likely) and will refuse again. */
+        ESP_LOGW(TAG, "rotation: cannot take a turn on %s (%s) -- staying "
+                      "on %s", xprslora_mode_name(want), esp_err_to_name(err),
+                 s_def->name);
+        s_rot.slice_ms = now;
+        return;
+    }
+    if (s_def->net == LR_NET_MC && s_mc && s_mc->mesh_on) mc_worker_start();
+    s_rot.at = next;
+    s_rot.slice_ms = now;
+    s_rot.turns++;
+    ESP_LOGI(TAG, "rotation: %s now, turn %lu", s_def->name,
+             (unsigned long)s_rot.turns);
+}
+
 /* On the bearer task, once per tick: finish a transmission, fetch what the
  * interrupt announced, and let the bridge air what is due. */
 static void lr_drain(void *ctx)
@@ -620,6 +706,7 @@ static void lr_drain(void *ctx)
     if (!s_survey.active) {
         lr_mt_tick();
         lr_mc_tick();
+        rotate_tick();
     }
 
     /* This task pumps every bearer, and the bridge added X25519 (about
@@ -1031,7 +1118,7 @@ esp_err_t xprslora_set_region(const char *name)
     lr_lock(NULL);
     esp_err_t err = lr_tune_mode(s_mode, true);
     if (err == ESP_OK) {
-        xb_set_duty(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
+        xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                     s_region->reserve_ms, s_region->dwell_ms);
     } else {
         snprintf(s_region_want, sizeof s_region_want, "%s", was);
@@ -1051,11 +1138,15 @@ esp_err_t xprslora_set_mode(xprslora_mode_t mode)
     lr_lock(NULL);
     esp_err_t err = lr_tune_mode(mode, true);
     if (err == ESP_OK) {
-        /* The pace and the ledger belong to the channel, not to the radio:
-         * a frame at SF11 is five times a frame at SF7, and the hour is the
-         * region's. */
+        /* The pace and the limits belong to the channel, not to the
+         * radio: a frame at SF11 is five times a frame at SF7, and the
+         * hour is the region's. What has already been SPENT belongs to
+         * the transmitter, though, and stays: the regulator's hour does
+         * not restart because our modem changed channel, and a station
+         * that rotates between two networks would otherwise reset it
+         * every half minute (xb_set_duty_keep). */
         xb_set_pace(s_lora, s_def->pace_ms);
-        xb_set_duty(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
+        xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                     s_region->reserve_ms, s_region->dwell_ms);
     }
     lr_unlock(NULL);
@@ -1261,8 +1352,10 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
     s_survey.active = true;
     /* Nothing leaves while we are off our own channel: an hour of one
      * millisecond is a budget nothing fits in, and our own packets WAIT
-     * rather than being dropped (xb_send_ex's deferred path). */
-    xb_set_duty(s_lora, &s_duty, lr_airtime, NULL, 1u, 0u, 0u);
+     * rather than being dropped (xb_send_ex's deferred path). The hour
+     * already spent is kept, here and on the way home, because a sweep
+     * is not a new hour. */
+    xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, 1u, 0u, 0u);
     xprslora_mode_t first = xprslora_mode_available(XPRSLORA_MODE_XPRS)
                                 ? XPRSLORA_MODE_XPRS
                                 : survey_next(XPRSLORA_MODE_XPRS);
@@ -1270,7 +1363,7 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
     lr_unlock(NULL);
     if (err != ESP_OK) {
         s_survey.active = false;
-        xb_set_duty(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
+        xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                     s_region->reserve_ms, s_region->dwell_ms);
         return err;
     }
@@ -1286,6 +1379,100 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
                  (unsigned long)(k_modes[XPRSLORA_MODE_MESHTASTIC].detect_ms / 1000u),
                  (unsigned long)(k_modes[XPRSLORA_MODE_MESHCORE].detect_ms / 1000u));
     return ESP_OK;
+}
+
+esp_err_t xprslora_rotate_start(const xprslora_mode_t *modes, int n,
+                                uint32_t slice_s)
+{
+    if (!s_radio || !s_lora) return ESP_ERR_INVALID_STATE;
+    if (!modes || n < 2) return ESP_ERR_INVALID_ARG;
+    if (s_survey.active) return ESP_ERR_INVALID_STATE;
+    /* A slice under the settle window is mostly settling; one over ten
+     * minutes is two stations pretending to be one. */
+    if (slice_s < 5) slice_s = 5;
+    if (slice_s > 600) slice_s = 600;
+
+    uint8_t ring_n = 0;
+    xprslora_mode_t ring[XPRSLORA_MODE_COUNT];
+    for (int i = 0; i < n && ring_n < XPRSLORA_MODE_COUNT; i++) {
+        if (modes[i] >= XPRSLORA_MODE_COUNT) continue;
+        bool dup = false;
+        for (int k = 0; k < ring_n; k++) if (ring[k] == modes[i]) dup = true;
+        if (dup) continue;
+        if (!xprslora_mode_available(modes[i])) {
+            ESP_LOGW(TAG, "rotation: %s is not in this firmware -- left out",
+                     xprslora_mode_name(modes[i]));
+            continue;
+        }
+        /* MeshCore on a board with no PSRAM refuses the mode itself
+         * (lr_claim_for). Finding that out here rather than on the first
+         * turn keeps the ring honest: what is in it, the station can
+         * really do. */
+        if (lr_claim_for(&k_modes[modes[i]]) != ESP_OK) {
+            ESP_LOGW(TAG, "rotation: this board cannot run %s -- left out",
+                     xprslora_mode_name(modes[i]));
+            continue;
+        }
+        ring[ring_n++] = modes[i];
+    }
+    if (ring_n < 2) {
+        ESP_LOGE(TAG, "rotation: %u usable network%s of %d asked -- a "
+                      "rotation needs two, so the radio stays in %s mode",
+                 (unsigned)ring_n, ring_n == 1 ? "" : "s", n, s_def->name);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    memset(&s_rot, 0, sizeof s_rot);
+    s_rot.n = ring_n;
+    memcpy(s_rot.ring, ring, sizeof(xprslora_mode_t) * ring_n);
+    s_rot.floor_ms = slice_s * 1000u;
+    /* Four slices is the most an exchange may hold the radio. Past that,
+     * the network waiting its turn has been waiting two minutes. */
+    s_rot.ceiling_ms = s_rot.floor_ms * 4u;
+    /* Start where the radio already is when that is in the ring, so
+     * nothing moves at the moment the rotation is switched on. */
+    s_rot.at = 0;
+    for (uint8_t i = 0; i < ring_n; i++) if (ring[i] == s_mode) s_rot.at = i;
+    s_rot.slice_ms = lr_now_ms();
+    s_rot.active = true;
+
+    char list[64]; int ln = 0;
+    for (uint8_t i = 0; i < ring_n; i++)
+        ln += snprintf(list + ln, sizeof list - (size_t)ln, "%s%s",
+                       i ? ", " : "", xprslora_mode_name(ring[i]));
+    ESP_LOGI(TAG, "rotation: %s, %lus each at least (%lus when an exchange "
+                  "is live); starting on %s",
+             list, (unsigned long)slice_s,
+             (unsigned long)(s_rot.ceiling_ms / 1000u), s_def->name);
+    if (s_mode != ring[s_rot.at])
+        ESP_LOGI(TAG, "rotation: this radio is on %s, which is not in the "
+                      "ring -- the first turn moves it", s_def->name);
+    return ESP_OK;
+}
+
+void xprslora_rotate_stop(void)
+{
+    if (!s_rot.active) return;
+    s_rot.active = false;
+    ESP_LOGI(TAG, "rotation: stopped after %lu turn%s, staying on %s",
+             (unsigned long)s_rot.turns, s_rot.turns == 1 ? "" : "s",
+             s_def->name);
+}
+
+bool xprslora_rotate_state(xprslora_rotate_t *out)
+{
+    if (!s_rot.active) return false;
+    if (out) {
+        memset(out, 0, sizeof *out);
+        out->active = true;
+        out->n = s_rot.n;
+        memcpy(out->modes, s_rot.ring, sizeof(xprslora_mode_t) * s_rot.n);
+        out->now = s_mode;
+        out->slice_s = s_rot.floor_ms / 1000u;
+        out->in_slice_ms = lr_now_ms() - s_rot.slice_ms;
+        out->turns = s_rot.turns;
+    }
+    return true;
 }
 
 esp_err_t xprslora_survey_start(uint32_t per_mode_s)
@@ -1331,7 +1518,7 @@ static void survey_tick(void)
      * another one. */
     if (s_survey.probe && !answered && s_def->net != LR_NET_NONE) {
         uint32_t dwell = survey_dwell_ms();
-        if ((s_survey.probes == 0 && in_mode >= MC_SETTLE_MS) ||
+        if ((s_survey.probes == 0 && in_mode >= LR_SETTLE_MS) ||
             (s_survey.probes == 1 && in_mode >= dwell / 2)) {
             lr_lock(NULL);
             survey_probe();
@@ -1359,7 +1546,7 @@ static void survey_tick(void)
     /* Done: back where we were, and the ledger with it. */
     lr_tune_mode(s_survey.home, true);
     xb_set_pace(s_lora, s_def->pace_ms);
-    xb_set_duty(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
+    xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                 s_region->reserve_ms, s_region->dwell_ms);
     s_survey.active = false;
     s_survey.done = true;
@@ -1450,7 +1637,7 @@ void xprslora_set_duty(uint32_t budget_ms, uint32_t reserve_ms,
                        uint32_t dwell_ms)
 {
     if (s_lora)
-        xb_set_duty(s_lora, &s_duty, lr_airtime, NULL,
+        xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL,
                     budget_ms, reserve_ms, dwell_ms);
 }
 
@@ -1764,7 +1951,22 @@ esp_err_t xprslora_mc_start(const xprslora_mt_hooks_t *hooks,
     bool have = s_mc != NULL, already = have && s_mc->mesh_on;
     xSemaphoreGiveRecursive(s_mt_mutex);
     if (!have) return ESP_ERR_NOT_SUPPORTED;
-    if (already) return ESP_OK;
+    if (already) {
+        /* The bridge is up from an earlier visit to this mode. Its state
+         * was kept, but the WORKER was stood down on the way out
+         * (lr_mc_release), and everything this bridge thinks with runs
+         * there: signatures, key exchanges, advert scheduling, the DM
+         * retries and the NVS writes. Returning without it leaves a
+         * bridge that airs its queue and thinks about nothing, which
+         * looks exactly like a working one. */
+        if (!mc_worker_start()) {
+            ESP_LOGE(TAG, "MeshCore: back in this mode, but the worker "
+                          "would not start -- the bridge cannot sign or "
+                          "open anything until it does");
+            return ESP_ERR_NO_MEM;
+        }
+        return ESP_OK;
+    }
     s_hooks = *hooks;
     mc_mesh_ops_t ops = {
         .air = lr_air_mc, .now_ms = lr_now_ms, .random = lr_random,

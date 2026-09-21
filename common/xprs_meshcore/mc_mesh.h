@@ -270,6 +270,10 @@ typedef struct {
     uint32_t        keys_saved_ms;
     bool            vnodes_dirty;
     uint32_t        vnodes_saved_ms;
+    /* The last time a DIRECT message went either way here: an inbound
+     * one delivered, or one of ours acknowledged. Channel chatter is
+     * deliberately not counted (see mt_mesh.h). */
+    uint32_t        last_dm_ms;
     uint8_t         bcast_min[60];
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;
@@ -320,6 +324,10 @@ void mc_mesh_set_nick(mc_mesh_t *m, const char *nick);
 
 /* MeshCore nodes heard, for a status page. Returns how many; [i] 0..n-1. */
 int mc_mesh_node(const mc_mesh_t *m, int i, const mc_node_t **out);
+
+/* Is this bridge in the middle of something? See mt_mesh_busy: a station
+ * that shares one radio between two networks asks before walking away. */
+bool mc_mesh_busy(const mc_mesh_t *m, uint32_t now_ms, uint32_t recent_ms);
 
 /* For tests and the status page: one slot at this modulation, in ms. */
 uint32_t mc_mesh_slot_ms(void);

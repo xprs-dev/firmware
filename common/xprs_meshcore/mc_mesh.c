@@ -735,6 +735,9 @@ static void dm_in(mc_mesh_t *m, const uint8_t *payload, int plen, uint32_t hash,
             ack_queue(m, mc_ack_checksum(t.timestamp,
                                          (uint8_t)((t.txt_type << 2) | t.attempt),
                                          t.text, their));
+            /* A direct message is an exchange somebody is waiting on
+             * (mc_mesh_busy); a channel message is not. */
+            m->last_dm_ms = m->ops.now_ms();
             if (m->cfg.bridge) text_in(m, their, hash, t.text, v->call);
             return;
         }
@@ -748,6 +751,7 @@ static void ack_value(mc_mesh_t *m, uint32_t ack)
         mc_pending_t *p = &m->pend[i];
         if (!p->used || p->ack != ack) continue;
         p->used = false;
+        m->last_dm_ms = m->ops.now_ms();
         m->st.dm_acked++;
         mlog(m, "mc: acked DM %s from %s", p->xid, p->sender);
         receipt_out(m, p, true);
@@ -1262,6 +1266,26 @@ int mc_mesh_node(const mc_mesh_t *m, int i, const mc_node_t **out)
         n++;
     }
     return n;
+}
+
+/* See mc_mesh.h. The same three reasons as the Meshtastic side, with
+ * MeshCore's own numbers: its client gives up after three attempts about
+ * 6 to 8 s apart on this channel, so an exchange here is even shorter
+ * lived than Meshtastic's. */
+bool mc_mesh_busy(const mc_mesh_t *m, uint32_t now_ms, uint32_t recent_ms)
+{
+    if (!m) return false;
+    for (int i = 0; i < MC_TXQ; i++)
+        if (m->q[i].used && (int32_t)(now_ms - m->q[i].due_ms) >= -1000)
+            return true;
+    for (int i = 0; i < MC_PENDING; i++) {
+        const mc_pending_t *p = &m->pend[i];
+        if (!p->used) continue;
+        if (!p->aired || p->tries < MC_DM_TRIES) return true;
+    }
+    if (m->last_dm_ms && (uint32_t)(now_ms - m->last_dm_ms) < recent_ms)
+        return true;
+    return false;
 }
 
 void mc_mesh_init(mc_mesh_t *m, const mc_mesh_ops_t *ops,

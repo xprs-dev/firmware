@@ -593,6 +593,8 @@ static void settings_ok(int row);
 static void mesh_deliver(const char *wire, int len, bool sign);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
+static esp_err_t lora_rotate_apply(const char *list);
+static uint32_t lora_rotate_slice_s(void);
 static esp_err_t lora_apply_freq(uint32_t hz);
 static esp_err_t lora_apply_region(const char *name);
 
@@ -733,6 +735,42 @@ static bool lora_console(const char *line)
         }
         return true;
     }
+    if (strncmp(p, "rotate", 6) == 0 && (p[6] == ' ' || p[6] == 0)) {
+        const char *w = p + 6;
+        while (*w == ' ') w++;
+        if (!*w) {
+            xprslora_rotate_t r;
+            if (!xprslora_rotate_state(&r)) {
+                printf("rotate: off (one network at a time). "
+                       "`cfg rotate meshtastic,meshcore` takes turns\n");
+                return true;
+            }
+            printf("rotate: on, %lus each at least, %lu turn%s so far, "
+                   "%s now (%lus in)\n",
+                   (unsigned long)r.slice_s, (unsigned long)r.turns,
+                   r.turns == 1 ? "" : "s", xprslora_mode_name(r.now),
+                   (unsigned long)(r.in_slice_ms / 1000u));
+            return true;
+        }
+        if (strcasecmp(w, "off") == 0 || strcasecmp(w, "no") == 0) {
+            xprslora_rotate_stop();
+            xcfg_set("lora_rotate", "");
+            printf("rotate: off, staying on %s\n",
+                   xprslora_mode_name(xprslora_mode()));
+            return true;
+        }
+        esp_err_t e = lora_rotate_apply(w);
+        if (e != ESP_OK) {
+            printf("rotate: %s\n", esp_err_to_name(e));
+            return true;
+        }
+        xcfg_set("lora_rotate", w);
+        printf("rotate: %s, %lus each at least. One radio: while it is on "
+               "one network it hears nothing of the other, and neither "
+               "holds messages for a node that was away\n",
+               w, (unsigned long)lora_rotate_slice_s());
+        return true;
+    }
     return false;
 }
 
@@ -764,14 +802,83 @@ static esp_err_t lora_apply_region(const char *name)
     return ESP_OK;
 }
 
-static esp_err_t lora_apply_mode(xprslora_mode_t mode)
+/* Move the radio and bring up whatever speaks on the new channel. [keep]
+ * says whether this is the operator's choice, which is remembered, or a
+ * turn of the rotation, which is not: `lora_mode` names the mode a station
+ * was PUT in, and a rotation that wrote it every slice would be a flash
+ * write every half minute for the life of the board. */
+static esp_err_t lora_move_mode(xprslora_mode_t mode, bool keep)
 {
     if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
     esp_err_t err = xprslora_set_mode(mode);
     if (err != ESP_OK) return err;
-    xcfg_set("lora_mode", xprslora_mode_name(mode));
+    if (keep) xcfg_set("lora_mode", xprslora_mode_name(mode));
     if (mode == XPRSLORA_MODE_MESHTASTIC || mode == XPRSLORA_MODE_MESHCORE)
         lora_start_bridge();
+    return ESP_OK;
+}
+
+static esp_err_t lora_apply_mode(xprslora_mode_t mode)
+{
+    return lora_move_mode(mode, true);
+}
+
+/* The shortest turn, in seconds. 25 is not a round number, it is the one
+ * the other networks' retry budgets give: a Meshtastic sender airs a DM
+ * three times over 15 to 45 s and a MeshCore client three times over 20
+ * to 25 s, so an absence longer than that loses the exchange outright
+ * (docs/lora.md, "Taking turns on two networks"). */
+static uint32_t lora_rotate_slice_s(void)
+{
+    const char *v = xcfg_get("lora_rotate_s", NULL);
+    uint32_t s = v && v[0] ? (uint32_t)strtoul(v, NULL, 10) : 25u;
+    return s ? s : 25u;
+}
+
+/* Start taking turns over the networks named in [list] ("meshtastic,
+ * meshcore"). Each one is VISITED first, because a bridge is brought up
+ * by entering its mode and the rotation only moves a radio between
+ * networks that already speak. The radio comes back to where it started
+ * if the rotation will not run. */
+static esp_err_t lora_rotate_apply(const char *list)
+{
+    if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
+    if (!list || !list[0]) return ESP_ERR_INVALID_ARG;
+
+    xprslora_mode_t modes[XPRSLORA_MODE_COUNT];
+    int n = 0;
+    char buf[64];
+    snprintf(buf, sizeof buf, "%s", list);
+    for (char *tok = strtok(buf, ","); tok && n < XPRSLORA_MODE_COUNT;
+         tok = strtok(NULL, ",")) {
+        while (*tok == ' ') tok++;
+        char *end = tok + strlen(tok);
+        while (end > tok && (end[-1] == ' ' || end[-1] == '\r')) *--end = 0;
+        xprslora_mode_t m;
+        if (!xprslora_mode_parse(tok, &m)) {
+            ESP_LOGW(TAG, "rotation: \"%s\" is not a LoRa mode", tok);
+            return ESP_ERR_INVALID_ARG;
+        }
+        modes[n++] = m;
+    }
+    if (n < 2) return ESP_ERR_INVALID_ARG;
+
+    xprslora_mode_t home = xprslora_mode();
+    int up = 0;
+    for (int i = 0; i < n; i++) {
+        /* false: a turn of the rotation is not the operator's choice of
+         * mode, so `lora_mode` keeps naming what they asked for. */
+        if (lora_move_mode(modes[i], false) == ESP_OK) up++;
+        else ESP_LOGW(TAG, "rotation: %s would not start here",
+                      xprslora_mode_name(modes[i]));
+    }
+    esp_err_t e = up >= 2 ? xprslora_rotate_start(modes, n,
+                                                  lora_rotate_slice_s())
+                          : ESP_ERR_INVALID_ARG;
+    if (e != ESP_OK) {
+        lora_move_mode(home, false);
+        return e;
+    }
     return ESP_OK;
 }
 
@@ -4790,6 +4897,33 @@ static void ui_render(void)
                 }
                 SROW("LoRa auto-detect", sval, sdet);
             }
+            {   /* Serving two networks by taking turns. The detail says
+                 * what it costs, because a row that only said "On" would
+                 * be a promise this station cannot keep: while it is on
+                 * one network it hears nothing of the other. */
+                char rval[sizeof tr[0].cell[1]];
+                char rdet[160];
+                xprslora_rotate_t rot;
+                if (!s_board->lora) {
+                    snprintf(rval, sizeof rval, "--");
+                    snprintf(rdet, sizeof rdet, "No LoRa radio on this board.");
+                } else if (xprslora_rotate_state(&rot)) {
+                    snprintf(rval, sizeof rval, "%lus each",
+                             (unsigned long)rot.slice_s);
+                    snprintf(rdet, sizeof rdet,
+                             "Taking turns on %d networks, %s now. While "
+                             "it is on one it hears nothing of the other. "
+                             "%s stops it.", (int)rot.n,
+                             lora_mode_label(rot.now), ok_key());
+                } else {
+                    snprintf(rval, sizeof rval, "Off");
+                    snprintf(rdet, sizeof rdet,
+                             "One network at a time. %s takes turns on "
+                             "Meshtastic and MeshCore instead: both are "
+                             "served, neither continuously.", ok_key());
+                }
+                SROW("LoRa rotation", rval, rdet);
+            }
         }
         SROW("Name", xcfg_get("name", "--"),
              "The device's friendly name. Set it through the config "
@@ -5981,12 +6115,34 @@ static void idx_task(void *arg)
             mc_mesh_stats_t mcs;
             /* The network word rides only while that bridge is the running
              * one, so `serve:` says what this station can do for somebody
-             * NOW (XPRS.md 14.8). */
+             * NOW (XPRS.md 14.8). A station taking turns can do both, and
+             * says both: a reader deciding where to send a message needs
+             * to know this station reaches that network at all, and the
+             * fact that it is there half the time is not a claim `serve:`
+             * has the grammar to make. */
+            char mesh_buf[24] = "";
             const char *mesh_word = "";
-            if (xprslora_mt_stats(&mts) && xcfg_get_bool("mt_bridge", true))
+            xprslora_rotate_t rot;
+            if (xprslora_rotate_state(&rot)) {
+                int mn = 0;
+                for (uint8_t i = 0; i < rot.n; i++) {
+                    const char *w1 = NULL;
+                    if (rot.modes[i] == XPRSLORA_MODE_MESHTASTIC &&
+                        xcfg_get_bool("mt_bridge", true)) w1 = ",meshtastic";
+                    else if (rot.modes[i] == XPRSLORA_MODE_MESHCORE &&
+                             xcfg_get_bool("mc_bridge", true)) w1 = ",meshcore";
+                    if (w1) mn += snprintf(mesh_buf + mn,
+                                           sizeof mesh_buf - (size_t)mn,
+                                           "%s", w1);
+                }
+                mesh_word = mesh_buf;
+            } else if (xprslora_mt_stats(&mts) &&
+                       xcfg_get_bool("mt_bridge", true)) {
                 mesh_word = ",meshtastic";
-            else if (xprslora_mc_stats(&mcs) && xcfg_get_bool("mc_bridge", true))
+            } else if (xprslora_mc_stats(&mcs) &&
+                       xcfg_get_bool("mc_bridge", true)) {
                 mesh_word = ",meshcore";
+            }
             if (!serve[0])
                 snprintf(sbuf, sizeof sbuf, "archive%s", mesh_word);
             else
@@ -6751,10 +6907,29 @@ static void settings_ok(int row)
         if (s_board->lora)
             xprslora_detect_start((uint32_t)atoi(xcfg_get("lora_detect_s", "0")));
         break;
-    case 13:
-        s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
+    case 11:
+        /* On, off, on: the row is a switch, and the list it turns on is
+         * the configured one or both mesh networks by default. */
+        if (s_board->lora && !xprslora_survey_active()) {
+            if (xprslora_rotate_state(NULL)) {
+                xprslora_rotate_stop();
+                xcfg_set("lora_rotate", "");
+            } else {
+                const char *v = xcfg_get("lora_rotate", NULL);
+                const char *list = v && v[0] ? v : "meshtastic,meshcore";
+                esp_err_t e = lora_rotate_apply(list);
+                if (e != ESP_OK)
+                    ESP_LOGW(TAG, "rotation %s refused: %s", list,
+                             esp_err_to_name(e));
+                else
+                    xcfg_set("lora_rotate", list);
+            }
+        }
         break;
     case 14:
+        s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
+        break;
+    case 15:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;
@@ -6887,6 +7062,21 @@ static int api_lora_json(char *buf, size_t cap)
         (unsigned long)r.held, (unsigned long)r.deferred,
         (unsigned long)r.stale, (unsigned long)r.next_free_ms, modem_sf,
         (unsigned long)modem_bw);
+    /* Taking turns on two networks: which ones, how long a turn is, where
+     * the radio is this moment and how many turns it has served. A reader
+     * that sees `mode` alone would think this station lives there. */
+    xprslora_rotate_t rot;
+    if (n > 0 && (size_t)n < cap && xprslora_rotate_state(&rot)) {
+        n += snprintf(buf + n, cap - (size_t)n,
+                      ",\"rotate\":{\"slice_s\":%lu,\"turns\":%lu,"
+                      "\"in_slice_ms\":%lu,\"modes\":[",
+                      (unsigned long)rot.slice_s, (unsigned long)rot.turns,
+                      (unsigned long)rot.in_slice_ms);
+        for (uint8_t i = 0; i < rot.n && (size_t)n < cap; i++)
+            n += snprintf(buf + n, cap - (size_t)n, "%s\"%s\"",
+                          i ? "," : "", xprslora_mode_name(rot.modes[i]));
+        if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]}");
+    }
     /* The Meshtastic repeater and bridge (docs/lora.md), counted, so
      * what it did is read off the board rather than out of a serial log. */
     mt_mesh_stats_t mt;
@@ -7995,6 +8185,14 @@ void xapp_run(const xapp_board_t *board)
                 if (mode == XPRSLORA_MODE_MESHTASTIC ||
                     mode == XPRSLORA_MODE_MESHCORE)
                     lora_start_bridge();
+                /* And, if this station serves two networks by taking
+                 * turns, the rotation -- after the bridge above, because
+                 * it visits each network to bring its bridge up. */
+                const char *rot = xcfg_get("lora_rotate", NULL);
+                if (rot && rot[0] && lora_rotate_apply(rot) != ESP_OK)
+                    ESP_LOGW(TAG, "rotation \"%s\" would not start -- this "
+                                  "station stays on %s", rot,
+                             xprslora_mode_name(xprslora_mode()));
             }
         }
         if (!xprslora_is_active())

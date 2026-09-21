@@ -238,6 +238,11 @@ typedef struct {
     uint32_t        keys_saved_ms;
     bool            vnodes_dirty;
     uint32_t        vnodes_saved_ms;
+    /* The last time a DIRECT message went either way here: an inbound one
+     * delivered, or one of ours acknowledged. Channel chatter is left out
+     * on purpose -- a busy public channel never goes quiet, and a radio
+     * that stayed for it would never serve the other network again. */
+    uint32_t        last_dm_ms;
     uint8_t         bcast_min[60];   /* mirrored broadcasts per minute */
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;
@@ -277,6 +282,17 @@ void mt_mesh_set_nick(mt_mesh_t *m, const char *nick);
 
 /* Meshtastic nodes heard, for a status page. Returns how many; [i] 0..n-1. */
 int mt_mesh_node(const mt_mesh_t *m, int i, const mt_node_t **out);
+
+/* Is this bridge in the middle of something?
+ *
+ * True while a queued frame is due or nearly due, while a direct message
+ * is still inside its retry budget, or while a direct message went either
+ * way in the last [recent_ms]. It is asked by a station that shares one
+ * radio between two networks and has to decide whether this is a moment
+ * to walk away from: a bridge answering yes is one whose counterpart is
+ * probably still waiting, and Meshtastic's sender gives up after three
+ * airings (15 to 45 s), so leaving mid-exchange loses the exchange. */
+bool mt_mesh_busy(const mt_mesh_t *m, uint32_t now_ms, uint32_t recent_ms);
 
 /* For tests and the status page: slot time in ms at LongFast. */
 uint32_t mt_mesh_slot_ms(void);

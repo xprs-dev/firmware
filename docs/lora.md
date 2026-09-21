@@ -22,11 +22,12 @@ one of three sections in it.
 7. [`xprs` mode: our own channel](#7-xprs-mode-our-own-channel)
 8. [`meshtastic` mode](#8-meshtastic-mode)
 9. [`meshcore` mode](#9-meshcore-mode)
-10. [Configuration](#10-configuration)
-11. [Memory and stack](#11-memory-and-stack)
-12. [Measured on the bench](#12-measured-on-the-bench)
-13. [Lessons learned](#13-lessons-learned)
-14. [Not done yet](#14-not-done-yet)
+10. [Taking turns on two networks](#10-taking-turns-on-two-networks)
+11. [Configuration](#11-configuration)
+12. [Memory and stack](#12-memory-and-stack)
+13. [Measured on the bench](#13-measured-on-the-bench)
+14. [Lessons learned](#14-lessons-learned)
+15. [Not done yet](#15-not-done-yet)
 
 ## 1. One radio, three networks
 
@@ -691,7 +692,121 @@ field, so a like would arrive as a line of its own), positions and
 telemetry, and MeshCore's room servers and transport routes, which a
 repeater does not need.
 
-## 10. Configuration
+## 10. Taking turns on two networks
+
+One radio, two networks, and an operator who wants both: `[lora] rotate =
+meshtastic,meshcore` makes the station serve them in turn. It is a real
+feature and a real compromise, and the compromise is the important half,
+so it is stated first.
+
+**While the station is on one network it is deaf to the other.** That is
+not an implementation detail to be improved later: a LoRa receiver hears
+one modulation and one sync word, and there is only one of it.
+
+### What the other networks keep for a node that was not listening
+
+Almost nothing, and never by default. Researched 2026-09-21 against both
+firmwares' own sources:
+
+| | Meshtastic | MeshCore |
+|---|---|---|
+| the one mechanism | the Store & Forward module | the room server |
+| who runs it | an ESP32 **with PSRAM**, `enabled` off by default, router role | a node flashed as `room_server` |
+| what it holds | text it could DECRYPT. Since public-key DMs became the default it cannot read, and so cannot store, a direct message between two other nodes | 32 posts (`MAX_UNSYNCED_POSTS`), in RAM, lost on reboot |
+| how it is collected | `CLIENT_HISTORY` with a window in minutes; at most 25 messages (`historyReturnMax`) from the last 240 (`historyReturnWindow`), one per 5 s, sent `want_ack = false`, and **refused on the default channel** | a login (`ANON_REQ`) carrying `sync_since`; the server pushes one post per 1.2 s until each is acknowledged |
+| the repeaters | stateless flood, no queue for anybody | stateless flood, no mailbox anywhere |
+
+So a rotating station cannot ask either network to hold its mail. What it
+can rely on is the sender's own patience, and that is short.
+
+### The numbers the dwell is chosen from
+
+| | Meshtastic | MeshCore |
+|---|---|---|
+| direct message | 3 airings (`NUM_RELIABLE_RETX`), `2*airtime + CW + 4500 ms` apart: 7-8 s idle, ~15 s busy. **All of it inside 15-45 s**, then the sender NAKs | the firmware never retries (`onSendTimeout(){}`); the client app does, 3 attempts, `500 + 16*airtime` flood / `500 + (6*airtime + 250)*hops` direct: about 6-8 s each on our channel, so **20-25 s** |
+| broadcast / channel message | aired **once**, no retry | aired **once**, no ACK, no retry |
+| dedup | a ring of ids with **no clock** (160 to 500 of them) | a ring of 160 hashes, **no clock**, persisted across reboot |
+
+Two things follow, and they are the whole design:
+
+1. **Nothing punishes us for having been away.** Neither dedup table
+   expires by time, so a retry that arrives after we come back is new to
+   us and is accepted. A station does not have to be present when a
+   message is FIRST sent, only while one of its attempts is in the air.
+2. **A slice longer than a sender's patience loses the message.** A
+   minute away is longer than either network's entire retry budget.
+
+### The rules, and the number behind each one
+
+The decision is `lr_rotate_due()` in `common/xprs_bearer_lora/lr_rotate.c`,
+kept apart from the radio so it can be tested (`test_rotate_host.sh`).
+
+| rule | why |
+|---|---|
+| never leave before `rotate_s` (default **25 s**) | shorter and the slice is mostly the 1.2 s settle after the retune, and each network sees a station that appears and vanishes |
+| stay while the running bridge is busy: a frame due, a direct message inside its retry budget, or a DM either way in the last 60 s (`mt_mesh_busy`, `mc_mesh_busy`) | their sender gives up in 15-25 s, so walking out of an exchange loses it |
+| but leave anyway after 4 slices (100 s) | on a lively channel "busy" is nearly always true, and the other network would never be served again |
+| never mid-transmission, and never inside 1.2 s of a retune (`LR_SETTLE_MS`) | a frame aired ~30 ms after `sx1262_retune` was transmitted in full and demodulated by nobody, four runs out of four (2026-09-20) |
+| channel chatter does **not** count as busy | a public channel is never quiet; counting it would starve the other network |
+
+A packet's two frames cannot be split by a turn: `lr_air` puts both on the
+air inside one call, on the same task the scheduler runs on.
+
+### What it costs, measured
+
+Measured 2026-09-21. A Heltec V3 in `meshtastic` mode aired one numbered
+packet every 12 s on LongFast (`/api/xprs/send` with `bearer: lora`, so
+the cadence is ours and not the bench's); a T-Deck two metres away
+counted what arrived, first standing still on that network and then
+rotating between the two.
+
+| | aired | arrived | |
+|---|---|---|---|
+| standing still on Meshtastic | 20 | 16 | 80 %, the bench's own baseline: the rest went to a busy channel and a spent budget |
+| rotating, 25 s slices | 20 | 8 | 40 % |
+
+A rotating station heard **half of what a still one did**, which is the
+time it spent there and nothing worse: the switching itself cost no
+measurable extra loss. Halve the reception, roughly, for each extra
+network in the ring.
+
+The other half of the cost is the hour. A rotating station spends ONE
+regional allowance on two networks (both of these channels are in the
+same EU sub-band), so the budget drains about twice as fast: in the same
+run `lora.spent_ms` rose 13.0 s to 54.7 s in five minutes, against a
+360 s hourly allowance. Watch `lora.free_ms`, not just the counters.
+
+And the ledger holds across a turn: 11 turns in five minutes, and
+`spent_ms` never once stepped backwards. It used to, before
+`xb_set_duty_keep` (see "Lessons learned").
+
+**The honest recommendation** is unchanged by any of it: a site that wants
+both networks reliably runs two boards, one per network, and lets XPRS
+carry between them over BLE, the LAN or ESP-NOW, where XPRS's own
+store-and-forward (mailboxes, XPRS.md 9.12) applies. The rotation is for
+the site that has one radio and would rather reach both networks
+imperfectly than one of them well.
+
+### Using it
+
+`cfg rotate` prints the state, `cfg rotate meshtastic,meshcore` starts it,
+`cfg rotate off` stops it and stays where the radio is. The T-Deck's
+Settings panel has a "LoRa rotation" row that toggles the same thing, and
+`[lora] rotate` / `rotate_s` make it survive a restart. `/api/status`
+carries `lora.rotate` with the ring, the slice, the turns served and how
+far into the current one the station is; `lora.mode` still says which
+network the radio is on THIS moment.
+
+A station that is taking turns names **both** networks in its beacon's
+`serve:`, because a reader deciding where to send a message needs to know
+this station reaches that network at all.
+
+MeshCore needs PSRAM, so a board without it (the Heltec V3) cannot rotate
+into MeshCore; such a mode is dropped from the ring with a line saying so,
+and a ring with fewer than two usable networks is refused outright rather
+than silently becoming a mode change.
+
+## 11. Configuration
 
 Everything here is `config.ini` and `cfg set <nvs key> <value>` over
 serial. The radio settings are one section, and each bridge has its own.
@@ -721,7 +836,7 @@ The console words are `cfg lora <mode>`, `cfg freq <MHz|Hz|preset>`,
 has them with their output, and the T-Deck's Settings panel has a row for
 each of the four.
 
-## 11. Memory and stack
+## 12. Memory and stack
 
 | | T-Deck (PSRAM) | Heltec V3 (no PSRAM) |
 |---|---|---|
@@ -739,7 +854,7 @@ generated `sdkconfig.heltec_v3` said 16, and the generated file is what built.
 The curve work (X25519 for a DM or a NodeInfo, about 1.3 KB deep) runs only
 on the bearer task's tick, never on whichever task heard the packet.
 
-## 12. Measured on the bench
+## 13. Measured on the bench
 
 ### Meshtastic, 2026-09-19
 
@@ -856,7 +971,7 @@ section above). XPRS on that channel therefore crosses between stations in
 range of each other, and the mode loses MeshCore's relays for XPRS traffic
 while keeping them for everything the bridge translates.
 
-## 13. Lessons learned
+## 14. Lessons learned
 
 Each of these cost at least one wrong turn on 2026-09-19. Read them before
 changing the bridge.
@@ -983,7 +1098,42 @@ changing the bridge.
   had Bluetooth off in its config; the phone app saw nothing until
   `bluetooth.enabled` was set.
 
-## 14. Not done yet
+- **A worker that stops and never restarts looks exactly like one that
+  is running.** Leaving `meshcore` mode stood the `mcwork` task down, and
+  coming back did not start it again: `xprslora_mc_start` returned early
+  on "the bridge is already up". The bridge went on airing its queue with
+  nothing behind it -- no signature verified, no advert scheduled, no DM
+  retried, nothing written to NVS -- and every counter on the status page
+  looked healthy. Found while writing the rotation, which would have hit
+  it on its second lap; it had been there since the day the mode was
+  written. When a subsystem is stopped and restarted by two different
+  paths, the restart needs a test of its own: here, that an advert (type
+  0x04, which only the worker can sign) goes out after mode, other mode,
+  mode again.
+- **A ledger reset on a setting change is a compliance bug waiting for a
+  faster caller.** `xb_set_duty()` memsets the duty ledger, and every mode
+  change called it. With a mode change being an operator's rare act that
+  was merely wrong; with a rotation changing mode every 25 s it would have
+  reset the hour 40 times an hour and transmitted without any limit at
+  all, while reporting itself compliant. The fix is `xb_set_duty_keep`,
+  which changes the limits and keeps `bucket[]`, `spent_ms` and `head_ms`:
+  the regulator's hour does not restart because our modem changed channel.
+  Anything that reads like "reconfigure" deserves the question "and what
+  does it quietly forget?".
+- **A per-switch NVS write is invisible until the switch becomes
+  automatic.** `lora_apply_mode` wrote `lora_mode` on every change, which
+  is right for an operator's choice and would have been 40 flash writes an
+  hour for the life of a rotating board. The mode a station was PUT in and
+  the network its radio is on this second are two different facts, and
+  only the first belongs in NVS.
+- **Measure the thing itself, not what is lying around.** The first
+  attempt at measuring the rotation's loss counted ambient bench traffic,
+  and the transmitter aired one frame in three minutes (`lora_worth` keeps
+  beacons off a mesh channel, correctly), so the ratio was noise over
+  noise. The answer came from a transmitter under our control, one
+  numbered packet every 12 s, counted by name at the far end.
+
+## 15. Not done yet
 
 - The P1-Pro (nRF52, RadioLib) still runs SF7 and is deaf to the fleet. It
   needs `begin()` on LongFast, `xlc_aes_encrypt_block()` over CC310 or
