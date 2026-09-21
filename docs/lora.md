@@ -798,6 +798,23 @@ there is no session to lose, which is the one advantage of a network that
 holds nothing for anybody. What is lost is only what was aired while the
 radio was elsewhere.
 
+**Half an hour unattended, T-Deck, 2026-09-21.** Turned on through
+`[lora] rotate` and a restart, which is the path a deployed station uses,
+and left alone:
+
+| | |
+|---|---|
+| turns | 72 in 30 minutes, and the rotation was running at all 60 polls |
+| heap | 13,776 B at the start, 13,868 B at the end: flat. Transient dips to about 9.3 KB, which is the web server's response buffer and the index, not the rotation |
+| duty ledger | not one backwards step across 72 retunes |
+| the hour | 306 s of airtime spent in 30 minutes, against a 360 s allowance |
+
+That last row is the one to plan around: this bench is busy and the
+station was mirroring onto both networks, so it was on course to spend
+its whole hour and start deferring. One allowance, two networks. On a
+quiet site it will not matter; on a busy one, lower
+`[meshtastic]/[meshcore] broadcasts_per_hour` before blaming the radio.
+
 **The honest recommendation** is unchanged by any of it: a site that wants
 both networks reliably runs two boards, one per network, and lets XPRS
 carry between them over BLE, the LAN or ESP-NOW, where XPRS's own

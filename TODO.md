@@ -14,11 +14,12 @@ docs/lora.md, "The rules we follow", and reads its "Lessons learned".**
    the duty ledger across them, the worker staying up, 40% against 80%
    reception, and a stock MeshCore v1.17.1 repeater relaying this
    station's channel messages on its MeshCore turns while hearing nothing
-   from it on the other ones. What is NOT measured: a long soak (the
-   longest run so far is four minutes) and the heap across one; and the
-   hour, which a rotating station spends on two networks from one EU
-   allowance, so `lora.free_ms` is the number to watch on a busy site.
-   The catch-up clients that would make a rotation much less lossy (a
+   from it on the other ones, plus a 30-minute unattended soak from the
+   config-and-restart path: 72 turns, flat heap, no backwards step in the
+   ledger. What that soak showed and nobody should forget: 306 s of a
+   360 s hourly allowance spent in half an hour, because one allowance
+   covers both networks. A busy site wants `broadcasts_per_hour` lowered
+   rather than a bigger radio. The catch-up clients that would make a rotation much less lossy (a
    MeshCore room-server login with `sync_since`, a Meshtastic
    `CLIENT_HISTORY` request on return) are written up in docs/lora.md
    section 10 and not started.
