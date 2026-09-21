@@ -4843,13 +4843,18 @@ static void ui_render(void)
              * Always a row, so the rows below keep their numbers on a board
              * without a radio. */
             char lval[sizeof tr[0].cell[1]];
+            xprslora_rotate_t lrot;
             if (!s_board->lora)                 snprintf(lval, sizeof lval, "No radio");
             else if (xprslora_survey_active())  snprintf(lval, sizeof lval, "Surveying");
+            else if (xprslora_rotate_state(&lrot))
+                snprintf(lval, sizeof lval, "Turns %lus: %s",
+                         (unsigned long)lrot.slice_s,
+                         lora_mode_label(lrot.now));
             else snprintf(lval, sizeof lval, "%s", lora_mode_label(xprslora_mode()));
             SROWF("LoRa mode", lval,
-                  "XPRS: its own channel. XPRS+Meshtastic: Meshtastic's, "
-                  "bridged. Other modes are not heard on LoRa. %s "
-                  "switches at once.", ok_key());
+                  "Which network this radio is on. %s steps through them, "
+                  "then takes turns on both meshes -- serving each about "
+                  "half the time, deaf to the other meanwhile.", ok_key());
             {   /* 14.8: the channel. Not every board is an 868 MHz board
                  * -- the same chip is sold matched for 433 and 915 -- so
                  * this row walks the running mode's presets, each taken at
@@ -4896,33 +4901,6 @@ static void ui_render(void)
                              "it.", ok_key());
                 }
                 SROW("LoRa auto-detect", sval, sdet);
-            }
-            {   /* Serving two networks by taking turns. The detail says
-                 * what it costs, because a row that only said "On" would
-                 * be a promise this station cannot keep: while it is on
-                 * one network it hears nothing of the other. */
-                char rval[sizeof tr[0].cell[1]];
-                char rdet[160];
-                xprslora_rotate_t rot;
-                if (!s_board->lora) {
-                    snprintf(rval, sizeof rval, "--");
-                    snprintf(rdet, sizeof rdet, "No LoRa radio on this board.");
-                } else if (xprslora_rotate_state(&rot)) {
-                    snprintf(rval, sizeof rval, "%lus each",
-                             (unsigned long)rot.slice_s);
-                    snprintf(rdet, sizeof rdet,
-                             "Taking turns on %d networks, %s now. While "
-                             "it is on one it hears nothing of the other. "
-                             "%s stops it.", (int)rot.n,
-                             lora_mode_label(rot.now), ok_key());
-                } else {
-                    snprintf(rval, sizeof rval, "Off");
-                    snprintf(rdet, sizeof rdet,
-                             "One network at a time. %s takes turns on "
-                             "Meshtastic and MeshCore instead: both are "
-                             "served, neither continuously.", ok_key());
-                }
-                SROW("LoRa rotation", rval, rdet);
             }
         }
         SROW("Name", xcfg_get("name", "--"),
@@ -6868,9 +6846,30 @@ static void settings_ok(int row)
         break;
     case 8:
         /* The next available LoRa mode after the running one (14.8), taken
-         * at once. */
+         * at once, and after the last of them the rotation: which networks
+         * this radio serves is one question, so it is one row. A board
+         * that cannot rotate (MeshCore needs PSRAM) simply wraps round to
+         * the first mode, which is why this is not a row of its own --
+         * docs/esp32.md, and 740 bytes a row on a board with 12 KB. */
         if (s_board->lora && !xprslora_survey_active()) {
+            if (xprslora_rotate_state(NULL)) {     /* ... and off again */
+                xprslora_rotate_stop();
+                xcfg_set("lora_rotate", "");
+                break;
+            }
             xprslora_mode_t m = xprslora_mode();
+            bool last = true;
+            for (int i = (int)m + 1; i < XPRSLORA_MODE_COUNT; i++)
+                if (xprslora_mode_available((xprslora_mode_t)i)) last = false;
+            if (last) {
+                const char *v = xcfg_get("lora_rotate", NULL);
+                const char *list = v && v[0] ? v : "meshtastic,meshcore";
+                if (lora_rotate_apply(list) == ESP_OK) {
+                    xcfg_set("lora_rotate", list);
+                    break;                          /* the fourth stop */
+                }
+                /* This board cannot: carry on round to the first mode. */
+            }
             for (int i = 0; i < XPRSLORA_MODE_COUNT; i++) {
                 m = (xprslora_mode_t)((m + 1) % XPRSLORA_MODE_COUNT);
                 if (xprslora_mode_available(m)) break;
@@ -6907,29 +6906,10 @@ static void settings_ok(int row)
         if (s_board->lora)
             xprslora_detect_start((uint32_t)atoi(xcfg_get("lora_detect_s", "0")));
         break;
-    case 11:
-        /* On, off, on: the row is a switch, and the list it turns on is
-         * the configured one or both mesh networks by default. */
-        if (s_board->lora && !xprslora_survey_active()) {
-            if (xprslora_rotate_state(NULL)) {
-                xprslora_rotate_stop();
-                xcfg_set("lora_rotate", "");
-            } else {
-                const char *v = xcfg_get("lora_rotate", NULL);
-                const char *list = v && v[0] ? v : "meshtastic,meshcore";
-                esp_err_t e = lora_rotate_apply(list);
-                if (e != ESP_OK)
-                    ESP_LOGW(TAG, "rotation %s refused: %s", list,
-                             esp_err_to_name(e));
-                else
-                    xcfg_set("lora_rotate", list);
-            }
-        }
-        break;
-    case 14:
+    case 13:
         s_wipe_req = true;   /* idx_task owns the storage; it does the deed */
         break;
-    case 15:
+    case 14:
         ESP_LOGI(TAG, "restart from the Settings panel");
         esp_restart();
         break;

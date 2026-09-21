@@ -790,9 +790,10 @@ imperfectly than one of them well.
 ### Using it
 
 `cfg rotate` prints the state, `cfg rotate meshtastic,meshcore` starts it,
-`cfg rotate off` stops it and stays where the radio is. The T-Deck's
-Settings panel has a "LoRa rotation" row that toggles the same thing, and
-`[lora] rotate` / `rotate_s` make it survive a restart. `/api/status`
+`cfg rotate off` stops it and stays where the radio is. On the T-Deck's
+Settings panel the "LoRa mode" row steps xprs, meshtastic, meshcore and
+then the rotation, and `[lora] rotate` / `rotate_s` make it survive a
+restart. `/api/status`
 carries `lora.rotate` with the ring, the slice, the turns served and how
 far into the current one the station is; `lora.mode` still says which
 network the radio is on THIS moment.
@@ -1126,6 +1127,22 @@ changing the bridge.
   hour for the life of a rotating board. The mode a station was PUT in and
   the network its radio is on this second are two different facts, and
   only the first belongs in NVS.
+- **A task handed back and asked for again is a fragmentation bet you
+  lose eventually.** Leaving `meshcore` mode stands the 6 KB `mcwork`
+  stack down, which is right for an operator's mode change and wrong
+  forty times an hour: "whoever starts last gets the fragments"
+  (docs/esp32.md). A rotating station keeps the worker alive across the
+  laps, which also means the sealing and signing for MeshCore's next turn
+  is done while the radio is still on the other network. The one caller
+  that genuinely wants those six kilobytes back, an OTA install, now says
+  so with a flag the restart path honours, because the first version let
+  a rotation take back what quiesce had just handed over.
+- **A screen row is a memory decision.** The rotation began as its own
+  Settings row, which is about 740 bytes once the row, the render scratch
+  and the detail string are counted -- on a board with 12 KB free, for a
+  feature that board cannot run at all, since MeshCore needs PSRAM. It is
+  a fourth stop on the existing "LoRa mode" row instead: which networks
+  this radio serves is one question, so it is one row.
 - **Measure the thing itself, not what is lying around.** The first
   attempt at measuring the rotation's loss counted ambient bench traffic,
   and the transmitter aired one frame in three minutes (`lora_worth` keeps

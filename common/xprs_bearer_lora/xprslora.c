@@ -272,6 +272,12 @@ static lr_mc_state_t *s_mc;
  * Started with the bridge, stopped before its state is freed. */
 static TaskHandle_t s_mc_worker;
 static volatile bool s_mc_worker_stop, s_mc_worker_live;
+/* Set while an install has the worker's six kilobytes. Nothing may start
+ * it again until the install says so: a rotation entering MeshCore's turn
+ * would otherwise take back what quiesce had just handed over, which is
+ * the whole point of quiesce (docs/esp32.md, "Quiesce means hand
+ * resources back"). */
+static bool s_mc_quiet;
 
 static uint8_t s_rxbuf[MT_FRAME_MAX + 1];
 static uint8_t s_txbuf[MT_FRAME_MAX];
@@ -593,7 +599,13 @@ static void rotate_tick(void)
         s_rot.slice_ms = now;
         return;
     }
-    if (s_def->net == LR_NET_MC && s_mc && s_mc->mesh_on) mc_worker_start();
+    /* The worker is kept alive across turns (lr_mc_release), so this is a
+     * safety net rather than a restart. Its return is checked because an
+     * unchecked xTaskCreate is how a station ends up airing a queue with
+     * nothing behind it (docs/esp32.md, "Heap is the binding constraint"). */
+    if (s_def->net == LR_NET_MC && s_mc && s_mc->mesh_on && !mc_worker_start())
+        ESP_LOGE(TAG, "rotation: MeshCore's turn without its worker -- this "
+                      "turn signs and opens nothing");
     s_rot.at = next;
     s_rot.slice_ms = now;
     s_rot.turns++;
@@ -992,11 +1004,25 @@ static esp_err_t lr_claim_for(const lr_mode_def_t *d)
  * The worker task is stopped, though: it is 6 KB of stack doing nothing on
  * another network's channel, and an install wants it back
  * (xprslora_mc_pause).
+ *
+ * NOT while the station is taking turns, and this is the same rule as the
+ * block above rather than an exception to it. A 6 KB task stack is one
+ * contiguous piece of INTERNAL heap, and a rotation would hand it back and
+ * ask for it again every lap: "whoever starts last gets the fragments"
+ * (docs/esp32.md, "The boot order is the allocator"). The lap that finally
+ * could not have it would leave a bridge that airs its queue and thinks
+ * about nothing. The task also has work to do while the radio is
+ * elsewhere -- sealing, signing, scheduling adverts -- so that what is due
+ * is ready the moment MeshCore's turn comes round.
  */
 static void lr_mc_release(void)
 {
     if (s_survey.active || !s_mc) return;
     if (s_def->net == LR_NET_MC) return;
+    if (s_rot.active) {
+        for (uint8_t i = 0; i < s_rot.n; i++)
+            if (s_rot.ring[i] == XPRSLORA_MODE_MESHCORE) return;
+    }
     if (mc_worker_stop())
         ESP_LOGI(TAG, "MeshCore: worker stopped, %s mode has no use for it",
                  s_def->name);
@@ -1922,6 +1948,7 @@ static bool mc_worker_stop(void)
 static bool mc_worker_start(void)
 {
     if (s_mc_worker) return true;
+    if (s_mc_quiet) return false;
     s_mc_worker_stop = false;
     /* XPRS_WORK_CORE, not a bare 1: on the C3 there is no core 1 and
      * asking for it is an abort before the station says a word
@@ -2035,10 +2062,12 @@ void xprslora_mc_pause(bool quiet)
      * bridge's own state stays, so nothing is forgotten. */
     if (!s_mc || !s_mc->mesh_on) return;
     if (quiet) {
+        s_mc_quiet = true;
         if (mc_worker_stop())
             ESP_LOGW(TAG, "MeshCore worker stood down for the install");
-    } else if (mc_worker_start()) {
-        ESP_LOGI(TAG, "MeshCore worker back");
+    } else {
+        s_mc_quiet = false;
+        if (mc_worker_start()) ESP_LOGI(TAG, "MeshCore worker back");
     }
 }
 

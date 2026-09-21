@@ -183,15 +183,17 @@ void xui_radar_blips(const xui_blip_t *blips, int n);
 
 /* ---- Generic selectable table ------------------------------------------- */
 
-/* The Settings panel's rows set this: sixteen since the LoRa rotation row
- * joined the mode, channel and auto-detect ones (xprs_app.c render case
- * 6). Every row costs one xui_row_t in the render scratch and in
- * xprs_ui.c's tables (PSRAM where there is some), and settings_ok()'s
- * cases are numbered by this order: a row added in the middle moves every
- * case below it. There is no bounds check on the writer, so this constant
- * and the number of SROW() calls are one fact written twice: the last row
- * added overflowed the array before the constant caught up. */
-#define XUI_TAB_ROWS 16
+/* The Settings panel's rows set this: fifteen since the LoRa mode, channel
+ * and auto-detect rows (xprs_app.c render case 6). Every row costs one
+ * xui_row_t here AND in the render scratch AND 160 bytes of detail, about
+ * 740 bytes a row, which on a board without PSRAM comes out of the same
+ * ~12 KB everything else is fighting over -- so a row is a memory
+ * decision, and one that only some boards can use does not belong here at
+ * all (the LoRa rotation is a fourth stop on the mode row instead of a row
+ * of its own, for exactly that reason). settings_ok()'s cases are numbered
+ * by this order, and there is no bounds check on the writer: this constant
+ * and the number of SROW() calls are one fact written twice. */
+#define XUI_TAB_ROWS 15
 #define XUI_TAB_COLS 5
 
 typedef struct {
