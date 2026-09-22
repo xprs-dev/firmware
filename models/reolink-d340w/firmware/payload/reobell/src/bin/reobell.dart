@@ -10,19 +10,54 @@
 ///   reobell callsign                     print this device's callsign + npub
 ///   reobell sign-send "<wire>" [addr...] sign a wire (t: first, m: last) and broadcast
 ///   reobell identity [addr...]           build+sign+broadcast the presence t:identity
+///   reobell run                          the daemon: watch the door, air what
+///                                        happens, serve the still (see below)
 ///   reobell selftest                     sign/verify round-trip + callsign check
 ///
-/// The device key (an nsec) is read from $REOBELL_KEY (default ./reobell.key).
-/// Presence fields come from env: $REOBELL_NICK (default frontdoor),
-/// $REOBELL_URL (optional, e.g. http://<cam-ip>/door/snapshot.jpg).
+/// The device key (an nsec) is read from \$REOBELL_KEY (default ./reobell.key).
+/// Presence fields come from env: \$REOBELL_NICK (default frontdoor),
+/// \$REOBELL_URL (optional; by default the daemon works out its own address).
+///
+/// ── What `run` does, and why it is one process ───────────────────────────
+///
+/// It holds ONE login against the camera's own api.cgi over loopback, watches
+/// `GetEvents` for the button and for motion, and airs what it sees the way
+/// XPRS.md 11.7 says a device says it:
+///
+///   t:observation f:X4... state:pressed url:http://<ip>:8080/door/snapshot.jpg
+///   t:observation f:X4... state:motion  url:...
+///   t:observation f:X4... state:clear
+///
+/// and serves that url: itself, proxying `Snap` with the token it already
+/// holds so no credential is ever in a URL it hands out (11.7.2).
+///
+/// It replaced a shell poller that logged in again on every token error and
+/// leaked a lease on every restart, and that could only say `t:message` --
+/// prose where the format has a word. The message is still aired beside the
+/// observation for one release, so a phone that has not updated is not left
+/// with a doorbell that went silent.
+///
+/// Env it reads, all optional except the password:
+///   REOBELL_API        camera API base          (default http://127.0.0.1)
+///   REOBELL_USER       camera user              (default admin)
+///   REOBELL_PASS       camera password          (no default; no session without it)
+///   REOBELL_BCAST      extra broadcast address  (e.g. 192.168.1.255)
+///   REOBELL_HTTP_PORT  where the still is served (default 8080; 80 is the camera's)
+///   REOBELL_POLL_MS    how often the door is read (default 1000)
+///   REOBELL_MOTION_EVERY_S  least gap between motion reports (default 60)
+///   REOBELL_CLEAR_AFTER_S   quiet needed before `clear` (default 20)
+///   REOBELL_IDENTITY_S they hear who it is this often (default 300)
+///   REOBELL_MESSAGE    the legacy t:message body
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:hex/hex.dart';
 
+import 'package:reobell/camera.dart';
 import 'package:reobell/nostr_crypto.dart';
 import 'package:reobell/xprs_crypto.dart';
 import 'package:reobell/xprs_packet.dart';
@@ -207,9 +242,196 @@ int _cmdSelftest() {
   return 0;
 }
 
+/// ── The daemon ──────────────────────────────────────────────────────────
+int _envInt(String k, int def) => int.tryParse(_env(k)) ?? def;
+
+void _log(String line) {
+  stdout.writeln('${nowTs()} $line');
+}
+
+/// Sign [fields] and put it on the air. Drops `url:` rather than the whole
+/// packet when the wire would run past the 250-byte limit: a state nobody can
+/// fetch a picture for still says what happened.
+Future<void> _airFields(
+    DevKey key, List<MapEntry<String, String>> fields, List<String> bcast) async {
+  var packet = XprsPacket(fields);
+  var signed = signPacket(packet, key.d);
+  if (utf8.encode(signed.encode()).length > XprsPacket.maxBytes) {
+    packet = XprsPacket(fields.where((f) => f.key != 'url').toList());
+    signed = signPacket(packet, key.d);
+    _log('wire too long with url:, aired without it');
+  }
+  if (utf8.encode(signed.encode()).length > XprsPacket.maxBytes) {
+    _log('wire too long even without url:, not aired');
+    return;
+  }
+  final n = await broadcast(signed.encode(), bcast);
+  _log('aired ${signed.encode()}${n > 0 ? '' : ' (nobody to send to)'}');
+}
+
+Future<void> _airObservation(DevKey key, String state, String? url,
+    List<String> bcast) async {
+  await _airFields(key, [
+    const MapEntry('t', 'observation'),
+    MapEntry('f', key.callsign),
+    MapEntry('state', state),
+    if (url != null && url.isNotEmpty) MapEntry('url', url),
+    MapEntry('ts', nowTs()),
+    const MapEntry('scope', 'local'),
+  ], bcast);
+}
+
+Future<void> _airIdentity(DevKey key, String? url, List<String> bcast) async {
+  await _airFields(key, [
+    const MapEntry('t', 'identity'),
+    MapEntry('f', key.callsign),
+    MapEntry('k', key.npub),
+    MapEntry('nick', _env('REOBELL_NICK', 'frontdoor')),
+    if (url != null && url.isNotEmpty) MapEntry('url', url),
+    MapEntry('ts', nowTs()),
+    const MapEntry('scope', 'local'),
+  ], bcast);
+}
+
+/// The legacy ring, kept for one release so a phone that has not updated
+/// still hears the doorbell (see the note at the top of this file).
+Future<void> _airMessage(DevKey key, List<String> bcast) async {
+  final body = _env('REOBELL_MESSAGE', 'Someone at the front door');
+  await _airFields(key, [
+    const MapEntry('t', 'message'),
+    MapEntry('f', key.callsign),
+    MapEntry('ts', nowTs()),
+    const MapEntry('scope', 'local'),
+    MapEntry('m', body),
+  ], bcast);
+}
+
+Future<int> _cmdRun(List<String> args) async {
+  final key = _loadKey();
+  final bcast = <String>[
+    ..._env('REOBELL_BCAST').split(RegExp(r'[ ,]+')).where((s) => s.isNotEmpty),
+    ...args,
+  ];
+  final port = _envInt('REOBELL_HTTP_PORT', 8080);
+  final pollMs = _envInt('REOBELL_POLL_MS', 1000);
+  final motionEvery = Duration(seconds: _envInt('REOBELL_MOTION_EVERY_S', 60));
+  final clearAfter = Duration(seconds: _envInt('REOBELL_CLEAR_AFTER_S', 20));
+  final identityEvery = Duration(seconds: _envInt('REOBELL_IDENTITY_S', 300));
+
+  _log('reobell ${key.callsign} starting');
+
+  final session = CameraSession(
+    base: _env('REOBELL_API', 'http://127.0.0.1'),
+    user: _env('REOBELL_USER', 'admin'),
+    password: _env('REOBELL_PASS'),
+    log: _log,
+  );
+  final server = SnapshotServer(
+    session: session,
+    port: port,
+    callsign: key.callsign,
+    log: _log,
+  );
+  try {
+    await server.start();
+  } catch (e) {
+    // No picture is a smaller loss than no doorbell: keep going.
+    _log('could not serve stills on :$port: $e');
+  }
+
+  /// Where this camera's still can be fetched. Worked out again each time,
+  /// because a doorbell's address moves with its DHCP lease.
+  Future<String?> pictureUrl() async {
+    final fixed = _env('REOBELL_URL');
+    if (fixed.isNotEmpty) return fixed;
+    final ip = await lanAddress();
+    return ip == null ? null : 'http://$ip:$port/door/snapshot.jpg';
+  }
+
+  var stopping = false;
+  Future<void> shutdown(String why) async {
+    if (stopping) return;
+    stopping = true;
+    _log('stopping ($why)');
+    await server.stop();
+    await session.logout();
+    session.close();
+    exit(0);
+  }
+
+  ProcessSignal.sigterm.watch().listen((_) => shutdown('SIGTERM'));
+  ProcessSignal.sigint.watch().listen((_) => shutdown('SIGINT'));
+
+  // Who it is, now and every few minutes after.
+  await _airIdentity(key, await pictureUrl(), bcast);
+  Timer.periodic(identityEvery, (_) async {
+    await _airIdentity(key, await pictureUrl(), bcast);
+  });
+
+  if (session.password.isEmpty) {
+    _log('no REOBELL_PASS: the door cannot be watched and no still can be '
+        'taken. Announcing only.');
+  }
+
+  var wasVisitor = false;
+  var wasMotion = false;
+  var lastMotion = DateTime.fromMillisecondsSinceEpoch(0);
+  var lastPress = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime? quietSince;
+  var saidClear = true;
+
+  while (!stopping) {
+    if (session.password.isNotEmpty) {
+      final ev = await session.events();
+      if (ev != null) {
+        final now = DateTime.now();
+        final url = await pictureUrl();
+
+        // The button. A press is the one thing worth interrupting a person
+        // for, so it is aired every time -- debounced only against the same
+        // press being read twice by a one-second poll.
+        if (ev.visitor && !wasVisitor &&
+            now.difference(lastPress) > const Duration(seconds: 5)) {
+          lastPress = now;
+          saidClear = false;
+          await _airObservation(key, 'pressed', url, bcast);
+          await _airMessage(key, bcast);
+        }
+
+        // Movement. A camera pointed at a street sees it all day, and airing
+        // that every second would be a doorbell shouting over everything
+        // else on the network.
+        if (ev.motion && !wasMotion && now.difference(lastMotion) > motionEvery) {
+          lastMotion = now;
+          saidClear = false;
+          await _airObservation(key, 'motion', url, bcast);
+        }
+
+        // `clear` ends an event (11.7.2). Only after a quiet spell, because
+        // motion flaps, and only once.
+        final busy = ev.visitor || ev.motion;
+        if (busy) {
+          quietSince = null;
+        } else {
+          quietSince ??= now;
+          if (!saidClear && now.difference(quietSince) >= clearAfter) {
+            saidClear = true;
+            await _airObservation(key, 'clear', null, bcast);
+          }
+        }
+        wasVisitor = ev.visitor;
+        wasMotion = ev.motion;
+      }
+    }
+    await Future<void>.delayed(Duration(milliseconds: pollMs));
+  }
+  return 0;
+}
+
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
-    stderr.writeln('usage: reobell <keygen|callsign|sign-send|identity|selftest>');
+    stderr.writeln(
+        'usage: reobell <run|keygen|callsign|sign-send|identity|selftest>');
     exit(2);
   }
   final cmd = args.first;
@@ -224,6 +446,8 @@ Future<void> main(List<String> args) async {
       code = await _cmdSignSend(rest);
     case 'identity':
       code = await _cmdIdentity(rest);
+    case 'run':
+      code = await _cmdRun(rest);
     case 'selftest':
       code = _cmdSelftest();
     default:

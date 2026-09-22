@@ -35,7 +35,7 @@ mkdir -p "$W"
 [ -f "$STOCK" ] || { echo "FAIL: stock pak not found: $STOCK"; exit 2; }
 MAGIC=$(head -c4 "$STOCK" | od -An -tx1 | tr -d ' \n')
 [ "$MAGIC" = "13597232" ] || { echo "FAIL: stock pak bad magic ($MAGIC)"; exit 2; }
-for f in reobell boot.sh xprsbell.sh config; do
+for f in reobell boot.sh config; do
   [ -e "$PAYLOAD/$f" ] || { echo "FAIL: payload missing $PAYLOAD/$f"; exit 2; }
 done
 if grep -q 'CHANGE_ME' "$PAYLOAD/config" 2>/dev/null; then
@@ -60,9 +60,9 @@ R=$(find "$W/rootfs_ex" -maxdepth 2 -name rootfs -type d | head -1)
 # 2. Bake the reobell payload and launch it from start_app.
 #    40s delay lets the network and local api.cgi come up first. boot.sh
 #    generates the device key once (persisted at /mnt/para/reobell.key), starts
-#    the signed presence beacon, and supervises the ring poller (xprsbell.sh).
+#    the signed presence beacon, and supervises the daemon (reobell run).
 cp -a "$PAYLOAD" "$R/reobell"
-chmod +x "$R/reobell/reobell" "$R/reobell/boot.sh" "$R/reobell/xprsbell.sh"
+chmod +x "$R/reobell/reobell" "$R/reobell/boot.sh"
 cat >> "$R/etc/init.d/start_app" <<'HOOK'
 
 # ---- reobell: camera-side XPRS (baked in rootfs) ----

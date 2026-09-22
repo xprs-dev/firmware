@@ -324,32 +324,41 @@ Auto-dial (the station dialling a heard probe without a console) is the
 follow-up worth considering while in there: it would make the GATT road
 remote too.
 
-## The doorbell camera: what it owes the spec, and what the phone still cannot do (2026-09-22)
+## The doorbell camera: what is left after the daemon (2026-09-22)
 
-`models/reolink-d340w/` is in the catalogue and the firmware runs on the unit
-(firmVer 4664, callsign X4875H). Two things are open.
+**Done and bench-proven, not yet on the unit.** `reobell` is one daemon now
+(`firmware/payload/reobell/src/`): it holds a single login against the camera's
+own api.cgi, watches `GetEvents` for the button and for motion, airs
+`t:observation state:pressed|motion|clear` with a `url:`, and serves that url:
+itself on 8080, proxying `Snap` so no credential is in anything it hands out.
+The shell poller is gone. Measured against `firmware/tool/stand-in-camera.py`:
+one login for the whole run, the lease handed back on SIGTERM, three quick
+asks for a picture costing the camera one `Snap`, and the app on this desktop
+fetching the still from the address the daemon aired.
 
-1. **It speaks prose where the spec wants a state.** A press goes out as
-   `t:message ... m:Someone at the front door`. Spec section 11.7.2 wants
-   `t:observation state:pressed` carrying a `url:` to a still captured at the
-   event, `state:motion` for the camera's own motion alarm, `state:clear` when
-   it ends, and `q:snapshot` / `q:stream` answered with an observation naming
-   what was asked in `s:`. The camera already produces the stills (its
-   `api.cgi` serves a snapshot) and already sees motion (`md.alarm_state`
-   beside the `visitor.alarm_state` the poller reads), so the observations are
-   the smaller half of the work.
-2. **Answering anything needs a socket it does not open.** `reobell`
-   broadcasts and never listens, so `q:snapshot` cannot be answered today. A
-   receiving socket on 4242 is the change, and it is the one that turns this
-   from a device that talks into a station that can be asked. It also brings
-   the questions that go with listening on a front wall: what it answers to an
-   unsigned request, and whether the snapshot URL is served to the LAN or only
-   to listed callers (spec 11.7.2 leaves that to the owner, and
-   `API-HTTP.md`'s rule is that a camera on a hostile network turns its HTTP
-   off rather than putting a door picture within reach).
+1. **Flash it.** The camera is on firmVer 4664, which still says `t:message`
+   and carries no `url:`, so everything above is true of the tree and not yet
+   of the doorbell. `firmware/flashing.md` is the procedure; both validators
+   run first, and the version has to go up.
 
-Then the flashing half, which is the next piece of work on the phone rather
-than here: the XPRS app's Firmwares wapp finds ESP32 boards over USB OTG and
+2. **It cannot be asked anything.** `q:snapshot`, `q:stream` and `q:state`
+   (XPRS.md 8, 11.7.2) need a listening socket on 4242, which the daemon does
+   not open. Worth noting what it would make this: section 37 records `q:`/`s:`
+   as unimplemented everywhere, so reobell answering would be the first
+   responder in the project and the Things wapp the first asker. That is a
+   reason to do it carefully, on the bench, before anything depends on it.
+
+3. **The picture cannot leave the LAN.** 11.7.2's `url:` is a LAN address by
+   construction, so a phone away from home sees the doorbell ring and nothing
+   else. Carrying the still as a `file:<sha256>` media token is the shape that
+   would work and is worth a spec note.
+
+4. **The legacy `t:message` goes after one release.** It is aired beside the
+   observation so a phone that has not updated is not left with a doorbell
+   that went silent. Drop it once the phones are on Things 0.2.0 or newer.
+
+5. **Flashing one from the phone** is the piece that lives on the app side
+rather than here: the XPRS app's Firmwares wapp finds ESP32 boards over USB OTG and
 writes them with esptool. A camera is nothing like that. It is found on the
 LAN, not on a cable (the vendor API answers on port 80, and `GetDevInfo`
 reports `itemNo` and `hardVer`, which is what says "this is a D340W and the

@@ -1,60 +1,112 @@
-# reobell - camera-side XPRS bridge (runs on the doorbell, 24/7)
+# reobell - the XPRS daemon that runs on the doorbell, 24/7
 
-Files that live on the **SD card** at `<sdcard>/reobell/`. The one-time firmware
-hook (`../../firmware-hook.sh`, baked into `start_app`) runs `boot.sh` from here at
-every boot, so everything below is editable **without reflashing**.
+What sits on the camera. In the deployed build it lives in the rootfs at
+`/reobell/`; in the SD-boot variant it is `<sdcard>/reobell/`, where it can be
+edited without reflashing.
 
-The doorbell is a proper XPRS **X4 device**: it signs what it says and announces
-itself, so any XPRS station on the LAN learns it and verifies its messages. No
-desktop app is involved.
+The doorbell is a proper XPRS **X4 device**: it holds its own key, signs what
+it says, and announces itself, so any XPRS station on the LAN learns it and
+verifies its reports. No desktop application sits in the middle.
 
 | File | Role |
-|------|------|
-| `boot.sh` | launched by the firmware hook; generates the key once, runs the beacon + poller |
-| `xprsbell.sh` | polls local `api.cgi` for the button, calls `reobell` to sign+broadcast on a ring |
-| `reobell` | Dart binary (ARMv7 hard-float): signs XPRS packets and UDP-broadcasts to :4242 |
-| `reobell.key` | the device private key (nsec), created on first boot; **never in the repo** |
-| `config` | admin password, message, nick, optional url, broadcast addr |
-| `src/` | the `reobell` Dart source, to rebuild the binary |
+|---|---|
+| `boot.sh` | launched by the firmware hook; makes the key once, then supervises the daemon |
+| `reobell` | the daemon: one ARMv7 hard-float binary, built from `src/` |
+| `config` | admin password, nick, the ring message, the port, broadcast address |
+| `reobell.key` | the device private key (an nsec), made on first boot; **never in the repo** |
+| `src/` | the Dart source, to rebuild the binary |
+| `xprsbcast.c` | the first unsigned broadcaster, from before any of this. Reference only. |
 
-## What it broadcasts
+## What it does
 
-- **Presence**, every 5 minutes: a signed
-  `t:identity f:X4<derived> k:npub1... nick:frontdoor [url:...] ts:... scope:local sig:...`
-- **Ring**: on the button, a signed
-  `t:message f:X4<derived> ts:... scope:local sig:... m:Someone at the front door`
+One process, because the camera counts sessions:
 
-The `X4` callsign is derived from the device key; the signature is the XPRS
-short-Schnorr (`sig:`, 60 base85 chars) that every XPRS station verifies. Tested
-live: real stations on the LAN reported `hears:X4<derived>` after these packets.
+- **Holds one login** against the camera's own `api.cgi`, over loopback, and
+  renews it at four fifths of its lease. The D340W allows only a few at once,
+  cannot be made to forget one, and locks the household out of the Reolink app
+  when they run out. A refused login backs off to a minute rather than
+  retrying every second.
+- **Watches the door** with `GetEvents`, which carries the button and motion in
+  one answer, and airs what it sees the way XPRS.md 11.7 says a device says it:
+
+```
+t:observation f:X4... state:pressed url:http://<ip>:8080/door/snapshot.jpg ts:... sig:...
+t:observation f:X4... state:motion  url:http://<ip>:8080/door/snapshot.jpg ts:... sig:...
+t:observation f:X4... state:clear                                          ts:... sig:...
+```
+
+  A press is aired every time; movement at most once a minute, because a camera
+  pointed at a street sees it all day and a doorbell should not shout over the
+  rest of the network; `clear` once, after the doorstep has been quiet for
+  twenty seconds, because motion flaps.
+- **Announces itself** every five minutes with a signed `t:identity` carrying
+  its npub, its nick and the same `url:`. The address is worked out again each
+  time, because a DHCP lease moves.
+- **Serves the picture** those URLs point at, on port 8080 (80 is the camera's
+  own web UI):
+
+| | |
+|---|---|
+| `GET /door/snapshot.jpg` | a current still, `image/jpeg` |
+| `GET /door/stream.mjpeg` | `multipart/x-mixed-replace`, about 1.5 frames a second |
+| `GET /api/services` | what it serves, so a client asks once instead of probing |
+
+  It proxies: the daemon calls `Snap` itself with the token it already holds
+  and streams the bytes back, so **no credential is ever in a URL it hands
+  out** (11.7.2 says so about RTSP passwords; a session token is no different).
+  One camera call serves every viewer inside a second, so ten phones and a
+  stream loop are one `Snap`, not eleven.
+
+  The stream is honestly a run of stills. The camera serves h264 over RTSP and
+  an ARMv7 doorbell cannot transcode, so `multipart/x-mixed-replace` is what it
+  can offer a browser and 1.5 fps is what that costs.
+- **Still airs `t:message`** beside the press for one release, so a phone that
+  has not updated is not left with a doorbell that went silent. It goes after.
 
 ## Install
 
-1. Edit `config`: set `PASSWORD` to the camera's admin password. Optionally set
-   `NICK`, `BCAST` (e.g. `192.168.178.255`), and `URL`.
-2. Copy the whole `reobell/` folder (including the `reobell` binary) to the root
-   of the camera's microSD card.
-3. Reboot the camera (once the hooked firmware is flashed). On first boot it
-   generates `reobell.key` and prints the callsign to `/mnt/tmp/reobell_boot.log`.
+1. Edit `config`: the camera's admin password, and anything else you want
+   different. Quote any value with a space in it.
+2. Copy the whole `reobell/` folder (binary included) to the SD card root, or
+   let `tool/build_reobell_pak.sh` bake it into the image.
+3. Reboot the camera. On first boot it makes `reobell.key` and prints the
+   callsign to `/mnt/tmp/reobell_boot.log`.
 
-## Rebuilding the `reobell` binary
+## Rebuilding the binary
 
 Pure Dart, cross-compiled from an x64 host with the Dart SDK (>= 3.10):
 
-    cd src
-    dart pub get
-    dart compile exe --target-os linux --target-arch arm -o ../reobell bin/reobell.dart
+```sh
+cd src
+dart pub get
+dart compile exe --target-os linux --target-arch arm -o ../reobell bin/reobell.dart
+dart run bin/reobell.dart selftest     # sign/verify round trip
+```
 
-The result is ARMv7 EABI5 hard-float, links glibc <= 2.17 (the camera has 2.30),
-and uses `/lib/ld-linux-armhf.so.3` - it runs on the doorbell unmodified. The
-crypto is vendored from the XPRS reference (`XprsCrypto`, `NostrCrypto`) so
-signatures stay byte-identical to the network. `dart run bin/reobell.dart
-selftest` checks a sign/verify round-trip.
+ARMv7 EABI5 hard-float, `/lib/ld-linux-armhf.so.3`, glibc old enough for the
+camera's 2.30. The crypto is vendored from the XPRS reference so signatures
+stay byte-identical to what the network verifies.
+
+## Running it anywhere but the camera
+
+Everything comes from the environment, so the daemon can be pointed at a
+stand-in while it is worked on:
+
+```sh
+REOBELL_KEY=/tmp/bell.key REOBELL_API=http://127.0.0.1:8098 \
+REOBELL_USER=admin REOBELL_PASS=sesame REOBELL_HTTP_PORT=8097 \
+dart run bin/reobell.dart run 127.0.0.1
+```
+
+`REOBELL_POLL_MS`, `REOBELL_MOTION_EVERY_S`, `REOBELL_CLEAR_AFTER_S`,
+`REOBELL_IDENTITY_S`, `REOBELL_URL` and `REOBELL_MESSAGE` are the rest.
 
 ## Notes
 
-- The admin password and the device key sit on the SD card; neither leaves the
-  camera and neither is committed to the repo.
+- The admin password and the device key sit beside each other on the camera.
+  Neither leaves it: the password is only ever sent to loopback, and the key
+  only ever signs.
 - Logs: `/mnt/tmp/reobell.log` and `/mnt/tmp/reobell_boot.log`.
-- `xprsbcast` / `xprsbcast.c` are the old unsigned v1 broadcaster, superseded by
-  `reobell` (which also broadcasts). Kept only for reference.
+- What it does not do yet: answer `q:snapshot`, `q:stream` or `q:state`
+  (XPRS.md 8, 11.7.2). That needs a listening socket, which is a bigger change
+  than airing what it already knows.

@@ -228,8 +228,8 @@ Build it with `tool/build_reobell_pak.sh` (runs in the same `reobell-mtd`
 image). What it does, on top of sections 1-4:
 
 1. **Bake the payload.** Copy `payload/reobell/` into the extracted rootfs
-   at `/reobell/` (binary + `boot.sh` + `xprsbell.sh` + `config`), `chmod +x`
-   the three scripts.
+   at `/reobell/` (the binary + `boot.sh` + `config`), `chmod +x` the binary
+   and the script.
 2. **Launch from `start_app`.** Append one backgrounded line:
    `( sleep 40; /reobell/boot.sh ) >/mnt/tmp/reobell_boot.log 2>&1 &`. The 40s
    delay lets the network and the local `api.cgi` come up first. `boot.sh`
@@ -273,9 +273,12 @@ contains the password, so it is kept local (`~/reobell_flash/`), never committed
 Validate the repacked pak the same two ways as section 4 (nandsim mount, and
 `update 0 <pak> all` under qemu). Once booted, confirm reobell is live: it
 broadcasts a signed `t:identity` on UDP 4242 (any other LAN XPRS station should
-report `hears:X4875H`), and `xprsbell.sh` watches the local `GetEvents`
-`visitor.alarm_state` for a doorbell press and broadcasts a signed
-`t:message ... m:Someone at the front door`.
+report `hears:X4875H`). The daemon holds one login against the camera's own
+api.cgi, watches `GetEvents` for the button and for motion, and airs a signed
+`t:observation state:pressed url:http://<ip>:8080/door/snapshot.jpg` (and
+`state:motion`, and `state:clear` when the doorstep goes quiet), serving that
+url: itself. `curl http://<ip>:8080/api/services` is the quickest check that
+it is up.
 
 ## 8. Recovery
 

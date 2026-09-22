@@ -1186,7 +1186,7 @@
     "product_url": "https://reolink.com/product/reolink-video-doorbell-wifi/",
     "manual_url": null,
     "tagline": "A doorbell that is its own X4 station: it signs its own ring and airs it on the LAN.",
-    "summary": "Reolink Video Doorbell WiFi (D340W): a mains-wired doorbell camera on a Novatek NT98566 (ARM Cortex-A9, Linux 4.19.91, read-only UBIFS root), 5 MP OmniVision OS05A10 behind a ~135 degree lens, dual-band Realtek RTL8812CU WiFi, one microSD slot, a LAN port, microphone and speaker. No radio this project's common/ code can drive and not a microcontroller at all: the port is a userland daemon, reobell, a Dart AOT ARMv7 binary baked into a repacked vendor firmware image. It generates a keypair on the camera, derives an X4 callsign from it, announces a signed t:identity every five minutes, and signs and airs the doorbell press it reads from the camera's own local API. It talks on the LAN and it does not listen, so it is a device on the network rather than a station serving it.",
+    "summary": "Reolink Video Doorbell WiFi (D340W): a mains-wired doorbell camera on a Novatek NT98566 (ARM Cortex-A9, Linux 4.19.91, read-only UBIFS root), 5 MP OmniVision OS05A10 behind a ~135 degree lens, dual-band Realtek RTL8812CU WiFi, one microSD slot, a LAN port, microphone and speaker. No radio this project's common/ code can drive and not a microcontroller at all: the port is a userland daemon, reobell, a Dart AOT ARMv7 binary baked into a repacked vendor firmware image. It generates a keypair on the camera, derives an X4 callsign from it, announces a signed t:identity every five minutes, and airs signed observations for what the door does: state:pressed on the button, state:motion, state:clear when it goes quiet, each carrying a url: to a still it serves itself on port 8080. It talks on the LAN and does not listen for XPRS, so it is a device on the network rather than a station serving it.",
     "status": "shipping",
     "silicon": {
       "mcu": "Novatek NT98566 (NA51055)",
@@ -1212,7 +1212,7 @@
       "lora": "no",
       "lora_note": "No LoRa radio, and no bus brought out to add one.",
       "lan": "yes",
-      "lan_note": "Transmit only, and deliberately so. reobell airs signed XPRS wires as UDP broadcasts to port 4242 over the camera's own WiFi association, verified on the bench: real stations on the same LAN reported hearing the camera's derived X4 callsign after its identity and ring packets. It opens no listening socket, so it never repeats what others air and never answers a request. A doorbell that only ever speaks is a smaller thing to leave on a front wall.",
+      "lan_note": "Transmit only for XPRS, and deliberately so. reobell airs signed wires as UDP broadcasts to port 4242 over the camera's own WiFi association, verified on the bench: real stations on the same LAN reported hearing the camera's derived X4 callsign after its identity and event packets. It opens no XPRS listening socket, so it never repeats what others air and never answers a request. A doorbell that only ever speaks is a smaller thing to leave on a front wall. It does serve plain HTTP on 8080 for the picture its observations point at, which carries no XPRS packet at all.",
       "espnow": "no",
       "espnow_note": "ESP-NOW is an Espressif WiFi protocol; this is a Realtek USB part under Linux."
     },
@@ -1227,7 +1227,7 @@
       "hotspot": "no",
       "hotspot_note": "The camera's own AP is the vendor's setup mode, not the XPRS chat hotspot.",
       "api": "no",
-      "api_note": "The HTTP server on this device is Reolink's api.cgi, which reobell is a client of. There is no /api/status and no xprs_api; common/ is ESP-IDF.",
+      "api_note": "Not the station API: there is no /api/status and no xprs_api, and common/ is ESP-IDF. What reobell does serve on port 8080 is the camera surface of API-HTTP.md, /door/snapshot.jpg and /door/stream.mjpeg with /api/services beside them, proxied from the camera's own api.cgi so no credential is in a URL it hands out.",
       "indexer": "no",
       "indexer_note": "Not ported. The microSD is the camera's recording store.",
       "share": "no",
@@ -1246,7 +1246,7 @@
       "mesh_session_note": "No BLE.",
       "vhf": "no",
       "vhf_note": "No SA818.",
-      "note": "An X4 device in the sense of spec section 11.7.1, holding its own key instead of a controller holding it for it. It airs t:message on a press; spec 11.7.2 wants t:observation state:pressed with a url:, which is the next piece of work (see the board README)."
+      "note": "An X4 device in the sense of spec section 11.7.1, holding its own key instead of a controller holding it for it, and a camera in the sense of 11.7.2: state:pressed, state:motion and state:clear, each with a url: to a still it serves. What is left of 11.7.2 is answering q:snapshot, q:stream and q:state, which needs a listening socket it does not have."
     },
     "io": {
       "screen": null,
@@ -1276,6 +1276,10 @@
         {
           "name": "LAN",
           "note": "RJ45 under the back plate, beside the card slot"
+        },
+        {
+          "name": "HTTP 8080",
+          "note": "reobell's own: the still its observations point at"
         },
         {
           "name": "doorbell wiring",
