@@ -27,7 +27,10 @@ docs/         what is true across boards
 **`models/<board>/` is where anything board-specific belongs**: its ESP-IDF
 config, its documentation, its photos, pinouts and 3D-printed cases. Three
 boards carry their own firmware project there as well; the rest are targets
-of the shared `multiboard/` build.
+of the shared `multiboard/` build. One entry is not a board at all:
+`reolink-d340w` is a doorbell camera running a vendor Linux, and its
+`firmware/` holds the daemon that speaks XPRS on it and the tooling that
+repacks the vendor image around it.
 
 Each board folder also holds a `board.yml` -- the same facts as its README
 but flat, so a program can read them. That is what a download-and-browse
@@ -61,6 +64,7 @@ project's `CMakeLists.txt` when the catalogue is built.
 | [`epaper-1in54`](models/epaper-1in54/) | ESP32-S3 | own project, 200x200 e-paper: room climate, who is in reach, messages |
 | [`generic`](models/generic/) | ESP32 | own project, any plain ESP32 board with 4 MB: ESP-NOW, LAN, the chat hotspot |
 | [`sensecap-p1-pro`](models/sensecap-p1-pro/) | **nRF52840** | none yet -- solar outdoor node; LoRa + BLE5, no WiFi, not an ESP32 |
+| [`reolink-d340w`](models/reolink-d340w/) | **ARM Linux** | own project: a doorbell camera that signs its own ring, a daemon inside a repacked vendor image rather than a build of `common/` |
 
 ## Building
 

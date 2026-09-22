@@ -32,7 +32,7 @@
       },
       "lora": {
         "chip": "SX1262",
-        "band_mhz": "869.525, Meshtastic LongFast (band g3; 433/915 hardware sold)"
+        "band_mhz": "869.525 (lora_mode meshtastic, the default, or meshcore) or 869.5 (lora_mode xprs), band g3; 433/915 hardware sold"
       },
       "other": []
     },
@@ -522,7 +522,7 @@
       },
       "lora": {
         "chip": "SX1262",
-        "band_mhz": "869.525, Meshtastic LongFast (band g3; 433/915 hardware sold)"
+        "band_mhz": "869.525 (lora_mode meshtastic, the default, or meshcore) or 869.5 (lora_mode xprs), band g3; 433/915 hardware sold"
       },
       "other": []
     },
@@ -988,7 +988,7 @@
       "ble5": "yes",
       "ble5_note": "Working, measured 2026-08-30 (docs/ble5-nrf52.md). tinynimble's SoftDevice port speaks to S140 v7.3.0 directly -- Bluefruit, the core's own library, is capped at 31 bytes and cannot carry an XPRS beacon -- and puts a 255-byte extended advert on the air that a T-Dongle digipeated (\"via:X3WWAJ\"); what it hears on BLE is bridged onto LoRa. The mesh channel over a CONNECTION is measured too (docs/ble5-gatt.md): this board dials a T-Deck serving tn_att, MTU 247, 244-byte frames both ways, hang-up and re-dial. One advertising set on this chip, so the beacon is silent while a session is up.",
       "lora": "yes",
-      "lora_note": "Working, both directions, measured against a T-Deck on 2026-08-30: 6 of 7 beacons received there at -30 dBm SNR 12, 29 wires received here in 180 s, none corrupt and none unparsed. A beacon from this station was then digipeated by the T-Deck onto the LAN as \"via:X3GSLC,X3WWAJ\", so the packets are first-class on the network and not merely audible. Driven by RadioLib rather than a port of common/xprs_sx1262, which is ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which MUST stay equal to xprslora.c or the two radios are deaf to each other -- and since 2026-09-19 it does not: the ESP32 fleet moved to Meshtastic's LongFast (SF11 / BW250 / sync 0x2B at 869.525 MHz, docs/meshtastic.md), and this board is deaf to it until it is ported.",
+      "lora_note": "Working, both directions, measured against a T-Deck on 2026-08-30: 6 of 7 beacons received there at -30 dBm SNR 12, 29 wires received here in 180 s, none corrupt and none unparsed. A beacon from this station was then digipeated by the T-Deck onto the LAN as \"via:X3GSLC,X3WWAJ\", so the packets are first-class on the network and not merely audible. Driven by RadioLib rather than a port of common/xprs_sx1262, which is ESP-IDF SPI throughout. SF7 / BW125 / CR4-5 / preamble 8 / CRC on, which MUST stay equal to xprslora.c's `xprs` LoRa mode or the two radios are deaf to each other. This board runs the `xprs` mode only: ESP32 stations set to `lora_mode xprs` hear it (verified 2026-09-19, its digipeats arriving as \"via:...,X3S7S8\"), and ones in the default `meshtastic` mode do not, until it is ported (docs/meshtastic.md, \"LoRa modes\").",
       "lan": "no",
       "lan_note": "nRF52840 has no WiFi radio, so there is no LAN and there never will be on this board. xprs_bearer_lan is not portable here, and the LAN bearer's task is also what pumps every other bearer's re-air queue -- which is a real structural problem for a port, not just a missing feature. See the note in models/sensecap-p1-pro/README.md.",
       "espnow": "no",
@@ -1172,6 +1172,201 @@
         "caption": "Exterior callouts, mounted and from below. The datasheet numbers these 1-15 and prints no legend.",
         "credit": "Seeed Studio, industrial datasheet for SKU 114993633",
         "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/hardware/images/exterior-callouts.png"
+      }
+    ],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/reolink-d340w",
+    "id": "reolink-d340w",
+    "name": "Video Doorbell WiFi (D340W)",
+    "vendor": "Reolink",
+    "sku": "D340W",
+    "product_url": "https://reolink.com/product/reolink-video-doorbell-wifi/",
+    "manual_url": null,
+    "tagline": "A doorbell that is its own X4 station: it signs its own ring and airs it on the LAN.",
+    "summary": "Reolink Video Doorbell WiFi (D340W): a mains-wired doorbell camera on a Novatek NT98566 (ARM Cortex-A9, Linux 4.19.91, read-only UBIFS root), 5 MP OmniVision OS05A10 behind a ~135 degree lens, dual-band Realtek RTL8812CU WiFi, one microSD slot, a LAN port, microphone and speaker. No radio this project's common/ code can drive and not a microcontroller at all: the port is a userland daemon, reobell, a Dart AOT ARMv7 binary baked into a repacked vendor firmware image. It generates a keypair on the camera, derives an X4 callsign from it, announces a signed t:identity every five minutes, and signs and airs the doorbell press it reads from the camera's own local API. It talks on the LAN and it does not listen, so it is a device on the network rather than a station serving it.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "Novatek NT98566 (NA51055)",
+      "family": "linux-arm",
+      "core": "ARM Cortex-A9, ARMv7 EABI5 hard-float (clock not published)",
+      "ram_kb": null,
+      "psram_mb": null,
+      "flash_mb": null
+    },
+    "radios": {
+      "bluetooth": null,
+      "wifi": {
+        "standards": "802.11 a/b/g/n/ac (Realtek RTL8812CU, driver rtl88x2CU v5.12.1)",
+        "band_ghz": "2.4 / 5",
+        "modes": "STA"
+      },
+      "lora": null,
+      "other": []
+    },
+    "bearers": {
+      "ble5": "no",
+      "ble5_note": "No Bluetooth radio on this camera; the Realtek part is WiFi only.",
+      "lora": "no",
+      "lora_note": "No LoRa radio, and no bus brought out to add one.",
+      "lan": "yes",
+      "lan_note": "Transmit only, and deliberately so. reobell airs signed XPRS wires as UDP broadcasts to port 4242 over the camera's own WiFi association, verified on the bench: real stations on the same LAN reported hearing the camera's derived X4 callsign after its identity and ring packets. It opens no listening socket, so it never repeats what others air and never answers a request. A doorbell that only ever speaks is a smaller thing to leave on a front wall.",
+      "espnow": "no",
+      "espnow_note": "ESP-NOW is an Espressif WiFi protocol; this is a Realtek USB part under Linux."
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "no",
+      "digipeater_note": "Listens to nothing, so there is nothing to repeat.",
+      "bridge": "no",
+      "bridge_note": "One bearer, and it is one-way.",
+      "igate": "no",
+      "igate_note": "Not ported. The camera has IP, but nothing here speaks APRS-IS.",
+      "hotspot": "no",
+      "hotspot_note": "The camera's own AP is the vendor's setup mode, not the XPRS chat hotspot.",
+      "api": "no",
+      "api_note": "The HTTP server on this device is Reolink's api.cgi, which reobell is a client of. There is no /api/status and no xprs_api; common/ is ESP-IDF.",
+      "indexer": "no",
+      "indexer_note": "Not ported. The microSD is the camera's recording store.",
+      "share": "no",
+      "share_note": "No archive, so nothing to serve.",
+      "reticulum": "no",
+      "reticulum_note": "Not ported.",
+      "ota": "no",
+      "ota_note": "Firmware arrives as a vendor .pak through the camera's web UI. That path checks a header CRC, the board type and the version, and no signature at all (CVE-2025-60855), which is exactly why this port is possible and exactly why it is not XPRS signed OTA.",
+      "gossip": "no",
+      "gossip_note": "Not ported.",
+      "dashboard": "no",
+      "dashboard_note": "No screen. The button's LED ring belongs to the vendor firmware.",
+      "chat": "no",
+      "chat_note": "Nothing to type on.",
+      "mesh_session": "no",
+      "mesh_session_note": "No BLE.",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "An X4 device in the sense of spec section 11.7.1, holding its own key instead of a controller holding it for it. It airs t:message on a press; spec 11.7.2 wants t:observation state:pressed with a url:, which is the next piece of work (see the board README)."
+    },
+    "io": {
+      "screen": null,
+      "buttons": [
+        {
+          "name": "visitor",
+          "note": "the doorbell button; read as visitor.alarm_state through the camera's own api.cgi GetEvents, not as a GPIO"
+        },
+        {
+          "name": "reset",
+          "note": "pinhole on the back plate, behind the mount"
+        }
+      ],
+      "leds": [
+        {
+          "name": "ring",
+          "colour": "blue",
+          "note": "the illuminated ring around the button, driven by the vendor firmware"
+        }
+      ],
+      "gnss": null,
+      "connectors": [
+        {
+          "name": "microSD",
+          "note": "one slot; the camera's recording store, and where the SD-boot variant of this port keeps reobell"
+        },
+        {
+          "name": "LAN",
+          "note": "RJ45 under the back plate, beside the card slot"
+        },
+        {
+          "name": "doorbell wiring",
+          "note": "screw terminals for the existing chime transformer; the unit is mains-fed and always on"
+        }
+      ],
+      "sensors": [
+        {
+          "name": "OmniVision OS05A10",
+          "note": "5 MP, 2560x1920 main stream at 20 fps"
+        },
+        {
+          "name": "microphone",
+          "note": "AAC-LC 16 kHz in; a speaker answers over the ONVIF backchannel"
+        },
+        {
+          "name": "on-chip CNN",
+          "note": "person, vehicle and dog_cat detection in the vendor firmware"
+        }
+      ]
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "wired doorbell transformer, permanently on"
+    },
+    "firmware": {
+      "toolchain": "docker (mtd-utils 2.0.2, pakler, ubi_reader) + Dart AOT for armv7",
+      "project": "models/reolink-d340w/firmware",
+      "env": null,
+      "version": "4664_2509161282",
+      "artifact": null,
+      "flash_port": "vendor-web",
+      "build_cmd": [
+        "cd models/reolink-d340w/firmware",
+        "stock/fetch-stock.sh",
+        "docker build -t reobell-mtd tool",
+        "docker run --rm --cap-add MKNOD -v \"$PWD/../../..\":/repo -v \"$PWD/tool/work\":/work \\",
+        "  -e VER=4664_2509161282 reobell-mtd /repo/models/reolink-d340w/firmware/tool/build_reobell_pak.sh"
+      ],
+      "flashing": "The camera's own web UI, System > Maintenance > Firmware Update, with the built .pak renamed to the vendor's filename pattern and a version number higher than the one installed. No signature is checked. The file has to sit somewhere the browser can actually read, which is not /tmp for a snap-confined one. Both qemu validators in tool/ run before any flash.",
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/reolink-d340w/firmware"
+    },
+    "docs": [
+      {
+        "title": "Board README",
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/reolink-d340w/README.md"
+      },
+      {
+        "title": "Build and flash the modified pak",
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/reolink-d340w/firmware/flashing.md"
+      },
+      {
+        "title": "What is inside the stock firmware",
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/reolink-d340w/docs/firmware-analysis.md"
+      },
+      {
+        "title": "The camera's LAN protocols, ports and limits",
+        "url": "https://github.com/xprs-dev/firmware/blob/main/models/reolink-d340w/docs/device-capabilities.md"
+      },
+      {
+        "title": "Reolink firmware archive (AT0myks/reolink-fw-archive)",
+        "url": "https://github.com/AT0myks/reolink-fw-archive"
+      }
+    ],
+    "images": [
+      {
+        "file": "hardware/images/product-front.webp",
+        "caption": "The doorbell mounted: camera above, the illuminated button below.",
+        "credit": "Reolink product photography, reolink.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/reolink-d340w/hardware/images/product-front.webp"
+      },
+      {
+        "file": "hardware/images/product-mounted.webp",
+        "caption": "Beside a door, at the height it reports a visitor from.",
+        "credit": "Reolink product photography, reolink.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/reolink-d340w/hardware/images/product-mounted.webp"
+      },
+      {
+        "file": "hardware/images/rear-callouts-white.jpg",
+        "caption": "The back plate, white unit: the LAN socket and the microSD slot are labelled, the reset pinhole sits beside them. Reolink numbers the callouts 1-6 and prints no legend on the product page.",
+        "credit": "Reolink product page illustration, reolink.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/reolink-d340w/hardware/images/rear-callouts-white.jpg"
+      },
+      {
+        "file": "hardware/images/rear-callouts-black.jpg",
+        "caption": "The same back plate on the black unit. Reolink sells the D340W in both colours; the firmware is one image for both.",
+        "credit": "Reolink product page illustration, reolink.com",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/reolink-d340w/hardware/images/rear-callouts-black.jpg"
       }
     ],
     "screenshots": []

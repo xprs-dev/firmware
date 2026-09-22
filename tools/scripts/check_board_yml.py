@@ -23,7 +23,10 @@ TOP = ["id", "name", "vendor", "sku", "product_url", "manual_url", "tagline", "s
        "status", "silicon", "radios", "bearers", "xprs", "io", "physical",
        "firmware", "docs", "images", "screenshots"]
 STATUS = {"shipping", "legacy", "planned", "unsupported"}
-FAMILY = {"esp32", "esp32s3", "esp32c3", "nrf52"}
+# The TOOLCHAIN family. linux-arm is the odd one out and is meant to be: a
+# device running a vendor Linux, where the port is a userland program rather
+# than anything built from common/.
+FAMILY = {"esp32", "esp32s3", "esp32c3", "nrf52", "linux-arm"}
 BEARERS = ["ble5", "lora", "lan", "espnow"]
 # yes/no/untested, as STRINGS. Unquoted yes and no are booleans in YAML and
 # `untested` is not, which would make one field two types.
@@ -35,7 +38,9 @@ XPRS = ["beacon", "digipeater", "bridge", "igate", "hotspot", "api", "indexer",
         "mesh_session", "vhf"]
 XPRS_VERDICT = {"yes", "no", "planned", "untested"}
 FIRMWARE = ["toolchain", "project", "env", "version", "artifact", "flash_port", "flashing"]
-FLASH_PORT = {"usb-serial", "native-usb", "uf2", None}
+# vendor-web: the device's own web interface takes a firmware file. No cable,
+# no bootloader, and nothing this tree's tools/ scripts can drive.
+FLASH_PORT = {"usb-serial", "native-usb", "uf2", "vendor-web", None}
 
 root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 problems = []
@@ -101,8 +106,12 @@ def check(path, d, is_template):
     for k in FIRMWARE:
         if k not in fw:
             bad(f"firmware is missing '{k}'")
+    cmd = fw.get("build_cmd")
+    if cmd is not None and (not isinstance(cmd, list)
+                            or not all(isinstance(x, str) for x in cmd)):
+        bad("firmware.build_cmd is present but is not a list of strings")
     if fw.get("flash_port") not in FLASH_PORT:
-        bad(f"firmware.flash_port {fw.get('flash_port')!r} is not one of usb-serial | native-usb | uf2")
+        bad(f"firmware.flash_port {fw.get('flash_port')!r} is not one of usb-serial | native-usb | uf2 | vendor-web")
     proj = fw.get("project")
     if proj and not os.path.isdir(os.path.join(root, proj)):
         bad(f"firmware.project '{proj}' does not exist")

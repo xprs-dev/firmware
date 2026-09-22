@@ -29,7 +29,10 @@ models/<id>/
     HARDWARE.md        pinout, block diagram, what is wired to what
     images/            photographs and diagrams; see "Images" below
   docs/                anything true of this board and of no other
-  firmware/            its own PlatformIO project, IF it has one
+  firmware/            its own PlatformIO project, IF it has one. For a device
+                       that runs a vendor OS, whatever does build its image
+                       (the Reolink doorbell keeps its repack tooling, its
+                       payload and its flashing procedure there)
   sdkconfig.<target>   its ESP-IDF config, IF it is a multiboard target
   prebuilt/            what tools/scripts/collect_prebuilt.py copied out of the
                        last `pio run`: bootloader, partitions, firmware and an
@@ -69,8 +72,11 @@ status:        shipping | legacy | planned | unsupported
 silicon:
   mcu:         part number, e.g. ESP32-S3 / nRF52840
   family:      the TOOLCHAIN family, not the marketing name:
-               esp32 | esp32s3 | esp32c3 | nrf52
-               This is what says whether common/ can be reused at all.
+               esp32 | esp32s3 | esp32c3 | nrf52 | linux-arm
+               This is what says whether common/ can be reused at all, and
+               linux-arm is the answer "not at all": a device running a
+               vendor's own Linux, where the port is a userland program
+               dropped into the vendor firmware rather than a build of ours.
   core:        e.g. "Xtensa LX7 dual @ 240 MHz"
   ram_kb:      internal RAM
   psram_mb:    null when there is none. A number here changes what fits.
@@ -115,10 +121,15 @@ xprs:          what the station on this board does on the network, one key
 io:            screen (or null), buttons, leds, gnss, connectors, sensors
 physical:      dimensions_mm, weight_g, ip_rating, temp_c, power
 firmware:      toolchain, project, env, version, artifact, flashing,
-               flash_port: usb-serial | native-usb | uf2 -- how bytes reach
-               it, which is not the same as the chip family (the Heltec V3
-               is an S3 behind a CP2102). The page picks its flashing
-               section from this.
+               flash_port: usb-serial | native-usb | uf2 | vendor-web, how
+               bytes reach it, which is not the same as the chip family
+               (the Heltec V3 is an S3 behind a CP2102, and the Reolink
+               doorbell takes its image through its own web interface, over
+               the network, with no cable at all). The page picks its
+               flashing section from this.
+               build_cmd:   OPTIONAL, a list of shell lines. A board whose
+               image is not a `pio run` writes the recipe here and the page
+               prints it verbatim instead of guessing a PlatformIO pair.
 docs:          list of {title, url}
 images:        list of {file, caption, credit} -- photographs of the HARDWARE
 screenshots:   list of {file, caption} -- what the FIRMWARE shows: the screen,

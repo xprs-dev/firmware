@@ -1,0 +1,172 @@
+# One board's facts, for a program to read. Schema and rules: docs/catalog.md.
+#
+# Sources: the camera's own api.cgi (GetDevInfo, GetEnc, GetAbility, GetEvents)
+# read over the LAN from the unit this port was developed on, and the stock
+# firmware pak taken apart in docs/firmware-analysis.md. The XPRS lines below
+# were measured on the bench: other stations on the LAN reported hearing this
+# camera's callsign. Anything null is a figure nobody has taken, and the vendor
+# does not publish it in a form worth copying.
+
+id: reolink-d340w
+name: Video Doorbell WiFi (D340W)
+vendor: Reolink
+sku: D340W
+product_url: https://reolink.com/product/reolink-video-doorbell-wifi/
+manual_url: null
+tagline: "A doorbell that is its own X4 station: it signs its own ring and airs it on the LAN."
+summary: >-
+  Reolink Video Doorbell WiFi (D340W): a mains-wired doorbell camera on a
+  Novatek NT98566 (ARM Cortex-A9, Linux 4.19.91, read-only UBIFS root), 5 MP
+  OmniVision OS05A10 behind a ~135 degree lens, dual-band Realtek RTL8812CU
+  WiFi, one microSD slot, a LAN port, microphone and speaker. No radio this
+  project's common/ code can drive and not a microcontroller at all: the port
+  is a userland daemon, reobell, a Dart AOT ARMv7 binary baked into a
+  repacked vendor firmware image. It generates a keypair on the camera, derives
+  an X4 callsign from it, announces a signed t:identity every five minutes,
+  and signs and airs the doorbell press it reads from the camera's own local
+  API. It talks on the LAN and it does not listen, so it is a device on the
+  network rather than a station serving it.
+status: shipping
+
+silicon:
+  mcu: Novatek NT98566 (NA51055)
+  family: linux-arm
+  core: ARM Cortex-A9, ARMv7 EABI5 hard-float (clock not published)
+  ram_kb: null
+  psram_mb: null
+  flash_mb: null
+  # NAND, partitioned by the vendor: the rootfs mtd is 32 MB and the app mtd
+  # 21 MB (docs/firmware-analysis.md). The total part size is not published and
+  # the running camera does not report it.
+
+radios:
+  bluetooth: null
+  wifi: {standards: "802.11 a/b/g/n/ac (Realtek RTL8812CU, driver rtl88x2CU v5.12.1)", band_ghz: "2.4 / 5", modes: "STA"}
+  lora: null
+  other: []
+
+bearers:
+  ble5: "no"
+  ble5_note: No Bluetooth radio on this camera; the Realtek part is WiFi only.
+  lora: "no"
+  lora_note: No LoRa radio, and no bus brought out to add one.
+  lan: "yes"
+  lan_note: >-
+    Transmit only, and deliberately so. reobell airs signed XPRS wires as UDP
+    broadcasts to port 4242 over the camera's own WiFi association, verified on
+    the bench: real stations on the same LAN reported hearing the camera's
+    derived X4 callsign after its identity and ring packets. It opens no
+    listening socket, so it
+    never repeats what others air and never answers a request. A doorbell that
+    only ever speaks is a smaller thing to leave on a front wall.
+  espnow: "no"
+  espnow_note: ESP-NOW is an Espressif WiFi protocol; this is a Realtek USB part under Linux.
+
+xprs:
+  beacon: "yes"
+  digipeater: "no"
+  digipeater_note: Listens to nothing, so there is nothing to repeat.
+  bridge: "no"
+  bridge_note: One bearer, and it is one-way.
+  igate: "no"
+  igate_note: Not ported. The camera has IP, but nothing here speaks APRS-IS.
+  hotspot: "no"
+  hotspot_note: The camera's own AP is the vendor's setup mode, not the XPRS chat hotspot.
+  api: "no"
+  api_note: >-
+    The HTTP server on this device is Reolink's api.cgi, which reobell is a
+    client of. There is no /api/status and no xprs_api; common/ is ESP-IDF.
+  indexer: "no"
+  indexer_note: Not ported. The microSD is the camera's recording store.
+  share: "no"
+  share_note: No archive, so nothing to serve.
+  reticulum: "no"
+  reticulum_note: Not ported.
+  ota: "no"
+  ota_note: >-
+    Firmware arrives as a vendor .pak through the camera's web UI. That path
+    checks a header CRC, the board type and the version, and no signature at
+    all (CVE-2025-60855), which is exactly why this port is possible and
+    exactly why it is not XPRS signed OTA.
+  gossip: "no"
+  gossip_note: Not ported.
+  dashboard: "no"
+  dashboard_note: No screen. The button's LED ring belongs to the vendor firmware.
+  chat: "no"
+  chat_note: Nothing to type on.
+  mesh_session: "no"
+  mesh_session_note: No BLE.
+  vhf: "no"
+  vhf_note: No SA818.
+  note: >-
+    An X4 device in the sense of spec section 11.7.1, holding its own key
+    instead of a controller holding it for it. It airs t:message on a press;
+    spec 11.7.2 wants t:observation state:pressed with a url:, which is the
+    next piece of work (see the board README).
+
+io:
+  screen: null
+  buttons:
+    - {name: visitor, note: "the doorbell button; read as visitor.alarm_state through the camera's own api.cgi GetEvents, not as a GPIO"}
+    - {name: reset, note: "pinhole on the back plate, behind the mount"}
+  leds:
+    - {name: ring, colour: blue, note: "the illuminated ring around the button, driven by the vendor firmware"}
+  gnss: null
+  connectors:
+    - {name: microSD, note: "one slot; the camera's recording store, and where the SD-boot variant of this port keeps reobell"}
+    - {name: LAN, note: "RJ45 under the back plate, beside the card slot"}
+    - {name: "doorbell wiring", note: "screw terminals for the existing chime transformer; the unit is mains-fed and always on"}
+  sensors:
+    - {name: OmniVision OS05A10, note: "5 MP, 2560x1920 main stream at 20 fps"}
+    - {name: microphone, note: "AAC-LC 16 kHz in; a speaker answers over the ONVIF backchannel"}
+    - {name: "on-chip CNN", note: "person, vehicle and dog_cat detection in the vendor firmware"}
+
+physical:
+  dimensions_mm: null
+  weight_g: null
+  ip_rating: null
+  temp_c: null
+  power: wired doorbell transformer, permanently on
+
+firmware:
+  toolchain: docker (mtd-utils 2.0.2, pakler, ubi_reader) + Dart AOT for armv7
+  project: models/reolink-d340w/firmware
+  env: null
+  version: "4664_2509161282"   # quoted: YAML 1.1 reads 4664_2509161282 as an integer
+  artifact: null
+  flash_port: vendor-web
+  build_cmd:
+    - cd models/reolink-d340w/firmware
+    - stock/fetch-stock.sh
+    - docker build -t reobell-mtd tool
+    - "docker run --rm --cap-add MKNOD -v \"$PWD/../../..\":/repo -v \"$PWD/tool/work\":/work \\"
+    - "  -e VER=4664_2509161282 reobell-mtd /repo/models/reolink-d340w/firmware/tool/build_reobell_pak.sh"
+  flashing: >-
+    The camera's own web UI, System > Maintenance > Firmware Update, with the
+    built .pak renamed to the vendor's filename pattern and a version number
+    higher than the one installed. No signature is checked. The file has to sit
+    somewhere the browser can actually read, which is not /tmp for a
+    snap-confined one. Both qemu validators in tool/ run before any flash.
+
+docs:
+  - {title: "Board README", url: "models/reolink-d340w/README.md"}
+  - {title: "Build and flash the modified pak", url: "models/reolink-d340w/firmware/flashing.md"}
+  - {title: "What is inside the stock firmware", url: "models/reolink-d340w/docs/firmware-analysis.md"}
+  - {title: "The camera's LAN protocols, ports and limits", url: "models/reolink-d340w/docs/device-capabilities.md"}
+  - {title: "Reolink firmware archive (AT0myks/reolink-fw-archive)", url: "https://github.com/AT0myks/reolink-fw-archive"}
+
+images:
+  - file: hardware/images/product-front.webp
+    caption: "The doorbell mounted: camera above, the illuminated button below."
+    credit: "Reolink product photography, reolink.com"
+  - file: hardware/images/product-mounted.webp
+    caption: "Beside a door, at the height it reports a visitor from."
+    credit: "Reolink product photography, reolink.com"
+  - file: hardware/images/rear-callouts-white.jpg
+    caption: "The back plate, white unit: the LAN socket and the microSD slot are labelled, the reset pinhole sits beside them. Reolink numbers the callouts 1-6 and prints no legend on the product page."
+    credit: "Reolink product page illustration, reolink.com"
+  - file: hardware/images/rear-callouts-black.jpg
+    caption: "The same back plate on the black unit. Reolink sells the D340W in both colours; the firmware is one image for both."
+    credit: "Reolink product page illustration, reolink.com"
+
+screenshots: []

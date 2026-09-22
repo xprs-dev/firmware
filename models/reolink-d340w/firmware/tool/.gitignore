@@ -1,0 +1,5 @@
+# Build scratch + outputs (extracted rootfs, rebuilt UBI, built paks).
+work/
+*.pak
+*.ubi
+*.ubifs

@@ -1,0 +1,9 @@
+# reobell XPRS bridge - camera-side config. Edit on the SD card; no reflash.
+USER=admin
+PASSWORD=CHANGE_ME                  # the camera's admin password (localhost login)
+MESSAGE=Someone at the front door   # the m: body sent on a ring
+NICK=frontdoor                      # nick: in the presence announcement
+URL=                                # optional url: for the announcement (a snapshot); blank omits it
+BCAST=                              # extra directed broadcast addr, e.g. 192.168.178.255; blank = 255.255.255.255 only
+POLL=1                              # seconds between event polls
+# The X4 callsign is derived from the device key (reobell.key), not set here.

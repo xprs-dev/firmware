@@ -323,3 +323,41 @@ which a pole unit does not have.
 Auto-dial (the station dialling a heard probe without a console) is the
 follow-up worth considering while in there: it would make the GATT road
 remote too.
+
+## The doorbell camera: what it owes the spec, and what the phone still cannot do (2026-09-22)
+
+`models/reolink-d340w/` is in the catalogue and the firmware runs on the unit
+(firmVer 4664, callsign X4875H). Two things are open.
+
+1. **It speaks prose where the spec wants a state.** A press goes out as
+   `t:message ... m:Someone at the front door`. Spec section 11.7.2 wants
+   `t:observation state:pressed` carrying a `url:` to a still captured at the
+   event, `state:motion` for the camera's own motion alarm, `state:clear` when
+   it ends, and `q:snapshot` / `q:stream` answered with an observation naming
+   what was asked in `s:`. The camera already produces the stills (its
+   `api.cgi` serves a snapshot) and already sees motion (`md.alarm_state`
+   beside the `visitor.alarm_state` the poller reads), so the observations are
+   the smaller half of the work.
+2. **Answering anything needs a socket it does not open.** `reobell`
+   broadcasts and never listens, so `q:snapshot` cannot be answered today. A
+   receiving socket on 4242 is the change, and it is the one that turns this
+   from a device that talks into a station that can be asked. It also brings
+   the questions that go with listening on a front wall: what it answers to an
+   unsigned request, and whether the snapshot URL is served to the LAN or only
+   to listed callers (spec 11.7.2 leaves that to the owner, and
+   `API-HTTP.md`'s rule is that a camera on a hostile network turns its HTTP
+   off rather than putting a door picture within reach).
+
+Then the flashing half, which is the next piece of work on the phone rather
+than here: the XPRS app's Firmwares wapp finds ESP32 boards over USB OTG and
+writes them with esptool. A camera is nothing like that. It is found on the
+LAN, not on a cable (the vendor API answers on port 80, and `GetDevInfo`
+reports `itemNo` and `hardVer`, which is what says "this is a D340W and the
+image for `DB_566128M5MP_W` fits it"), and it is flashed by uploading a `.pak`
+to its own web UI with a version number higher than the installed one. What
+the app would need from this repository is in `board.yml` already
+(`flash_port: vendor-web`, the build recipe, the hardware string); what it
+does not have is a published image, because a built pak carries the camera's
+admin password. Building one per camera on the phone, or splitting the
+password out of the image so a generic pak can be published, is the decision
+to make before any of that is written.

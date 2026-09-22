@@ -93,19 +93,23 @@ FLASH_ONELINE = {
     "usb-serial": "a USB-serial bridge (CP210x/CH340), esptool; hold BOOT if it will not connect",
     "native-usb": "the chip's own USB port, esptool; hold BOOT while plugging in if no port appears",
     "uf2": "double-tap reset, copy the .uf2 onto the USB drive that appears",
+    "vendor-web": "the device's own web interface, which takes a firmware file over the network",
 }
 FLASH_SECTION = {"usb-serial": ("flash-esp32", "ESP32 over USB-serial"),
                  "native-usb": ("flash-esp32s3", "ESP32-S3 / C3 over native USB"),
-                 "uf2": ("flash-nrf52", "nRF52 by UF2 drag-and-drop")}
+                 "uf2": ("flash-nrf52", "nRF52 by UF2 drag-and-drop"),
+                 "vendor-web": ("flash-vendor-web", "a vendor device over its own web UI")}
 FLASH_PORT_DEFAULT = {"esp32": "usb-serial", "esp32s3": "native-usb",
-                      "esp32c3": "native-usb", "nrf52": "uf2"}
+                      "esp32c3": "native-usb", "nrf52": "uf2",
+                      "linux-arm": "vendor-web"}
 
 
 def flash_port(b):
     fw, sil = b.get("firmware") or {}, b.get("silicon") or {}
     return fw.get("flash_port") or FLASH_PORT_DEFAULT.get(sil.get("family"))
 FAMILY_LABEL = {"esp32": "ESP32", "esp32s3": "ESP32-S3",
-                "esp32c3": "ESP32-C3", "nrf52": "nRF52840"}
+                "esp32c3": "ESP32-C3", "nrf52": "nRF52840",
+                "linux-arm": "ARM Linux"}
 
 
 def esc(v):
@@ -359,7 +363,14 @@ def card(b, embed):
 
     sec_id, sec_label = FLASH_SECTION.get(flash_port(b), ("flash-source", "from source"))
     prebuilt = prebuilt_block(b, fw)
-    if fw.get("project"):
+    if fw.get("build_cmd"):
+        # A board whose image is not a pio run: the recipe is written out in
+        # board.yml because nothing here can guess it.
+        build = (f'<div class="build"><div class="build-head">Build from source</div>'
+                 f'<pre class="mono">' + esc("\n".join(fw["build_cmd"])) + '</pre>'
+                 + ("" if prebuilt else f'<p class="flashnote">Flashing: <a href="#{sec_id}">{esc(sec_label)}</a>.</p>')
+                 + '</div>')
+    elif fw.get("project"):
         build = (f'<div class="build"><div class="build-head">Build from source</div>'
                  f'<pre class="mono">cd {esc(fw["project"])}\n'
                  f'~/.platformio/penv/bin/pio run{" -e " + esc(fw["env"]) if fw.get("env") else ""}\n'
@@ -787,6 +798,19 @@ esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 460800 write_flash \\
     the drive does not appear, the second tap was too slow or the board is not in
     reach of the reset button through the case: the button row is on the underside
     (see the photos).</p>
+
+  <h3 id="flash-vendor-web">A vendor device over its own web UI</h3>
+  <p>The Reolink doorbell is not a microcontroller: it is a small Linux computer
+    with a vendor updater, and the only way in is that updater. The build produces
+    a <span class="mono">.pak</span> in the vendor's own format; it is renamed to the
+    vendor's filename pattern with a version number <b>higher</b> than the one
+    installed, then uploaded in the camera's web UI under System &rarr; Maintenance
+    &rarr; Firmware Update. There is no cable, no bootloader and no signature check,
+    so the two validators in the board's <span class="mono">firmware/tool/</span>
+    (a nandsim mount, and the camera's own flasher under qemu) are what stands
+    between a build and a brick. Run both. The one non-obvious trap: the browser
+    must be able to <i>read</i> the file, so a confined Chromium cannot take it from
+    <span class="mono">/tmp</span> and silently uploads nothing.</p>
 
   <h3 id="flash-source">From source</h3>
   <p>Every card's "Build from source" block is the exact command pair. The projects

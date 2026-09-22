@@ -39,6 +39,7 @@ There are three kinds of firmware in the tree:
 | **Own project** | `tdongle-s3`, `m5stack-core`, `tdeck`, `epaper-1in54`, `esp32c3-mini`, `generic`, `sensecap-p1-pro` | `models/<board>/firmware/` |
 | **`multiboard` target** | `heltec-v3`, `kv4p`, and the old builds of `esp32c3-mini`, `epaper-1in54` and `generic` | `multiboard/` builds them |
 | **Not an ESP32** | `sensecap-p1-pro` | Nordic nRF52840, Arduino/Adafruit core |
+| **Not a microcontroller** | `reolink-d340w` | a doorbell camera running a vendor ARM Linux; the port is a userland daemon inside a repacked vendor firmware image |
 
 The shared code reaches an ESP-IDF board as an IDF **component** and reaches the
 nRF52 board as a PlatformIO **library** (symlinked into `firmware/lib/`). The
@@ -444,6 +445,24 @@ storage, signing, LoRa+BLE digipeating, and the **GATT over-the-air update** of
 §6.2. Its `firmware/README.md` carries the pin map and the three
 flash-vs-SoftDevice rules; §7 above is the general version of what it taught.
 
+### Reolink Video Doorbell WiFi (D340W) · `models/reolink-d340w/` · shipping · own project
+**Not a microcontroller.** A Novatek NT98566 (ARM Cortex-A9) running Linux
+4.19 off a read-only UBIFS, sold as a doorbell. Nothing of `common/` compiles
+for it and nothing needs to: the port is `reobell`, a Dart AOT ARMv7 daemon
+baked into a repacked vendor `.pak`. It generates its own keypair on the
+camera, derives an **X4** callsign from it (spec 11.7.1, except that the
+device holds its own key rather than a controller holding it), announces a
+signed `t:identity` every five minutes, and signs and airs the button press it
+reads from the camera's own `api.cgi`. **LAN only, and transmit only** - it
+opens no listening socket, so it digipeats nothing and answers nothing;
+stations on the same LAN carry its packets onward. Flashing is the camera's own
+web UI, which checks a CRC, a board type and a version number and no signature
+at all, so the two validators in its `firmware/tool/` (a nandsim mount and the
+camera's own flasher under qemu) are the only thing between a build and a
+brick. The spec's camera behaviour (`t:observation state:pressed` with a
+`url:`, and answering `q:snapshot`) is not implemented yet and the board README
+says so.
+
 ---
 
 ## 9. Where to start reading, by task
@@ -459,3 +478,4 @@ flash-vs-SoftDevice rules; §7 above is the general version of what it taught.
 | Push firmware to a WiFi board | `tools/push_firmware.sh`, `common/xprs_ota` |
 | Push firmware to the P1-Pro | `tools/push_firmware_p1.py`, `models/sensecap-p1-pro/firmware/src/update.cpp` |
 | Bring a new non-ESP32 board up | `models/sensecap-p1-pro/` and §7 above |
+| Put XPRS on a device that runs its own Linux | `models/reolink-d340w/` and its `firmware/flashing.md` |

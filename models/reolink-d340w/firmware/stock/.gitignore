@@ -1,0 +1,4 @@
+# The stock vendor image is Reolink's, downloaded on demand by fetch-stock.sh
+# and verified by hash. It is not redistributed from this repository.
+*.pak
+*.zip

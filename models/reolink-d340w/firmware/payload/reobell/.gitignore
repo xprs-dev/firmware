@@ -1,0 +1,4 @@
+# the device private key is generated on the camera, never committed
+reobell.key
+# Dart build cruft
+src/.dart_tool/
