@@ -23,9 +23,11 @@ callsign from its own packets, which is the whole point. No desktop application
 sits in the middle translating for it, because a device that cannot sign for
 itself is a device somebody else is speaking for.
 
-**The unit is a version behind this tree.** It runs firmVer 4664, which says
-`t:message` on a press and carries no `url:`. The daemon described here is
-built and bench-tested; it reaches the camera at the next flash.
+**The unit is a version behind this tree.** It runs firmVer 4664, whose press
+is a `t:message` -- chat, which put a bubble with a Reply button in the Local
+room on every ring -- and which carries no `url:`. The daemon described here
+says it as an observation instead and is built and bench-tested; it reaches the
+camera at the next flash.
 
 It is an `X4` station in the sense of the specification's section 11.7.1, with
 one difference worth stating: 11.7.1 describes a controller holding the

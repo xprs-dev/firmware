@@ -58,13 +58,22 @@ if [ ! -f "$Q/vmlinuz" ] || [ ! -f "$Q/nandsim.ko" ]; then
   cp "$KO" "$Q/nandsim.ko"
 fi
 
-# 3. Static busybox for the initramfs (once).
+# 3. Static busybox for the initramfs (once). ARMHF, like the kernel: this
+# image is amd64, so an unqualified `apt-get download busybox-static` fetches
+# an x86-64 binary, the guest boots and then sits in silence because it cannot
+# execute /init, and the run dies on the timeout looking exactly like a kernel
+# that would not boot. Asserted below rather than trusted.
 if [ ! -f "$Q/busybox" ]; then
-  ( cd "$Q" && rm -f busybox-static_*.deb && apt-get download busybox-static ) \
-    || { echo "FAIL: apt could not download busybox-static"; exit 3; }
-  dpkg-deb -x "$Q"/busybox-static_*.deb "$Q/bbdeb"
+  dpkg --add-architecture armhf; apt-get update -qq
+  ( cd "$Q" && rm -f busybox-static_*.deb && apt-get download busybox-static:armhf ) \
+    || { echo "FAIL: apt could not download busybox-static:armhf"; exit 3; }
+  dpkg-deb -x "$Q"/busybox-static_*armhf.deb "$Q/bbdeb"
   cp "$Q/bbdeb/bin/busybox" "$Q/busybox"
 fi
+case "$(od -An -tx1 -j18 -N2 "$Q/busybox" | tr -d ' ')" in
+  2800) ;;   # EM_ARM
+  *) echo "FAIL: $Q/busybox is not an ARM binary; delete $Q and re-run"; exit 3 ;;
+esac
 
 # 4. Build the initramfs: busybox + update + nandsim.ko + the pak + init.
 IR="$Q/ir"; rm -rf "$IR"; mkdir -p "$IR/bin"

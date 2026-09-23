@@ -18,13 +18,12 @@ export REOBELL_USER="${USER:-admin}"
 export REOBELL_PASS="$PASSWORD"
 export REOBELL_API="${API:-http://127.0.0.1}"
 export REOBELL_HTTP_PORT="${HTTP_PORT:-8080}"
-export REOBELL_MESSAGE="$MESSAGE"
 # Fixed address for the picture, when the camera's own is not what a phone
 # should be told (a port forward, say). Empty means "work it out at run time",
 # which is what a DHCP lease needs.
 export REOBELL_URL="$URL"
 [ -n "$POLL" ] && export REOBELL_POLL_MS=$((POLL * 1000))
-[ -n "$MOTION_EVERY" ] && export REOBELL_MOTION_EVERY_S="$MOTION_EVERY"
+[ -n "$MOTION_DEBOUNCE" ] && export REOBELL_MOTION_DEBOUNCE_S="$MOTION_DEBOUNCE"
 
 # Generate the device keypair once (an X4 callsign derived from it). The
 # private key stays where the admin password already is.

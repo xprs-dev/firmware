@@ -33,9 +33,20 @@
 ///
 /// It replaced a shell poller that logged in again on every token error and
 /// leaked a lease on every restart, and that could only say `t:message` --
-/// prose where the format has a word. The message is still aired beside the
-/// observation for one release, so a phone that has not updated is not left
-/// with a doorbell that went silent.
+/// prose where the format has a word.
+///
+/// ── Why there is no `t:message` here at all ──────────────────────────────
+///
+/// `t:message` is chat. A station's chat ring admits exactly `t:message` and
+/// `t:status`, and the phone's `#LOCAL` room admits any undirected
+/// `scope:local` message with no regard for whether a person or a machine
+/// sent it, so a doorbell airing one puts a bubble, an unread and a
+/// notification in a conversation on every press. Section 11.3 of the format
+/// draws the line for commands in so many words -- "it must not appear in a
+/// conversation view even when it carries `m:`" -- and a device reporting is
+/// the same shape. What a thing has to say is an observation (design rule 5:
+/// one packet type carries every kind of observation), and a receiver decides
+/// for itself whether that is worth interrupting anybody for.
 ///
 /// Env it reads, all optional except the password:
 ///   REOBELL_API        camera API base          (default http://127.0.0.1)
@@ -44,10 +55,9 @@
 ///   REOBELL_BCAST      extra broadcast address  (e.g. 192.168.1.255)
 ///   REOBELL_HTTP_PORT  where the still is served (default 8080; 80 is the camera's)
 ///   REOBELL_POLL_MS    how often the door is read (default 1000)
-///   REOBELL_MOTION_EVERY_S  least gap between motion reports (default 60)
+///   REOBELL_MOTION_DEBOUNCE_S  least gap between motion reports (default 30)
 ///   REOBELL_CLEAR_AFTER_S   quiet needed before `clear` (default 20)
 ///   REOBELL_IDENTITY_S they hear who it is this often (default 300)
-///   REOBELL_MESSAGE    the legacy t:message body
 library;
 
 import 'dart:async';
@@ -204,7 +214,8 @@ int _cmdSelftest() {
   final callsign = 'X4${NostrCrypto.deriveCallsign(kp.publicKeyHex)}';
 
   final base = XprsPacket.parse(
-      't:message f:$callsign ts:${nowTs()} scope:local m:Someone at the front door')!;
+      't:observation f:$callsign state:pressed '
+      'url:http://192.168.1.9:8080/door/snapshot.jpg ts:${nowTs()} scope:local')!;
   final signed = signPacket(base, d);
   final sigVal = signed['sig'];
   if (sigVal == null || sigVal.length != 60) {
@@ -223,9 +234,11 @@ int _cmdSelftest() {
     stdout.writeln('FAIL: reference verify rejected our signature');
     return 1;
   }
-  // Tamper: a flipped message byte must fail.
+  // Tamper: a flipped byte must fail. `pressed` to `motion` is the change
+  // that matters here -- a signature that survived it would let anybody turn
+  // one of this doorbell's reports into another.
   final tampered = XprsPacket.parse(
-      signed.encode().replaceFirst('front door', 'back door'))!;
+      signed.encode().replaceFirst('state:pressed', 'state:motion'))!;
   final tdigest = NostrCrypto.sha256Bytes(Uint8List.fromList(
       utf8.encode(tampered.without(kIdExcluded).encode())));
   if (XprsCrypto.verify(tdigest, sigBytes, pubXonly)) {
@@ -293,19 +306,6 @@ Future<void> _airIdentity(DevKey key, String? url, List<String> bcast) async {
   ], bcast);
 }
 
-/// The legacy ring, kept for one release so a phone that has not updated
-/// still hears the doorbell (see the note at the top of this file).
-Future<void> _airMessage(DevKey key, List<String> bcast) async {
-  final body = _env('REOBELL_MESSAGE', 'Someone at the front door');
-  await _airFields(key, [
-    const MapEntry('t', 'message'),
-    MapEntry('f', key.callsign),
-    MapEntry('ts', nowTs()),
-    const MapEntry('scope', 'local'),
-    MapEntry('m', body),
-  ], bcast);
-}
-
 Future<int> _cmdRun(List<String> args) async {
   final key = _loadKey();
   final bcast = <String>[
@@ -314,7 +314,8 @@ Future<int> _cmdRun(List<String> args) async {
   ];
   final port = _envInt('REOBELL_HTTP_PORT', 8080);
   final pollMs = _envInt('REOBELL_POLL_MS', 1000);
-  final motionEvery = Duration(seconds: _envInt('REOBELL_MOTION_EVERY_S', 60));
+  final motionDebounce =
+      Duration(seconds: _envInt('REOBELL_MOTION_DEBOUNCE_S', 30));
   final clearAfter = Duration(seconds: _envInt('REOBELL_CLEAR_AFTER_S', 20));
   final identityEvery = Duration(seconds: _envInt('REOBELL_IDENTITY_S', 300));
 
@@ -387,21 +388,22 @@ Future<int> _cmdRun(List<String> args) async {
         final now = DateTime.now();
         final url = await pictureUrl();
 
-        // The button. A press is the one thing worth interrupting a person
-        // for, so it is aired every time -- debounced only against the same
-        // press being read twice by a one-second poll.
+        // The button. Aired every time it is pressed. The debounce is not a
+        // judgement about whether a ring is worth anybody's attention -- that
+        // is the receiver's to make -- it only stops a one-second poll reading
+        // one press as two.
         if (ev.visitor && !wasVisitor &&
             now.difference(lastPress) > const Duration(seconds: 5)) {
           lastPress = now;
           saidClear = false;
           await _airObservation(key, 'pressed', url, bcast);
-          await _airMessage(key, bcast);
         }
 
-        // Movement. A camera pointed at a street sees it all day, and airing
-        // that every second would be a doorbell shouting over everything
-        // else on the network.
-        if (ev.motion && !wasMotion && now.difference(lastMotion) > motionEvery) {
+        // Movement, debounced the same way and for the same reason: the
+        // camera's md flag flaps several times while one person walks past,
+        // and those are one movement rather than six. Whoever hears it decides
+        // what to do about it.
+        if (ev.motion && !wasMotion && now.difference(lastMotion) > motionDebounce) {
           lastMotion = now;
           saidClear = false;
           await _airObservation(key, 'motion', url, bcast);

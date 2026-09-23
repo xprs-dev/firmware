@@ -353,11 +353,7 @@ fetching the still from the address the daemon aired.
    else. Carrying the still as a `file:<sha256>` media token is the shape that
    would work and is worth a spec note.
 
-4. **The legacy `t:message` goes after one release.** It is aired beside the
-   observation so a phone that has not updated is not left with a doorbell
-   that went silent. Drop it once the phones are on Things 0.2.0 or newer.
-
-5. **Flashing one from the phone** is the piece that lives on the app side
+4. **Flashing one from the phone** is the piece that lives on the app side
 rather than here: the XPRS app's Firmwares wapp finds ESP32 boards over USB OTG and
 writes them with esptool. A camera is nothing like that. It is found on the
 LAN, not on a cable (the vendor API answers on port 80, and `GetDevInfo`

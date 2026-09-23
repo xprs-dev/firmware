@@ -174,7 +174,19 @@ scripts under `tool/` automate them (each takes the pak path):
   crc/magic/board/version reject** (the script asserts this and prints `>>>
   PASS`). The `fdt.restore/uenv/sp/ep/NOUSE ... not found in img` lines are
   absent partitions on the single nandsim device and are EXPECTED; only rootfs
-  and app matter. This is exactly how the 4664 pak was cleared before flashing.
+  and app matter. The 4665 pak was cleared this way on 2026-09-23, with all six
+  sections reporting success.
+
+  **The initramfs busybox must be armhf, and until 2026-09-23 it was not.** The
+  script asked apt for `busybox-static` without an architecture inside an amd64
+  image, so the initramfs carried an x86-64 binary: the ARM kernel booted, went
+  silent at `rdinit=/init` because it could not execute it, and the run died on
+  the 240-second timeout reporting "qemu did not reach the update step (boot
+  problem or timeout)" -- which reads exactly like a kernel that will not boot.
+  It now asks for `busybox-static:armhf` and refuses to boot anything whose ELF
+  machine is not ARM. Whether the 4664 pak was ever really cleared by this gate
+  is therefore not something this document can claim, and the pak on the camera
+  was flashed on the strength of a run that could not have got that far.
 
   **Caveat (kernel may age out):** `validate_update_qemu.sh` fetches the Debian
   armhf kernel and busybox with `apt download`, so it needs network and the

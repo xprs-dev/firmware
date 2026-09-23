@@ -1,20 +1,21 @@
 # reobell XPRS bridge - camera-side config. Edit on the SD card; no reflash.
 #
 # Every value with a space in it MUST be quoted. This file is sourced by a
-# POSIX shell, where `MESSAGE=Someone at the front door` is not an assignment
-# at all: it sets MESSAGE only for the command `at`, which then fails, and the
-# shell carries on with MESSAGE empty. The doorbell aired `m:` with nothing
-# after it for exactly that reason (seen on the air 2026-09-22).
+# POSIX shell, where `WORDS=two words here` is not an assignment at all: it
+# sets WORDS only for the command `two`, which then fails, and the shell
+# carries on with WORDS empty. The doorbell shipped with an unquoted line like
+# that and aired an empty body for weeks because of it (seen on the air
+# 2026-09-22), which is half of why that line is gone now.
 USER=admin
 PASSWORD=CHANGE_ME                    # the camera's admin password (loopback login)
 NICK=frontdoor                        # nick: in the presence announcement
-MESSAGE="Someone at the front door"   # the legacy t:message body sent on a ring
 BCAST=                                # extra directed broadcast, e.g. 192.168.1.255
                                       # (blank = 255.255.255.255 only)
 HTTP_PORT=8080                        # where the still is served; 80 is the camera's
 URL=                                  # fixed picture address; blank = work it out
                                       # from the camera's own address each time
 POLL=1                                # seconds between reads of the door
-MOTION_EVERY=60                       # least seconds between movement reports
+MOTION_DEBOUNCE=30                    # least seconds between movement reports:
+                                      # one person walking past is one movement
 API=http://127.0.0.1                  # the camera's own api.cgi, over loopback
 # The X4 callsign is derived from the device key (reobell.key), not set here.

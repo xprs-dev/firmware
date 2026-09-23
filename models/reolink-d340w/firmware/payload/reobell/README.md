@@ -12,7 +12,7 @@ verifies its reports. No desktop application sits in the middle.
 |---|---|
 | `boot.sh` | launched by the firmware hook; makes the key once, then supervises the daemon |
 | `reobell` | the daemon: one ARMv7 hard-float binary, built from `src/` |
-| `config` | admin password, nick, the ring message, the port, broadcast address |
+| `config` | admin password, nick, the port, the broadcast address, the debounces |
 | `reobell.key` | the device private key (an nsec), made on first boot; **never in the repo** |
 | `src/` | the Dart source, to rebuild the binary |
 | `xprsbcast.c` | the first unsigned broadcaster, from before any of this. Reference only. |
@@ -35,10 +35,11 @@ t:observation f:X4... state:motion  url:http://<ip>:8080/door/snapshot.jpg ts:..
 t:observation f:X4... state:clear                                          ts:... sig:...
 ```
 
-  A press is aired every time; movement at most once a minute, because a camera
-  pointed at a street sees it all day and a doorbell should not shout over the
-  rest of the network; `clear` once, after the doorstep has been quiet for
-  twenty seconds, because motion flaps.
+  A press is aired every time it happens. Both it and movement are debounced
+  (5 s and 30 s), which answers "is this the same press, the same person
+  walking past" and never "is this worth anybody's attention": that second
+  question belongs to whoever hears it. `clear` goes out once, after the
+  doorstep has been quiet for twenty seconds.
 - **Announces itself** every five minutes with a signed `t:identity` carrying
   its npub, its nick and the same `url:`. The address is worked out again each
   time, because a DHCP lease moves.
@@ -60,8 +61,13 @@ t:observation f:X4... state:clear                                          ts:..
   The stream is honestly a run of stills. The camera serves h264 over RTSP and
   an ARMv7 doorbell cannot transcode, so `multipart/x-mixed-replace` is what it
   can offer a browser and 1.5 fps is what that costs.
-- **Still airs `t:message`** beside the press for one release, so a phone that
-  has not updated is not left with a doorbell that went silent. It goes after.
+- **Airs nothing that is chat.** A doorbell does not belong in a conversation:
+  a station's chat ring admits `t:message` and `t:status`, and a phone's
+  `#LOCAL` room admits any undirected `scope:local` message without caring
+  whether a person or a machine sent it. So a press was a bubble with a Reply
+  button on it, in among people talking. The format's answer is the type: what
+  a thing has to say is an observation, and what a receiver does about one is
+  the receiver's business.
 
 ## Install
 
@@ -98,8 +104,8 @@ REOBELL_USER=admin REOBELL_PASS=sesame REOBELL_HTTP_PORT=8097 \
 dart run bin/reobell.dart run 127.0.0.1
 ```
 
-`REOBELL_POLL_MS`, `REOBELL_MOTION_EVERY_S`, `REOBELL_CLEAR_AFTER_S`,
-`REOBELL_IDENTITY_S`, `REOBELL_URL` and `REOBELL_MESSAGE` are the rest.
+`REOBELL_POLL_MS`, `REOBELL_MOTION_DEBOUNCE_S`, `REOBELL_CLEAR_AFTER_S`,
+`REOBELL_IDENTITY_S` and `REOBELL_URL` are the rest.
 
 ## Notes
 
