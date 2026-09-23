@@ -18,4 +18,8 @@ POLL=1                                # seconds between reads of the door
 MOTION_DEBOUNCE=30                    # least seconds between movement reports:
                                       # one person walking past is one movement
 API=http://127.0.0.1                  # the camera's own api.cgi, over loopback
+KEYFILE=/mnt/para/reobell.key         # where the device key is kept. The rootfs is
+                                      # read-only in the baked build, so the key cannot
+                                      # sit beside the binary; /mnt/para is writable.
+                                      # A firmware flash clears it: new key, new callsign.
 # The X4 callsign is derived from the device key (reobell.key), not set here.

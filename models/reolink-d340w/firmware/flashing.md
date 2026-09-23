@@ -31,10 +31,10 @@ docker build -t reobell-mtd models/reolink-d340w/firmware/tool
 cp -a models/reolink-d340w/firmware/payload/reobell ~/reobell_stage
 $EDITOR ~/reobell_stage/config          # set the real PASSWORD, BCAST, nick
 
-# 3. build the baked pak (repacks for the bigger rootfs; version 4664+)
+# 3. build the baked pak (repacks for the bigger rootfs; version 4666+)
 docker run --rm --cap-add MKNOD \
   -v "$PWD":/repo -v "$PWD/models/reolink-d340w/firmware/tool/work":/work \
-  -e PAYLOAD=/stage -v ~/reobell_stage:/stage -e VER=4664_2509161282 \
+  -e PAYLOAD=/stage -v ~/reobell_stage:/stage -e VER=4667_2509231282 \
   reobell-mtd /repo/models/reolink-d340w/firmware/tool/build_reobell_pak.sh
 
 # 4. VALIDATE on qemu (both must pass; see section 4)
@@ -48,7 +48,7 @@ docker run --rm --cap-add MKNOD \
 
 # 5. only if both PASS: name it and web-flash from a browser-readable $HOME path
 cp models/reolink-d340w/firmware/tool/work/reobell_baked.pak \
-   ~/reobell_flash/DB_566128M5MP_W.4664_2509161282.Reolink-Video-Doorbell-WiFi.OV05A10.5MP.WIFI8812.REOLINK.pak
+   ~/reobell_flash/DB_566128M5MP_W.4667_2509231282.Reolink-Video-Doorbell-WiFi.OV05A10.5MP.WIFI8812.REOLINK.pak
 # then upload it in the web UI (section 5). NOT from /tmp: a snap/flatpak
 # Chromium cannot read /tmp and uploads an empty file.
 ```
@@ -226,11 +226,11 @@ password, nick, broadcast address). On the next boot the flashed hook runs
 `<sd>/reobell/boot.sh`: it generates the device key once and starts the signed
 XPRS presence beacon + ring poller. See `payload/reobell/README.md`.
 
-## 7. Baking reobell into the rootfs (no SD card) -- the 4664 deployment
+## 7. Baking reobell into the rootfs (no SD card) -- the deployed variant
 
 Sections 1-5 build the SD-boot **hook** (firmVer 4663): a stock-shaped rootfs
 that only adds one line to `start_app`, then all logic lives on the SD card.
-The version actually running on the unit (firmVer **4664**, callsign `X4875H`)
+The version actually running on the unit (firmVer **4666**, callsign `X4PF9X`)
 instead **bakes the whole reobell payload into the rootfs**, so the camera runs
 the camera-side XPRS daemon with no SD card. The reobell binary is a 5.7MB Dart
 AOT ARM build, which pushes the rootfs to 183 PEBs, past the stock 153-PEB slot,
@@ -245,8 +245,14 @@ image). What it does, on top of sections 1-4:
 2. **Launch from `start_app`.** Append one backgrounded line:
    `( sleep 40; /reobell/boot.sh ) >/mnt/tmp/reobell_boot.log 2>&1 &`. The 40s
    delay lets the network and the local `api.cgi` come up first. `boot.sh`
-   generates the device key once at **`/mnt/para/reobell.key`** (persists across
-   reboots), starts the signed presence beacon, and supervises the ring poller.
+   generates the device key once at **`/mnt/para/reobell.key`**. That path is
+   not decoration: the rootfs is mounted read-only, so a key written beside the
+   binary cannot be created at all, and the daemon then has nothing to sign
+   with and says nothing (firmVer 4665 shipped exactly that and was silent on
+   the air with port 8080 closed). `/mnt/para` is writable and survives a
+   reboot, but **not** a firmware flash: every update gives the doorbell a new
+   callsign. Then it starts the signed presence beacon and supervises the
+   daemon.
    (An earlier build also appended a `telnetd -l /bin/sh` debug line; the
    camera's busybox has NO telnetd applet, so that line is inert. It is left out
    of the repo script.)
@@ -266,13 +272,13 @@ image). What it does, on top of sections 1-4:
    - recompute the pak header CRC (section 2 formula) over the whole new pak.
    The result parses back through `pakler.PAK.from_file` with a valid CRC and is
    ~45.7MB (vs the stock ~41.7MB). Rename it to the official pattern with
-   `<VER> = 4664_2509161282` and flash via the web UI (section 5).
+   `<VER> = 4667_2509231282` and flash via the web UI (section 5).
 
    ```
    docker build -t reobell-mtd models/reolink-d340w/firmware/tool
    docker run --rm --cap-add MKNOD \
      -v "$PWD":/repo -v "$PWD/models/reolink-d340w/firmware/tool/work":/work \
-     -e VER=4664_2509161282 reobell-mtd \
+     -e VER=4667_2509231282 reobell-mtd \
      /repo/models/reolink-d340w/firmware/tool/build_reobell_pak.sh
    ```
 
@@ -285,7 +291,7 @@ contains the password, so it is kept local (`~/reobell_flash/`), never committed
 Validate the repacked pak the same two ways as section 4 (nandsim mount, and
 `update 0 <pak> all` under qemu). Once booted, confirm reobell is live: it
 broadcasts a signed `t:identity` on UDP 4242 (any other LAN XPRS station should
-report `hears:X4875H`). The daemon holds one login against the camera's own
+report hearing its callsign; after the 4666 flash that is `X4PF9X`). The daemon holds one login against the camera's own
 api.cgi, watches `GetEvents` for the button and for motion, and airs a signed
 `t:observation state:pressed url:http://<ip>:8080/door/snapshot.jpg` (and
 `state:motion`, and `state:clear` when the doorstep goes quiet), serving that

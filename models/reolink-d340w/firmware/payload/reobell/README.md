@@ -12,8 +12,8 @@ verifies its reports. No desktop application sits in the middle.
 |---|---|
 | `boot.sh` | launched by the firmware hook; makes the key once, then supervises the daemon |
 | `reobell` | the daemon: one ARMv7 hard-float binary, built from `src/` |
-| `config` | admin password, nick, the port, the broadcast address, the debounces |
-| `reobell.key` | the device private key (an nsec), made on first boot; **never in the repo** |
+| `config` | admin password, nick, the port, the broadcast address, the debounces, where the key is kept |
+| `reobell.key` | the device private key (an nsec), made on first boot at `/mnt/para/` because the rootfs is read-only; **never in the repo** |
 | `src/` | the Dart source, to rebuild the binary |
 | `xprsbcast.c` | the first unsigned broadcaster, from before any of this. Reference only. |
 
@@ -111,7 +111,10 @@ dart run bin/reobell.dart run 127.0.0.1
 
 - The admin password and the device key sit beside each other on the camera.
   Neither leaves it: the password is only ever sent to loopback, and the key
-  only ever signs.
+  only ever signs. The key is written to `/mnt/para/reobell.key`, not next to
+  the binary: the baked rootfs mounts read-only, so a key there could never be
+  created at all. `/mnt/para` does not survive a firmware flash, so the camera
+  comes back from an update as a new callsign.
 - Logs: `/mnt/tmp/reobell.log` and `/mnt/tmp/reobell_boot.log`.
 - What it does not do yet: answer `q:snapshot`, `q:stream` or `q:state`
   (XPRS.md 8, 11.7.2). That needs a listening socket, which is a bigger change
