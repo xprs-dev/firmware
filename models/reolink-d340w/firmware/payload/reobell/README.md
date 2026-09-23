@@ -60,7 +60,18 @@ t:observation f:X4... state:clear                                          ts:..
 
   The stream is honestly a run of stills. The camera serves h264 over RTSP and
   an ARMv7 doorbell cannot transcode, so `multipart/x-mixed-replace` is what it
-  can offer a browser and 1.5 fps is what that costs.
+  can offer a browser and 1.5 fps is what that costs. One size only: this
+  camera answers `Snap` with its 2560x1920 main-stream picture and nothing
+  else, about 700 KB, whether it is asked for a substream, a width or the
+  sub channel its own web client uses.
+
+  **A stream ends.** Two viewers at once (the third is told 503), five minutes
+  each, and a viewer that has stopped READING ends it too: the flush that
+  never completes is the signal, since a write into a buffer nobody drains
+  does not fail. Without those three, a viewer that walked away left this
+  daemon asking the camera for a picture a second for as long as it ran, and a
+  few of those took the whole HTTP port down with them -- stills, services and
+  all (seen on the bench 2026-09-23, chasing a live view in the phone app).
 - **Airs nothing that is chat.** A doorbell does not belong in a conversation:
   a station's chat ring admits `t:message` and `t:status`, and a phone's
   `#LOCAL` room admits any undirected `scope:local` message without caring
@@ -117,8 +128,8 @@ dart run bin/reobell.dart run 127.0.0.1
   suffix: the camera's own `device` binary keeps its TLS material in the same
   place and clears it with `rm /mnt/para/*.key`, which quietly ate the
   doorbell's identity between boots until the file was called something else.
-  `/mnt/para` does not survive a firmware flash, so the camera does come back
-  from an update as a new callsign.
+  With the right name it survives a reboot and a firmware update alike: the
+  camera came through the 4668 -> 4669 flash as the same callsign.
 - Logs: `/mnt/tmp/reobell.log` and `/mnt/tmp/reobell_boot.log`.
 - What it does not do yet: answer `q:snapshot`, `q:stream` or `q:state`
   (XPRS.md 8, 11.7.2). That needs a listening socket, which is a bigger change

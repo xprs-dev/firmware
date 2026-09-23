@@ -23,12 +23,13 @@ callsign from its own packets, which is the whole point. No desktop application
 sits in the middle translating for it, because a device that cannot sign for
 itself is a device somebody else is speaking for.
 
-**The unit runs this tree.** firmVer 4668, callsign `X49HRF`: it announces
-itself, serves `http://<ip>:8080/door/snapshot.jpg`, and says what the door
-does as an observation. The chat `t:message` a press used to also send, which
-put a bubble with a Reply button in the Local room on every ring, is gone. The
-callsign is new because a firmware flash clears `/mnt/para`, where the device
-key lives.
+**The unit runs this tree.** firmVer 4669, callsign `X49HRF`: it announces
+itself, serves `http://<ip>:8080/door/snapshot.jpg` and a live view at
+`/door/stream.mjpeg`, and says what the door does as an observation. The chat
+`t:message` a press used to also send, which put a bubble with a Reply button
+in the Local room on every ring, is gone. Its key lives at
+`/mnt/para/reobell.nsec`, which is a name the camera's own housekeeping will
+not delete, so the callsign now survives a restart and an update.
 
 It is an `X4` station in the sense of the specification's section 11.7.1, with
 one difference worth stating: 11.7.1 describes a controller holding the

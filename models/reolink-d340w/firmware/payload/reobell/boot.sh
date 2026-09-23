@@ -29,13 +29,14 @@ export REOBELL_URL="$URL"
 # daemon comes up with nothing to sign with (silence on the air, no still
 # server, and no way to tell from outside; that is exactly what firmVer 4665
 # did). /mnt/para is the camera's writable config partition, which is what a
-# key needs. It does not survive a firmware flash: the doorbell takes a new
-# callsign at every update, and the stations on the LAN meet a new device.
+# key needs, and it survives both a reboot and a firmware flash: measured
+# across the 4668 -> 4669 update, the doorbell came back as the same callsign.
 # Not *.key, and not *.crt: the camera's own `device` binary keeps its TLS
 # material in /mnt/para and clears it with `rm /mnt/para/*.crt` and
 # `rm /mnt/para/*.key`. A device key named reobell.key is deleted by that glob
-# between boots, which is why this doorbell came back with a new callsign
-# after every restart until 4668.
+# between boots, which is the whole reason this doorbell used to come back
+# under a new callsign after every restart -- five identities in one hour on
+# 2026-09-23 -- and why the file is called reobell.nsec now.
 KEYFILE="${KEYFILE:-/mnt/para/reobell.nsec}"
 KEYDIR=$(dirname "$KEYFILE")
 

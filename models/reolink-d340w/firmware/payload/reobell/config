@@ -23,5 +23,5 @@ KEYFILE=/mnt/para/reobell.nsec        # where the device key is kept. The rootfs
                                       # sit beside the binary; /mnt/para is writable.
                                       # The suffix matters: the camera runs
                                       # `rm /mnt/para/*.key` and would eat it.
-                                      # A firmware flash clears it: new key, new callsign.
+                                      # It survives a reboot and a reflash.
 # The X4 callsign is derived from the device key (reobell.key), not set here.

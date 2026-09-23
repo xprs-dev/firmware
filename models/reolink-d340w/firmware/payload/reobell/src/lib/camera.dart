@@ -400,30 +400,66 @@ class SnapshotServer {
     await req.response.close();
   }
 
+  /// How many viewers may watch at once, and how long one watch lasts. Both
+  /// exist because a stream is the one request that does not end by itself:
+  /// on the bench a viewer that stopped READING (a phone that walked out of
+  /// range, a probe that hung up without closing) left this loop fetching a
+  /// frame a second from the camera for as long as the process lived, and a
+  /// handful of those took the doorbell's whole HTTP port down with them --
+  /// snapshots, `/api/services` and all -- because every one of them was
+  /// still asking the camera for pictures nobody would ever read.
+  static const int maxViewers = 2;
+  static const Duration streamMax = Duration(minutes: 5);
+  int _viewers = 0;
+
   Future<void> _stream(HttpRequest req) async {
     const boundary = 'reobellframe';
+    if (_viewers >= maxViewers) {
+      return _json(req, {
+        'ok': false,
+        'error': 'too many viewers; $maxViewers at once',
+      }, HttpStatus.serviceUnavailable);
+    }
+    _viewers++;
     req.response
       ..statusCode = HttpStatus.ok
       ..headers.set('content-type', 'multipart/x-mixed-replace; boundary=$boundary')
       ..headers.set('access-control-allow-origin', '*')
       ..headers.set('cache-control', 'no-store');
+    // The connection closing is the ordinary way a watch ends, and Dart tells
+    // us through `done` rather than through the next write, which can sit in
+    // a buffer for a long time.
+    var gone = false;
+    unawaited(req.response.done.then((_) => gone = true, onError: (_) {
+      gone = true;
+    }));
+    final until = DateTime.now().add(streamMax);
+    var misses = 0;
     try {
-      // Runs until the viewer goes away: writing to a closed socket throws,
-      // which is the signal to stop asking the camera for frames.
       for (;;) {
+        if (gone || DateTime.now().isAfter(until)) break;
         final bytes = await still();
-        if (bytes != null) {
+        if (bytes == null) {
+          // The camera itself is not answering. A stream that cannot carry a
+          // picture is a stream that should end, not one that keeps asking.
+          if (++misses >= 5) break;
+        } else {
+          misses = 0;
           req.response.write('--$boundary\r\nContent-Type: image/jpeg\r\n'
               'Content-Length: ${bytes.length}\r\n\r\n');
           req.response.add(bytes);
           req.response.write('\r\n');
-          await req.response.flush();
+          // A viewer that has stopped reading never fails a write, it just
+          // stops draining: the flush is what notices, and the timeout is
+          // what keeps this loop from waiting on it forever.
+          await req.response.flush().timeout(const Duration(seconds: 10));
         }
         await Future<void>.delayed(streamGap);
       }
     } catch (_) {
-      // the viewer closed the tab
+      // the viewer closed the tab, or stopped reading long enough to say so
     }
+    _viewers--;
     try {
       await req.response.close();
     } catch (_) {}

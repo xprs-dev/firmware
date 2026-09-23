@@ -258,7 +258,7 @@ XPRS presence beacon + ring poller. See `payload/reobell/README.md`.
 
 Sections 1-5 build the SD-boot **hook** (firmVer 4663): a stock-shaped rootfs
 that only adds one line to `start_app`, then all logic lives on the SD card.
-The version actually running on the unit (firmVer **4668**, callsign `X49HRF`)
+The version actually running on the unit (firmVer **4669**, callsign `X49HRF`)
 instead **bakes the whole reobell payload into the rootfs**, so the camera runs
 the camera-side XPRS daemon with no SD card. The reobell binary is a 5.7MB Dart
 AOT ARM build, which pushes the rootfs to 183 PEBs, past the stock 153-PEB slot,
@@ -281,9 +281,10 @@ image). What it does, on top of sections 1-4:
    own `device` binary keeps TLS material in the same directory and clears it
    with `rm /mnt/para/*.crt` and `rm /mnt/para/*.key`, so a key called
    `reobell.key` is deleted between boots and the doorbell greets the LAN as a
-   different device every restart (4666 and 4667 did). `/mnt/para` is writable
-   and survives a reboot, but **not** a firmware flash: every update gives the
-   doorbell a new callsign. `boot.sh` also waits for that mount rather than
+   different device every restart (4666 and 4667 did). With a name outside
+   that glob it keeps its identity: `/mnt/para` survives a reboot AND a
+   firmware update, measured across 4668 -> 4669. `boot.sh` also waits for
+   that mount rather than
    testing it once, because `S00_PreReady` attaches it while the 40s launch
    delay is running. Then it starts the signed presence beacon and supervises
    the daemon.
@@ -325,7 +326,7 @@ contains the password, so it is kept local (`~/reobell_flash/`), never committed
 Validate the repacked pak the same two ways as section 4 (nandsim mount, and
 `update 0 <pak> all` under qemu). Once booted, confirm reobell is live: it
 broadcasts a signed `t:identity` on UDP 4242 (any other LAN XPRS station should
-report hearing its callsign; after the 4668 flash that is `X49HRF`). The daemon holds one login against the camera's own
+report hearing its callsign; on this unit that is `X49HRF`). The daemon holds one login against the camera's own
 api.cgi, watches `GetEvents` for the button and for motion, and airs a signed
 `t:observation state:pressed url:http://<ip>:8080/door/snapshot.jpg` (and
 `state:motion`, and `state:clear` when the doorstep goes quiet), serving that
