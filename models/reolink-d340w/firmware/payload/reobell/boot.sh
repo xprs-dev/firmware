@@ -31,22 +31,45 @@ export REOBELL_URL="$URL"
 # did). /mnt/para is the camera's writable config partition, which is what a
 # key needs. It does not survive a firmware flash: the doorbell takes a new
 # callsign at every update, and the stations on the LAN meet a new device.
-KEYFILE="${KEYFILE:-/mnt/para/reobell.key}"
-mkdir -p "$(dirname "$KEYFILE")" 2>/dev/null
-# The probe runs in a subshell on purpose: a failed redirection on a special
-# builtin ends the whole script in dash, which would kill the doorbell here.
-if [ ! -s "$KEYFILE" ]; then
-  if ( : > "$KEYFILE.probe" ) 2>/dev/null; then
-    rm -f "$KEYFILE.probe"
-  else
-    # Announcing under a fresh callsign every boot is wrong, but it is visible
-    # on the air, where a daemon that cannot start is not.
-    echo "$(date -u) $KEYFILE is not writable; using /mnt/tmp, so this camera"
-    echo "$(date -u) will take a new callsign on every boot. Fix KEYFILE."
-    KEYFILE=/mnt/tmp/reobell.key
+# Not *.key, and not *.crt: the camera's own `device` binary keeps its TLS
+# material in /mnt/para and clears it with `rm /mnt/para/*.crt` and
+# `rm /mnt/para/*.key`. A device key named reobell.key is deleted by that glob
+# between boots, which is why this doorbell came back with a new callsign
+# after every restart until 4668.
+KEYFILE="${KEYFILE:-/mnt/para/reobell.nsec}"
+KEYDIR=$(dirname "$KEYFILE")
+
+# /mnt/para is a UBIFS volume that S00_PreReady mounts (ubiattach -m 8), and
+# until that has happened the same path is a bare directory in the read-only
+# rootfs. Writing the key there would go nowhere, which is why this waits for
+# the mount instead of judging it once: a key that lands on the wrong side of
+# that race gives the doorbell a new callsign on every boot, and every station
+# on the LAN meets a stranger. The probe runs in a subshell because a failed
+# redirection on a special builtin ends the whole script in dash.
+i=0
+while [ "$i" -lt 24 ]; do
+  mkdir -p "$KEYDIR" 2>/dev/null
+  if ( : > "$KEYDIR/.reobell_probe" ) 2>/dev/null; then
+    rm -f "$KEYDIR/.reobell_probe"
+    break
   fi
+  i=$((i + 1))
+  echo "$(date -u) waiting for $KEYDIR to be writable ($i)"
+  sleep 5
+done
+if [ "$i" -ge 24 ]; then
+  # Announcing under a fresh callsign every boot is wrong, but it is visible
+  # on the air, where a daemon that cannot start is not.
+  echo "$(date -u) $KEYDIR never became writable; using /mnt/tmp, so this"
+  echo "$(date -u) camera takes a new callsign on every boot. Fix KEYFILE."
+  KEYFILE=/mnt/tmp/reobell.nsec
 fi
 export REOBELL_KEY="$KEYFILE"
+
+# An identity from before the rename, if the camera has not eaten it yet.
+if [ ! -s "$KEYFILE" ] && [ -s "$KEYDIR/reobell.key" ]; then
+  cp "$KEYDIR/reobell.key" "$KEYFILE" && echo "$(date -u) kept the old callsign"
+fi
 
 # Generate the device keypair once (an X4 callsign derived from it). The
 # private key stays where the admin password already is.

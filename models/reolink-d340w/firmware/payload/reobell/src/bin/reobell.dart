@@ -332,7 +332,7 @@ Future<int> _cmdRun(List<String> args) async {
     port: port,
     callsign: key.callsign,
     log: _log,
-  );
+  )..keyFile = _env('REOBELL_KEY');
   try {
     await server.start();
   } catch (e) {

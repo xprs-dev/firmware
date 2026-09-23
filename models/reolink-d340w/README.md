@@ -23,7 +23,7 @@ callsign from its own packets, which is the whole point. No desktop application
 sits in the middle translating for it, because a device that cannot sign for
 itself is a device somebody else is speaking for.
 
-**The unit runs this tree.** firmVer 4666, callsign `X4PF9X`: it announces
+**The unit runs this tree.** firmVer 4668, callsign `X49HRF`: it announces
 itself, serves `http://<ip>:8080/door/snapshot.jpg`, and says what the door
 does as an observation. The chat `t:message` a press used to also send, which
 put a bubble with a Reply button in the Local room on every ring, is gone. The

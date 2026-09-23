@@ -261,6 +261,12 @@ class SnapshotServer {
   final String callsign;
   final void Function(String line)? log;
 
+  /// Where the device key was read from. Reported by `/api/services` because
+  /// the camera has no shell and no readable log: when the callsign changes on
+  /// every boot, this is the only way to see from the LAN that the key landed
+  /// somewhere that does not survive one.
+  String keyFile = '';
+
   /// One camera call serves every viewer inside this window. Ten phones and a
   /// stream loop asking at once is one `Snap`, not eleven.
   final Duration cacheFor;
@@ -334,11 +340,39 @@ class SnapshotServer {
           'features': {'digipeater': false, 'bridge': false, 'igate': false},
           'api': ['services', 'snapshot', 'stream'],
           'callsign': callsign,
+          'key': _keyReport(),
         });
       default:
         return _json(req, {'ok': false, 'error': 'no such thing here'},
             HttpStatus.notFound);
     }
+  }
+
+  /// Where the key is and whether that place can actually hold it. Paths and
+  /// booleans only: the key itself never leaves the camera.
+  Map<String, Object?> _keyReport() {
+    final dir = keyFile.contains('/')
+        ? keyFile.substring(0, keyFile.lastIndexOf('/'))
+        : '.';
+    var mounted = false;
+    try {
+      mounted = File('/proc/mounts')
+          .readAsLinesSync()
+          .any((l) => l.split(' ').length > 1 && l.split(' ')[1] == dir);
+    } catch (_) {}
+    var writable = false;
+    try {
+      final probe = File('$dir/.reobell_probe');
+      probe.writeAsStringSync('');
+      probe.deleteSync();
+      writable = true;
+    } catch (_) {}
+    return {
+      'file': keyFile,
+      'exists': keyFile.isNotEmpty && File(keyFile).existsSync(),
+      'dir_is_a_mount': mounted,
+      'dir_writable': writable,
+    };
   }
 
   Future<void> _json(HttpRequest req, Map<String, Object?> body,
