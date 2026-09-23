@@ -219,6 +219,34 @@ Steps:
 3. Confirm: `GetDevInfo` `firmVer` becomes `v3.0.0.<VER>` and streaming/snapshot
    still work.
 
+### Flashing without touching a browser window
+
+The upload can be driven headlessly, which is how 4665 and 4666 went on. Start
+Chromium with the DevTools port open, log in to the camera page, click through
+**Maintenance -> Firmware Update**, hand the file to the input over CDP
+(`DOM.setFileInputFiles`, so no native file dialog is involved), then click
+**Update** and, on the confirm step that follows, **Next**. The dialog is two
+steps: stopping after Update uploads nothing.
+
+```sh
+chromium --headless=new --no-sandbox --remote-debugging-port=9222 \
+  --user-data-dir=$HOME/reoflash/profile about:blank &
+# then drive http://127.0.0.1:9222 : Page.navigate, Runtime.evaluate for the
+# login form and the buttons, DOM.setFileInputFiles for the pak.
+```
+
+Before clicking Update, read the first four bytes back **through the page**
+(`file.slice(0,4).arrayBuffer()`); they must be `13 59 72 32`. That is the
+check that catches the empty-upload trap from a browser that cannot read the
+path. Watch `document.body.innerText`: `Uploading files...` for a few minutes,
+then `Upgrading firmware...`, then the camera drops off the network and comes
+back on the login page.
+
+The camera's own `api.cgi` is **not** a way in: `cmd=UpgradePrepare` exists but
+answers `rspCode -4 "param error"` to every plausible parameter shape, because
+the settings client encrypts its request bodies. Reverse-engineering that is
+not worth it when the file input works.
+
 ## 6. Prepare the SD card (hook variant only)
 
 Copy `payload/reobell/` to the SD root and edit `reobell/config` (admin
