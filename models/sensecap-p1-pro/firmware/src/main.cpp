@@ -124,10 +124,13 @@ using namespace Adafruit_LittleFS_Namespace;
  *
  * RadioLib spells the coding rate as its denominator, so 4/5 is 5.
  *
- * The sync word is the one thing neither side sets: xprs_sx1262 never issues
- * SetLoRaSyncWord, so the chip keeps its reset default of 0x1424 -- the
- * private-network value, not LoRaWAN's public 0x3444. RadioLib writes that
- * same register from the one-byte shorthand 0x12. Same bytes on the air.
+ * The sync word used to be the one thing neither side set. It is set on both
+ * sides now: xprs_sx1262 writes it from the one-byte shorthand every time it
+ * tunes or retunes, and `xprs` mode's shorthand is 0x12, which is the
+ * register value 0x1424 the chip also happens to come up with -- the
+ * private-network value, not LoRaWAN's public 0x3444. RadioLib writes the
+ * same register from the same shorthand. Same bytes on the air, and now for
+ * a stated reason rather than by both sides leaving it alone.
  */
 #define LORA_FREQ_MHZ    869.5
 #define LORA_BW_KHZ      125.0

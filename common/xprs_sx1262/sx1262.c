@@ -261,11 +261,40 @@ static esp_err_t sx1262_set_pa_config(sx1262_handle_t handle, int8_t power_dbm)
 static esp_err_t sx1262_set_modulation_params(sx1262_handle_t handle,
                                                 sx1262_sf_t sf, sx1262_bw_t bw, sx1262_cr_t cr)
 {
-    // Low data rate optimize for SF11/SF12 at BW125
-    uint8_t ldro = 0;
-    if (bw == SX1262_BW_125 && (sf == SX1262_SF11 || sf == SX1262_SF12)) {
-        ldro = 1;
+    /*
+     * Low data rate optimize, by the datasheet's own rule rather than by a
+     * list of the presets this firmware happens to carry: on when a symbol
+     * lasts 16.38 ms or longer, which is 2^SF / BW.
+     *
+     * The old condition was `BW125 && (SF11 || SF12)`, and it gave the
+     * right answer for every preset here by luck -- SF11 at 250 kHz is
+     * 8.2 ms, SF8 at 62.5 kHz is 4.1 ms, both correctly off. It gives the
+     * WRONG answer the moment an operator picks the modulation, which
+     * `both` mode exists to let them do: SF11 at 62.5 kHz is 32.8 ms and
+     * SF10 at 62.5 kHz and SF12 at 250 kHz are 16.4 ms each. RadioLib
+     * applies the real rule, so on those three the two ends would not
+     * demodulate each other and the antenna would get the blame.
+     *
+     * Integer arithmetic, scaled by 100 so 16.38 ms is exact:
+     * (2^SF * 100000 / BW_Hz) >= 1638.
+     */
+    uint32_t hz = 0;
+    switch (bw) {
+    case SX1262_BW_7_8:   hz = 7810u;   break;
+    case SX1262_BW_10_4:  hz = 10420u;  break;
+    case SX1262_BW_15_6:  hz = 15630u;  break;
+    case SX1262_BW_20_8:  hz = 20830u;  break;
+    case SX1262_BW_31_25: hz = 31250u;  break;
+    case SX1262_BW_41_7:  hz = 41670u;  break;
+    case SX1262_BW_62_5:  hz = 62500u;  break;
+    case SX1262_BW_125:   hz = 125000u; break;
+    case SX1262_BW_250:   hz = 250000u; break;
+    case SX1262_BW_500:   hz = 500000u; break;
     }
+    uint8_t ldro = 0;
+    if (hz && sf >= 5 && sf <= 12 &&
+        ((1u << (unsigned)sf) * 100000u) / hz >= 1638u)
+        ldro = 1;
 
     uint8_t args[4] = { (uint8_t)sf, (uint8_t)bw, (uint8_t)cr, ldro };
     return sx1262_write_command(handle, SX1262_CMD_SET_MODULATION_PARAMS, args, 4);
