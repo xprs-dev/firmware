@@ -651,6 +651,56 @@ it synced against an unset callback: BLE came up and `on_sync` never ran. The
 controller is ready immediately, so this race always loses -- there is no window
 in which "start it, then wire it up" works on this chip.
 
+### A directive asked for is not a directive taken
+
+A line in `sdkconfig.defaults` is a REQUEST. Kconfig may refuse it, and when
+it does **nothing says so**: the generated `sdkconfig.<env>` is what builds,
+and it simply does not contain what was asked for. This page already records
+one instance ("a new line in a board's sdkconfig.defaults is ignored while
+`sdkconfig.<env>` exists"). On 2026-10-03 a sweep found five more, across
+every board, and two of them had been live for months.
+
+| what was asked | what was built | why Kconfig refused |
+|---|---|---|
+| `ESP_TASK_WDT_TIMEOUT_S=90`, on **every board** | **5** | `range 1 60` in `esp_system/Kconfig`. Out of range values are discarded, and the companion `ESP_TASK_WDT_PANIC=y` DID apply |
+| `# CONFIG_BT_NIMBLE_ENABLED is not set` (T-Deck) | `y` | a member of the `BT_HOST` **choice**; a choice member cannot be negated from a defaults file |
+| `CONFIG_XPRS_BEARER_RNS=n` (Heltec V3) | `y` | nothing refused it -- the generated file was simply older than the request, which is the original trap |
+| `CONFIG_SDCARD_MAX_FILES=3`, `BT_CTRL_BLE_MAX_ACT=2` (Heltec) | 5, 3 | the same staleness |
+| `SPIRAM_IGNORE_NOTFOUND=y` | absent | `depends on !SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, which the same file sets. The two are mutually exclusive and this page used to prescribe both |
+| `ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n` | `y` | `select`ed by `ESP_COEX_SW_COEXIST_ENABLE`; a `select` cannot be refused from a defaults file |
+
+**The two that mattered.** A panicking five-second task watchdog on boards
+whose config said ninety, which is close enough to an Ed25519 verify plus an
+NVS commit, or a four-second SF11 frame, to be a real hazard. And a Heltec V3
+running the Reticulum bearer that this page had already decided to give up on
+that board, with the measurement to justify it -- the feature was given up in
+the defaults and never given up in the build. Restoring it returned **9.7 KB
+of static RAM** on the board with the least room in the fleet:
+
+| Heltec V3 | before | after |
+|---|---|---|
+| static RAM (link) | 144,272 | **134,576** |
+| free heap, steady | 6,884 | **28,496** |
+| largest free block | 4,288 | **25,740** |
+
+That board had been 120 bytes from losing its UI task. It is not any more, and
+nothing was traded for it: it is what its own configuration always said.
+
+**So the rule.** `tools/scripts/check_sdkconfig_drift.py` compares every
+directive a board asks for against what was built, per board or over all of
+them, and exits non-zero on a divergence. A divergence that has been
+understood and accepted is recorded next to the request, so the knowledge
+lives in the file that makes the request:
+
+```
+# drift-ok: CONFIG_SPIRAM_IGNORE_NOTFOUND mutually exclusive with ALLOW_BSS_SEG_EXTERNAL_MEMORY
+```
+
+Run it after touching any `sdkconfig.defaults`, and treat a new divergence as
+a build failure. Deleting the generated `sdkconfig.<env>` is how a stale one
+is fixed, and it is worth doing deliberately now and then: two of the five
+above were nothing but staleness.
+
 ### The boot order is the allocator
 
 Whoever starts last gets the fragments. This file already says to claim big task
@@ -744,6 +794,97 @@ The station says so with the numbers and comes up in its default mode
 rather than not at all, and the setting is left alone so a board with room
 takes it next time. The T-Deck, which has 8 MB of PSRAM, carries the state
 there and only the 6 KB stack internally.
+
+### And the same answer, twice over: both bridges at once
+
+`both` mode (docs/lora.md section 11) serves Meshtastic and MeshCore on one
+channel, which means holding both bridges at the same time:
+
+| piece | cost | where it can live |
+|---|---|---|
+| MeshCore's state (`lr_mc_state_t`) | 7,092 B small / 10,064 B large tables | PSRAM |
+| Meshtastic's state (`lr_state_t`) | 6.7 KB small / 9.2 KB large tables | PSRAM |
+| the `mcwork` task's stack | 6,144 B | internal only |
+| the classifier's decrypt buffer | 255 B | `.bss` |
+
+Nineteen kilobytes and change, against a Heltec V3 that has about 11.8 KB of
+internal heap free with ONE bridge running. There is nothing to reshuffle,
+so the rule is the board's again and it is the same rule: **no PSRAM, no
+`both`.**
+
+**And the gate itself was the bug.** The worker's stack used to be asked for
+at the moment a mode was entered -- which on a station switched hours into a
+run is 6 KB of contiguous internal heap from a heap that is no longer whole.
+A fully loaded T-Deck refused `cfg lora meshcore` for exactly that reason on
+2026-10-03, before `both` mode existed. It is claimed in `xprslora_start`
+now, from a whole heap and before the UI task takes its eight kilobytes, and
+the task parks on a semaphore instead of being created and deleted; entering
+a mode costs nothing. That is this page's own rule ("Create the big task
+stacks first", "prefer claiming a large stack early over hoping it fits
+later") applied to the one task that was breaking it.
+
+With that and the configuration restored above, a fully loaded T-Deck with
+Bluetooth up runs `both` mode: min-ever **14,872** against the 4,000 floor,
+where plain `meshcore` mode used to sit at 3,728 and `both` could not start
+at all.
+
+**And the one number nobody was measuring.** `mcwork` had no
+`uxTaskGetStackHighWaterMark` line while the bearer task and `idx_task` both
+had one, and two documents disagreed about what it costs -- 3.9 KB here, 3.3
+KB in `mc_mesh.h`. It now prints the same line the bearer does, and the
+bench says **904 bytes of its 6,144 were never used**: real usage is about
+5,240 bytes, MORE than either figure. Nobody should trim that stack, and
+anyone who had trusted `mc_mesh.h`'s 3.3 KB would have overflowed it. Both
+figures say 3.9 now.
+
+*Measured on the bench, 2026-10-03, and the reason this subsection has
+numbers at all:* the first version of `both` mode cost the Heltec V3 **920
+bytes** of static DRAM. Its UI task asked for 8 KB, found a largest block of
+7,680, fell back to 6 KB and panicked in a loop (`zc:panic,ui`). The thing to
+take from it is that the broken build **reported more free heap than the
+working one** -- 9,052 bytes against 6,884 -- because the 8 KB task it failed
+to create is bigger than the 2 KB it saved by not creating it. This page's rule
+is what catches that: judge by min-ever and by whether every subsystem started.
+
+Where the 920 went, and what each fix was worth:
+
+| bytes | what | fix |
+|---|---|---|
+| 528 | six cached config keys at 88 each | one packed `[both] channel` key, and none at all without PSRAM |
+| 255 | the classifier's decrypt scratch | moved into the PSRAM block that only exists when the mode can run |
+| 148 | a fourth row in `k_modes` and `s_survey` | `XPRSLORA_MODE_TABLE`: no row on a board that cannot run it |
+| 40 | the shared channel and the counters | left alone; measured as affordable |
+
+The Heltec runs at **+120 bytes** over baseline now: 43 minutes up, no UI
+warning, no panic, heap flat at 6,884 free. Not `XPRS_PSRAM_BSS` for the
+scratch, incidentally -- that attribute "is inert unless
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is set", so on the board that
+cannot afford the buffer it would still be there. A member of a block that is
+never allocated costs nothing.
+
+**And the T-Deck, which did not close either.** A fully loaded T-Deck
+(Bluetooth up) has about 22.0 KB of free internal heap against the 22,528
+`lr_claim_for` wants for MeshCore's worker, and refuses the mode -- it refuses
+plain `meshcore` too on that build, which is how the margin was found. The
+A/B: baseline firmware enters `meshcore` with roughly **92 bytes** to spare,
+and this feature's remaining 312 bytes is more than that. Per this page, the
+answer is not to shave the feature to 92 bytes nor to quietly lower the
+reserve: it is to decide what the board is for. Validated with `ble_on = no`
+and written down as a gap.
+
+Two details that are this page's rules rather than that mode's:
+
+- **The budget is taken before the radio moves, and it counts BOTH blocks**
+  even though only MeshCore's is claimed there. Claiming the Meshtastic
+  block early would hand `xprslora_mt_start` a zeroed struct and make its
+  "already up" shortcut return a bridge that was never initialised, so the
+  cost is budgeted in one place and the block is claimed in the other. A
+  station that cannot afford both refuses before the retune rather than
+  arriving on a shared channel with one bridge working and one silent.
+- **Nothing is freed on the way out.** Both blocks are kept, as
+  `meshcore` mode's already was, because a board that can hold them holds
+  them and "freeing memory does not fix an over-committed board -- it moves
+  the victim".
 
 ### A boot-trace delta says what a subsystem cost, not what stopping it returns
 
@@ -871,7 +1012,7 @@ reboot. Measured by overflowing them:
 | `xprslan` | 5120 | two SHA-256 derivations per datagram, a BLE re-air and a log line; 4096 overflowed |
 | `aprsis` | 6144 | line parsing, DNS, socket; 4096 overflowed |
 | `heartbeat` | 3072 | `ESP_LOG` with ten arguments is almost all of it; 2048 overflowed |
-| `mcwork` | 6144 | one Ed25519 verification: 3.9 KB of it, measured with `-fstack-usage` on the target compiler (2.7 KB for the verify frame, 0.7 KB for the point addition under it, the rest SHA-512 and the bridge) |
+| `mcwork` | 6144 | one Ed25519 verification. `-fstack-usage` put the verify frame at 3.9 KB (2.7 KB for the verify, 0.7 KB for the point addition under it, the rest SHA-512 and the bridge); the RUNTIME high-water on the bench, 2026-10-03, says only **904 bytes of the 6,144 are ever spare**, so the whole pass costs about 5,240. Do not trim it |
 
 **A task's stack is the reason a bridge has a task at all.** MeshCore signs
 its adverts, so reading one is an Ed25519 verification, and verifying it
@@ -966,9 +1107,15 @@ packet. That default alone is ~27 KB of internal RAM nobody asked for, and it is
 the difference between the middle and right columns above -- at 32 this board
 loses its screen. 16 is the Kconfig floor.
 
-Also: `SPIRAM_IGNORE_NOTFOUND=y` is the boot-loop insurance -- without it, "PSRAM
-configured but not detected" is a startup panic indistinguishable from a bad
-flash. Keep `SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` off; this firmware writes flash
+Also: `SPIRAM_IGNORE_NOTFOUND=y` *would be* the boot-loop insurance -- without
+it, "PSRAM configured but not detected" is a startup panic indistinguishable
+from a bad flash -- except that **it cannot be had alongside the `.bss`
+migration below**: Kconfig has it `depends on
+!SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`. This page prescribed both for months
+and no board ever had the first (see "A directive asked for is not a directive
+taken"). Moving `.bss` out of DRAM is worth more here than insurance against a
+soldered-on chip, so the request is left in the defaults as a record, with a
+`drift-ok` line beside it. Keep `SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY` off; this firmware writes flash
 (OTA, coredump), which disables the cache on **both** cores. And 80 MHz, not
 120: IDF's own help calls octal-at-120 experimental and warns it "will crash
 randomly" after a ~20 degree swing.

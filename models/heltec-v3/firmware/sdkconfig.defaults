@@ -8,6 +8,14 @@ CONFIG_BT_ENABLED=y
 # CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y   (host retired: tinynimble)
 
 # BLE 5.0 controller features (ESP32-S3).
+#
+# NOT TAKEN, and they cannot be: the BT_LE_* symbols belong to IDF's NimBLE
+# PORT, and this board retired that host for tinynimble (below), so they do
+# not exist in the build. BLE5 extended advertising still works -- tinynimble
+# asks the controller for it over HCI, which is the whole point of that
+# backend. Kept as a record of what the radio is expected to do.
+# drift-ok: CONFIG_BT_LE_50_FEATURE_SUPPORT a NimBLE port symbol; no host selected
+# drift-ok: CONFIG_BT_LE_EXT_ADV a NimBLE port symbol; no host selected
 CONFIG_BT_LE_50_FEATURE_SUPPORT=y
 CONFIG_BT_LE_EXT_ADV=y
 
@@ -138,6 +146,7 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=12
 # CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT=8   (host retired: tinynimble)
 # CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT=8   (host retired: tinynimble)
 CONFIG_BT_CTRL_BLE_MAX_ACT=2
+# drift-ok: CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE depends on a duplicate filter this board turns off
 CONFIG_BT_CTRL_SCAN_DUPL_CACHE_SIZE=20
 
 # One TCP connection's send and receive windows are 5,744 bytes each by
@@ -195,7 +204,12 @@ CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
 # said "the 90 s task watchdog (panic on trigger) is what turns a hang into
 # the reset that rolls back" -- and the built config had a 5 s warn-only
 # watchdog, so a new image that hung simply sat there. Now it is true.
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+# 60, not 90: esp_system/Kconfig declares `range 1 60`, so 90 was out of
+# range and silently discarded -- the built value stayed at the default 5
+# while PANIC=y applied, which is a panicking five-second watchdog on a board
+# whose config said ninety. Found on 2026-10-03 with
+# tools/scripts/check_sdkconfig_drift.py, on every board at once.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # The archive names its segments seg_0000000000.bin -- eighteen characters,

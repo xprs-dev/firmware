@@ -70,7 +70,11 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # by the one that could. The 90 s panicking watchdog is what turns a hang
 # into that reset.
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+# 60, not 90: esp_system/Kconfig declares `range 1 60`, so 90 was out of
+# range and silently discarded -- the built value stayed at the default 5
+# while PANIC=y applied. Same bug as the T-Deck had, found by
+# tools/scripts/check_sdkconfig_drift.py on 2026-10-03.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # Open files on /idx, ~4 KB of sector cache each, from PSRAM below. The

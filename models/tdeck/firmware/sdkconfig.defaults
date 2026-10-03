@@ -12,6 +12,11 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 # This node exists to hear ESP-NOW. A station that modem-sleeps misses frames.
+# NOT TAKEN: esp_coex/Kconfig does
+# `select ESP_WIFI_STA_DISCONNECTED_PM_ENABLE if ESP_WIFI_ENABLED`, and a
+# `select` cannot be refused from a defaults file. The mitigation is at
+# runtime, where this firmware holds WIFI_PS_NONE (see further down).
+# drift-ok: CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE selected by ESP_COEX_SW_COEXIST_ENABLE; WIFI_PS_NONE at runtime
 CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 
 # LVGL (managed component, configured via Kconfig — its CMake sets
@@ -28,6 +33,7 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # than one table widget, and when this pool runs out LVGL's LV_ASSERT_MALLOC
 # spins forever inside lv_init -- a hang with no message, which is a long way
 # to walk to find a number.
+# drift-ok: CONFIG_LV_MEM_SIZE_KILOBYTES inert under LV_MEM_CUSTOM=y (tinylv_mem owns the pool)
 CONFIG_LV_MEM_SIZE_KILOBYTES=48
 # The XPRS index names segments seg_<10 digits>.bin -- longer than 8.3, so
 # without long-filename support every write fails while the accept counter
@@ -76,6 +82,15 @@ CONFIG_SPIRAM_SPEED_80M=y
 # returns 0, and the code that wanted PSRAM refuses to start and SAYS SO rather
 # than quietly eating the internal heap instead. Depends on SPIRAM_BOOT_INIT and
 # on NOT setting SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY, so that stays off.
+# NOT TAKEN, and it cannot be: Kconfig has it
+# `depends on SPIRAM_BOOT_INIT && !SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY`, and
+# this file sets the BSS segment setting further down. The two are mutually
+# exclusive, so the request below is a contradiction with the one at the
+# bottom of the file, and the BSS one wins. Moving .bss out of DRAM is worth
+# more on this board than insurance against a PSRAM chip that is soldered on,
+# so the request is left here as a record rather than deleted. docs/esp32.md
+# prescribed both for a while, which was never possible.
+# drift-ok: CONFIG_SPIRAM_IGNORE_NOTFOUND mutually exclusive with ALLOW_BSS_SEG_EXTERNAL_MEMORY
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
 # CAPS_ALLOC, not USE_MALLOC, and this was arrived at by measurement after
@@ -246,7 +261,35 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 #
 # Measured after: see the boot ladder at the end of this file.
 CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
+# NO HOST. tinynimble speaks to the controller over HCI and brings its own
+# host, so the choice below picks the controller on its own. The NIMBLE_*
+# lines further down are kept, not deleted, so the "go back" path at the end
+# of this block stays one line; Kconfig drops them while the host is not
+# selected.
+CONFIG_BT_CONTROLLER_ONLY=y
+#
+# The CONFIG_BT_NIMBLE_* lines in this block are deliberately kept and are
+# deliberately NOT taken: with no host selected the symbols do not exist, so
+# tools/scripts/check_sdkconfig_drift.py is told to expect their absence.
+# They are here so that the "go back" line at the end of the block is one
+# line and not an archaeology exercise.
+# drift-ok: CONFIG_BT_NIMBLE_EXT_ADV no host selected; kept for the go-back path
+# drift-ok: CONFIG_BT_NIMBLE_ROLE_OBSERVER no host selected
+# drift-ok: CONFIG_BT_NIMBLE_ROLE_BROADCASTER no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MAX_CONNECTIONS no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MAX_BONDS no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MAX_CCCDS no host selected
+# drift-ok: CONFIG_BT_NIMBLE_GATT_MAX_PROCS no host selected
+# drift-ok: CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU no host selected
+# drift-ok: CONFIG_BT_NIMBLE_TRANSPORT_EVT_COUNT no host selected
+# drift-ok: CONFIG_BT_NIMBLE_TRANSPORT_EVT_DISCARD_COUNT no host selected
+# drift-ok: CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT no host selected
+# drift-ok: CONFIG_BT_NIMBLE_ACL_BUF_COUNT no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MSYS_1_BLOCK_COUNT no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MSYS_2_BLOCK_COUNT no host selected
+# drift-ok: CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES no host selected
+# drift-ok: CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL no host selected
 CONFIG_BT_NIMBLE_EXT_ADV=y
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
@@ -362,10 +405,19 @@ CONFIG_SDCARD_MAX_FILES=6
 # Proven on the air in both directions: a NimBLE deck and a tinynimble deck
 # heard each other, 164 and 167 frames. See common/tinynimble/README.md.
 #
-# To go back, set BACKEND_TINYNIMBLE=n and NIMBLE_ENABLED=y -- the NimBLE path
-# in xprs_bearer_ble is kept, not deleted, precisely so that is one line.
+# To go back, set BACKEND_TINYNIMBLE=n and BT_NIMBLE_ENABLED=y in place of
+# BT_CONTROLLER_ONLY above -- the NimBLE path in xprs_bearer_ble is kept, not
+# deleted, precisely so that is one line.
 CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
-# CONFIG_BT_NIMBLE_ENABLED is not set
+#
+# This line used to read `# CONFIG_BT_NIMBLE_ENABLED is not set` and it never
+# worked: BT_NIMBLE_ENABLED is a member of the `BT_HOST` choice, and a choice
+# member CANNOT be negated from a defaults file -- Kconfig re-selects the
+# choice's default. So the host was enabled all along, this file said it was
+# not, and the ~22 KB saving claimed above was never taken. Found on the
+# bench 2026-10-03. The fix is to select the choice member that means what
+# was wanted, BT_CONTROLLER_ONLY, which is done where the host used to be
+# enabled. Do not re-add a negation here; it is not expressible.
 
 # LVGL's examples are compiled (though --gc-sections drops them, so they cost
 # build time rather than flash). They also USE the widgets below, so they have
@@ -467,11 +519,33 @@ CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
 # turns the annotation on.
 CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 
+# Two WiFi buffer counts that SPIRAM_TRY_ALLOCATE_WIFI_LWIP raises behind our
+# back, and which cost internal DRAM rather than the PSRAM that setting is
+# for. esp_wifi/Kconfig: `default 10 if !SPIRAM_TRY_ALLOCATE_WIFI_LWIP` and
+# `default 16 if SPIRAM_TRY_ALLOCATE_WIFI_LWIP`, with the help text saying
+# "Each buffer takes approximately 1.6KB of RAM ... allocated when
+# esp_wifi_init is called, they are not freed". Six extra buffers is about
+# 9.6 KB of the scarcest memory on this board, for throughput this station
+# does not need: its job is to hear ESP-NOW and run a radio, not to move
+# bulk. RX_BA_WIN goes back to its own non-PSRAM default by the same
+# argument (and IDF requires it below STATIC_RX_BUFFER_NUM).
+# Pinned here so neither is ever again a side effect nobody counted.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+
 # The task watchdog the partition table's rollback argument relies on. It
 # said "the 90 s task watchdog (panic on trigger) is what turns a hang into
 # the reset that rolls back" -- and the built config had a 5 s warn-only
-# watchdog, so a new image that hung simply sat there. Now it is true.
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+# watchdog, so a new image that hung simply sat there.
+#
+# 60, NOT the 90 this file asked for until 2026-10-03, and the difference
+# mattered: esp_system/Kconfig declares `range 1 60`, so 90 was OUT OF RANGE
+# and silently discarded. The built value stayed at the default 5 while
+# PANIC=y did apply -- a panicking five-second watchdog on a board whose
+# config said ninety, for months. 60 is the real maximum and it is taken.
+# An Ed25519 verify plus an NVS commit on mcwork, or a four-second SF11
+# frame, sits far too close to five seconds.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # The Reticulum bearer (xprs_bearer_rns): this archiver, reachable over RNS.

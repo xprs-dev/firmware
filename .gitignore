@@ -14,6 +14,12 @@ sdkconfig.tdeck_plus
 sdkconfig.tdongle
 sdkconfig.epaper
 sdkconfig.c3mini
+# Slipped through this list until 2026-10-03 and was therefore COMMITTED,
+# which is how the Heltec came to build a resolved config older than its own
+# defaults: the Reticulum bearer its defaults disable was on, and the task
+# watchdog it asks for was not (docs/esp32.md, "A directive asked for is not
+# a directive taken").
+sdkconfig.heltec_v3
 sdkconfig.generic
 sdkconfig.espnow_probe
 # Same, for the two-deck tinynimble probe (deckA, deckB, deckA_nimble).

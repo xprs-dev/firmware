@@ -181,7 +181,12 @@ CONFIG_XPRSBLE_BACKEND_TINYNIMBLE=y
 # said "the 90 s task watchdog (panic on trigger) is what turns a hang into
 # the reset that rolls back" -- and the built config had a 5 s warn-only
 # watchdog, so a new image that hung simply sat there. Now it is true.
-CONFIG_ESP_TASK_WDT_TIMEOUT_S=90
+# 60, not 90: esp_system/Kconfig declares `range 1 60`, so 90 was out of
+# range and silently discarded -- the built value stayed at the default 5
+# while PANIC=y applied, which is a panicking five-second watchdog on a board
+# whose config said ninety. Found on 2026-10-03 with
+# tools/scripts/check_sdkconfig_drift.py, on every board at once.
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=60
 CONFIG_ESP_TASK_WDT_PANIC=y
 
 # The archive names its segments seg_0000000000.bin -- eighteen characters,
