@@ -59,6 +59,16 @@ docs/lora.md, "The rules we follow", and reads its "Lessons learned".**
    (`RX 170 bytes at -39 dBm: t:message f:X1WATT`). Twenty minutes unattended,
    40 samples a station, zero reboots, and `either`/`neither` zero in every
    sample. Numbers in docs/lora.md, "A phone's message on both networks".
+   **NOT FINISHED: the UI task trips the task watchdog in `both` mode.** Left
+   alone after that soak, both T-Decks rebooted within ~15 minutes,
+   ESP_RST_TASK_WDT with the crash record naming `ui`; the Heltec on the same
+   channel in `meshtastic` mode had 39 minutes clean. Follows the mode, not
+   the channel. Prime suspect is UI starvation on `s_mt_mutex`, which both
+   bridges' stats calls now take and which mc_worker holds across an
+   nvs_commit -- but that is a hypothesis. Resolve the two PCs (0x4210122e,
+   0x403767ad) with addr2line against the matching ELF first. Do not run
+   `both` mode unattended on a station anybody relies on until this is
+   closed. docs/lora.md, "OPEN: the UI task trips the watchdog".
 
 0a2. **LDRO was right by luck and is now right by rule.** `sx1262.c`
    enabled low data rate optimize for `BW125 && (SF11 || SF12)`; it now

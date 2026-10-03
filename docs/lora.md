@@ -1413,6 +1413,41 @@ airtime in those 20 minutes, which extrapolates to about 68% of its 360 s
 allowance. Two bridges on one channel, both translating every broadcast, is
 what that costs, and `broadcasts_per_hour` is the lever.
 
+### OPEN: the UI task trips the watchdog in `both` mode (2026-10-03)
+
+**This mode is not finished, and this is why.** The twenty minutes above are
+real -- the logged uptimes climb 643 to 1831 with no backward step on either
+station -- but left alone AFTERWARDS, both T-Decks rebooted independently
+within about fifteen minutes, both `ESP_RST_TASK_WDT` with the crash record
+naming the **ui** task (`zc:panic,ui`, PCs 0x4210122e and 0x403767ad). The
+Heltec V3, on the same channel but in `meshtastic` mode, had 39 minutes clean
+at the same moment. So it follows `both` mode, not the channel.
+
+What is known, as opposed to guessed:
+
+- the UI task went unfed for the full 60 s watchdog period, which is a stall
+  and not a borderline timing figure;
+- `xprslora_mt_stats` and `xprslora_mc_stats` both take `s_mt_mutex`, and in
+  `both` mode BOTH now return true, so every path that draws status takes
+  that mutex twice where it used to take it once -- `/api/status` takes it
+  four times (`xprs_app.c`);
+- `mc_worker` holds the same mutex for the whole of `mc_mesh_work`, which
+  includes Ed25519 verification and, up to twice a minute, an `nvs_commit`
+  that disables the cache on both cores;
+- it did NOT happen while the stations were being polled every 30 s for
+  twenty minutes, and did happen when they were left alone, so the polling
+  is not the trigger.
+
+The plausible mechanism is therefore UI starvation on `s_mt_mutex`, but that
+is a hypothesis and the PCs have not been resolved to functions yet. Note
+also that the watchdog change made this VISIBLE rather than created it: the
+timeout was an effective 5 s with panic before 2026-10-03, so a stall this
+long would have rebooted the board sooner. What is new is `both` mode.
+
+Next step is to resolve those two PCs with `addr2line` against the matching
+ELF, and to instrument the mutex rather than reason about it. Until that is
+done, do not run `both` mode unattended on a station anybody relies on.
+
 ## 15. Lessons learned
 
 Each of these cost at least one wrong turn on 2026-09-19. Read them before
