@@ -58,6 +58,17 @@ static bool     s_far;                 /* the `far` profile, xprs mode only */
 static uint32_t s_freq_want;
 static uint8_t  s_sf_want;             /* lora_sf, 0 = the mode's own */
 static uint16_t s_bw_want;             /* lora_bw_khz, 0 = the mode's own */
+/*
+ * lora_sync, 0 = the mode's own. It exists for one question the bench has
+ * to answer and nothing else can: does the SX126x reject a frame whose
+ * sync word is not the one it was set to? Neither Meshtastic nor MeshCore
+ * exposes its sync word as a setting -- 0x2B and 0x12 are constants in
+ * their own firmware -- so whether ONE channel can carry both networks'
+ * stock nodes depends entirely on how strict that comparison is. With this
+ * key the question is `cfg set lora_sync 2B` in meshcore mode and a count
+ * of what arrives (docs/lora.md, "Measured on the bench").
+ */
+static uint8_t s_sync_want;
 
 /*
  * The regions, per mode (see the header).
@@ -105,9 +116,23 @@ static const xprslora_region_t k_regions_mc[] = {
     { "au", 915800000u,       0,     0, 0, 30 },
 };
 
+/* both: one row, and its frequency is whatever the operator set (mc.h and
+ * mt.h have no say here: the two networks meet where they are put, not
+ * where either of them lives). The hour and the e.r.p. ceiling are EU band
+ * g3's, because a station that meters against nothing is a station that
+ * transmits without limit while believing itself compliant, and the reserve
+ * is Meshtastic's larger one, since SF11 may well be the shared modulation.
+ * Whether band g3 is the right band where this station stands is the
+ * operator's answer, as the power ceiling already is (section 3). */
+#if XPRSLORA_MODE_TABLE > 3   /* `both`'s index; see xprslora.h */
+static const xprslora_region_t k_regions_both[] = {
+    { "cfg", 0, 360000u, 21000u, 0, 27 },
+};
+#endif
+
 /* Which network's frames this mode speaks: it picks the wrap, the unwrap
  * and the engine, and `none` means the wire goes on the air bare. */
-typedef enum { LR_NET_NONE = 0, LR_NET_MT, LR_NET_MC } lr_net_t;
+typedef enum { LR_NET_NONE = 0, LR_NET_MT, LR_NET_MC, LR_NET_BOTH } lr_net_t;
 
 /* One row per mode: what the radio is set to, and whose frames it carries.
  * The airtime ledger is built from the same row the radio is configured
@@ -136,7 +161,17 @@ typedef struct {
     int nregions;
 } lr_mode_def_t;
 
-static const lr_mode_def_t k_modes[XPRSLORA_MODE_COUNT] = {
+/* The words, one per mode the ENUM names, so that a mode this build has no
+ * row for is still a word the station recognises and refuses by name
+ * (XPRS.md 14.8: a missing mode is code:501, not a malformed command). */
+static const char *const k_mode_words[XPRSLORA_MODE_COUNT] = {
+    [XPRSLORA_MODE_XPRS] = "xprs",
+    [XPRSLORA_MODE_MESHTASTIC] = "meshtastic",
+    [XPRSLORA_MODE_MESHCORE] = "meshcore",
+    [XPRSLORA_MODE_BOTH] = "both",
+};
+
+static const lr_mode_def_t k_modes[XPRSLORA_MODE_TABLE] = {
     [XPRSLORA_MODE_XPRS] = {
         .name = "xprs", .available = true, .net = LR_NET_NONE,
         .sf = SX1262_SF7, .sf_far = SX1262_SF9, .bw = SX1262_BW_125,
@@ -164,30 +199,81 @@ static const lr_mode_def_t k_modes[XPRSLORA_MODE_COUNT] = {
         .regions = k_regions_mc,
         .nregions = (int)(sizeof k_regions_mc / sizeof k_regions_mc[0]),
     },
+    /* The modulation here is a placeholder that is never used: every field
+     * the radio is given in this mode comes from s_both instead (lr_modem),
+     * because the whole point of the mode is that the channel is the
+     * operator's. The row still carries the pace and the backoff slot,
+     * which are ours, and the longer of the two detect waits, because a
+     * sweep on this channel may be waiting for either network's backoff. */
+#if XPRSLORA_MODE_TABLE > 3   /* `both`'s index; see xprslora.h */
+    [XPRSLORA_MODE_BOTH] = {
+        .name = "both", .available = true, .net = LR_NET_BOTH,
+        .sf = SX1262_SF8, .sf_far = SX1262_SF8, .bw = SX1262_BW_62_5,
+        .bw_hz = 62500u, .preamble = 16,
+        .sync_word = 0x12, .pace_ms = 10000u, .slot_ms = 28u,
+        .detect_ms = 20000u,
+        .regions = k_regions_both,
+        .nregions = (int)(sizeof k_regions_both / sizeof k_regions_both[0]),
+    },
+#endif
 };
 
 static xprslora_mode_t s_mode = XPRSLORA_MODE_DEFAULT;
 static const lr_mode_def_t *s_def = &k_modes[XPRSLORA_MODE_DEFAULT];
+/* Does the running mode serve [net]? The question every door the bridges
+ * have has to ask (docs/lora.md rule 15), and it stopped being a single
+ * equality the day one mode served two networks. */
+static bool lr_serves(lr_net_t net)
+{
+    if (s_def->net == LR_NET_BOTH) return net == LR_NET_MT || net == LR_NET_MC;
+    return s_def->net == net;
+}
+
+/*
+ * The channel `both` mode puts the two networks on, and the one place it
+ * is kept. Deliberately NOT s_freq_want / s_sf_want / s_bw_want: those are
+ * an override for every mode, which is what they are for, and reusing them
+ * here would drag `meshtastic` and `meshcore` mode onto this channel too --
+ * the exact shape of the bug the bench found on 2026-09-20 (docs/lora.md
+ * section 3, "A frequency is an override").
+ */
+static struct {
+    bool     set;
+    uint32_t freq_hz;
+    uint8_t  sf;
+    uint16_t bw_khz;
+    uint8_t  sync;
+    uint16_t preamble;
+} s_both;
+
+/* What the classifier decided, since boot (docs/lora.md rule 14). */
+static xprslora_class_stats_t s_class;
 
 const char *xprslora_mode_name(xprslora_mode_t mode)
 {
-    return mode < XPRSLORA_MODE_COUNT ? k_modes[mode].name : "?";
+    return mode < XPRSLORA_MODE_COUNT ? k_mode_words[mode] : "?";
 }
 
 bool xprslora_mode_parse(const char *word, xprslora_mode_t *out)
 {
     if (!word) return false;
     for (int i = 0; i < XPRSLORA_MODE_COUNT; i++)
-        if (strcasecmp(word, k_modes[i].name) == 0) {
+        if (strcasecmp(word, k_mode_words[i]) == 0) {
             if (out) *out = (xprslora_mode_t)i;
             return true;
         }
     return false;
 }
 
+/* Defined beside the things they are about -- the modem table and the heap
+ * budget -- and declared here because this is where they are first asked. */
+static bool lr_mode_runnable(xprslora_mode_t mode);
+static uint32_t lr_bw_hz(sx1262_bw_t bw, uint32_t fallback);
+
 bool xprslora_mode_available(xprslora_mode_t mode)
 {
-    return mode < XPRSLORA_MODE_COUNT && k_modes[mode].available;
+    if (mode >= XPRSLORA_MODE_TABLE || !k_modes[mode].available) return false;
+    return lr_mode_runnable(mode);
 }
 
 xprslora_mode_t xprslora_mode(void)
@@ -197,7 +283,7 @@ xprslora_mode_t xprslora_mode(void)
 
 const xprslora_region_t *xprslora_regions(xprslora_mode_t mode, int *count)
 {
-    const lr_mode_def_t *d = mode < XPRSLORA_MODE_COUNT ? &k_modes[mode] : NULL;
+    const lr_mode_def_t *d = mode < XPRSLORA_MODE_TABLE ? &k_modes[mode] : NULL;
     if (count) *count = d ? d->nregions : 0;
     return d ? d->regions : NULL;
 }
@@ -207,13 +293,33 @@ const xprslora_region_t *xprslora_region(void)
     return s_region ? s_region : &s_def->regions[0];
 }
 
+/*
+ * Which envelope XPRS's own wires wear on this channel. The same question
+ * as "which network does this mode serve" everywhere but `both` mode, where
+ * two networks are served and a wire still has to pick one.
+ *
+ * It picks Meshtastic's, and for a reason rather than a toss-up: 233 bytes
+ * of payload against MeshCore's 183, and a stock Meshtastic router relays a
+ * frame on a channel hash it cannot read while a stock MeshCore repeater
+ * does NOT carry a RAW_CUSTOM (docs/lora.md, "`meshcore` mode", proven
+ * on the bench
+ * 2026-09-20). So the Meshtastic wrapping is the one that reaches past
+ * direct range. Both wrappings are still UNDERSTOOD on receive, because a
+ * neighbour may be in `meshcore` mode on this very channel; airing both
+ * would double the hour for no new reader.
+ */
+static lr_net_t lr_xprs_net(void)
+{
+    return s_def->net == LR_NET_BOTH ? LR_NET_MT : s_def->net;
+}
+
 /* What an XPRS wire of [len] bytes costs here: the wire itself, or, on a
  * network whose frames we wear, its frame or its two. */
 static uint32_t lr_airtime(int len, void *ctx)
 {
     (void)ctx;
     uint32_t ms = 0;
-    switch (s_def->net) {
+    switch (lr_xprs_net()) {
     case LR_NET_MT:
         for (int part = 0; part < mt_xprs_frames_for(len); part++)
             ms += xb_lora_airtime_ms(&s_air, mt_xprs_frame_len(len, part));
@@ -254,12 +360,33 @@ static lr_state_t *s_st;
  * UNLESS it landed in PSRAM, where keeping it costs nothing and claiming
  * it again might fail. A board without PSRAM cannot hold this and the
  * Meshtastic bridge at once, which is why it is freed there (docs/esp32.md,
- * and docs/lora.md "One radio, three networks"). The survey never reassembles, so a
+ * and docs/lora.md "One radio, four modes"). The survey never reassembles, so a
  * rotation does not touch the heap. */
 typedef struct {
     mc_mesh_t  mesh;
     mc_reasm_t reasm;
     bool       mesh_on;
+    /*
+     * `both` mode's classification proof decrypts into this and nothing
+     * else does. NOT s_txbuf: sx1262_tx_start is asynchronous and the chip
+     * reads that buffer after lr_start has returned, so a frame classified
+     * while a transmission is in flight would rewrite what is being aired.
+     *
+     * It lives HERE, in MeshCore's block, rather than in .bss, because a
+     * board without PSRAM can never run `both` mode and must not pay for
+     * it: 255 bytes of static RAM is enough to cost the Heltec V3 its UI
+     * task, which is what happened on the bench on 2026-10-03 (docs/esp32.md,
+     * "Heap is the binding constraint"). This block is claimed only when
+     * MeshCore or `both` is entered, and in PSRAM where the board has it.
+     *
+     * NOT XPRS_PSRAM_BSS, which is the usual answer for a large static and
+     * is the wrong one here: that attribute "is inert unless
+     * CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY is set ... there the
+     * buffer simply stays where it always was" (xprs_psram.h), so on the
+     * board that cannot afford it the buffer would still be there. A member
+     * of a block that is never allocated costs nothing at all.
+     */
+    uint8_t    cls[MT_FRAME_MAX];
 } lr_mc_state_t;
 static lr_mc_state_t *s_mc;
 
@@ -272,6 +399,29 @@ static lr_mc_state_t *s_mc;
  * Started with the bridge, stopped before its state is freed. */
 static TaskHandle_t s_mc_worker;
 static volatile bool s_mc_worker_stop, s_mc_worker_live;
+/*
+ * The worker's stack, claimed ONCE and kept.
+ *
+ * It used to be created the moment a mode wanted it, which on a station
+ * switched hours into a run means asking for 6 KB of contiguous INTERNAL
+ * heap from a heap that is no longer whole. That is the anti-pattern
+ * docs/esp32.md names twice ("Create the big task stacks first", "The boot
+ * order is the allocator"), and it is not theoretical: a fully loaded
+ * T-Deck refused `cfg lora meshcore` on the bench on 2026-10-03, and the
+ * same refusal is what kept `both` mode off that board.
+ *
+ * So it is claimed in xprslora_start, where the heap is still whole and
+ * before the UI task takes its eight kilobytes, and the task parks on a
+ * semaphore instead of being deleted. Entering a mode then costs nothing.
+ * Only an install hands it back (xprslora_mc_pause), which is the one
+ * place that is supposed to (docs/esp32.md, "Quiesce means hand resources
+ * back"), and an install ends in a reboot that claims it again early.
+ */
+#define LR_MC_STACK 6144u
+static StackType_t  *s_mc_stack;      /* NULL = fall back to a lazy create */
+static StaticTask_t *s_mc_tcb;
+static SemaphoreHandle_t s_mc_wake;
+static volatile bool s_mc_wanted;     /* a mode that needs the worker is on */
 /* Set while an install has the worker's six kilobytes. Nothing may start
  * it again until the install says so: a rotation entering MeshCore's turn
  * would otherwise take back what quiesce had just handed over, which is
@@ -295,7 +445,7 @@ static struct {
     uint8_t         probes;          /* how many we have aired in this mode */
     uint32_t        probe_hash;              /* the MeshCore one */
     xprslora_mode_t home;
-    xprslora_survey_mode_t m[XPRSLORA_MODE_COUNT];
+    xprslora_survey_mode_t m[XPRSLORA_MODE_TABLE];
 } s_survey;
 static uint32_t s_cad_busy, s_cad_waits;
 
@@ -318,11 +468,15 @@ static struct {
     bool            active;
     uint8_t         n;                       /* how many modes in the ring */
     uint8_t         at;                      /* where in it we are */
-    xprslora_mode_t ring[XPRSLORA_MODE_COUNT];
+    xprslora_mode_t ring[XPRSLORA_MODE_TABLE];
     uint32_t        floor_ms, ceiling_ms;
     uint32_t        slice_ms;                /* when this slice started */
     uint32_t        turns;                   /* slices served, for the status */
 } s_rot;
+
+/* Set when entering a mode has made `lora_rotate` a lie. The app reads it
+ * and clears the key; the bearer does not own config. */
+static bool s_rot_cleared;
 
 static void survey_frame(const uint8_t *frame, int len);
 static void survey_tick(void);
@@ -332,6 +486,9 @@ static esp_err_t lr_claim_for(const lr_mode_def_t *d);
 static void lr_mc_release(void);
 static bool mc_worker_stop(void);
 static bool mc_worker_start(void);
+static bool mc_worker_claim(void);
+static void mc_worker_release(void);
+static bool lr_psram_for(size_t want);
 static esp_err_t lr_tune_mode(xprslora_mode_t mode, bool say);
 static bool lr_bw_of(uint16_t khz, sx1262_bw_t *bw, uint32_t *hz);
 static sx1262_lora_config_t lr_modem(const lr_mode_def_t *d,
@@ -426,7 +583,7 @@ static bool lr_air(void *ctx, const char *wire, int len)
     if (!s_radio || len <= 0 || len > XB_WIRE_MAX) return false;
     int fl[2];
     int n;
-    switch (s_def->net) {
+    switch (lr_xprs_net()) {
     case LR_NET_MT:
         n = mt_xprs_wrap(wire, len, s_self, s_frames, fl);
         break;
@@ -472,7 +629,7 @@ static bool lr_air_mt(void *ctx, const uint8_t *frame, int len, int prio)
      * asks again, which is what it does for a busy channel, so a switch
      * back finds its queue where it was. A station in `xprs` mode airing
      * LongFast was the first thing the live switch got wrong. */
-    if (s_def->net != LR_NET_MT || s_survey.active) return false;
+    if (!lr_serves(LR_NET_MT) || s_survey.active) return false;
     lr_lock(NULL);
     bool ok = false;
     if (!sx1262_tx_active(s_radio) && !lr_channel_busy()) {
@@ -501,7 +658,7 @@ static bool lr_air_mc(void *ctx, const uint8_t *frame, int len, int prio)
 {
     (void)ctx;
     if (!s_radio || !s_lora || len <= 0 || len > MC_FRAME_MAX) return false;
-    if (s_def->net != LR_NET_MC || s_survey.active) return false;
+    if (!lr_serves(LR_NET_MC) || s_survey.active) return false;
     lr_lock(NULL);
     bool ok = false;
     if (!sx1262_tx_active(s_radio) && !lr_channel_busy()) {
@@ -526,7 +683,7 @@ static bool lr_air_mc(void *ctx, const uint8_t *frame, int len, int prio)
 
 static void lr_mc_tick(void)
 {
-    if (s_def->net != LR_NET_MC) return;
+    if (!lr_serves(LR_NET_MC)) return;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     if (s_mc && s_mc->mesh_on) mc_mesh_tick(&s_mc->mesh, lr_now_ms());
     xSemaphoreGiveRecursive(s_mt_mutex);
@@ -534,7 +691,7 @@ static void lr_mc_tick(void)
 
 static void lr_mt_tick(void)
 {
-    if (!s_st || !s_st->mesh_on || s_def->net != LR_NET_MT) return;
+    if (!s_st || !s_st->mesh_on || !lr_serves(LR_NET_MT)) return;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     mt_mesh_tick(&s_st->mesh, lr_now_ms());
     xSemaphoreGiveRecursive(s_mt_mutex);
@@ -547,9 +704,9 @@ static bool lr_rotate_busy(uint32_t now)
 {
     bool busy = false;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
-    if (s_def->net == LR_NET_MT && s_st && s_st->mesh_on)
+    if (lr_serves(LR_NET_MT) && s_st && s_st->mesh_on)
         busy = mt_mesh_busy(&s_st->mesh, now, LR_ROT_RECENT_MS);
-    else if (s_def->net == LR_NET_MC && s_mc && s_mc->mesh_on)
+    if (!busy && lr_serves(LR_NET_MC) && s_mc && s_mc->mesh_on)
         busy = mc_mesh_busy(&s_mc->mesh, now, LR_ROT_RECENT_MS);
     xSemaphoreGiveRecursive(s_mt_mutex);
     return busy;
@@ -603,7 +760,7 @@ static void rotate_tick(void)
      * safety net rather than a restart. Its return is checked because an
      * unchecked xTaskCreate is how a station ends up airing a queue with
      * nothing behind it (docs/esp32.md, "Heap is the binding constraint"). */
-    if (s_def->net == LR_NET_MC && s_mc && s_mc->mesh_on && !mc_worker_start())
+    if (lr_serves(LR_NET_MC) && s_mc && s_mc->mesh_on && !mc_worker_start())
         ESP_LOGE(TAG, "rotation: MeshCore's turn without its worker -- this "
                       "turn signs and opens nothing");
     s_rot.at = next;
@@ -611,6 +768,234 @@ static void rotate_tick(void)
     s_rot.turns++;
     ESP_LOGI(TAG, "rotation: %s now, turn %lu", s_def->name,
              (unsigned long)s_rot.turns);
+}
+
+/* ── The receive path ────────────────────────────────────────────────────
+ *
+ * One arm per network, and in `both` mode the classifier picks which arm
+ * runs. The arms themselves are unchanged by the new mode: each still tries
+ * XPRS's own envelope first and hands everything else to its engine, which
+ * is what makes `both` mode a dispatch decision rather than a second
+ * implementation of either network.
+ */
+
+/* `meshcore`: ours is a RAW_CUSTOM payload, and everything else on the
+ * channel is MeshCore's own, for the repeater and the bridge (mc_mesh.c).
+ *
+ * The whole arm is under the bridge's lock, because the reassembly buffer
+ * and the bridge are one block that a mode change on another task may free
+ * (lr_mc_release), and the lock is where that is settled. */
+static void lr_rx_mc(const sx1262_rx_info_t *info, bool quiet)
+{
+    xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
+    int n = mc_xprs_unwrap(s_mc ? &s_mc->reasm : NULL, s_rxbuf,
+                           info->len, lr_now_ms(), s_wire, sizeof s_wire);
+    if (n > 0) {
+        ESP_LOGI(TAG, "RX %d bytes at %d dBm SNR %d: %.48s", n,
+                 info->rssi, info->snr, s_wire);
+        if (s_mc) mc_mesh_note_xprs_frame(&s_mc->mesh, s_rxbuf, info->len);
+        if (s_def->net == LR_NET_BOTH) s_class.xprs_mc++;
+        xSemaphoreGiveRecursive(s_mt_mutex);
+        xb_on_wire(s_lora, s_wire, n, 0, info->rssi);
+    } else if (n < 0) {
+        mc_pkt_t p;
+        if (mc_parse(s_rxbuf, info->len, &p))
+            ESP_LOGI(TAG, "mc type %02x route %d hop %d %uB %d dBm",
+                     p.type, p.route, p.hops, (unsigned)info->len,
+                     info->rssi);
+        else if (!quiet)
+            ESP_LOGI(TAG, "heard %u bytes that were not MeshCore"
+                     " (%d dBm)", (unsigned)info->len, info->rssi);
+        if (s_def->net == LR_NET_BOTH) s_class.mc++;
+        if (s_mc && s_mc->mesh_on)
+            mc_mesh_on_frame(&s_mc->mesh, s_rxbuf, info->len, info->rssi,
+                             info->snr);
+        xSemaphoreGiveRecursive(s_mt_mutex);
+    } else {
+        /* n == 0: half a wire, waiting for its sibling. */
+        xSemaphoreGiveRecursive(s_mt_mutex);
+    }
+}
+
+/* `meshtastic`: the same shape, on the other network. */
+static void lr_rx_mt(const sx1262_rx_info_t *info)
+{
+    int n = mt_xprs_unwrap(s_st ? &s_st->reasm : NULL, s_rxbuf,
+                           info->len, lr_now_ms(), s_wire, sizeof s_wire);
+    if (n > 0 && xprs_looks_like((const uint8_t *)s_wire, n)) {
+        /* Before the dupe rings swallow it: the one log line that
+         * proves a packet crossed on RF rather than on WiFi, with
+         * the RSSI only a radio has. */
+        ESP_LOGI(TAG, "RX %d bytes at %d dBm SNR %d: %.48s", n,
+                 info->rssi, info->snr, s_wire);
+        if (s_def->net == LR_NET_BOTH) s_class.xprs_mt++;
+        if (s_st) {
+            xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
+            mt_mesh_note_xprs_frame(&s_st->mesh, s_rxbuf, info->len);
+            xSemaphoreGiveRecursive(s_mt_mutex);
+        }
+        xb_on_wire(s_lora, s_wire, n, 0, info->rssi);
+    } else if (n < 0) {
+        mt_hdr_t h;
+        if (mt_hdr_parse(s_rxbuf, info->len, &h))
+            ESP_LOGI(TAG, "mt %08lx>%08lx id %08lx hop %d/%d ch %02x %uB %d dBm",
+                     (unsigned long)h.from, (unsigned long)h.to,
+                     (unsigned long)h.id, h.hop_limit, h.hop_start,
+                     h.channel, (unsigned)info->len, info->rssi);
+        if (s_def->net == LR_NET_BOTH) s_class.mt++;
+        if (s_st && s_st->mesh_on && lr_serves(LR_NET_MT)) {
+            xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
+            mt_mesh_on_frame(&s_st->mesh, s_rxbuf, info->len,
+                             info->rssi, info->snr);
+            xSemaphoreGiveRecursive(s_mt_mutex);
+        }
+    }
+    /* n == 0: a fragment waiting for its sibling. */
+}
+
+/*
+ * `both`: the structure says MT, MC, both or neither, and when it says both
+ * this settles it on evidence or drops the frame.
+ *
+ * Only positive evidence counts, and the order is strongest first:
+ *
+ *   1. a four-byte Meshtastic address that is ours, or one we have heard --
+ *      one chance in four thousand million of coinciding, and the check
+ *      that saves the frames we must not lose, because a public-key direct
+ *      message to one of our virtual nodes can never be decrypted and so
+ *      can never prove itself any other way;
+ *   2. the frame decrypts under Meshtastic's default key and decodes as a
+ *      Data. A key and a protobuf agreeing is not a guess. AES over 255
+ *      bytes is about fifteen blocks, which is the same work survey_frame
+ *      already does on this task (rule 12 allows it; a signature it does
+ *      not, and MeshCore's adverts are verified on mcwork as they always
+ *      were);
+ *   3. a one-byte MeshCore hash that is one of ours, or a path hop we have
+ *      heard. One byte is a tie-break and never a proof, which is why it
+ *      is last.
+ *
+ * Nothing left: counted and dropped. Dropping costs this station one
+ * packet; guessing costs the channel a frame re-aired as the wrong
+ * protocol, with the wrong byte decremented, and a correctly received copy
+ * swallowed afterwards as a duplicate by whichever ring was poisoned.
+ */
+/* 1. four bytes of Meshtastic address. Reads the engine's tables, so the
+ * caller holds the bridge lock -- and holds it for nothing else. */
+static bool lr_both_mt_known(const sx1262_rx_info_t *info)
+{
+    mt_hdr_t h;
+    if (!s_st || !mt_hdr_parse(s_rxbuf, info->len, &h)) return false;
+    const mt_mesh_t *m = &s_st->mesh;
+    if (h.to == m->self || h.from == m->self) return true;
+    for (int i = 0; i < MT_VNODES; i++)
+        if (m->vnodes[i].call[0] &&
+            (h.to == m->vnodes[i].num || h.from == m->vnodes[i].num))
+            return true;
+    for (int i = 0; i < MT_NODES; i++)
+        if (m->nodes[i].num && h.from == m->nodes[i].num) return true;
+    return false;
+}
+
+/* 2. the default key and a protobuf, agreeing. No table and therefore NO
+ * LOCK: fifteen AES blocks is not slow, but the rule is that the bridge's
+ * mutex holds no work at all, and every other task offering the bridge a
+ * packet waits on it (rule 12). The channel hash is passed in because
+ * reading it off the engine is the one thing here that would need the lock.
+ *
+ * Not s_txbuf either: the chip reads that one after lr_start returns, and
+ * this runs while a transmission may still be in flight. */
+static bool lr_both_mt_decodes(const sx1262_rx_info_t *info, uint8_t lf_hash)
+{
+    mt_hdr_t h;
+    /* s_mc carries the scratch, and in this mode it is always there
+     * (lr_claim_for refuses the mode otherwise). */
+    if (!s_mc || !mt_hdr_parse(s_rxbuf, info->len, &h)) return false;
+    if (h.channel != lf_hash || info->len <= MT_HDR_LEN) return false;
+    int pn = info->len - MT_HDR_LEN;
+    if (pn <= 0 || pn > (int)sizeof s_mc->cls) return false;
+    memcpy(s_mc->cls, s_rxbuf + MT_HDR_LEN, (size_t)pn);
+    mt_data_t d;
+    return mt_crypt(mt_default_key, 16, h.from, h.id, s_mc->cls, pn) &&
+           mt_data_decode(s_mc->cls, pn, &d) && d.portnum;
+}
+
+static bool lr_both_is_mc(const sx1262_rx_info_t *info)
+{
+    mc_pkt_t p;
+    if (!s_mc || !mc_parse(s_rxbuf, info->len, &p)) return false;
+    const mc_mesh_t *m = &s_mc->mesh;
+
+    /* 3. one byte, and only as a tie-break. A direct message, a path and an
+     * ack all name their destination in the first payload byte. */
+    if (p.payload_len > 0 && m->self_keyed && p.payload[0] == m->self_hash)
+        return true;
+    if (p.payload_len > 0)
+        for (int i = 0; i < MC_VNODES; i++)
+            if (m->vnodes[i].keyed && p.payload[0] == m->vnodes[i].hash)
+                return true;
+    for (int i = 0; i < p.hops; i++)
+        for (int j = 0; j < MC_NODES; j++)
+            if (m->nodes[j].heard_ms &&
+                p.path[i * p.hash_size] == m->nodes[j].pub[0])
+                return true;
+    return false;
+}
+
+static void lr_rx_both(const sx1262_rx_info_t *info)
+{
+    lr_class_in_t in = {
+        .lf_hash = s_st ? s_st->mesh.lf_hash : mt_longfast_hash(),
+        .xprs_hash = MT_CH_HASH_XPRS,
+    };
+    lr_class_t v = lr_classify(s_rxbuf, info->len, &in);
+
+    if (v == LR_CLASS_EITHER) {
+        /* 0. One side claims the frame as XPRS's own and the other does
+         * not. Both tests are strong structure -- a channel hash on one
+         * side, a first byte pinned to four values on the other -- and when
+         * only one holds, nothing better is going to come along. Checked
+         * before the evidence below because our OWN traffic in MeshCore
+         * wrapping can satisfy Meshtastic's structure by coincidence, and
+         * without this it would reach the end of the ladder and be dropped.
+         * When both or neither claim it, the coincidence is the thing being
+         * tested, so it decides nothing and the ladder runs. */
+        bool x_mt = lr_class_mt_is_xprs(s_rxbuf, info->len, &in);
+        bool x_mc = lr_class_mc_is_xprs(s_rxbuf, info->len);
+        bool mt = false, mc = false;
+        if (x_mt != x_mc) {
+            mt = x_mt;
+            mc = x_mc;
+        } else {
+            /* The engines' tables are read under the bridge lock and
+             * nothing else happens while it is held: the decrypt proof runs
+             * after it is released, and the chosen arm takes it again for
+             * itself (rule 12, and "Receive paths park; they do not
+             * send"). */
+            xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
+            mt = lr_both_mt_known(info);
+            mc = !mt && lr_both_is_mc(info);
+            xSemaphoreGiveRecursive(s_mt_mutex);
+            if (!mt && !mc) mt = lr_both_mt_decodes(info, in.lf_hash);
+        }
+        v = mt ? LR_CLASS_MT : mc ? LR_CLASS_MC : LR_CLASS_EITHER;
+        if (v == LR_CLASS_EITHER) {
+            s_class.either++;
+            ESP_LOGD(TAG, "both: %u bytes fit both networks and proved "
+                          "neither (%d dBm) -- dropped",
+                     (unsigned)info->len, info->rssi);
+            return;
+        }
+    }
+
+    switch (v) {
+    case LR_CLASS_MT: lr_rx_mt(info); break;
+    case LR_CLASS_MC: lr_rx_mc(info, true); break;
+    default:
+        s_class.neither++;
+        ESP_LOGD(TAG, "both: %u bytes belonging to neither network (%d dBm)",
+                 (unsigned)info->len, info->rssi);
+        break;
+    }
 }
 
 /* On the bearer task, once per tick: finish a transmission, fetch what the
@@ -646,71 +1031,13 @@ static void lr_drain(void *ctx)
                          (unsigned)info.len, info.rssi);
             }
         } else if (got == ESP_OK && info.len > 0 &&
+                   s_def->net == LR_NET_BOTH) {
+            lr_rx_both(&info);
+        } else if (got == ESP_OK && info.len > 0 &&
                    s_def->net == LR_NET_MC) {
-            /* `meshcore` mode: ours is a RAW_CUSTOM payload, and
-             * everything else on the channel is MeshCore's own, for the
-             * repeater and the bridge (mc_mesh.c).
-             *
-             * The whole branch is under the bridge's lock, because the
-             * reassembly buffer and the bridge are one block that a mode
-             * change on another task may free (lr_mc_release), and the
-             * lock is where that is settled. */
-            xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
-            int n = mc_xprs_unwrap(s_mc ? &s_mc->reasm : NULL, s_rxbuf,
-                                   info.len, lr_now_ms(), s_wire, sizeof s_wire);
-            if (n > 0) {
-                ESP_LOGI(TAG, "RX %d bytes at %d dBm SNR %d: %.48s", n,
-                         info.rssi, info.snr, s_wire);
-                if (s_mc) mc_mesh_note_xprs_frame(&s_mc->mesh, s_rxbuf, info.len);
-                xSemaphoreGiveRecursive(s_mt_mutex);
-                xb_on_wire(s_lora, s_wire, n, 0, info.rssi);
-            } else if (n < 0) {
-                mc_pkt_t p;
-                if (mc_parse(s_rxbuf, info.len, &p))
-                    ESP_LOGI(TAG, "mc type %02x route %d hop %d %uB %d dBm",
-                             p.type, p.route, p.hops, (unsigned)info.len,
-                             info.rssi);
-                else
-                    ESP_LOGI(TAG, "heard %u bytes that were not MeshCore"
-                             " (%d dBm)", (unsigned)info.len, info.rssi);
-                if (s_mc && s_mc->mesh_on)
-                    mc_mesh_on_frame(&s_mc->mesh, s_rxbuf, info.len, info.rssi,
-                                     info.snr);
-                xSemaphoreGiveRecursive(s_mt_mutex);
-            } else {
-                /* n == 0: half a wire, waiting for its sibling. */
-                xSemaphoreGiveRecursive(s_mt_mutex);
-            }
+            lr_rx_mc(&info, false);
         } else if (got == ESP_OK && info.len > 0) {
-            int n = mt_xprs_unwrap(s_st ? &s_st->reasm : NULL, s_rxbuf,
-                                   info.len, lr_now_ms(), s_wire, sizeof s_wire);
-            if (n > 0 && xprs_looks_like((const uint8_t *)s_wire, n)) {
-                /* Before the dupe rings swallow it: the one log line that
-                 * proves a packet crossed on RF rather than on WiFi, with
-                 * the RSSI only a radio has. */
-                ESP_LOGI(TAG, "RX %d bytes at %d dBm SNR %d: %.48s", n,
-                         info.rssi, info.snr, s_wire);
-                if (s_st) {
-                    xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
-                    mt_mesh_note_xprs_frame(&s_st->mesh, s_rxbuf, info.len);
-                    xSemaphoreGiveRecursive(s_mt_mutex);
-                }
-                xb_on_wire(s_lora, s_wire, n, 0, info.rssi);
-            } else if (n < 0) {
-                mt_hdr_t h;
-                if (mt_hdr_parse(s_rxbuf, info.len, &h))
-                    ESP_LOGI(TAG, "mt %08lx>%08lx id %08lx hop %d/%d ch %02x %uB %d dBm",
-                             (unsigned long)h.from, (unsigned long)h.to,
-                             (unsigned long)h.id, h.hop_limit, h.hop_start,
-                             h.channel, (unsigned)info.len, info.rssi);
-                if (s_st && s_st->mesh_on && s_def->net == LR_NET_MT) {
-                    xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
-                    mt_mesh_on_frame(&s_st->mesh, s_rxbuf, info.len,
-                                     info.rssi, info.snr);
-                    xSemaphoreGiveRecursive(s_mt_mutex);
-                }
-            }
-            /* n == 0: a fragment waiting for its sibling. */
+            lr_rx_mt(&info);
         }
         /* The radio stays in continuous receive after a packet. */
     }
@@ -833,18 +1160,18 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
      * exists only in `xprs` mode. */
     s_sf_want = cfg->sf;
     s_bw_want = cfg->bw_khz;
+    s_sync_want = cfg->sync;
     int sf_n = 0;
     sx1262_lora_config_t lora = lr_modem(s_def, s_region, &sf_n);
     if (cfg->freq_hz) lora.frequency_hz = cfg->freq_hz;
     lora.tx_power_dbm = cfg->tx_power_dbm ? cfg->tx_power_dbm : 14;
     lora.use_tcxo = cfg->use_tcxo;
     lora.use_dio2_rf_switch = cfg->use_dio2_rf_switch;
-    uint32_t bw_hz = s_def->bw_hz;
-    { sx1262_bw_t bw_tmp; lr_bw_of(s_bw_want, &bw_tmp, &bw_hz); }
     /* The airtime table is built from the SAME values the radio was just
      * given, so the ledger cannot drift from the modem. */
+    uint32_t bw_hz = lr_bw_hz(lora.bw, s_def->bw_hz);
     s_air = (xb_lora_air_t){ .bw_hz = bw_hz, .sf = (uint8_t)sf_n,
-                             .cr = 1, .preamble = s_def->preamble,
+                             .cr = 1, .preamble = (uint16_t)lora.preamble_len,
                              .crc = true, .implicit_header = false };
     err = sx1262_init(s_radio, &lora);
     if (err != ESP_OK) {
@@ -873,13 +1200,35 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
         return err;
     }
 
+    /*
+     * MeshCore's worker gets its stack NOW, while the heap is still whole
+     * and before the UI task asks for its eight kilobytes, and keeps it for
+     * the life of the run. Claimed on any board with the PSRAM to run
+     * `meshcore` or `both` at all, whether or not this boot's mode wants it,
+     * because the alternative is asking for 6 KB of contiguous internal heap
+     * at the moment an operator types `cfg lora meshcore` -- which a fully
+     * loaded T-Deck refused on the bench, 2026-10-03 (docs/esp32.md, "Create
+     * the big task stacks first").
+     */
+    if (lr_psram_for(sizeof(lr_mc_state_t))) mc_worker_claim();
+
     ESP_LOGI(TAG, "up in %s mode: %lu Hz SF%d/%luk, sync 0x%02X, %d dBm as %s"
              " -- %s: %lus of airtime an hour, %lus reserved",
              s_def->name, (unsigned long)lora.frequency_hz, sf_n,
-             (unsigned long)(s_def->bw_hz / 1000u), s_def->sync_word,
+             (unsigned long)(bw_hz / 1000u), lora.sync_word,
              lora.tx_power_dbm, callsign, s_region->name,
              (unsigned long)(s_region->duty_ms / 1000u),
              (unsigned long)(s_region->reserve_ms / 1000u));
+    /* The one sentence a reader of this log must not have to infer. A
+     * station in `both` mode is not on either network's channel, so it
+     * hears whichever nodes were PUT on this one and nothing else. */
+    if (s_def->net == LR_NET_BOTH)
+        ESP_LOGW(TAG, "both: this is neither network's own channel. A stock "
+                      "Meshtastic node is on 869.525 at SF11/250k with sync "
+                      "0x2B and a stock MeshCore node on 869.618 at SF8/62.5k "
+                      "with sync 0x12, and neither of them exposes its sync "
+                      "word as a setting: only nodes an operator has moved "
+                      "onto this channel are heard here");
     if (lora.tx_power_dbm > s_region->max_dbm)
         ESP_LOGW(TAG, "%d dBm exceeds the %s region's %d dBm e.r.p. ceiling"
                  " -- the operator owns that call", lora.tx_power_dbm,
@@ -900,9 +1249,26 @@ static bool lr_bw_of(uint16_t khz, sx1262_bw_t *bw, uint32_t *hz)
     }
 }
 
+/* The chip's bandwidth as hertz, so the airtime table can be built from
+ * the very value the radio was handed and cannot drift from it. */
+static uint32_t lr_bw_hz(sx1262_bw_t bw, uint32_t fallback)
+{
+    switch (bw) {
+    case SX1262_BW_62_5: return 62500u;
+    case SX1262_BW_125:  return 125000u;
+    case SX1262_BW_250:  return 250000u;
+    case SX1262_BW_500:  return 500000u;
+    default:             return fallback;
+    }
+}
+
 /* The spreading factor this mode runs at, the operator's override first. */
 static sx1262_sf_t lr_sf_of(const lr_mode_def_t *d)
 {
+    /* `both` mode's modulation is the operator's and nobody else's: the
+     * general overrides are not consulted here, because they apply to every
+     * mode and this channel is meant for one (see s_both). */
+    if (d->net == LR_NET_BOTH) return (sx1262_sf_t)s_both.sf;
     if (s_sf_want >= 7 && s_sf_want <= 12) return (sx1262_sf_t)s_sf_want;
     return (s_far && d == &k_modes[XPRSLORA_MODE_XPRS]) ? d->sf_far : d->sf;
 }
@@ -915,17 +1281,30 @@ static sx1262_lora_config_t lr_modem(const lr_mode_def_t *d,
     sx1262_sf_t sf = lr_sf_of(d);
     sx1262_bw_t bw = d->bw;
     uint32_t bw_hz = d->bw_hz;
-    lr_bw_of(s_bw_want, &bw, &bw_hz);
+    uint32_t freq = s_freq_want ? s_freq_want : reg->freq_hz;
+    uint8_t sync = s_sync_want ? s_sync_want : d->sync_word;
+    uint16_t preamble = d->preamble;
+    if (d->net == LR_NET_BOTH) {
+        /* Every modem field, from the one place that holds this channel.
+         * Not the general overrides: those move every mode, and a channel
+         * that only this mode means is stated only for this mode. */
+        lr_bw_of(s_both.bw_khz, &bw, &bw_hz);
+        freq = s_both.freq_hz;
+        sync = s_both.sync;
+        preamble = s_both.preamble;
+    } else {
+        lr_bw_of(s_bw_want, &bw, &bw_hz);
+    }
     if (sf_n) *sf_n = (int)sf;
     sx1262_lora_config_t lora = {
-        .frequency_hz = s_freq_want ? s_freq_want : reg->freq_hz,
+        .frequency_hz = freq,
         .sf = sf,
         .bw = bw,
         .cr = SX1262_CR_4_5,
         .tx_power_dbm = s_tx_power,
-        .preamble_len = d->preamble,
+        .preamble_len = preamble,
         .crc_on = true,
-        .sync_word = d->sync_word,
+        .sync_word = sync,
     };
     return lora;
 }
@@ -955,7 +1334,20 @@ static const xprslora_region_t *lr_region_of(const lr_mode_def_t *d)
 
 static esp_err_t lr_claim_for(const lr_mode_def_t *d)
 {
-    if (d->net != LR_NET_MC || s_survey.active || s_mc) return ESP_OK;
+    if (s_survey.active) return ESP_OK;
+    bool want_mc = d->net == LR_NET_MC || d->net == LR_NET_BOTH;
+    /* `both` mode needs the Meshtastic block too. It is not CLAIMED here --
+     * xprslora_mt_start owns that block and is the only thing that calls
+     * mt_mesh_init on it, and a block handed over uninitialised would make
+     * that function's "already up" shortcut return a bridge that was never
+     * built. What happens here is that its cost is BUDGETED, so a station
+     * that cannot afford both bridges refuses before the radio moves rather
+     * than coming up on a shared channel with one bridge working and one
+     * silent. */
+    bool want_mt = d->net == LR_NET_BOTH;
+    if (!want_mc && !want_mt) return ESP_OK;
+    if ((!want_mc || s_mc) && (!want_mt || s_st)) return ESP_OK;
+
     /* A reading of the free heap HERE cannot answer the question: this
      * runs early in the boot, before the screen's task, the index and the
      * web server have taken theirs. The Heltec V3 had 48 KB free at this
@@ -963,31 +1355,141 @@ static esp_err_t lr_claim_for(const lr_mode_def_t *d)
      * a reboot loop. What the board has is decided by the board, so the
      * rule is the board's: without PSRAM there is no room for MeshCore's
      * state AND a 6 KB stack that cannot live anywhere else. */
-    bool psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= sizeof(lr_mc_state_t);
-    if (!psram) {
-        ESP_LOGE(TAG, "MeshCore wants %u bytes of state and a %u byte stack, "
-                      "and this board has no PSRAM to put either in: "
-                      "staying in %s mode (docs/lora.md, \"What it "
-                      "costs\")",
-                 (unsigned)sizeof(lr_mc_state_t), 6144u, s_def->name);
+    size_t want_psram = 0;
+    if (want_mc && !s_mc) want_psram += sizeof(lr_mc_state_t);
+    if (want_mt && !s_st) want_psram += sizeof(lr_state_t);
+    if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < want_psram) {
+        if (d->net == LR_NET_BOTH)
+            ESP_LOGE(TAG, "both mode wants %u bytes for MeshCore's state, %u "
+                          "for Meshtastic's and a %u byte stack that cannot "
+                          "live in PSRAM at all, and this board has no PSRAM "
+                          "for any of it: staying in %s mode (docs/lora.md, "
+                          "\"What it costs\")",
+                     (unsigned)sizeof(lr_mc_state_t),
+                     (unsigned)sizeof(lr_state_t), 6144u, s_def->name);
+        else
+            ESP_LOGE(TAG, "MeshCore wants %u bytes of state and a %u byte "
+                          "stack, and this board has no PSRAM to put either "
+                          "in: staying in %s mode (docs/lora.md, \"What it "
+                          "costs\")",
+                     (unsigned)sizeof(lr_mc_state_t), 6144u, s_def->name);
         return ESP_ERR_NO_MEM;
     }
+    /* The worker's stack is only a cost if it has not been claimed yet.
+     * Normally it was, at start, from a whole heap (see mc_worker_claim), and
+     * then entering this mode costs no internal memory at all and this gate
+     * has nothing to refuse. The old arithmetic is kept for the board where
+     * the early claim did not happen. */
+    size_t want_stack = s_mc_stack ? 0 : LR_MC_STACK;
     size_t have = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    if (have < LR_MC_SPARE_INTERNAL + 6144u) {
-        ESP_LOGE(TAG, "MeshCore's worker needs a %u byte stack and only %u "
-                      "bytes of internal heap are free: staying in %s mode",
-                 6144u, (unsigned)have, s_def->name);
+    if (want_stack && have < LR_MC_SPARE_INTERNAL + want_stack) {
+        ESP_LOGE(TAG, "MeshCore's worker needs a %u byte stack it did not get "
+                      "at start, and only %u bytes of internal heap are free: "
+                      "staying in %s mode",
+                 (unsigned)want_stack, (unsigned)have, s_def->name);
         return ESP_ERR_NO_MEM;
     }
-    s_mc = heap_caps_calloc(1, sizeof *s_mc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_mc) s_mc = heap_caps_calloc(1, sizeof *s_mc, MALLOC_CAP_8BIT);
-    if (!s_mc) {
-        ESP_LOGE(TAG, "no room for MeshCore (%u bytes)", (unsigned)sizeof *s_mc);
-        return ESP_ERR_NO_MEM;
+    if (want_mc && !s_mc) {
+        s_mc = heap_caps_calloc(1, sizeof *s_mc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_mc) s_mc = heap_caps_calloc(1, sizeof *s_mc, MALLOC_CAP_8BIT);
+        if (!s_mc) {
+            ESP_LOGE(TAG, "no room for MeshCore (%u bytes)",
+                     (unsigned)sizeof *s_mc);
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGI(TAG, "MeshCore: %u bytes %s", (unsigned)sizeof *s_mc,
+                 esp_ptr_external_ram(s_mc) ? "in PSRAM" : "internal");
     }
-    ESP_LOGI(TAG, "MeshCore: %u bytes %s", (unsigned)sizeof *s_mc,
-             esp_ptr_external_ram(s_mc) ? "in PSRAM" : "internal");
     return ESP_OK;
+}
+
+/* Both bridges resident, and the 6 KB worker stack that cannot live in
+ * PSRAM: `both` mode asks the board the same question `meshcore` does, and
+ * then one more, because a channel nobody has named is not a channel. */
+static bool lr_psram_for(size_t want)
+{
+    return heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= want;
+}
+
+static bool lr_mode_runnable(xprslora_mode_t mode)
+{
+    if (mode == XPRSLORA_MODE_MESHCORE)
+        return s_mc != NULL || lr_psram_for(sizeof(lr_mc_state_t));
+    if (mode == XPRSLORA_MODE_BOTH) {
+        /* The same arithmetic lr_claim_for does, so what the mode list
+         * offers and what the retune accepts cannot disagree: whichever of
+         * the two blocks is not already held has to fit in PSRAM. */
+        size_t want = 0;
+        if (!s_mc) want += sizeof(lr_mc_state_t);
+        if (!s_st) want += sizeof(lr_state_t);
+        return s_both.set && lr_psram_for(want);
+    }
+    return true;
+}
+
+esp_err_t xprslora_set_both(uint32_t freq_hz, uint8_t sf, uint16_t bw_khz,
+                            uint8_t sync, uint16_t preamble)
+{
+    sx1262_bw_t bw_tmp;
+    uint32_t hz_tmp;
+    if (freq_hz < 150000000u || freq_hz > 960000000u) return ESP_ERR_INVALID_ARG;
+    if (sf < 7 || sf > 12) return ESP_ERR_INVALID_ARG;
+    if (!lr_bw_of(bw_khz, &bw_tmp, &hz_tmp)) return ESP_ERR_INVALID_ARG;
+    /* No default for the sync word, deliberately. It is the parameter that
+     * decides which of the two stock firmwares has to be rebuilt to turn up
+     * here, so an operator who has not thought about it should be stopped
+     * rather than handed one network's value by accident. The preamble does
+     * default, because both networks use 16 and there is nothing to choose. */
+    if (!sync) return ESP_ERR_INVALID_ARG;
+    s_both.freq_hz = freq_hz;
+    s_both.sf = sf;
+    s_both.bw_khz = bw_khz;
+    s_both.sync = sync;
+    s_both.preamble = preamble ? preamble : 16;
+    s_both.set = true;
+    ESP_LOGI(TAG, "both: the shared channel is %lu Hz SF%u/%uk, sync 0x%02X, "
+                  "preamble %u -- neither network's own, which is why both "
+                  "of them have to be put on it",
+             (unsigned long)freq_hz, (unsigned)sf, (unsigned)bw_khz,
+             s_both.sync, (unsigned)s_both.preamble);
+    /* Taken at once when it is the channel the radio is on, the way a
+     * frequency or a region change already is. */
+    if (s_radio && s_def->net == LR_NET_BOTH)
+        return lr_tune_mode(XPRSLORA_MODE_BOTH, true);
+    return ESP_OK;
+}
+
+const char *xprslora_both_why_not(void)
+{
+    size_t want = 0;
+    if (!s_mc) want += sizeof(lr_mc_state_t);
+    if (!s_st) want += sizeof(lr_state_t);
+    if (!lr_psram_for(want))
+        return "this board has no PSRAM, and two bridges plus a 6 KB stack "
+               "cannot be had without it";
+    if (!s_both.set)
+        return "the channel both networks were put on is not set "
+               "([both] channel = <freq>,<bw_khz>,<sf>,<sync>)";
+    return NULL;
+}
+
+bool xprslora_both_channel(uint32_t *freq_hz, uint8_t *sf, uint16_t *bw_khz,
+                           uint8_t *sync, uint16_t *preamble)
+{
+    if (!s_both.set) return false;
+    if (freq_hz) *freq_hz = s_both.freq_hz;
+    if (sf) *sf = s_both.sf;
+    if (bw_khz) *bw_khz = s_both.bw_khz;
+    if (sync) *sync = s_both.sync;
+    if (preamble) *preamble = s_both.preamble;
+    return true;
+}
+
+bool xprslora_class_stats(xprslora_class_stats_t *out)
+{
+    if (!out || !s_radio) return false;
+    *out = s_class;
+    return true;
 }
 
 /*
@@ -1018,7 +1520,7 @@ static esp_err_t lr_claim_for(const lr_mode_def_t *d)
 static void lr_mc_release(void)
 {
     if (s_survey.active || !s_mc) return;
-    if (s_def->net == LR_NET_MC) return;
+    if (lr_serves(LR_NET_MC)) return;
     if (s_rot.active) {
         for (uint8_t i = 0; i < s_rot.n; i++)
             if (s_rot.ring[i] == XPRSLORA_MODE_MESHCORE) return;
@@ -1053,20 +1555,28 @@ static esp_err_t lr_tune_mode(xprslora_mode_t mode, bool say)
     s_region = reg;
     /* The ledger is built from what the radio was JUST given, overrides
      * included, so it cannot drift from the modem. */
-    s_air = (xb_lora_air_t){ .bw_hz = lora.bw == SX1262_BW_62_5  ? 62500u
-                                    : lora.bw == SX1262_BW_125   ? 125000u
-                                    : lora.bw == SX1262_BW_250   ? 250000u
-                                    : lora.bw == SX1262_BW_500   ? 500000u
-                                                                 : d->bw_hz,
+    s_air = (xb_lora_air_t){ .bw_hz = lr_bw_hz(lora.bw, d->bw_hz),
                              .sf = (uint8_t)sf_n,
-                             .cr = 1, .preamble = d->preamble,
+                             .cr = 1, .preamble = (uint16_t)lora.preamble_len,
                              .crc = true, .implicit_header = false };
     s_hdr_since = 0;
     lr_listen();
-    if (say)
+    if (say) {
         ESP_LOGI(TAG, "now in %s mode: %lu Hz SF%d/%luk, sync 0x%02X (%s)",
                  d->name, (unsigned long)lora.frequency_hz, sf_n,
-                 (unsigned long)(d->bw_hz / 1000u), lora.sync_word, reg->name);
+                 (unsigned long)(s_air.bw_hz / 1000u), lora.sync_word,
+                 reg->name);
+        /* The same sentence xprslora_start prints, because a live switch
+         * into this mode needs it just as much: a reader of the log must
+         * not have to infer that this is nobody's own channel. */
+        if (d->net == LR_NET_BOTH)
+            ESP_LOGW(TAG, "both: this is neither network's own channel. Only "
+                          "nodes an operator has moved onto it are heard "
+                          "here -- a stock Meshtastic node is on 869.525 at "
+                          "SF11/250k sync 0x2B, a stock MeshCore node on "
+                          "869.618 at SF8/62.5k sync 0x12, and neither "
+                          "firmware exposes its sync word");
+    }
     return ESP_OK;
 }
 
@@ -1082,6 +1592,15 @@ esp_err_t xprslora_set_freq(uint32_t hz)
     if (!s_radio || !s_lora) return ESP_ERR_INVALID_STATE;
     if (s_survey.active) return ESP_ERR_INVALID_STATE;
     if (hz && (hz < LR_FREQ_MIN || hz > LR_FREQ_MAX)) return ESP_ERR_INVALID_ARG;
+    /* Refused rather than silently ignored. In `both` mode the channel is
+     * [both] frequency and lr_modem does not consult this override at all,
+     * so accepting it here would report a move that never happened and then
+     * warn about a band the region row does not have. */
+    if (s_def->net == LR_NET_BOTH) {
+        ESP_LOGW(TAG, "both mode's channel is [both] frequency, not "
+                      "[lora] frequency: %lu Hz not taken", (unsigned long)hz);
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     uint32_t was = s_freq_want;
     s_freq_want = hz;
@@ -1124,6 +1643,13 @@ esp_err_t xprslora_set_freq(uint32_t hz)
 uint32_t xprslora_freq(void)
 {
     if (!s_radio) return 0;
+    /* `both` mode's region row is an allowance and carries no channel, so
+     * asking it returns 0 and the status said the radio was on 0 Hz while
+     * it was on 869.618 (bench, 2026-10-03). This has to be what the radio
+     * is ON: docs/esp32.md's validation rules exist because a status that
+     * reported something else had the bench chasing a radio that had
+     * already moved. */
+    if (s_def->net == LR_NET_BOTH) return s_both.freq_hz;
     return s_freq_want ? s_freq_want : xprslora_region()->freq_hz;
 }
 
@@ -1160,6 +1686,22 @@ esp_err_t xprslora_set_mode(xprslora_mode_t mode)
     if (!xprslora_mode_available(mode)) return ESP_ERR_NOT_SUPPORTED;
     if (s_survey.active) return ESP_ERR_INVALID_STATE;
     if (mode == s_mode) return ESP_OK;
+    /* Taking turns and serving both at once are two answers to the same
+     * question, and a station gives one of them. Switching into `both`
+     * ends the rotation out loud rather than leaving a ring that would
+     * retune the radio off this channel on its next slice. */
+    if (k_modes[mode].net == LR_NET_BOTH && s_rot.active) {
+        ESP_LOGI(TAG, "rotation off: %s serves both networks on one channel, "
+                      "so there are no turns left to take",
+                 k_modes[mode].name);
+        xprslora_rotate_stop();
+        /* Stopping it in RAM is not enough: `lora_rotate` is what a restart
+         * reads, so a station switched to `both` came back on a rotation lap
+         * and took the radio off the shared channel. Seen on the bench,
+         * 2026-10-03. The caller clears the key, because config is the app's
+         * and not the bearer's (xprslora_rotate_cleared). */
+        s_rot_cleared = true;
+    }
 
     lr_lock(NULL);
     esp_err_t err = lr_tune_mode(mode, true);
@@ -1348,13 +1890,22 @@ static bool survey_echo(const uint8_t *frame, int len)
     return false;
 }
 
-/* The next mode worth listening on, or COUNT when the sweep is done. */
+/* The next mode worth listening on, or COUNT when the sweep is done.
+ *
+ * `both` is skipped, and not as an oversight: a sweep answers "which of
+ * these networks is reachable", and that mode is not a network. Its channel
+ * is whichever one the operator configured, which the two single-network
+ * stops already visit on their own channels; listening on it a third time
+ * would report the same frames twice under a name that is not a network's.
+ * A sweep STARTED from `both` mode still comes home to it (s_survey.home). */
 static xprslora_mode_t survey_next(xprslora_mode_t from)
 {
-    for (int m = (int)from + 1; m < XPRSLORA_MODE_COUNT; m++)
+    for (int m = (int)from + 1; m < XPRSLORA_MODE_TABLE; m++) {
+        if (k_modes[m].net == LR_NET_BOTH) continue;
         if (xprslora_mode_available((xprslora_mode_t)m))
             return (xprslora_mode_t)m;
-    return XPRSLORA_MODE_COUNT;
+    }
+    return XPRSLORA_MODE_TABLE;
 }
 
 static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
@@ -1419,12 +1970,23 @@ esp_err_t xprslora_rotate_start(const xprslora_mode_t *modes, int n,
     if (slice_s > 600) slice_s = 600;
 
     uint8_t ring_n = 0;
-    xprslora_mode_t ring[XPRSLORA_MODE_COUNT];
-    for (int i = 0; i < n && ring_n < XPRSLORA_MODE_COUNT; i++) {
-        if (modes[i] >= XPRSLORA_MODE_COUNT) continue;
+    xprslora_mode_t ring[XPRSLORA_MODE_TABLE];
+    for (int i = 0; i < n && ring_n < XPRSLORA_MODE_TABLE; i++) {
+        if (modes[i] >= XPRSLORA_MODE_TABLE) continue;
         bool dup = false;
         for (int k = 0; k < ring_n; k++) if (ring[k] == modes[i]) dup = true;
         if (dup) continue;
+        if (k_modes[modes[i]].net == LR_NET_BOTH) {
+            /* Not a refusal of a broken setting: a refusal of a category
+             * error. `both` is the OTHER answer to the question a rotation
+             * answers, so putting it in a ring would be taking turns with
+             * itself. The operator picks one of the two. */
+            ESP_LOGW(TAG, "rotation: %s is not a network -- it is already "
+                          "both of them, on one channel, so it cannot take "
+                          "turns with anything. Left out",
+                     xprslora_mode_name(modes[i]));
+            continue;
+        }
         if (!xprslora_mode_available(modes[i])) {
             ESP_LOGW(TAG, "rotation: %s is not in this firmware -- left out",
                      xprslora_mode_name(modes[i]));
@@ -1474,6 +2036,13 @@ esp_err_t xprslora_rotate_start(const xprslora_mode_t *modes, int n,
         ESP_LOGI(TAG, "rotation: this radio is on %s, which is not in the "
                       "ring -- the first turn moves it", s_def->name);
     return ESP_OK;
+}
+
+bool xprslora_rotate_cleared(void)
+{
+    bool v = s_rot_cleared;
+    s_rot_cleared = false;
+    return v;
 }
 
 void xprslora_rotate_stop(void)
@@ -1562,7 +2131,7 @@ static void survey_tick(void)
                         : m->probed ? ", nobody carried ours" : "");
     xprslora_mode_t next = survey_next(s_mode);
     lr_lock(NULL);
-    if (next < XPRSLORA_MODE_COUNT) {
+    if (next < XPRSLORA_MODE_TABLE) {
         s_survey.started_ms = now;
         s_survey.probes = 0;
         lr_tune_mode(next, false);
@@ -1602,7 +2171,8 @@ int xprslora_survey_json(char *buf, size_t cap)
     int n = snprintf(buf, cap, "{\"running\":%s,\"modes\":{",
                      s_survey.active ? "true" : "false");
     bool first = true;
-    for (int i = 0; i < XPRSLORA_MODE_COUNT && n > 0 && (size_t)n < cap; i++) {
+    for (int i = 0; i < XPRSLORA_MODE_TABLE && n > 0 && (size_t)n < cap; i++) {
+        if (k_modes[i].net == LR_NET_BOTH) continue;
         if (!xprslora_mode_available((xprslora_mode_t)i)) continue;
         n += snprintf(buf + n, cap - (size_t)n, "%s\"%s\":{\"frames\":%lu,\"heard\":[",
                       first ? "" : ",", k_modes[i].name,
@@ -1788,7 +2358,7 @@ esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
                             const mt_mesh_cfg_t *cfg, const char *nick)
 {
     if (!s_lora || !hooks || !cfg) return ESP_ERR_INVALID_STATE;
-    if (s_def->net != LR_NET_MT) return ESP_ERR_NOT_SUPPORTED; /* not allocated */
+    if (!lr_serves(LR_NET_MT)) return ESP_ERR_NOT_SUPPORTED; /* not allocated */
     if (s_st) return ESP_OK;
     lr_state_t *st = heap_caps_calloc(1, sizeof *st,
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -1824,7 +2394,7 @@ esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
 
 void xprslora_mt_offer(const char *wire, int len, int origin)
 {
-    if (!s_st || !s_st->mesh_on || s_def->net != LR_NET_MT) return;
+    if (!s_st || !s_st->mesh_on || !lr_serves(LR_NET_MT)) return;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     mt_mesh_on_xprs(&s_st->mesh, wire, len, origin);
     xSemaphoreGiveRecursive(s_mt_mutex);
@@ -1834,7 +2404,7 @@ bool xprslora_mt_stats(mt_mesh_stats_t *out)
 {
     /* False when Meshtastic is not the running mode, so what reads this --
      * the `serve:` word, the status block -- says what is true now. */
-    if (!s_st || !out || s_def->net != LR_NET_MT) return false;
+    if (!s_st || !out || !lr_serves(LR_NET_MT)) return false;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     *out = s_st->mesh.st;
     xSemaphoreGiveRecursive(s_mt_mutex);
@@ -1914,46 +2484,148 @@ static void mc_vnodes_save(void *ctx, const void *buf, int len)
 static void mc_worker(void *arg)
 {
     (void)arg;
-    s_mc_worker_live = true;
-    while (!s_mc_worker_stop) {
+    /* Parks rather than exits, so the stack it sits on is claimed once at
+     * start and never asked for again (see s_mc_stack). A parked task costs
+     * no CPU: it is blocked on a semaphore, not polling. */
+    for (;;) {
+        if (!s_mc_wanted) {
+            if (s_mc_worker_live) {
+                ESP_LOGI(TAG, "MeshCore worker parked");
+                s_mc_worker_live = false;
+            }
+            xSemaphoreTake(s_mc_wake, portMAX_DELAY);
+            continue;
+        }
+        /* The old exit path, kept for the one caller that still deletes the
+         * task outright: an install handing the stack back. */
+        if (s_mc_worker_stop) break;
+        s_mc_worker_live = true;
         xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
         if (s_mc && s_mc->mesh_on) mc_mesh_work(&s_mc->mesh, lr_now_ms());
         xSemaphoreGiveRecursive(s_mt_mutex);
+        /* The one task whose stack nobody was measuring. The bearer task
+         * has printed this line for a year; this one is deeper (an Ed25519
+         * verify is the single biggest frame in the firmware) and had no
+         * instrumentation at all, while two docs disagreed about what it
+         * cost. The bench answered it on 2026-10-03: 904 bytes of the 6,144
+         * spare at the low point, so a pass costs about 5,240 and this
+         * stack is not the place to look for savings. */
+        static UBaseType_t s_low = (UBaseType_t)-1;
+        UBaseType_t hw = uxTaskGetStackHighWaterMark(NULL);
+        if (hw + 128 < s_low || s_low == (UBaseType_t)-1) {
+            s_low = hw;
+            ESP_LOGI(TAG, "mcwork: %u bytes of stack never used",
+                     (unsigned)hw);
+        }
         vTaskDelay(pdMS_TO_TICKS(50));
     }
     /* Said before the flag drops: whoever is waiting frees the state the
      * moment it does. */
     ESP_LOGI(TAG, "MeshCore worker stopped");
     s_mc_worker_live = false;
+    s_mc_worker = NULL;
     vTaskDelete(NULL);
+}
+
+/* Claim the stack and start the task parked. Called from xprslora_start on a
+ * board that could ever need it, and again after an install has handed it
+ * back. True when the worker exists afterwards. */
+static bool mc_worker_claim(void)
+{
+    if (s_mc_worker) return true;
+    if (!s_mc_wake) {
+        s_mc_wake = xSemaphoreCreateBinary();
+        if (!s_mc_wake) return false;
+    }
+    if (!s_mc_stack) {
+        s_mc_stack = heap_caps_malloc(LR_MC_STACK, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        s_mc_tcb = heap_caps_malloc(sizeof *s_mc_tcb,
+                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!s_mc_stack || !s_mc_tcb) {
+            free(s_mc_stack); free(s_mc_tcb);
+            s_mc_stack = NULL; s_mc_tcb = NULL;
+            /* Not fatal: the mode can still try a lazy create later, which
+             * is exactly what this firmware did before. Say so, because a
+             * silent fallback here is a mode that refuses itself hours
+             * later for no visible reason. */
+            ESP_LOGW(TAG, "MeshCore worker: could not claim its %u byte stack "
+                          "at start (internal free %u, largest %u) -- the mode "
+                          "will have to ask again when it is entered",
+                     (unsigned)LR_MC_STACK,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+            return false;
+        }
+    }
+    s_mc_worker_stop = false;
+    s_mc_wanted = false;
+    s_mc_worker = xTaskCreateStaticPinnedToCore(
+        mc_worker, "mcwork", LR_MC_STACK, NULL, 2, s_mc_stack, s_mc_tcb,
+        XPRS_WORK_CORE);
+    if (!s_mc_worker) {
+        ESP_LOGE(TAG, "MeshCore worker: the task refused its own static stack");
+        return false;
+    }
+    ESP_LOGI(TAG, "MeshCore worker: %u bytes of stack held for the life of "
+                  "this run, parked until a mode wants it",
+             (unsigned)LR_MC_STACK);
+    return true;
+}
+
+/* The other half of quiesce: delete the task and hand the stack back. */
+static void mc_worker_release(void)
+{
+    if (s_mc_worker) {
+        s_mc_wanted = false;
+        s_mc_worker_stop = true;
+        if (s_mc_wake) xSemaphoreGive(s_mc_wake);
+        for (int i = 0; i < 40 && s_mc_worker; i++) vTaskDelay(pdMS_TO_TICKS(10));
+        if (s_mc_worker) {
+            ESP_LOGW(TAG, "MeshCore worker will not leave; keeping its stack");
+            s_mc_worker_stop = false;
+            return;
+        }
+    }
+    free(s_mc_stack); free(s_mc_tcb);
+    s_mc_stack = NULL; s_mc_tcb = NULL;
+    ESP_LOGI(TAG, "MeshCore worker: %u bytes of stack handed back",
+             (unsigned)LR_MC_STACK);
 }
 
 /* Stop it and get its stack back. True when it is gone (or never ran);
  * false when it would not leave, which means its state must be kept. */
+/* Park it. The stack stays claimed, which is the whole point: the next mode
+ * that wants the worker must never have to ask the heap for 6 KB again. */
 static bool mc_worker_stop(void)
 {
     if (!s_mc_worker) return true;
-    s_mc_worker_stop = true;
+    s_mc_wanted = false;
     for (int i = 0; i < 40 && s_mc_worker_live; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
     if (s_mc_worker_live) {
-        ESP_LOGW(TAG, "MeshCore worker did not stop");
-        s_mc_worker_stop = false;
+        ESP_LOGW(TAG, "MeshCore worker did not park");
         return false;
     }
-    s_mc_worker = NULL;
     return true;
 }
 
 static bool mc_worker_start(void)
 {
-    if (s_mc_worker) return true;
     if (s_mc_quiet) return false;
+    /* The ordinary path: the task already exists on its pre-claimed stack,
+     * so entering a mode is a semaphore give and costs no memory at all. */
+    if (s_mc_worker) {
+        s_mc_wanted = true;
+        if (s_mc_wake) xSemaphoreGive(s_mc_wake);
+        return true;
+    }
     s_mc_worker_stop = false;
-    /* XPRS_WORK_CORE, not a bare 1: on the C3 there is no core 1 and
-     * asking for it is an abort before the station says a word
-     * (docs/esp32.md, "The ESP32-C3"). */
-    if (xTaskCreatePinnedToCore(mc_worker, "mcwork", 6144, NULL, 2,
+    s_mc_wanted = true;
+    /* The fallback, for a board where the claim at start did not happen:
+     * ask now, as this firmware always did. XPRS_WORK_CORE, not a bare 1:
+     * on the C3 there is no core 1 and asking for it is an abort before the
+     * station says a word (docs/esp32.md, "The ESP32-C3"). */
+    if (xTaskCreatePinnedToCore(mc_worker, "mcwork", LR_MC_STACK, NULL, 2,
                                 &s_mc_worker, XPRS_WORK_CORE) == pdPASS)
         return true;
     s_mc_worker = NULL;
@@ -1973,7 +2645,7 @@ esp_err_t xprslora_mc_start(const xprslora_mt_hooks_t *hooks,
                             const mc_mesh_cfg_t *cfg, const char *nick)
 {
     if (!s_lora || !hooks || !cfg) return ESP_ERR_INVALID_STATE;
-    if (s_def->net != LR_NET_MC) return ESP_ERR_NOT_SUPPORTED;
+    if (!lr_serves(LR_NET_MC)) return ESP_ERR_NOT_SUPPORTED;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     bool have = s_mc != NULL, already = have && s_mc->mesh_on;
     xSemaphoreGiveRecursive(s_mt_mutex);
@@ -2028,7 +2700,7 @@ esp_err_t xprslora_mc_start(const xprslora_mt_hooks_t *hooks,
 
 void xprslora_mc_offer(const char *wire, int len, int origin)
 {
-    if (s_def->net != LR_NET_MC) return;
+    if (!lr_serves(LR_NET_MC)) return;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     if (s_mc && s_mc->mesh_on) mc_mesh_on_xprs(&s_mc->mesh, wire, len, origin);
     xSemaphoreGiveRecursive(s_mt_mutex);
@@ -2036,7 +2708,7 @@ void xprslora_mc_offer(const char *wire, int len, int origin)
 
 bool xprslora_mc_stats(mc_mesh_stats_t *out)
 {
-    if (!out || s_def->net != LR_NET_MC) return false;
+    if (!out || !lr_serves(LR_NET_MC)) return false;
     xSemaphoreTakeRecursive(s_mt_mutex, portMAX_DELAY);
     bool on = s_mc != NULL;
     if (on) *out = s_mc->mesh.st;
@@ -2063,11 +2735,24 @@ void xprslora_mc_pause(bool quiet)
     if (!s_mc || !s_mc->mesh_on) return;
     if (quiet) {
         s_mc_quiet = true;
-        if (mc_worker_stop())
-            ESP_LOGW(TAG, "MeshCore worker stood down for the install");
+        /* The one caller that really does hand the six kilobytes back,
+         * rather than parking on them: an install wants the RAM and the
+         * cache. An install ends in a reboot, where the claim happens early
+         * and from a whole heap, so this is cheap to give. */
+        mc_worker_release();
+        ESP_LOGW(TAG, "MeshCore worker stood down for the install");
     } else {
         s_mc_quiet = false;
-        if (mc_worker_start()) ESP_LOGI(TAG, "MeshCore worker back");
+        /* A cancelled install: take the stack back now. If the heap will
+         * not give it, say so -- the bridge is down until a restart, which
+         * is where it would have been before this change too. */
+        if (!mc_worker_claim())
+            ESP_LOGE(TAG, "MeshCore worker did not come back after the "
+                          "install was called off: this radio bridges "
+                          "nothing on MeshCore until a restart");
+        else if (lr_serves(LR_NET_MC) && s_mc && s_mc->mesh_on &&
+                 mc_worker_start())
+            ESP_LOGI(TAG, "MeshCore worker back");
     }
 }
 

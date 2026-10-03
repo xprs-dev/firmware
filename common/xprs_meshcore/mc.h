@@ -2,11 +2,16 @@
  * @file mc.h
  * @brief MeshCore on the XPRS LoRa radio: the frame, the payloads, the keys.
  *
- * The third LoRa mode (XPRS.md 14.8, docs/lora.md "One radio, three networks").
- * MeshCore's EU channel is 869.525 MHz, SF11, 250 kHz, CR 4/5, preamble 16,
- * which is Meshtastic's LongFast with ANOTHER SYNC WORD (0x12 against
- * 0x2B): the two networks sit on one frequency and are deaf to each other,
- * and a station picks one.
+ * The third LoRa mode (XPRS.md 14.8, docs/lora.md "One radio, four modes").
+ * MeshCore's EU channel is 869.618 MHz, SF8, 62.5 kHz, CR 4/5, preamble 16,
+ * sync word 0x12: a channel of its own, measured off a stock node, and NOT
+ * Meshtastic's LongFast with another sync word, which is what this file said
+ * until the bench said otherwise (the numbers and the date are in the block
+ * below, and that block is the one to believe). The two networks are on
+ * different frequencies with different modulations, so a receiver set to
+ * one is deaf to the other and a station picks one -- unless an operator
+ * has put both of them on a single channel, which is what `both` mode is
+ * for and the only thing that makes one receiver hear two networks.
  *
  * Written from MeshCore's published format (docs.meshcore.io packet_format
  * and payloads, and the field names in meshcore-dev/MeshCore's Packet.h,
@@ -21,9 +26,13 @@
  * carries the hop count in bits 0-5 and the size of each hop's hash, minus
  * one, in bits 6-7. A payload is at most 184 bytes.
  *
- * WHAT XPRS PUTS ON THAT CHANNEL is a RAW_CUSTOM payload, flood-routed, so
- * a MeshCore repeater carries it without understanding it, exactly as a
- * private portnum does on Meshtastic (mc_xprs.c).
+ * WHAT XPRS PUTS ON THAT CHANNEL is a RAW_CUSTOM payload, flood-routed,
+ * which is MeshCore's own answer to a payload a node does not understand,
+ * exactly as a private portnum is on Meshtastic (mc_xprs.c). A stock
+ * repeater HEARS it and does not re-air it, though -- proven against
+ * v1.17.1 on 2026-09-20 -- so XPRS on this channel reaches stations in
+ * direct range and no further, while everything the bridge translates
+ * crosses the whole mesh (docs/lora.md, "`meshcore` mode").
  *
  * The crypto is not ours either: AES-128-ECB with the shared secret's first
  * sixteen bytes (or the channel key), a two-byte truncation of

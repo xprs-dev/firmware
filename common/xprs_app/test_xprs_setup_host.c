@@ -106,7 +106,10 @@ static void test_values(void)
     CHECK(xsetup_check("zone", "+15:00"), "past +14:00");
 
     CHECK(!xsetup_check("lora", "xprs") && !xsetup_check("lora", "meshtastic") &&
-          !xsetup_check("lora", "meshcore"), "the three LoRa modes");
+          !xsetup_check("lora", "meshcore") && !xsetup_check("lora", "both"),
+          "the four LoRa modes");
+    CHECK(xsetup_check("lora", "lorawan") && xsetup_check("lora", "BOTH"),
+          "and nothing else, case included");
 
     /* 14.8: the channel itself, because not every board is an 868 MHz
      * board and a 433 community picks its own. */

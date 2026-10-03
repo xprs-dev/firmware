@@ -5,7 +5,7 @@
  * A LoRa receiver hears only the modulation and sync word it is set to, so
  * which LoRa network a station shares a channel with is a setting, chosen at
  * start and fixed until the next (`lora_mode`, docs/lora.md "One radio,
- * three networks"):
+ * four modes"):
  *
  *   xprs        XPRS's own channel, as the fleet ran before 2026-09-19:
  *               SF7 (SF9 with the `far` profile), 125 kHz, CR 4/5, preamble
@@ -18,7 +18,28 @@
  *               /mt.h), one frame up to 233 bytes, two above that; every
  *               other frame goes to the Meshtastic repeater and bridge
  *               (mt_mesh). The default.
- *   meshcore    reserved: named everywhere, not in this firmware yet.
+ *   meshcore    MeshCore's own channel, measured off a stock node rather
+ *               than assumed (SF8, 62.5 kHz, CR 4/5, preamble 16, sync word
+ *               0x12, 869.618 MHz in Europe). XPRS rides as a flood-routed
+ *               RAW_CUSTOM payload and every other packet goes to the
+ *               MeshCore repeater and bridge (mc_mesh). Needs PSRAM.
+ *   both        Meshtastic AND MeshCore at once, on ONE channel the
+ *               OPERATOR configures ([both] in config.ini). The sentence at
+ *               the top of this comment still holds and is the reason this
+ *               mode exists at all: there is one modulation and one sync
+ *               word, so the only way to serve two networks simultaneously
+ *               is to put both of them on the same one. Nothing stock is
+ *               reachable this way -- Meshtastic's nodes are on 869.525 at
+ *               SF11/250k with sync 0x2B and MeshCore's on 869.618 at
+ *               SF8/62.5k with sync 0x12 -- so this is for a site that
+ *               controls both sides. Each frame is classified by structure
+ *               (lr_class.h) and handed to one engine or to neither, never
+ *               to both. Needs PSRAM.
+ *
+ * A station that would rather reach the two networks as they actually are
+ * takes turns on them instead (lr_rotate.h), which costs about half the
+ * reception on each. Simultaneous, exclusive or in turn: the operator picks
+ * one of the three, and docs/lora.md says what each costs.
  *
  * The xb_* half never sees the difference: what it hands this file and
  * what this file hands back are plain XPRS wires, as on every other bearer.
@@ -34,6 +55,7 @@
 #include "esp_err.h"
 #include "xprsbearer.h"
 #include "mc_mesh.h"
+#include "lr_class.h"
 #include "lr_rotate.h"
 #include "mt_mesh.h"
 
@@ -46,20 +68,118 @@ typedef enum {
     XPRSLORA_MODE_XPRS = 0,
     XPRSLORA_MODE_MESHTASTIC,
     XPRSLORA_MODE_MESHCORE,
+    XPRSLORA_MODE_BOTH,
     XPRSLORA_MODE_COUNT
 } xprslora_mode_t;
+
+/*
+ * How many modes this BUILD carries a radio profile for, which is not always
+ * how many the enum names.
+ *
+ * `both` is last on purpose, so a board that cannot run it carries no row,
+ * no region table, no survey slot and no ring slot for it. That is 216 bytes
+ * of internal RAM, and on the Heltec V3 those 216 bytes were the difference
+ * between the UI task getting its 8 KB stack and dying on 6 KB -- measured on
+ * the bench, 2026-10-03 (docs/esp32.md, "Heap is the binding constraint").
+ * A board that cannot have the feature does not pay for it.
+ *
+ * The ENUM keeps every mode on every board, and so does the word
+ * xprslora_mode_parse() answers to, because the grammar of `cmd:set lora:`
+ * is the protocol's and not this board's: a mode this firmware lacks is
+ * answered `code:501`, not "malformed" (XPRS.md 14.8). Only
+ * xprslora_mode_available() says no.
+ */
+/*
+ * PLAIN INTEGERS, not the enum names. The preprocessor cannot see an
+ * enumerator: in an `#if` an unknown identifier is 0, so
+ * `#if XPRSLORA_MODE_TABLE > XPRSLORA_MODE_BOTH` written with the names
+ * reads as `0 > 0` and silently drops the row on EVERY board. That is how
+ * the first version of this went out, and the bench found it in one line
+ * ("lora: both cannot run on this board" on a T-Deck with 8 MB of PSRAM).
+ * The static assertions below are what keep these numbers honest when a
+ * fifth mode is added.
+ */
+#if !defined(ESP_PLATFORM) || defined(CONFIG_SPIRAM)
+#define XPRSLORA_MODE_TABLE 4
+#else
+#define XPRSLORA_MODE_TABLE 3
+#endif
+
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+_Static_assert(XPRSLORA_MODE_COUNT == 4,
+               "a mode was added: XPRSLORA_MODE_TABLE's literals must follow");
+_Static_assert(XPRSLORA_MODE_BOTH == 3,
+               "`both` must stay LAST, so a board without PSRAM can drop it");
+_Static_assert(XPRSLORA_MODE_TABLE <= XPRSLORA_MODE_COUNT,
+               "the table cannot hold more modes than the enum names");
+#endif
 
 /** The mode a freshly flashed station runs. */
 #define XPRSLORA_MODE_DEFAULT XPRSLORA_MODE_MESHTASTIC
 
-/** "xprs", "meshtastic", "meshcore". */
+/** "xprs", "meshtastic", "meshcore", "both". */
 const char *xprslora_mode_name(xprslora_mode_t mode);
 
 /** The mode a word names; false for a word that names none. */
 bool xprslora_mode_parse(const char *word, xprslora_mode_t *out);
 
-/** Whether this firmware can run [mode] (meshcore: not yet). */
+/**
+ * Whether this board can run [mode] right now, which is a question about
+ * the board and the configuration rather than about the firmware: both
+ * `meshcore` and `both` need PSRAM, and `both` also needs the channel its
+ * two networks are to share (xprslora_set_both). Everything that walks the
+ * modes -- the survey sweep, the T-Deck's Settings row, the rotation's
+ * ring -- asks here, so a mode that cannot run is skipped everywhere at
+ * once.
+ */
 bool xprslora_mode_available(xprslora_mode_t mode);
+
+/**
+ * The channel `both` mode puts the two networks on.
+ *
+ * Separate from `[lora] frequency`, `sf` and `bw_khz` ON PURPOSE. Those are
+ * an override for EVERY mode, which is what they are for and is also how a
+ * boot mode's channel once followed the radio into the other two
+ * (docs/lora.md, "The channel is a setting", found on the bench
+ * 2026-09-20). A channel that
+ * only `both` mode means has to be stated only for `both` mode.
+ *
+ * No preset: these numbers are the operator's, because the two networks can
+ * only meet where the operator puts them. [sync] is the one modem parameter
+ * no other mode lets anybody set, and it is the parameter that decides which
+ * of the two stock firmwares has to be rebuilt to turn up: Meshtastic
+ * hardcodes 0x2B and MeshCore 0x12.
+ *
+ * ESP_ERR_INVALID_ARG for a frequency, spreading factor or bandwidth the
+ * radio cannot take. Taken at once when `both` is the running mode.
+ */
+esp_err_t xprslora_set_both(uint32_t freq_hz, uint8_t sf, uint16_t bw_khz,
+                            uint8_t sync, uint16_t preamble);
+
+/** What `both` mode is set to; false when it has not been told. */
+bool xprslora_both_channel(uint32_t *freq_hz, uint8_t *sf, uint16_t *bw_khz,
+                           uint8_t *sync, uint16_t *preamble);
+
+/**
+ * Why `both` mode is unavailable, as one short sentence, or NULL when it is
+ * available. Two refusals wear one word otherwise, and they are not the same
+ * thing: a board with no PSRAM will never run the mode, while a missing
+ * channel is a minute's work. The memory answer comes first because it is
+ * the one the operator cannot fix.
+ */
+const char *xprslora_both_why_not(void);
+
+/** What the classifier decided, since boot: the counters rule 14 asks for
+ *  (docs/lora.md, "The rules we follow"). Zero in every mode but
+ *  `both`. */
+typedef struct {
+    uint32_t mt, mc;            /* frames given to each engine */
+    uint32_t xprs_mt, xprs_mc;  /* XPRS's own, in each wrapping */
+    uint32_t either, neither;   /* settled by a tie-break; given to nobody */
+} xprslora_class_stats_t;
+
+/** The counters above; false when the radio is not up. */
+bool xprslora_class_stats(xprslora_class_stats_t *out);
 
 /** The radio's wiring and tuning. A board that has no SX1262 simply never
  *  calls xprslora_start. */
@@ -85,6 +205,12 @@ typedef struct {
      * mode's default. */
     uint8_t  sf;             /* 7..12 */
     uint16_t bw_khz;         /* 62, 125, 250, 500 (62 means 62.5) */
+    /* The sync word, 0 = the mode's own. The one modem parameter neither
+     * Meshtastic nor MeshCore exposes in its own firmware, which is why
+     * this firmware does: it is the only way to find out what this chip
+     * does with a mismatched one, and that answer is what decides whether
+     * one channel can carry both networks' stock nodes at all. */
+    uint8_t  sync;
 } xprslora_cfg_t;
 
 /**
@@ -99,6 +225,14 @@ typedef struct {
  *               fits a 400 ms dwell and Meshtastic applies none, so the
  *               900 MHz rows carry none; `lora_duty_ms` and a dwell can
  *               still be set by the operator.
+ *   meshcore    MeshCore's own: `eu` 869.618 MHz, measured off a stock
+ *               node; `us` 910.525 and `au` 915.8 from its own builds.
+ *   both        one row, `cfg`, whose frequency is whatever
+ *               xprslora_set_both was given. The hour and the ceiling on
+ *               it are EU band g3's, because that is where this mode was
+ *               written and metering against something is not optional;
+ *               whether they are right where the station stands is the
+ *               operator's call, exactly as the power ceiling already is.
  */
 typedef struct {
     const char *name;        /* what lora_region selects */
@@ -186,7 +320,7 @@ int xprslora_survey_json(char *buf, size_t cap);
 typedef struct {
     bool            active;
     uint8_t         n;
-    xprslora_mode_t modes[XPRSLORA_MODE_COUNT];
+    xprslora_mode_t modes[XPRSLORA_MODE_TABLE];
     xprslora_mode_t now;        /* the network it is on this moment */
     uint32_t        slice_s;    /* the floor, in seconds */
     uint32_t        in_slice_ms;/* how long it has been on this one */
@@ -209,6 +343,10 @@ typedef struct {
  * Fewer than two usable modes is ESP_ERR_INVALID_ARG: that is not a
  * rotation, it is a mode.
  *
+ * [XPRSLORA_MODE_BOTH] is dropped from the ring too, and for a different
+ * reason: it is not a network, it is the other answer to the same question.
+ * Taking turns with it would be taking turns with itself.
+ *
  * Bring each bridge up FIRST (the station's own mode change does that);
  * this only moves the radio between networks that already speak.
  */
@@ -217,6 +355,15 @@ esp_err_t xprslora_rotate_start(const xprslora_mode_t *modes, int n,
 
 /** Stop taking turns and stay where the radio is now. */
 void xprslora_rotate_stop(void);
+
+/**
+ * True once, when entering a mode has made a stored `lora_rotate` a lie --
+ * `both` serves both networks itself, so there are no turns to take. The
+ * caller clears the key: the bearer stops the rotation in RAM but does not
+ * own config, and a station that only did the former came back on a rotation
+ * lap after a restart and left the shared channel (bench, 2026-10-03).
+ */
+bool xprslora_rotate_cleared(void);
 
 /** What it is doing; false when it is not running. */
 bool xprslora_rotate_state(xprslora_rotate_t *out);

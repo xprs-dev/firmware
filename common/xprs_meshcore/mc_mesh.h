@@ -196,9 +196,11 @@ typedef struct {
  * A packet waiting for the curve arithmetic that would open it.
  *
  * NONE OF THE CURVE WORK HAPPENS ON THE TASK THAT HEARD THE PACKET. An
- * Ed25519 verification is about 3.3 KB of stack (measured with
- * -fstack-usage on the target compiler) and the bearer task has roughly two
- * to spare, so verifying an advert where it arrives is a stack overflow and
+ * Ed25519 verification is about 3.9 KB of stack (measured with
+ * -fstack-usage on the target compiler; this file said 3.3 KB until
+ * 2026-10-03, and the runtime high-water on mcwork says a whole pass costs
+ * about 5,240 of its 6,144 bytes, so 3.9 is the one to believe) and the
+ * bearer task has roughly two to spare, so verifying an advert where it arrives is a stack overflow and
  * a reboot loop (docs/esp32.md, "Task stacks are heap, and these are the
  * measured floors"). The receive path copies the payload here, and
  * mc_mesh_work() -- which the station runs on a task of its own, on core 1

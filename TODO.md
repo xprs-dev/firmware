@@ -24,6 +24,42 @@ docs/lora.md, "The rules we follow", and reads its "Lessons learned".**
    `CLIENT_HISTORY` request on return) are written up in docs/lora.md
    section 10 and not started.
 
+0a1. **`both` mode: on the air, with one gap (2026-10-03).** One channel,
+   both foreign networks, each frame classified by structure and handed to
+   one engine or to neither (`common/xprs_bearer_lora/lr_class.c`; docs/lora.md
+   section 11, bench results in section 14). Measured on two T-Decks and a
+   Heltec V3: 2 genuine MeshCore frames and 1 genuine Meshtastic frame on ONE
+   channel, each to its own engine and relayed by its own repeater, 20 XPRS
+   wires in both wrappings, and **`either` and `neither` both zero** over
+   twenty minutes. The refusals, the rotation's two category errors and the
+   duty ledger across a live switch all behave.
+   **The sync-word question is answered and it bounds the feature:** two
+   identical radios on one channel differing only in the sync word heard 0
+   frames of 6 from each other while 8.7 s of airtime went out, and 10 of 6
+   once matched. Meshtastic hardcodes 0x2B and MeshCore 0x12, so one channel
+   serves ONE network's stock nodes plus the other's rebuilt ones. Do not
+   quote a wider reach than that.
+   **The gap, and it is a decision rather than a bug:** the mode has only run
+   on a T-Deck with `ble_on = no`. A fully loaded T-Deck is ~500 bytes short
+   of `lr_claim_for`'s 22,528-byte internal reserve and refuses -- as it
+   already does for plain `meshcore` on that build. Baseline clears that gate
+   by about 92 bytes; this feature costs 312. Either something comes off the
+   T-Deck or `LR_MC_SPARE_INTERNAL` (16 KB protecting an 8 KB UI task and a
+   4 KB floor) is revisited on purpose. See docs/esp32.md, "And the same
+   answer, twice over".
+   Nothing has been tried against a genuinely stock node of either network:
+   there is none at this bench.
+
+0a2. **LDRO was right by luck and is now right by rule.** `sx1262.c`
+   enabled low data rate optimize for `BW125 && (SF11 || SF12)`; it now
+   asks whether a symbol lasts 16.38 ms or more, which is the datasheet's
+   rule and RadioLib's. No preset this firmware carries changes behaviour.
+   Three modulations `both` mode lets an operator pick DO change (SF10 and
+   SF11 at 62.5 kHz, SF12 at 250 kHz), and they were silently broken
+   before. **Verified on the bench 2026-10-03**: old code against new on
+   SF11/62.5 with the same sync word, 0 frames of 3 while 32 s of airtime
+   went out; 2 of 3 with the new code on both ends. It was a dead link.
+
 0. **Try the remote LoRa mode switch on the bench.** `cmd:set lora:<mode>`
    is host-tested and in the Firmwares wapp (0.3.6), but neither bench board
    is owned by a profile on the bench phone (X1ARKL) or desktop (X16JK8):

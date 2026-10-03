@@ -1109,7 +1109,7 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
  * mc_mesh_work is where every signature, key exchange and derived key
  * happens, on the station's own task; mc_mesh_tick is what the bearer
  * calls, and it never touches the curve. Splitting them is not tidiness:
- * an Ed25519 verification is about 3.3 KB of stack and the bearer task has
+ * an Ed25519 verification is about 3.9 KB of stack and the bearer task has
  * two to spare (docs/esp32.md).
  */
 

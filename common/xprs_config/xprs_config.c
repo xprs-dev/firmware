@@ -104,6 +104,32 @@ static cfg_entry_t s_cfg[] = {
      * own, which is what almost every station wants. */
     { "lora_sf",      {0}, false },
     { "lora_bw_khz",  {0}, false },
+    /* The sync word, 0 = the mode's own. Neither Meshtastic nor MeshCore
+     * exposes its own (0x2B and 0x12 are constants in their firmware), so
+     * this is the only way to ask the one question that decides what a
+     * shared channel is worth: does the chip reject a frame whose sync word
+     * is not the one it was set to (docs/lora.md). */
+    { "lora_sync",    {0}, false },
+    /* The channel `both` mode puts the two foreign networks on. Separate
+     * from the four keys above because those move EVERY mode, which is what
+     * they are for: a boot mode's channel once followed the radio into the
+     * other two, and that is the bug these keys exist not to repeat.
+     *
+     * ONE key, not five, and the saving is the reason. Every cached key
+     * costs 88 bytes of internal RAM whether it is set or not, so five of
+     * them cost 440 to hold values like "8" and "62" -- enough to cost the
+     * Heltec V3 its UI task and the T-Deck its MeshCore worker, both
+     * measured on the bench on 2026-10-03. It also reads better: a channel
+     * is ONE thing and its parts are meaningless apart, which is how
+     * MeshCore's own nodes state theirs (`get radio` answers
+     * `869.6179809,62.5,8,5`).
+     *
+     * Not compiled at all on a board without PSRAM, because `both` mode
+     * cannot run there (docs/lora.md section 11): a board that cannot have
+     * the feature does not pay for its settings either. */
+#if !defined(ESP_PLATFORM) || defined(CONFIG_SPIRAM)
+    { "both_ch",      {0}, false },
+#endif
     /* 9.11.1: whether this station's LoRa counts as a local bearer (a
      * building's own mesh) and may carry scope:local; default no. */
     { "lora_local",   {0}, false },
@@ -257,7 +283,11 @@ int xcfg_ini_render(char *buf, size_t cap)
         ";   906.875, au 919.875 MHz). meshcore = MeshCore's own channel\n"
         ";   (SF8, 62.5 kHz, sync 0x12, eu 869.618 MHz), carrying XPRS as\n"
         ";   a RAW_CUSTOM payload their repeaters hear but do not relay.\n"
-        ";   Stations in different modes do not hear each other on LoRa.\n"
+        ";   both = Meshtastic AND MeshCore at once, on ONE channel you\n"
+        ";   configure in [both] below. Stations in different modes do not\n"
+        ";   hear each other on LoRa, and neither do the two networks\n"
+        ";   unless somebody has put them on one channel -- which is what\n"
+        ";   `both` needs and cannot do for you.\n"
         "; profile = far: SF9, xprs mode only. Empty keys take the region's\n"
         "; own figures. local = yes lets scope:local on LoRa.\n"
         "; sf / bw_khz: the modulation, for following neighbours onto a\n"
@@ -296,8 +326,41 @@ int xcfg_ini_render(char *buf, size_t cap)
         ";   one per network, is still the reliable answer. Empty = off.\n"
         "; rotate_s: the shortest turn, seconds (default 25, chosen from\n"
         ";   the other networks' retry budgets -- see docs/lora.md).\n"
+        "; sync: the sync word, hex, 0 or empty = the mode's own (xprs and\n"
+        ";   meshcore 0x12, meshtastic 0x2B). Set it only to find out what\n"
+        ";   this chip does with a mismatched one: neither foreign firmware\n"
+        ";   lets its own be changed.\n"
         "rotate = %s\n"
         "rotate_s = %s\n"
+        "sync = %s\n"
+        "\n"
+        "[both]\n"
+        "; The one channel `[lora] mode = both` puts the two foreign\n"
+        "; networks on, so that one receiver can hear them both. All four\n"
+        "; channel = <freq>,<bw_khz>,<sf>,<sync>[,<preamble>] -- one\n"
+        ";   setting, because a channel is one thing and its parts mean\n"
+        ";   nothing apart. Frequency in MHz or hertz, sync in hex,\n"
+        ";   preamble optional (16). The order is the one a MeshCore node\n"
+        ";   answers `get radio` with, plus the sync word.\n"
+        ";     channel = 869.618,62,8,12\n"
+        "; There is no default and there cannot be one: it is whichever\n"
+        "; channel YOU put Meshtastic and MeshCore on. The sync word is\n"
+        "; the part that decides which side needs rebuilding, because\n"
+        "; neither of their firmwares lets its own be changed.\n"
+        "; Needs PSRAM -- two bridges and a 6 KB task.\n"
+        ";\n"
+        "; What this costs, said once and plainly: a stock Meshtastic node\n"
+        "; is on 869.525 at SF11/250 kHz with sync 0x2B and a stock\n"
+        "; MeshCore node on 869.618 at SF8/62.5 kHz with sync 0x12, and\n"
+        "; NEITHER firmware exposes its sync word. So whichever sync you\n"
+        "; pick here, the other network's nodes need a rebuilt firmware to\n"
+        "; turn up, and one network pays for the other's modulation. One\n"
+        "; hour of airtime now serves two networks at once instead of in\n"
+        "; turn, so the budget drains faster than either alone.\n"
+        "; A station that would rather reach the two networks AS THEY ARE\n"
+        "; takes turns on them instead ([lora] rotate above), and a site\n"
+        "; that wants both reliably runs two boards.\n"
+        "channel = %s\n"
         "\n"
         "[meshtastic]\n"
         "; Relay Meshtastic traffic, and translate messages both ways.\n"
@@ -403,6 +466,8 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("lora_detect_s", ""),
         xcfg_get("lora_rotate", ""),
         xcfg_get("lora_rotate_s", ""),
+        xcfg_get("lora_sync", ""),
+        xcfg_get("both_ch", ""),
         xcfg_get_bool("mt_repeat", true) ? "yes" : "no",
         xcfg_get_bool("mt_bridge", true) ? "yes" : "no",
         xcfg_get("mt_bcast_hr", ""),
@@ -475,6 +540,10 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "lora",    "detect_s", "lora_detect_s" },
     { "lora",    "rotate",   "lora_rotate" },
     { "lora",    "rotate_s", "lora_rotate_s" },
+    { "lora",    "sync",     "lora_sync" },
+#if !defined(ESP_PLATFORM) || defined(CONFIG_SPIRAM)
+    { "both",    "channel",  "both_ch" },
+#endif
     { "meshtastic", "repeat", "mt_repeat" },
     { "meshtastic", "bridge", "mt_bridge" },
     { "meshtastic", "broadcasts_per_hour", "mt_bcast_hr" },

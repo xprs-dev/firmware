@@ -113,13 +113,14 @@ const char *xsetup_check(const char *key, const char *val)
         return "key: new";
     }
     if (strcmp(key, "lora") == 0) {
-        /* 14.8: the LoRa mode. The grammar names all three; whether this
+        /* 14.8: the LoRa mode. The grammar names all four; whether this
          * firmware HAS one is the station's answer, code:501, not a
-         * malformed command (a small board may be built without one). */
+         * malformed command (a small board may be built without one, and
+         * `both` needs PSRAM and a configured channel). */
         if (strcmp(val, "xprs") == 0 || strcmp(val, "meshtastic") == 0 ||
-            strcmp(val, "meshcore") == 0)
+            strcmp(val, "meshcore") == 0 || strcmp(val, "both") == 0)
             return NULL;
-        return "lora: xprs, meshtastic or meshcore";
+        return "lora: xprs, meshtastic, meshcore or both";
     }
     if (strcmp(key, "freq") == 0) {
         /* 14.8: the channel, in MHz (433.9) or in Hz (433900000), and

@@ -593,6 +593,7 @@ static void settings_ok(int row);
 static void mesh_deliver(const char *wire, int len, bool sign);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
+static bool lora_both_from_cfg(void);
 static esp_err_t lora_rotate_apply(const char *list);
 static uint32_t lora_rotate_slice_s(void);
 static esp_err_t lora_apply_freq(uint32_t hz);
@@ -609,7 +610,13 @@ static void lora_start_bridge(void)
         .nick_of = NULL,
     };
     const char *v;
-    if (xprslora_mode() == XPRSLORA_MODE_MESHCORE) {
+    xprslora_mode_t mode = xprslora_mode();
+    /* Two independent blocks rather than a chain, because `both` mode runs
+     * both of them. Each bridge still refuses to speak unless the running
+     * mode serves its network (docs/lora.md rule 15, which the bearer
+     * answers now with xprslora_serves rather than an equality), so
+     * starting one on a channel that has no use for it cannot happen. */
+    if (mode == XPRSLORA_MODE_MESHCORE || mode == XPRSLORA_MODE_BOTH) {
         mc_mesh_cfg_t mc = {
             .repeat = xcfg_get_bool("mc_repeat", true),
             .bridge = xcfg_get_bool("mc_bridge", true),
@@ -622,20 +629,21 @@ static void lora_start_bridge(void)
             mc.advert_min = (uint16_t)strtoul(v, NULL, 10);
         if (mc.repeat || mc.bridge)
             xprslora_mc_start(&hooks, &mc, xcfg_get("name", ""));
-        return;
     }
-    mt_mesh_cfg_t mt = {
-        .repeat = xcfg_get_bool("mt_repeat", true),
-        .bridge = xcfg_get_bool("mt_bridge", true),
-        .bcast_per_hour = 12,
-        .nodeinfo_min = 180,
-    };
-    if ((v = xcfg_get("mt_bcast_hr", NULL)) && v[0])
-        mt.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
-    if ((v = xcfg_get("mt_ni_min", NULL)) && v[0])
-        mt.nodeinfo_min = (uint16_t)strtoul(v, NULL, 10);
-    if (mt.repeat || mt.bridge)
-        xprslora_mt_start(&hooks, &mt, xcfg_get("name", ""));
+    if (mode == XPRSLORA_MODE_MESHTASTIC || mode == XPRSLORA_MODE_BOTH) {
+        mt_mesh_cfg_t mt = {
+            .repeat = xcfg_get_bool("mt_repeat", true),
+            .bridge = xcfg_get_bool("mt_bridge", true),
+            .bcast_per_hour = 12,
+            .nodeinfo_min = 180,
+        };
+        if ((v = xcfg_get("mt_bcast_hr", NULL)) && v[0])
+            mt.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
+        if ((v = xcfg_get("mt_ni_min", NULL)) && v[0])
+            mt.nodeinfo_min = (uint16_t)strtoul(v, NULL, 10);
+        if (mt.repeat || mt.bridge)
+            xprslora_mt_start(&hooks, &mt, xcfg_get("name", ""));
+    }
 }
 
 /* `cfg lora <mode>` and `cfg survey [seconds]` on the serial console: the
@@ -650,15 +658,33 @@ static bool lora_console(const char *line)
         const char *w = p + 4;
         while (*w == ' ') w++;
         if (!*w) {
-            printf("lora mode=%s (xprs, meshtastic, meshcore)\n",
+            uint32_t bf; uint8_t bsf, bsy; uint16_t bbw, bpr;
+            lora_both_from_cfg();      /* so what it prints is what is set */
+            printf("lora mode=%s (xprs, meshtastic, meshcore, both)\n",
                    xprslora_mode_name(xprslora_mode()));
+            if (xprslora_both_channel(&bf, &bsf, &bbw, &bsy, &bpr))
+                printf("both channel=%lu Hz SF%u/%ukHz sync 0x%02X "
+                       "preamble %u\n", (unsigned long)bf, (unsigned)bsf,
+                       (unsigned)bbw, bsy, (unsigned)bpr);
+            else
+                printf("both: unavailable -- %s\n",
+                       xprslora_both_why_not());
             return true;
         }
         xprslora_mode_t m;
         if (!xprslora_mode_parse(w, &m)) {
-            printf("lora: xprs, meshtastic or meshcore\n");
-        } else if (!xprslora_mode_available(m)) {
-            printf("lora: %s is not in this firmware\n", w);
+            printf("lora: xprs, meshtastic, meshcore or both\n");
+            return true;
+        }
+        /* `cfg set both_sf 8` only writes NVS, so read the channel again
+         * here: an operator who sets the four keys and asks for the mode in
+         * the next breath should not be told there is no channel. */
+        if (m == XPRSLORA_MODE_BOTH) lora_both_from_cfg();
+        if (!xprslora_mode_available(m)) {
+            const char *why = m == XPRSLORA_MODE_BOTH
+                                  ? xprslora_both_why_not() : NULL;
+            if (why) printf("lora: both is not available -- %s\n", why);
+            else     printf("lora: %s cannot run on this board\n", w);
         } else {
             esp_err_t e = lora_apply_mode(m);
             printf("lora mode=%s (%s)\n", xprslora_mode_name(m),
@@ -802,6 +828,58 @@ static esp_err_t lora_apply_region(const char *name)
     return ESP_OK;
 }
 
+/*
+ * The shared channel `both` mode needs, from config into the bearer.
+ *
+ * Called at boot AND from `cfg lora`, because `cfg set both_sf 8` only
+ * writes NVS: without this the operator would set the four keys, ask for
+ * the mode in the next breath and be told there is no channel. Everything
+ * else on this radio is taken at once (`cfg lora`, `cfg freq`,
+ * `cfg region`) and this is no different.
+ *
+ * Quiet when the keys are absent -- that is the normal state of a station
+ * that does not use the mode -- and loud only when they are there and wrong.
+ */
+static bool lora_both_from_cfg(void)
+{
+    const char *v = xcfg_get("both_ch", NULL);
+    if (!v || !v[0]) return false;
+
+    /* `<freq>,<bw_khz>,<sf>,<sync>[,<preamble>]`, the order a MeshCore node
+     * answers `get radio` with plus the sync word. Frequency in MHz or
+     * hertz, whichever was typed, which is the rule `cfg freq` already
+     * uses: one channel is not written two ways in one config file. */
+    char buf[48];
+    snprintf(buf, sizeof buf, "%s", v);
+    char *save = NULL;
+    const char *f_s  = strtok_r(buf, ",", &save);
+    const char *bw_s = strtok_r(NULL, ",", &save);
+    const char *sf_s = strtok_r(NULL, ",", &save);
+    const char *sy_s = strtok_r(NULL, ",", &save);
+    const char *pr_s = strtok_r(NULL, ",", &save);
+    if (!f_s || !bw_s || !sf_s || !sy_s) {
+        ESP_LOGW(TAG, "[both] channel = \"%s\" is not "
+                      "<freq>,<bw_khz>,<sf>,<sync>[,<preamble>]: both mode "
+                      "stays unavailable", v);
+        return false;
+    }
+    double mhz = atof(f_s);
+    uint32_t hz = mhz > 10000.0 ? (uint32_t)mhz
+                                : (uint32_t)(mhz * 1000000.0 + 0.5);
+    esp_err_t e = xprslora_set_both(hz,
+                                    (uint8_t)strtoul(sf_s, NULL, 10),
+                                    (uint16_t)strtoul(bw_s, NULL, 10),
+                                    (uint8_t)strtoul(sy_s, NULL, 16),
+                                    pr_s ? (uint16_t)strtoul(pr_s, NULL, 10) : 0);
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "[both] channel = \"%s\" is not one this radio can "
+                      "take (%s): both mode stays unavailable", v,
+                 esp_err_to_name(e));
+        return false;
+    }
+    return true;
+}
+
 /* Move the radio and bring up whatever speaks on the new channel. [keep]
  * says whether this is the operator's choice, which is remembered, or a
  * turn of the rotation, which is not: `lora_mode` names the mode a station
@@ -813,7 +891,16 @@ static esp_err_t lora_move_mode(xprslora_mode_t mode, bool keep)
     esp_err_t err = xprslora_set_mode(mode);
     if (err != ESP_OK) return err;
     if (keep) xcfg_set("lora_mode", xprslora_mode_name(mode));
-    if (mode == XPRSLORA_MODE_MESHTASTIC || mode == XPRSLORA_MODE_MESHCORE)
+    /* Entering `both` ends a rotation, and the stored list has to go with
+     * it or the next restart reads it and walks the radio off the shared
+     * channel (bench, 2026-10-03). */
+    if (xprslora_rotate_cleared()) {
+        xcfg_set("lora_rotate", "");
+        ESP_LOGI(TAG, "lora_rotate cleared: %s does not take turns",
+                 xprslora_mode_name(mode));
+    }
+    if (mode == XPRSLORA_MODE_MESHTASTIC || mode == XPRSLORA_MODE_MESHCORE ||
+        mode == XPRSLORA_MODE_BOTH)
         lora_start_bridge();
     return ESP_OK;
 }
@@ -845,11 +932,11 @@ static esp_err_t lora_rotate_apply(const char *list)
     if (!s_board->lora) return ESP_ERR_NOT_SUPPORTED;
     if (!list || !list[0]) return ESP_ERR_INVALID_ARG;
 
-    xprslora_mode_t modes[XPRSLORA_MODE_COUNT];
+    xprslora_mode_t modes[XPRSLORA_MODE_TABLE];
     int n = 0;
     char buf[64];
     snprintf(buf, sizeof buf, "%s", list);
-    for (char *tok = strtok(buf, ","); tok && n < XPRSLORA_MODE_COUNT;
+    for (char *tok = strtok(buf, ","); tok && n < XPRSLORA_MODE_TABLE;
          tok = strtok(NULL, ",")) {
         while (*tok == ' ') tok++;
         char *end = tok + strlen(tok);
@@ -857,6 +944,16 @@ static esp_err_t lora_rotate_apply(const char *list)
         xprslora_mode_t m;
         if (!xprslora_mode_parse(tok, &m)) {
             ESP_LOGW(TAG, "rotation: \"%s\" is not a LoRa mode", tok);
+            return ESP_ERR_INVALID_ARG;
+        }
+        if (m == XPRSLORA_MODE_BOTH) {
+            /* Refused where it was typed, not silently dropped later: a
+             * `rotate` list naming this is an operator who meant one of the
+             * two answers and got the other one's word. */
+            ESP_LOGW(TAG, "rotation: \"%s\" serves both networks on one "
+                          "channel already -- it is the alternative to taking "
+                          "turns, not something to take turns with. Set "
+                          "[lora] mode = both instead", tok);
             return ESP_ERR_INVALID_ARG;
         }
         modes[n++] = m;
@@ -889,6 +986,10 @@ static const char *lora_mode_label(xprslora_mode_t m)
     case XPRSLORA_MODE_XPRS:       return "XPRS";
     case XPRSLORA_MODE_MESHTASTIC: return "XPRS+Meshtastic";
     case XPRSLORA_MODE_MESHCORE:   return "XPRS+MeshCore";
+    /* Not "both" on its own: the cell is narrow and "both" would read as a
+     * promise that both networks are reached as they are. They are reached
+     * on one channel they were PUT on (docs/lora.md). */
+    case XPRSLORA_MODE_BOTH:       return "Both, one channel";
     default:                       return "?";
     }
 }
@@ -4852,9 +4953,10 @@ static void ui_render(void)
                          lora_mode_label(lrot.now));
             else snprintf(lval, sizeof lval, "%s", lora_mode_label(xprslora_mode()));
             SROWF("LoRa mode", lval,
-                  "Which network this radio is on. %s steps through them, "
-                  "then takes turns on both meshes -- serving each about "
-                  "half the time, deaf to the other meanwhile.", ok_key());
+                  "Which network this radio is on. %s steps them. Turns: "
+                  "each mesh about half the time. Both, one channel: at "
+                  "once, reaching only nodes moved onto it.",
+                  ok_key());
             {   /* 14.8: the channel. Not every board is an 868 MHz board
                  * -- the same chip is sold matched for 433 and 915 -- so
                  * this row walks the running mode's presets, each taken at
@@ -6099,10 +6201,9 @@ static void idx_task(void *arg)
              * fact that it is there half the time is not a claim `serve:`
              * has the grammar to make. */
             char mesh_buf[24] = "";
-            const char *mesh_word = "";
+            int mn = 0;
             xprslora_rotate_t rot;
             if (xprslora_rotate_state(&rot)) {
-                int mn = 0;
                 for (uint8_t i = 0; i < rot.n; i++) {
                     const char *w1 = NULL;
                     if (rot.modes[i] == XPRSLORA_MODE_MESHTASTIC &&
@@ -6113,14 +6214,24 @@ static void idx_task(void *arg)
                                            sizeof mesh_buf - (size_t)mn,
                                            "%s", w1);
                 }
-                mesh_word = mesh_buf;
-            } else if (xprslora_mt_stats(&mts) &&
-                       xcfg_get_bool("mt_bridge", true)) {
-                mesh_word = ",meshtastic";
-            } else if (xprslora_mc_stats(&mcs) &&
-                       xcfg_get_bool("mc_bridge", true)) {
-                mesh_word = ",meshcore";
+            } else {
+                /* Two independent appends, not a chain. A station in `both`
+                 * mode reaches both networks at once and must say both,
+                 * for the same reason a rotating one does: a reader
+                 * deciding where to send a message needs to know this
+                 * station reaches that network at all. The stats call is
+                 * the question "does the running mode serve this network",
+                 * which is the bearer's to answer. */
+                if (xprslora_mt_stats(&mts) &&
+                    xcfg_get_bool("mt_bridge", true))
+                    mn += snprintf(mesh_buf + mn, sizeof mesh_buf - (size_t)mn,
+                                   ",meshtastic");
+                if (xprslora_mc_stats(&mcs) &&
+                    xcfg_get_bool("mc_bridge", true))
+                    mn += snprintf(mesh_buf + mn, sizeof mesh_buf - (size_t)mn,
+                                   ",meshcore");
             }
+            const char *mesh_word = mesh_buf;
             if (!serve[0])
                 snprintf(sbuf, sizeof sbuf, "archive%s", mesh_word);
             else
@@ -6859,7 +6970,7 @@ static void settings_ok(int row)
             }
             xprslora_mode_t m = xprslora_mode();
             bool last = true;
-            for (int i = (int)m + 1; i < XPRSLORA_MODE_COUNT; i++)
+            for (int i = (int)m + 1; i < XPRSLORA_MODE_TABLE; i++)
                 if (xprslora_mode_available((xprslora_mode_t)i)) last = false;
             if (last) {
                 const char *v = xcfg_get("lora_rotate", NULL);
@@ -6870,8 +6981,8 @@ static void settings_ok(int row)
                 }
                 /* This board cannot: carry on round to the first mode. */
             }
-            for (int i = 0; i < XPRSLORA_MODE_COUNT; i++) {
-                m = (xprslora_mode_t)((m + 1) % XPRSLORA_MODE_COUNT);
+            for (int i = 0; i < XPRSLORA_MODE_TABLE; i++) {
+                m = (xprslora_mode_t)((m + 1) % XPRSLORA_MODE_TABLE);
                 if (xprslora_mode_available(m)) break;
             }
             esp_err_t e = lora_apply_mode(m);
@@ -7042,6 +7153,27 @@ static int api_lora_json(char *buf, size_t cap)
         (unsigned long)r.held, (unsigned long)r.deferred,
         (unsigned long)r.stale, (unsigned long)r.next_free_ms, modem_sf,
         (unsigned long)modem_bw);
+    /* `both` mode: the channel it was given, and what the classifier made
+     * of what arrived on it. The counters are the point (docs/lora.md rule
+     * 14): `either` and `neither` are frames this station dropped rather
+     * than guess at, so a rising `either` is the one number that says the
+     * two networks are too alike on this channel to be told apart. */
+    uint32_t b_freq; uint8_t b_sf, b_sync; uint16_t b_bw, b_pre;
+    xprslora_class_stats_t cls;
+    if (n > 0 && (size_t)n < cap &&
+        xprslora_mode() == XPRSLORA_MODE_BOTH &&
+        xprslora_both_channel(&b_freq, &b_sf, &b_bw, &b_sync, &b_pre) &&
+        xprslora_class_stats(&cls))
+        n += snprintf(buf + n, cap - (size_t)n,
+                      ",\"both\":{\"freq_hz\":%lu,\"sf\":%u,\"bw_khz\":%u,"
+                      "\"sync\":\"0x%02X\",\"preamble\":%u,"
+                      "\"mt\":%lu,\"mc\":%lu,\"xprs_mt\":%lu,"
+                      "\"xprs_mc\":%lu,\"either\":%lu,\"neither\":%lu}",
+                      (unsigned long)b_freq, (unsigned)b_sf, (unsigned)b_bw,
+                      b_sync, (unsigned)b_pre,
+                      (unsigned long)cls.mt, (unsigned long)cls.mc,
+                      (unsigned long)cls.xprs_mt, (unsigned long)cls.xprs_mc,
+                      (unsigned long)cls.either, (unsigned long)cls.neither);
     /* Taking turns on two networks: which ones, how long a turn is, where
      * the radio is this moment and how many turns it has served. A reader
      * that sees `mode` alone would think this station lives there. */
@@ -7087,8 +7219,10 @@ static int api_lora_json(char *buf, size_t cap)
         }
         if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]");
     }
-    /* The MeshCore side, the same way and only while it is the running
-     * mode, so a reader never sees two bridges at once. */
+    /* The MeshCore side, the same way and only while the running mode
+     * serves that network. In `both` mode it serves both, so a reader DOES
+     * see two bridges at once, and that is the mode being honest rather
+     * than a leak: the counters beside them say which frames went where. */
     mc_mesh_stats_t mc;
     if (n > 0 && (size_t)n < cap && xprslora_mc_stats(&mc))
         n += snprintf(buf + n, cap - (size_t)n,
@@ -8082,20 +8216,35 @@ void xapp_run(const xapp_board_t *board)
          * live in the bearer's tables (xprslora_regions); config only
          * chooses, tightens or knowingly loosens. This is the mode the
          * station COMES UP in; it changes live afterwards (`cfg lora`,
-         * docs/lora.md, "One radio, three networks"). */
+         * docs/lora.md, "One radio, four modes"). */
         xprslora_cfg_t lc = *board->lora;
         {
+            /* The shared channel FIRST, before the mode is parsed: `both`
+             * mode is not available until the bearer has been told which
+             * channel the two networks were put on, so a station
+             * configured for it would otherwise refuse itself on every
+             * boot and come up in the default mode instead. */
+            lora_both_from_cfg();
             xprslora_mode_t mode = XPRSLORA_MODE_DEFAULT;
             const char *mw = xcfg_get("lora_mode", NULL);
             if (mw && mw[0]) {
                 xprslora_mode_t want;
                 if (!xprslora_mode_parse(mw, &want))
                     ESP_LOGW(TAG, "lora_mode %s is not a LoRa mode (xprs, "
-                                  "meshtastic, meshcore) -- using %s",
+                                  "meshtastic, meshcore, both) -- using %s",
                              mw, xprslora_mode_name(mode));
-                else if (!xprslora_mode_available(want))
-                    ESP_LOGW(TAG, "lora_mode %s is not in this firmware -- "
-                                  "using %s", mw, xprslora_mode_name(mode));
+                else if (!xprslora_mode_available(want)) {
+                    /* Two different refusals wear one line otherwise, and
+                     * they should not: `both` without its channel is a
+                     * configuration a person can fix in a minute, and no
+                     * PSRAM is a board they cannot. */
+                    const char *why = want == XPRSLORA_MODE_BOTH
+                                          ? xprslora_both_why_not() : NULL;
+                    ESP_LOGW(TAG, "lora_mode %s cannot run here -- %s. "
+                                  "Using %s", mw,
+                             why ? why : "this board has no room for it",
+                             xprslora_mode_name(mode));
+                }
                 else
                     mode = want;
             }
@@ -8109,6 +8258,13 @@ void xapp_run(const xapp_board_t *board)
                 lc.sf = (uint8_t)strtoul(mod, NULL, 10);
             if ((mod = xcfg_get("lora_bw_khz", NULL)) && mod[0])
                 lc.bw_khz = (uint16_t)strtoul(mod, NULL, 10);
+            if ((mod = xcfg_get("lora_sync", NULL)) && mod[0]) {
+                lc.sync = (uint8_t)strtoul(mod, NULL, 16);
+                ESP_LOGW(TAG, "lora_sync 0x%02X replaces %s mode's own sync "
+                              "word: nothing on the default one will be "
+                              "heard, which is the point of asking",
+                         lc.sync, xprslora_mode_name(mode));
+            }
             int nreg = 0;
             const xprslora_region_t *regs = xprslora_regions(mode, &nreg);
             const xprslora_region_t *reg = &regs[0];
@@ -8130,12 +8286,18 @@ void xapp_run(const xapp_board_t *board)
             const char *fq = xcfg_get("lora_freq_hz", NULL);
             if (fq && fq[0]) {
                 lc.freq_hz = (uint32_t)strtoul(fq, NULL, 10);
-                if (lc.freq_hz != reg->freq_hz)
+                /* reg->freq_hz is 0 in `both` mode, where the region row
+                 * is an allowance and not a channel, so there is nothing
+                 * to be off. */
+                if (reg->freq_hz && lc.freq_hz != reg->freq_hz)
                     ESP_LOGW(TAG, "lora_freq_hz %lu is off the %s channel "
                                   "(%lu): no station in %s mode will hear this "
                                   "one", (unsigned long)lc.freq_hz,
                              reg->name, (unsigned long)reg->freq_hz,
                              xprslora_mode_name(mode));
+                if (mode == XPRSLORA_MODE_BOTH)
+                    ESP_LOGW(TAG, "lora_freq_hz is ignored in both mode -- "
+                                  "its channel is [both] frequency");
             }
             /* `far` (SF9): +5 dB a hop for 4x the airtime, a deployment
              * decision because every station on a link must share it. XPRS's
@@ -8163,7 +8325,8 @@ void xapp_run(const xapp_board_t *board)
                 /* The repeater and the bridge of whichever network this
                  * radio came up on (docs/lora.md). */
                 if (mode == XPRSLORA_MODE_MESHTASTIC ||
-                    mode == XPRSLORA_MODE_MESHCORE)
+                    mode == XPRSLORA_MODE_MESHCORE ||
+                    mode == XPRSLORA_MODE_BOTH)
                     lora_start_bridge();
                 /* And, if this station serves two networks by taking
                  * turns, the rotation -- after the bridge above, because

@@ -29,9 +29,9 @@ one of three sections in it.
 14. [Lessons learned](#14-lessons-learned)
 15. [Not done yet](#15-not-done-yet)
 
-## 1. One radio, three networks
+## 1. One radio, four modes
 
-A station's LoRa radio runs in one of three modes, `lora_mode`, read at start
+A station's LoRa radio runs in one of four modes, `lora_mode`, read at start
 (XPRS.md 14.8). The firmware is not tied to one LoRa network; the mode is a
 setting.
 
@@ -40,11 +40,20 @@ setting.
 | `xprs` | XPRS's own: SF7 (SF9 with `[lora] profile = far`), 125 kHz, CR 4/5, preamble 8, sync 0x12; `eu` 869.5, `eu-g1` 868.2, `eu-433` 433.9, `us` 903.9, `au` 917.0 MHz | XPRS, the packet is the frame; beacons included; pace 6 s. The mode the fleet ran before 2026-09-19 and the one the P1-Pro still runs. | any board with a radio | section 7 |
 | `meshtastic` (default) | Meshtastic's LongFast: SF11, 250 kHz, CR 4/5, preamble 16, sync 0x2B; `eu` 869.525, `eu-433` 433.875, `us` 906.875, `au` 919.875 MHz | XPRS inside Meshtastic frames, plus the Meshtastic repeater and bridge; only what somebody waits for; pace 10 s | any board with a radio | section 8 |
 | `meshcore` | MeshCore's own, measured off a stock node: SF8, 62.5 kHz, CR 4/5, preamble 16, **sync word 0x12**, `eu` 869.618 MHz (`us` 910.525, `au` 915.8 unverified) | XPRS inside MeshCore frames (a flood-routed `RAW_CUSTOM`, which their repeaters hear but do not relay), plus the MeshCore repeater and bridge; only what somebody waits for; pace 10 s | **PSRAM only** (section 9) | section 9 |
+| `both` | **the operator's own**, and this firmware blesses none: `[both] frequency`, `sf`, `bw_khz` and `sync` are required and have no defaults, because a channel two foreign networks share is whichever one somebody put them on | Meshtastic AND MeshCore at the same time: every frame classified by structure and handed to one engine or to neither, both repeaters, both bridges; XPRS itself in Meshtastic framing; pace 10 s | **PSRAM only** (section 11) | section 11 |
 
 Three networks on one radio means three sets of foreign rules, and the file
 is arranged so the shared half is read once: sections 2 to 6 are true in
-every mode, sections 7 to 9 are each one network, and the last five are
+every mode, sections 7 to 9 are each one network, sections 10 and 11 are the
+two ways to serve two networks with one radio, and the last five are
 configuration, cost, measurements and the mistakes already made.
+
+**Two networks, three answers, and the operator gives one.** A site that
+wants both foreign networks picks `rotate` (section 10: take turns, reach
+both networks as they really are, about half the reception on each),
+`mode = both` (section 11: serve both at once, on one channel somebody had
+to put them both on), or one mode and one network done properly. None of
+the three is free and the sections say what each costs.
 
 **How it is switched, and none of it restarts the station.** The radio
 retunes under the bearer's lock (`sx1262_retune`), the airtime table and the
@@ -326,25 +335,42 @@ The app half of the same rules is in `app/docs/meshtastic.md` section 5.
     curve work runs on the bearer tick; translations and receipts are parked
     by `mesh_deliver` and sent from `idx_task` on core 1. Every other
     bearer's task (the Bluetooth host among them) waits on that mutex to offer
-    the bridge a packet.
+    the bridge a packet. Deciding WHICH network a received frame belongs to
+    (`lr_class.c`, section 11) is arithmetic over its bytes and, at most, one
+    AES-128 pass over its payload, which is the same work `survey_frame`
+    already does here. A signature is never a classification test: an
+    Ed25519 verify is 3.9 KB of stack and runs on `mcwork` alone, after the
+    frame has already been handed to MeshCore.
 13. **A DM retried after the recipient could not open it goes under a new
     id.** A Meshtastic node records an id as seen even when it fails to
     decrypt, and drops every repeat of it silently.
 14. **Counted where it can be read.** `/api/status` carries the bridge's
     counters under `lora.mt`; a new behaviour gets a counter there the day
     it is written.
-15. **A bridge is silent unless its network is the running mode.** Every
-    door the bridge has (its transmit hook, its tick, the frames handed to
-    it, the packets offered to it, and the counters it reports) asks the
-    bearer what mode is running. A station switched to `xprs` aired a
-    LongFast frame seconds later on the first try, because only the receive
-    path had been gated.
+15. **A bridge is silent unless the running mode serves its network.**
+    Every door the bridge has (its transmit hook, its tick, the frames
+    handed to it, the packets offered to it, and the counters it reports)
+    asks the bearer WHICH NETWORKS THE RUNNING MODE SERVES (`lr_serves`),
+    never which mode it is. A station switched to `xprs` aired a LongFast
+    frame seconds later on the first try, because only the receive path had
+    been gated. A mode that serves two networks is this rule with two
+    answers rather than an exemption from it: in `both` mode both doors are
+    open because both networks are on the channel, and in every other mode
+    at most one is.
 16. **The LoRa network is a setting, never an assumption.** Code that only
     makes sense on one channel (the Meshtastic bridge, `lora_worth`, the
     framing) asks the running mode (`xprslora_mode()`); a mode's radio
     profile, regions and pace live in one row of `k_modes` in
     `xprslora.c`, and a new network (MeshCore) is a new row, a new word in
-    `xsetup_check`, and its engine behind the same `mesh` flag.
+    `xsetup_check`, and its engine behind the same `mesh` flag. A mode may
+    serve MORE THAN ONE network; then the row says which (`net =
+    LR_NET_BOTH`) and one function says which framing XPRS's own traffic
+    wears (`lr_xprs_net`). And a mode whose channel is the operator's own
+    carries no channel numbers in its row at all: it refuses to start until
+    configuration supplies the frequency, the spreading factor, the
+    bandwidth and the sync word. **No shared channel is blessed in this
+    firmware, because there is no shared channel to bless** -- it is
+    whichever one the operator put both networks on.
 
 ## 7. `xprs` mode: our own channel
 
@@ -703,6 +729,13 @@ so it is stated first.
 not an implementation detail to be improved later: a LoRa receiver hears
 one modulation and one sync word, and there is only one of it.
 
+That sentence is why section 11 exists and is not a contradiction of it but
+a consequence. The only way one receiver hears two networks at once is for
+both networks to have been put on one modulation and one sync word, and that
+is work on their nodes, not in this firmware. A stock Meshtastic node and a
+stock MeshCore node are on different frequencies with different modulations
+and different sync words, and **no mode of this radio hears both of them**.
+
 ### What the other networks keep for a node that was not listening
 
 Almost nothing, and never by default. Researched 2026-09-21 against both
@@ -826,9 +859,10 @@ imperfectly than one of them well.
 
 `cfg rotate` prints the state, `cfg rotate meshtastic,meshcore` starts it,
 `cfg rotate off` stops it and stays where the radio is. On the T-Deck's
-Settings panel the "LoRa mode" row steps xprs, meshtastic, meshcore and
-then the rotation, and `[lora] rotate` / `rotate_s` make it survive a
-restart. `/api/status`
+Settings panel the "LoRa mode" row steps xprs, meshtastic, meshcore, then
+`both` where that mode is available, and then the rotation; `[lora] rotate`
+/ `rotate_s` make it survive a restart. `rotate` refuses the word `both`,
+which is section 11's business, not a ring's. `/api/status`
 carries `lora.rotate` with the ring, the slice, the turns served and how
 far into the current one the station is; `lora.mode` still says which
 network the radio is on THIS moment.
@@ -842,7 +876,188 @@ into MeshCore; such a mode is dropped from the ring with a line saying so,
 and a ring with fewer than two usable networks is refused outright rather
 than silently becoming a mode change.
 
-## 11. Configuration
+## 11. One channel, both networks (`both` mode)
+
+One radio, two networks, served at the same time instead of in turn:
+`[lora] mode = both`. Like the rotation above it is a real feature and a
+real compromise, and the compromise is again the important half.
+
+**Both networks have to be on one channel already, and putting them there is
+not something this firmware can do.** A receiver hears one modulation and
+one sync word (section 10, and it is still true). So `both` mode does not
+find Meshtastic and MeshCore where they live; it listens to one channel and
+sorts out what arrives on it. Stock nodes are not on that channel until
+somebody moves them.
+
+**And the sync word is the part that bites.** Frequency, spreading factor
+and bandwidth are settings on both stock firmwares. The sync word is not:
+Meshtastic has 0x2B in `RadioInterface` and MeshCore passes
+`RADIOLIB_SX126X_SYNC_WORD_PRIVATE` (0x12) in `CustomSX1262.h`, both
+compile-time constants with no config field. So whichever value `[both]
+sync` takes, the other network's nodes need a rebuilt firmware to turn up.
+That is measured, not assumed: two identical radios on one channel, differing
+only in the sync word, heard 0 frames of 6 from each other while 8.7 seconds
+of real airtime went out, and 10 of 6 once the words matched (section 14).
+`[lora] sync` exists to have asked.
+
+**One modulation cannot suit both, either.** At SF11/250 kHz a MeshCore node
+pays about four times its native airtime; at SF8/62.5 kHz a Meshtastic node
+loses the link budget LongFast was chosen for. The operator decides which
+network is inconvenienced. There is no setting that is good for both and the
+firmware does not pretend there is one.
+
+### The channel is configuration, and no preset exists
+
+```ini
+[both]
+frequency = 869618000      ; Hz or MHz, required
+sf = 8                     ; 7 to 12, required
+bw_khz = 62                ; 62, 125, 250 or 500, required
+sync = 12                  ; hex, required
+preamble = 16              ; optional, 16 by default -- both networks use 16
+```
+
+Deliberately NOT `[lora] frequency`, `sf`, `bw_khz` and `sync`. Those are an
+override for EVERY mode, which is what they are for and is also how a boot
+mode's channel once followed the radio into the other two (section 3, found
+on the bench 2026-09-20). A channel only one mode means is stated only for
+that mode, and `[lora] frequency` is ignored here with a line saying so.
+
+So the mode serves **one** network's stock nodes, the other network's rebuilt
+ones, and XPRS stations in this same mode. That is the honest ceiling on it.
+
+The mode is unavailable until all four are set, and it says which of the two
+refusals it is: a missing channel, or a board without the memory. On a board
+without PSRAM there is no row for it in `k_modes` at all
+(`XPRSLORA_MODE_TABLE` in `xprslora.h`), because 216 bytes of table was enough
+to cost the Heltec V3 its UI task. `cfg set
+both_*` writes NVS and nothing more, so `cfg lora` reads the four keys again
+before it answers: set them and ask for the mode in the next breath and it
+is taken at once, with no restart, like every other channel change here. Everything
+that walks the modes asks the same question (`xprslora_mode_available`), so
+the T-Deck's Settings row, the sweep and the rotation's ring all skip it at
+once and for the same reason.
+
+`[lora] region` still applies, and in this mode a region row is an
+**allowance rather than a channel**: there is one row, `cfg`, whose
+frequency is whatever `[both] frequency` says and whose hour and e.r.p.
+ceiling are EU band g3's. A station that meters against nothing transmits
+without limit while believing itself compliant, so it meters against that;
+whether band g3 is right where the station stands is the operator's answer,
+exactly as the power ceiling already is.
+
+### What the classifier proves, and what it throws away
+
+`lr_class.c`, platform-free and host-tested (`test_class_host.sh`), the same
+arrangement and the same reason as `lr_rotate.c`: it is arithmetic, and
+arithmetic can be tested.
+
+**It must give ONE verdict, and that is the load-bearing decision.** Both
+engines relay what they cannot read, because that is what a router does on
+either network, and both add a frame to their duplicate ring before they
+decide anything. Hand every frame to both and you get a cross-protocol
+corrupting repeater: `mt_mesh.c` would re-air a MeshCore advert as a
+Meshtastic frame with a MeshCore payload byte decremented, `mc_mesh.c` would
+append its own path hash into the middle of a Meshtastic payload, both
+`rx_frames` counters would be fiction, and each network's dedup ring would be
+permanently seeded with the other's hashes -- MeshCore's survives a reboot.
+
+So: structure decides, and only positive evidence counts.
+
+| | the test | what it proves |
+|---|---|---|
+| MeshCore is ruled out | `frame[0] >> 6` is not 0 | every current MeshCore frame has byte 0 at or under 0x3F, and a Meshtastic broadcast's byte 0 is 0xFF. This one check settles most of the traffic on a public channel |
+| MeshCore structure | version 0, a payload type that exists (0x00-0x0B or 0x0F, so 0x0C to 0x0E are a rejection), transport and path and payload lengths adding up to exactly the frame, and a per-type minimum payload: an advert at least 101 bytes (key, timestamp, signature, flags), an ACK 4, a direct message or path over 3 | strong structure. This per-type table is the validation `mc_parse` does not do, and without it `mc_parse` accepts almost any byte string |
+| Meshtastic structure | 17 bytes or more, `from` not 0, `hop_limit` not above `hop_start`, and either a broadcast `to` or a channel hash that exists here (LongFast's, XPRS's own 0x09, or 0 for a public-key direct message) | strong structure |
+| both fit: 0 | exactly one side claims the frame as XPRS's own -- the clear XPRS channel hash on Meshtastic's side, a `RAW_CUSTOM` payload type on MeshCore's, which pins the whole first byte to 0x3C-0x3F | the side that claims it. Checked first because our OWN traffic in MeshCore wrapping can satisfy Meshtastic's structure by coincidence, and without this it would reach the end of the ladder and be dropped. When both or neither claim it, the coincidence is the thing being tested, so it decides nothing |
+| both fit: 1 | a four-byte Meshtastic address that is ours, one of our virtual nodes', or one we have heard | proof, to one part in four thousand million. This is the check that saves the frames we must not lose: a public-key direct message to one of our virtual nodes can never be decrypted, so it can never prove itself any other way |
+| both fit: 2 | the frame decrypts under Meshtastic's default key and decodes as a `Data` | proof. A key and a protobuf agreeing is not a guess. About fifteen AES blocks, on the bearer task, which is what rule 12 allows there |
+| both fit: 3 | a one-byte MeshCore hash that is ours or a path hop we have heard | a tie-break, never a proof, which is why it is last |
+| nothing matched | -- | counted (`lora.both.either`, `lora.both.neither`) and **dropped** |
+
+Dropping costs this station one packet. Guessing costs the channel a frame
+re-aired as the wrong protocol and a correct copy swallowed afterwards as a
+duplicate by whichever ring was poisoned. That trade is the whole design.
+
+**What it loses, stated rather than hidden.** A Meshtastic public-key direct
+message between two OTHER nodes carries nothing we can match and nothing we
+can decrypt, so roughly a quarter of them -- the ones whose `to` low byte has
+its top two bits clear -- land in `either` and are dropped instead of
+relayed. `lora.both.either` is the number that says how often; a rising one
+means the two networks are too alike on this channel to be told apart.
+
+### XPRS's own traffic
+
+Understood in both wrappings, aired in one. Aired in **Meshtastic's**: 233
+bytes of payload against MeshCore's 183, and a stock Meshtastic router
+relays a frame on a channel hash it cannot read while a stock MeshCore
+repeater does not carry a `RAW_CUSTOM` (section 9), so the Meshtastic
+wrapping is the one that reaches past direct range. Both are understood on
+receive because a neighbour may be in `meshcore` mode on this very channel;
+airing both would double the hour for no new reader.
+
+### One hour, now spent twice as fast
+
+Unchanged and load-bearing: one airtime table built from the bytes the radio
+was actually handed, one duty ledger, one `xb_spend`. In this mode there is
+one channel, so one region's allowance covers both protocols -- simpler than
+the rotation's case, where two channels in one sub-band share one allowance.
+
+What changes is the drain. Two repeaters and two bridges spend that one hour
+AT THE SAME TIME rather than in turn, and the rotation already spent 306 s
+of a 360 s allowance in thirty minutes while serving each network half the
+time. Expect the budget to be the binding constraint on a busy site. The
+levers are the ones that already exist: `mt_repeat`, `mc_repeat`,
+`mt_bcast_hr`, `mc_bcast_hr`, `lora_duty_ms`.
+
+### PSRAM only, and the refusal
+
+Both bridges resident plus MeshCore's worker: MeshCore's state and
+Meshtastic's both in PSRAM, and a 6 KB task stack that FreeRTOS cannot put
+there. The Heltec V3 has about 11.8 KB of internal heap free with ONE bridge
+up and a 5.0 KB minimum-ever, so the arithmetic does not close by a wide
+margin and the answer is the board's, not the heap's (section 13 and
+`docs/esp32.md`): **no PSRAM, no `both`.**
+
+The budget is taken before the radio moves and it counts BOTH blocks, so a
+station that cannot afford both bridges refuses before the retune rather
+than coming up on a shared channel with one bridge working and one silent.
+Only MeshCore's block is claimed there, though: `xprslora_mt_start` owns
+Meshtastic's and is the only thing that initialises it, so a block handed
+over early would make that function's "already up" shortcut hand back a
+bridge that was never built. One place budgets, the other claims. A board
+asked for this mode in `config.ini` comes up in its default mode with a line
+nobody can miss, and the setting is left alone so a board with room takes it
+next time.
+
+### It is not a network, so it does not take turns
+
+`[lora] rotate` refuses the word where it is typed, and so does
+`xprslora_rotate_start`: `both` is the OTHER answer to the question a
+rotation answers, and a ring containing it would be taking turns with
+itself. Switching into `both` stops a running rotation out loud. A sweep
+skips it too -- a sweep asks which of these networks is reachable, and this
+is not one of them -- but a sweep STARTED from `both` mode comes home to it
+with its channel intact.
+
+### When to use two boards instead
+
+The honest recommendation has not changed and this mode does not change it.
+A site that wants both networks reliably runs two boards, one per network,
+each on its own network's real channel, and lets XPRS carry between them
+over BLE, the LAN or ESP-NOW, where XPRS's own store-and-forward applies
+(XPRS.md 9.12). Beyond that:
+
+- a shared channel should carry the repeaters of **at most one** network.
+  Our station repeats correctly because it classifies; a stock repeater of
+  either network does not classify at all, so it will mangle the other
+  network's frames and nothing in this firmware can stop it;
+- the rotation is for a site that would rather reach both networks
+  imperfectly, as they really are;
+- `both` is for a site that controls both sides and would rather have them
+  on one channel all of the time than on two channels half of the time.
+
+## 12. Configuration
 
 Everything here is `config.ini` and `cfg set <nvs key> <value>` over
 serial. The radio settings are one section, and each bridge has its own.
@@ -851,13 +1066,19 @@ serial. The radio settings are one section, and each bridge has its own.
 |---|---|---|---|---|
 | `[lora]` | `mode` | `lora_mode` | `meshtastic` | the mode the station comes up in; every live switch writes it |
 | | `region` | `lora_region` | `eu` | which of the running mode's presets (section 3) |
-| | `frequency` | `lora_freq_hz` | empty | an override for EVERY mode; empty means each mode's own channel, which is what it should normally be |
-| | `sf` / `bw_khz` | `lora_sf`, `lora_bw_khz` | empty | follow neighbours onto a modulation this firmware has no preset for (7 to 12; 62, 125, 250, 500) |
+| | `frequency` | `lora_freq_hz` | empty | an override for EVERY mode; empty means each mode's own channel, which is what it should normally be. Refused in `both` mode, whose channel is `[both] frequency` |
+| | `sf` / `bw_khz` | `lora_sf`, `lora_bw_khz` | empty | follow neighbours onto a modulation this firmware has no preset for (7 to 12; 62, 125, 250, 500). Not consulted in `both` mode, which takes its modulation from `[both]` |
 | | `profile` | `lora_profile` | empty | `far` is SF9, `xprs` mode only |
 | | `duty_ms` / `reserve_ms` / `pace_ms` | `lora_duty_ms`, `lora_resv_ms`, `lora_pace_ms` | the region's | the hourly budget, the slice held back for sos and warnings, and the gap between our own frames |
 | | `local` | `lora_local` | `no` | LoRa counts as a local bearer (9.11.1) |
+| | `sync` | `lora_sync` | empty | the sync word, hex; empty is the mode's own (`xprs` and `meshcore` 0x12, `meshtastic` 0x2B). It exists to ask one question nothing else can, because neither foreign firmware exposes its own: does this chip reject a frame whose sync word is not the one it was set to (section 14) |
 | | `survey_s` | `lora_survey_s` | 60 | how long the listen-only survey sits on each mode |
 | | `detect_s` | `lora_detect_s` | empty | one figure for auto-detect (5 to 300); empty means each network's own wait |
+| `[both]` | `frequency` | `both_freq_hz` | **required** | the one channel the two networks were put on, Hz or MHz. Nothing defaults: there is no shared channel to default to |
+| | `sf` | `both_sf` | **required** | 7 to 12 |
+| | `bw_khz` | `both_bw_khz` | **required** | 62, 125, 250 or 500 |
+| | `sync` | `both_sync` | **required**, and it has no default on purpose | hex. Whichever value this takes, the other network's nodes need a rebuilt firmware to meet it (section 11), so an operator who has not thought about it is stopped rather than handed one network's value by accident |
+| | `preamble` | `both_preamble` | 16 | both networks use 16, so this is almost never set |
 | `[meshtastic]` | `repeat` | `mt_repeat` | `yes` | relay Meshtastic frames |
 | | `bridge` | `mt_bridge` | `yes` | translate both ways; adds `meshtastic` to `serve:` |
 | | `broadcasts_per_hour` | `mt_bcast_hr` | 12 | XPRS broadcasts mirrored onto LongFast |
@@ -867,12 +1088,18 @@ serial. The radio settings are one section, and each bridge has its own.
 | | `broadcasts_per_hour` | `mc_bcast_hr` | 12 | XPRS broadcasts mirrored onto the public channel |
 | | `advert_min` | `mc_advert_min` | 180 | how often each virtual node re-advertises |
 
+`[lora] rotate` and `mode = both` are the two answers to one question, so
+they are mutually exclusive and the station says which it took: `rotate`
+refuses the word `both` where it is typed, and switching into `both` stops a
+running rotation.
+
 The console words are `cfg lora <mode>`, `cfg freq <MHz|Hz|preset>`,
 `cfg region <name>`, `cfg survey [s]` and `cfg detect [s]`; `docs/API.md`
 has them with their output, and the T-Deck's Settings panel has a row for
-each of the four.
+each of the four. `cfg lora` with no argument also prints the `[both]`
+channel, or says it is not set.
 
-## 12. Memory and stack
+## 13. Memory and stack
 
 | | T-Deck (PSRAM) | Heltec V3 (no PSRAM) |
 |---|---|---|
@@ -890,7 +1117,18 @@ generated `sdkconfig.heltec_v3` said 16, and the generated file is what built.
 The curve work (X25519 for a DM or a NodeInfo, about 1.3 KB deep) runs only
 on the bearer task's tick, never on whichever task heard the packet.
 
-## 13. Measured on the bench
+**`both` mode holds both bridges at once**, which is where the arithmetic
+stops closing on a board without PSRAM: MeshCore's state (10,064 bytes) and
+Meshtastic's (9.2 KB) both want PSRAM, and the `mcwork` task's 6,144-byte
+stack cannot go there at all because FreeRTOS stacks are internal. Against
+the Heltec V3's 11.8 KB of free internal heap with ONE bridge running, that
+is not a reshuffle, it is a feature given up -- the fourth time this page's
+rule has given that answer (`docs/esp32.md`, "The arithmetic that did not
+close"). The classifier adds 255 bytes of `.bss` for the one buffer its
+decrypt proof writes into, and nothing else. The measured figures for a
+T-Deck in `both` mode go in section 14 when the soak has run.
+
+## 14. Measured on the bench
 
 ### Meshtastic, 2026-09-19
 
@@ -1007,10 +1245,148 @@ section above). XPRS on that channel therefore crosses between stations in
 range of each other, and the mode loses MeshCore's relays for XPRS traffic
 while keeping them for everything the bridge translates.
 
-## 14. Lessons learned
+### `both` mode on the air, 2026-10-03
+
+Two T-Decks (X3DCK0 and X3HW9U, both PSRAM) and a Heltec V3 (X333SM, none).
+There is no stock node of either network at this bench, so each protocol's
+traffic came from a station of ours put on the shared channel: the Meshtastic
+frames are genuine Meshtastic frames and the MeshCore ones genuine MeshCore,
+aired by a real SX1262, which is what the classifier has to tell apart.
+
+**The sync word: a mismatch is rejected, and that is the answer the mode's
+reach depends on.** Two identical radios on an IDENTICAL channel -- 869.618
+MHz, SF8, 62.5 kHz -- differing in nothing but the sync word:
+
+| A's sync | B's sync | B aired | A heard |
+|---|---|---|---|
+| 0x2B | 0x12 | 8,665 ms | **0 of 6** |
+| 0x12 | 0x12 | 5,885 ms | 10 frames from 6 probes |
+
+So the comparison is strict, and `[lora] sync` exists to have asked. Meshtastic
+hardcodes 0x2B and MeshCore 0x12, neither exposes it, and therefore **one
+channel cannot carry both networks' stock nodes.** Whichever value `[both]
+channel` takes, the other network's nodes need a rebuilt firmware. The mode
+serves one network's stock nodes, the other's rebuilt ones, and XPRS stations
+in the same mode. Nothing in this firmware can change that.
+
+**Classification, one channel, both protocols.** X3DCK0 in `both` mode on
+869.618/SF8/62.5/0x12; X3HW9U put on the same channel first as a MeshCore
+station (native there) and then as a Meshtastic one (`lora_sync 12`). Over
+twenty minutes:
+
+| verdict | count | what followed |
+|---|---|---|
+| `mc` | 2 | to the MeshCore engine; `mc.relayed` 2 -- its repeater re-aired both |
+| `mt` | 1 | to the Meshtastic engine; `mt.relayed` 1 |
+| `xprs_mc` | 2 | XPRS wires, unwrapped and delivered |
+| `xprs_mt` | 18 | the same in Meshtastic framing |
+| `either` | **0** | -- |
+| `neither` | **0** | -- |
+
+Not one frame was ambiguous and not one was dropped, and neither engine's
+counter ever moved for the other protocol's traffic. That is the claim the
+mode makes, measured.
+
+**The refusals.** The Heltec V3 answers `cfg lora both` with "this board has
+no PSRAM, and two bridges plus a 6 KB stack cannot be had without it" and does
+not move the radio; `both` is not in its `k_modes` at all
+(`XPRSLORA_MODE_TABLE`). A T-Deck with no `[both] channel` set answers "both
+needs a channel first". `cfg rotate meshtastic,both` is refused where it is
+typed, `cfg rotate meshtastic,meshcore` still works from `both` mode, and
+switching into `both` stops a running rotation with a line saying why.
+`spent_ms` went 33,594 to 34,468 across that switch: the hour does not restart
+because the modem moved.
+
+**LDRO, and why the old condition was a bug.** At SF11/62.5 kHz a symbol is
+32.77 ms, so low data rate optimize must be on; the old condition
+(`BW125 && (SF11 || SF12)`) left it off. Both boards on that channel with the
+same sync word, one running the old code and one the new:
+
+| A (new, LDRO on) | B | B aired | A heard |
+|---|---|---|---|
+| SF11/62.5 | old code, LDRO off | 32,473 ms | **0 of 3** |
+| SF11/62.5 | new code, LDRO on | 13,536 ms | 2 of 3 |
+
+A dead link, silently, on a modulation `both` mode invites an operator to
+choose. Found by reading the datasheet rule against the code, confirmed here.
+
+**What the hour costs.** Those SF11/62.5 kHz probes are over four seconds
+each, and twenty minutes of them spent 280,829 ms of the 360,000 ms allowance.
+On this mode's intended channel (SF8/62.5) a frame is a fifth of that, but the
+point stands: two bridges on one hour drain it, and `broadcasts_per_hour` is
+the lever.
+
+**On a fully loaded T-Deck, with nothing turned off (2026-10-03).** The first
+version of this mode could only be run with `ble_on = no`, because
+`lr_claim_for` wanted 22,528 bytes of free internal heap and a loaded T-Deck
+had about 22.0 -- and refused plain `meshcore` mode for the same reason, which
+is how the margin was found. Two fixes closed it, neither of them a reserve
+being shaved:
+
+- the worker's 6 KB stack is claimed at start, from a whole heap, instead of
+  at the moment a mode is entered from a fragmented one, so entering costs
+  nothing (`docs/esp32.md`, "Create the big task stacks first");
+- the board got back about 9.6 KB of internal DRAM that
+  `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` had quietly spent on six extra WiFi static
+  RX buffers (`docs/esp32.md`, "A directive asked for is not a directive
+  taken").
+
+With BLE up and nothing disabled: `cfg lora meshcore` succeeds, `cfg lora
+both` succeeds, min-ever is **14,872** against the 4,000 floor, and the
+classifier's figures over the run were `mt` 7, `mc` 7, `xprs_mt` 4,
+`xprs_mc` 8, **`either` 0 and `neither` 0**. Both repeaters relayed what they
+were handed and neither engine's counter moved for the other protocol's
+traffic.
+
+## 15. Lessons learned
 
 Each of these cost at least one wrong turn on 2026-09-19. Read them before
 changing the bridge.
+
+- **Both engines mutate before they validate, so a classifier gets one
+  verdict and only on positive evidence.** `mt_mesh_on_frame` counts the
+  frame, adds it to a clockless dedup ring and cancels a pending relay
+  before it has any idea whether it can read it; `mc_mesh_on_frame` does the
+  same on a ring that survives a reboot. "Offer it to both and let the
+  winner validate" therefore is not a cheap shortcut, it is a
+  cross-protocol corrupting repeater plus two poisoned dedup rings. A frame
+  that cannot be placed is dropped, and the drop is counted so the cost is
+  visible.
+- **A sync word is a compile-time constant in both foreign firmwares**, so
+  "one channel" is work on their nodes and never a setting of ours. Anything
+  that promises to serve two networks has to say that in its own start-up
+  line, not only in a document.
+- **A condition that is right by luck is still wrong.** Low data rate
+  optimize was enabled for `BW125 && (SF11 || SF12)`, which gives the right
+  answer for every preset this firmware carries and the wrong one for three
+  modulations an operator can now pick (SF10 and SF11 at 62.5 kHz, SF12 at
+  250 kHz). The rule is symbol duration at or over 16.38 ms, it always was.
+  Measured on 2026-10-03: old code against new on SF11/62.5, same sync word,
+  **0 frames of 3** while 32 seconds of airtime went out. A dead link, and the
+  antenna would have got the blame.
+- **"Free heap went up" hid a crash.** The first version of `both` mode cost
+  the Heltec V3 920 bytes of static RAM, its UI task fell back from 8 KB to 6
+  and the board panicked in a loop -- while REPORTING MORE FREE HEAP than the
+  build that worked, because the task it failed to create was 2 KB. This page's
+  own rule is the one that catches it: judge by min-ever and by whether every
+  subsystem started, never by the free number (`docs/esp32.md`).
+- **A cached config key costs 88 bytes whether it is set or not.** Five keys
+  for one channel cost 440 bytes of internal DRAM to hold values like "8" and
+  "62", which was enough to cost the Heltec its UI task and a T-Deck its
+  MeshCore worker. They are one key now, `[both] channel =
+  <freq>,<bw_khz>,<sf>,<sync>`, which is also how MeshCore's own nodes state a
+  channel. A channel is one thing.
+- **The preprocessor cannot see an enumerator.** `#if XPRSLORA_MODE_TABLE >
+  XPRSLORA_MODE_BOTH` reads as `0 > 0`, because an unknown identifier in an
+  `#if` is 0 -- so the table row was silently dropped on EVERY board, and a
+  T-Deck with 8 MB of PSRAM answered "both cannot run on this board". Literals
+  and a `_Static_assert` now, and the bench found it in one line.
+- **A log line that prints the mode's preset instead of the radio's setting
+  will cost somebody an afternoon.** The old boot line read `SF11/250k` for a
+  radio actually on 62.5 kHz, because it printed `s_def->bw_hz` rather than
+  what was handed to the modem. It nearly invalidated the LDRO measurement
+  above. Both log lines and the airtime table are built from the config struct
+  the chip was given now.
 
 - **"Delivered" on Meshtastic proves only that a bridge acked.** The bridge
   acks at once and takes custody; whether the words reached XPRS is a
@@ -1185,7 +1561,7 @@ changing the bridge.
   noise. The answer came from a transmitter under our control, one
   numbered packet every 12 s, counted by name at the far end.
 
-## 15. Not done yet
+## 16. Not done yet
 
 - The P1-Pro (nRF52, RadioLib) still runs SF7 and is deaf to the fleet. It
   needs `begin()` on LongFast, `xlc_aes_encrypt_block()` over CC310 or
@@ -1198,3 +1574,15 @@ changing the bridge.
   `mt_ni_min`, 180 minutes), because Meshtastic only updates "last heard" for
   packets it can decode, and our XPRS frames are on a channel it cannot.
 - The Heltec's minimum-ever heap wants a longer soak.
+- `both` mode has not been run on a T-Deck with Bluetooth on: a fully loaded
+  board is about 500 bytes short of `lr_claim_for`'s 22,528-byte internal
+  reserve and refuses, exactly as it already does for plain `meshcore` mode on
+  that build. Section 14 has the arithmetic. Either something comes off that
+  board or `LR_MC_SPARE_INTERNAL` is revisited on purpose, and that is a
+  decision about what the board is for.
+- Nothing has been tried against a genuinely stock node of either network;
+  there is none at this bench. Both protocols' traffic in section 14 came from
+  our own stations put on the shared channel, which tests the classifier but
+  not the other firmware's behaviour.
+- Positions and telemetry do not cross in `both` mode either, for the same
+  reason they do not in the single-network modes.

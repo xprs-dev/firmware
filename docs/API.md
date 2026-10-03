@@ -617,13 +617,30 @@ neither network holds anything for a node that was not listening: read
 docs/lora.md section 10 before turning it on, because what it costs is
 the point of it.
 
+`cfg lora both` is the other answer to the same question: both networks at
+the same time, on ONE channel somebody had to put them both on. It needs
+PSRAM and it needs that channel (`[both] frequency`, `sf`, `bw_khz`,
+`sync`), refuses itself by name when either is missing, and is mutually
+exclusive with `rotate` -- `cfg rotate` refuses the word and switching into
+`both` stops a running rotation. `cfg lora` with no argument prints the
+channel, or says it is not set. Nothing stock is on that channel until
+somebody moves it there, and neither foreign firmware lets its sync word be
+changed, so read docs/lora.md section 11 first: what it costs is again the
+point of it.
+
 `/api/status` carries the mode, the ledger, and the last survey:
 `"lora":{"mode":"meshtastic","region":"eu","freq_hz":869525000,"duty_ms":360000,`
 `"spent_ms":...,"free_ms":...,"reserve_ms":21000,"held":...,"deferred":...,`
 `"next_free_ms":...,"mt":{...},"survey":{...}}` -- `mt` is the Meshtastic
 bridge's counters and `mt_nodes` the names of up to six nodes it has heard,
-both present only while Meshtastic is the running mode; `mc` and `mc_nodes`
-are the same for MeshCore; `rotate` is `{"slice_s":25,"turns":11,
+both present only while the running mode SERVES Meshtastic, which in `both`
+mode it does alongside MeshCore, so there a reader sees two bridges at once;
+`mc` and `mc_nodes` are the same for MeshCore; `both` is
+`{"freq_hz":869618000,"sf":8,"bw_khz":62,"sync":"0x12","preamble":16,`
+`"mt":n,"mc":n,"xprs_mt":n,"xprs_mc":n,"either":n,"neither":n}` in that mode
+and absent otherwise -- the last two are frames the classifier dropped
+rather than guess at, and a rising `either` means the two networks are too
+alike on that channel to be told apart; `rotate` is `{"slice_s":25,"turns":11,
 "in_slice_ms":...,"modes":["meshtastic","meshcore"]}` while the station is
 taking turns, and absent when it is not, with `mode` still naming the
 network the radio is on this moment (`rx`, `opened`, `relayed`, `text_in`,
@@ -632,8 +649,9 @@ network the radio is on this moment (`rx`, `opened`, `relayed`, `text_in`,
 the worker never got to, which should stay at zero); and `survey` is `{"running":bool,"modes":{"<mode>":{"frames":n,"heard":[...]}}}`
 once a survey has run. The strip's top bar reads `held 41s`
 instead of `LoRa quiet` when the budget, not the band, is what is silent.
-Config, all under `[lora]` in config.ini: `lora_mode` (`xprs`, `meshtastic`
-or `meshcore`; the mode the station comes up in, changed live afterwards),
+Config, all under `[lora]` in config.ini: `lora_mode` (`xprs`, `meshtastic`,
+`meshcore` or `both`; the mode the station comes up in, changed live
+afterwards),
 `lora_profile` (`far`: SF9, `xprs` mode
 only), `lora_region`, `lora_freq_hz`, `lora_duty_ms`, `lora_resv_ms`,
 `lora_pace_ms`, `lora_local`, `lora_survey_s`, `lora_detect_s` (empty
@@ -646,8 +664,12 @@ mode's own, and a radio set to another modulation is deaf to everyone on
 the default); the Meshtastic keys under
 `[meshtastic]` (`repeat`, `bridge`, `broadcasts_per_hour`, `nodeinfo_min`)
 and the MeshCore ones under `[meshcore]` (`repeat`, `bridge`,
-`broadcasts_per_hour`, `advert_min`), each read when its network is the
-running mode (docs/lora.md).
+`broadcasts_per_hour`, `advert_min`), each read when the running mode serves
+its network (docs/lora.md); `lora_sync` (hex, empty is the mode's own: the
+only way to ask what this chip does with a mismatched sync word, since
+neither foreign firmware exposes its own); and the shared channel under
+`[both]` (`frequency`, `sf`, `bw_khz`, `sync`, `preamble`), which has no
+defaults because there is no shared channel to default to.
 
 ### Which station repeats
 
