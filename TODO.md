@@ -49,6 +49,16 @@ docs/lora.md, "The rules we follow", and reads its "Lessons learned".**
    answer, twice over".
    Nothing has been tried against a genuinely stock node of either network:
    there is none at this bench.
+   **Closed on the air, 2026-10-03.** A fully loaded T-Deck with Bluetooth up
+   runs the mode: the gate that refused it was the worker's stack being asked
+   for at mode-switch time, and ~9.6 KB of internal DRAM that
+   SPIRAM_TRY_ALLOCATE_WIFI_LWIP had quietly spent on WiFi static RX buffers.
+   Both fixed. Then the whole chain, with a phone that has no radio: one
+   broadcast from X1WATT went out as BOTH a Meshtastic and a MeshCore frame
+   from each station, was relayed once, and landed on a third board
+   (`RX 170 bytes at -39 dBm: t:message f:X1WATT`). Twenty minutes unattended,
+   40 samples a station, zero reboots, and `either`/`neither` zero in every
+   sample. Numbers in docs/lora.md, "A phone's message on both networks".
 
 0a2. **LDRO was right by luck and is now right by rule.** `sx1262.c`
    enabled low data rate optimize for `BW125 && (SF11 || SF12)`; it now

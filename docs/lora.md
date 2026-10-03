@@ -323,6 +323,16 @@ The app half of the same rules is in `app/docs/meshtastic.md` section 5.
    wapp.
 10. **What came from Meshtastic never goes back**, and XPRS older than 30
     minutes (a broadcast) or 6 hours (a DM) is not translated.
+10a. **Every gateway in earshot translates a BROADCAST; only one delivers a
+    DM.** A reader on a foreign network may be in range of just one of the
+    gateways, so each announces a broadcast as its own packet with its own
+    `via:` (rule 8), and the rate is held by `broadcasts_per_hour`. A direct
+    message is the opposite case and rule 4 governs it: the bridge that hears
+    the recipient delivers, the others count `dm_not_here` and stay quiet.
+    Measured on the bench 2026-10-03 with two gateways on one channel: one
+    phone broadcast, `text_out` +1 on each station for each network. That is
+    not the duplicate rule failing. What IS deduplicated is the repeat --
+    several stations hear one frame and one re-airs it.
 
 **The radio and the tasks**
 
@@ -1337,6 +1347,71 @@ classifier's figures over the run were `mt` 7, `mc` 7, `xprs_mt` 4,
 `xprs_mc` 8, **`either` 0 and `neither` 0**. Both repeaters relayed what they
 were handed and neither engine's counter moved for the other protocol's
 traffic.
+
+### A phone's message on both networks, and 20 minutes of it (2026-10-03)
+
+The whole chain, end to end, with a phone that has no radio at all.
+
+**The topology.** Two T-Decks in `both` mode and a Heltec V3 as a Meshtastic
+station, all three on one channel (869.618 MHz, SF8, 62.5 kHz, sync 0x12).
+The Heltec cannot run `both` -- no PSRAM -- but it can be a single-network
+station on the shared channel, which is what a site with one such board
+would do.
+
+**The send.** A phone (X1WATT) broadcast on the local channel through its own
+send path, and said what it had used: `ble5 sent, lan sent, reticulum sent,
+lora inactive`. A phone has no LoRa; the stations are what put the words on
+the air.
+
+**What each station did with it**, measured against an idle baseline of
+exactly zero on every counter:
+
+| | `mt.text_out` | `mc.text_out` | `mt.relayed` |
+|---|---|---|---|
+| X3DCK0 | +1 | +1 | +1 |
+| X3HW9U | +1 | +1 | 0 |
+
+One XPRS message, translated onto **both** foreign networks by each station,
+and relayed on the air exactly once. And the range extension, which is the
+point of the exercise -- the Heltec, which the phone cannot reach by any
+other means, logged it off the radio:
+
+```
+RX 170 bytes at -39 dBm SNR 12: t:message f:X1WATT ts:2026-10-03_19:43:13
+```
+
+**EACH GATEWAY TRANSLATES INDEPENDENTLY, AND THAT IS THE DECISION.** Two
+stations in earshot put the same broadcast on each network, once each, so a
+foreign network sees one copy per gateway rather than one copy. That is not
+the duplicate-suppression rule failing: the suppression that stops a second
+gateway airing something (`origin != MT_XPRS_OWN`, `mt_mesh_on_xprs`) is for
+DIRECT messages, where a reply that reached every bridge on the internet must
+only be aired by the bridge that can hear the recipient. A broadcast is
+different -- a reader on either network may be in range of only one of the
+gateways -- so every gateway announces it, each as its own packet with its own
+`via:` (rule 8), and the rate is held by `broadcasts_per_hour` rather than by
+silence. Do not "fix" this into one gateway speaking; it was considered and
+kept on 2026-10-03.
+
+What IS deduplicated, and was measured here, is the REPEAT: several stations
+hear one frame and only one re-airs it. `mt.relayed` moved once, `relay_skipped`
+stayed at zero, and `mc.rx_dupes` climbed as each station recognised the
+other's frame rather than carrying it again.
+
+**Twenty minutes unattended**, 40 samples per station, with the phone's
+traffic and the fleet's own crossing the channel throughout:
+
+| | X3DCK0 | X3HW9U | X333SM |
+|---|---|---|---|
+| min-ever internal | 15,836 to 15,364 | 15,440 to 14,968 | 27,704 free, 23,480 largest |
+| reboots | 0 | 0 | 0 |
+| `both.either` / `both.neither` | **0 in all 40 samples** | **0 in all 40 samples** | n/a |
+
+The classifier never once produced an ambiguous or unplaceable verdict over
+the whole run. The number to plan around is the hour: X3DCK0 spent 82 s of
+airtime in those 20 minutes, which extrapolates to about 68% of its 360 s
+allowance. Two bridges on one channel, both translating every broadcast, is
+what that costs, and `broadcasts_per_hour` is the lever.
 
 ## 15. Lessons learned
 
