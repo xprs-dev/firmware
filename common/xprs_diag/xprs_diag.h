@@ -91,6 +91,19 @@ void xdiag_log_line(const char *line, int n);
  *  it were recovered from RTC memory. */
 bool xdiag_last_words_valid(void);
 
+/**
+ * Who starved the task watchdog on the boot that just ended, or NULL.
+ *
+ * NOT the same thing as the core dump's task, and the difference is the
+ * whole reason this exists: `exc_task` names whatever was on the CPU when
+ * the panic fired, which on a multi-task core is usually the
+ * highest-priority task there rather than the one that stopped feeding the
+ * watchdog. The watchdog's own ISR knows the right answer and prints it with
+ * ESP_EARLY_LOGE, which bypasses the log hook and so survives nothing; this
+ * captures it into RTC memory instead. [cores] takes the failing-CPU mask.
+ */
+const char *xdiag_twdt_starved(uint32_t *cores);
+
 /** Console test hooks, only in a build with -DXDIAG_TEST_HOOKS:
  *  "cfg zpanic" aborts, "cfg zhang" spins with interrupts off (an
  *  interrupt-watchdog crash, the shape the T-Decks died in). Returns true

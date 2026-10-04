@@ -1413,40 +1413,83 @@ airtime in those 20 minutes, which extrapolates to about 68% of its 360 s
 allowance. Two bridges on one channel, both translating every broadcast, is
 what that costs, and `broadcasts_per_hour` is the lever.
 
-### OPEN: the UI task trips the watchdog in `both` mode (2026-10-03)
+### OPEN: a watchdog panic on a T-Deck in `both` mode (2026-10-03, revised 10-04)
 
-**This mode is not finished, and this is why.** The twenty minutes above are
-real -- the logged uptimes climb 643 to 1831 with no backward step on either
-station -- but left alone AFTERWARDS, both T-Decks rebooted independently
-within about fifteen minutes, both `ESP_RST_TASK_WDT` with the crash record
-naming the **ui** task (`zc:panic,ui`, PCs 0x4210122e and 0x403767ad). The
-Heltec V3, on the same channel but in `meshtastic` mode, had 39 minutes clean
-at the same moment. So it follows `both` mode, not the channel.
+**This mode is not finished.** The twenty minutes of soak above are real --
+the logged uptimes climb 643 to 1831 with no backward step on either station
+-- but left alone afterwards, both T-Decks reboot every fifteen to thirty
+minutes with `ESP_RST_TASK_WDT`. A Heltec V3 on the same channel does not.
 
-What is known, as opposed to guessed:
+**The first two diagnoses here were wrong, and the way they were wrong is
+worth more than either of them.**
 
-- the UI task went unfed for the full 60 s watchdog period, which is a stall
-  and not a borderline timing figure;
-- `xprslora_mt_stats` and `xprslora_mc_stats` both take `s_mt_mutex`, and in
-  `both` mode BOTH now return true, so every path that draws status takes
-  that mutex twice where it used to take it once -- `/api/status` takes it
-  four times (`xprs_app.c`);
-- `mc_worker` holds the same mutex for the whole of `mc_mesh_work`, which
-  includes Ed25519 verification and, up to twice a minute, an `nvs_commit`
-  that disables the cache on both cores;
-- it did NOT happen while the stations were being polled every 30 s for
-  twenty minutes, and did happen when they were left alone, so the polling
-  is not the trigger.
+The first blamed UI starvation on the bridge mutex. It is disproved: the `ui`
+task does not take `s_mt_mutex` on any repaint path. Every `xprslora_*` call
+`ui_render` makes is lock-free, and the two that do lock
+(`xprslora_mt_stats`, `xprslora_mc_stats`) are reached only from `idx_task`
+and the httpd task.
 
-The plausible mechanism is therefore UI starvation on `s_mt_mutex`, but that
-is a hypothesis and the PCs have not been resolved to functions yet. Note
-also that the watchdog change made this VISIBLE rather than created it: the
-timeout was an effective 5 s with panic before 2026-10-03, so a stall this
-long would have rebooted the board sooner. What is new is `both` mode.
+The second blamed IDF's USB-serial-JTAG console, which really does busy-wait
+up to 50 ms per character when no host drains the CDC
+(`vfs_usb_serial_jtag.c`, `usb_serial_jtag_tx_char`). Also disproved as the
+cause here: `ui` barely logs, the 22 lines a second come from tasks `ui`
+outranks, and the Heltec's immunity has a simpler explanation.
 
-Next step is to resolve those two PCs with `addr2line` against the matching
-ELF, and to instrument the mutex rather than reason about it. Until that is
-done, do not run `both` mode unattended on a station anybody relies on.
+**The Heltec is immune because it builds no LVGL at all.** It uses
+`xprs_ui_mini`, and `lvgl` appears zero times in its configuration. Nothing
+about LoRa explains the difference; the display path does.
+
+**What misled both attempts** is in `docs/esp32.md` now, because it is a trap
+anyone reading a crash record will fall into: **`exc_task` names the task
+that was RUNNING when the panic fired, not the task that starved the
+watchdog.** Both watched tasks are pinned to core 1 and `ui` is the
+highest-priority task there, so "ui" is the expected answer for any core-1
+trigger, including one caused by `idx`. The watchdog's ISR does know the right
+answer and prints it with `ESP_EARLY_LOGE`, which bypasses the log hook and
+therefore survives nothing: not `/api/log`, not the RTC ring, not `zc:`.
+
+**So the firmware now records it.** `esp_task_wdt_isr_user_handler` is a weak
+symbol and `esp_task_wdt_print_triggered_tasks()` is public; `xprs_diag` uses
+both to write the starving task's name into RTC memory that outlives the
+reboot, and reports it as `zw:` on the beacon and `starved` in `/api/diag`,
+separately from the core dump's `crash.task`. Rehearsed on the bench with a
+deliberate spin before being trusted, and that rehearsal corrected how both
+fields read: `crash.task` named the task that was spinning and `starved`
+named a lower-priority one it had starved of CPU, so the runner is the suspect
+and the starved task is the evidence (docs/esp32.md, "The crash record names
+the task that was running"). Three tasks subscribe here, all on core 1: `ui`
+at priority 4, `idx` at 3, `script` at 2.
+
+Note what that does to the four earlier records, which showed `crash.task` as
+`ui` three times and `idx` once: on the rehearsal's reading those name the
+task that would not yield, which puts the UI and indexer paths in the frame
+and leaves the classifier and the bridges out of it. That is a direction, not
+a cause, and `starved` is what will settle it.
+
+**Also established, and relevant whatever it names:**
+
+- the watchdog does not watch the idle tasks. `xprs_app.c` reconfigures it at
+  boot with `idle_core_mask = 0`, so the watched set is `ui` and `idx` only,
+  at 90 s with panic. A trigger therefore means one iteration of one of those
+  two tasks took over ninety seconds;
+- `ui` feeds the watchdog once, at the bottom of its loop, after `ui_render()`
+  and `xui_update()`. Everything in a pass is one unfed window;
+- the display and the radio share SPI2, and both use polling transfers.
+  `spi_device_polling_end`'s wait is a bare CPU spin whose timeout can never
+  fire at `portMAX_DELAY`, so a panel that stops answering hangs `ui` for
+  ever. One of the four crash PCs was inside that loop. It is **still not
+  bounded**, deliberately: giving it a real ceiling cost X3HW9U its radio for
+  383 s (0 frames received against the control's 42), because the timeout path
+  keeps the shared bus lock for ever and there is no cancel call. The trap is
+  written up in `docs/esp32.md`. What the flush does instead is feed the
+  watchdog per slice, which `common/xprs_lvgl/lvgl_port.c` already did for the
+  e-paper board and this path did not;
+- `xui_capture` waited two seconds PER ROW with nothing bounding the frame, so
+  an HTTP peer that walked away mid-screenshot could hold the UI task for
+  eight minutes. One deadline for the whole capture now.
+
+Do not run `both` mode unattended on a station anybody relies on until the
+starving task has been named and fixed.
 
 ## 15. Lessons learned
 

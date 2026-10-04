@@ -236,6 +236,37 @@ esp_err_t st7789_flush(st7789_handle_t handle,
             .length = (size_t)width * rows * 16,
             .tx_buffer = px,
         };
+        /*
+         * spi_device_polling_transmit, deliberately, after trying the other
+         * thing and breaking a board with it on 2026-10-04.
+         *
+         * The wrapper is polling_start(portMAX_DELAY) + polling_end(same),
+         * and polling_end busy-spins without yielding, so at portMAX_DELAY
+         * its timeout test can never be true. That looks like a hazard worth
+         * bounding, and it is not bounded by passing a real timeout:
+         *
+         *   - polling_end measures WALL CLOCK (xTaskGetTickCount around a
+         *     pre-emptible spin), not transfer time. This panel slice is
+         *     about 31 ms of SPI at 40 MHz, but `ui` runs at priority 4 and
+         *     anything above it on this core can hold it off for longer than
+         *     any ceiling worth setting. The timeout fires on a busy board,
+         *     not on a broken one.
+         *   - the timeout path returns with host->polling still true and the
+         *     bus lock still held, and there is no cancel call. So the panel
+         *     device rejects every later flush with ESP_ERR_INVALID_STATE,
+         *     and because SPI2 is shared, the SX1262 then blocks for ever on
+         *     a lock nobody will release. Measured on X3HW9U: the console
+         *     flooded with "Cannot send polling transaction while the
+         *     previous polling transaction is not terminated" and LoRa rx
+         *     went to 0 while the other T-Deck on the same channel took 42
+         *     packets.
+         *
+         * The watchdog risk this was meant to answer is answered where it
+         * belongs instead: xprs_ui's flush callback feeds the task watchdog
+         * once per slice, so a slow flush is slow and not a reboot. A truly
+         * dead panel still hangs this task, and that is now a known gap
+         * rather than a traded-away radio (docs/esp32.md).
+         */
         esp_err_t ret = spi_device_polling_transmit(handle->spi, &t);
         if (ret != ESP_OK) return ret;
         px += (size_t)width * rows;

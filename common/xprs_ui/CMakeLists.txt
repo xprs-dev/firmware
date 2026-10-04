@@ -7,5 +7,6 @@ idf_component_register(
     SRCS "xprs_ui.c"
     INCLUDE_DIRS "."
     REQUIRES mbedtls log lvgl__lvgl esp_timer xprs_common xprs_art
+             esp_system
              xprs_ui_api
 )

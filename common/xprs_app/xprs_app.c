@@ -7504,7 +7504,18 @@ static struct {
     SemaphoreHandle_t taken;      /* HTTP -> UI: send it and go on  */
     uint16_t          row[CAP_ROW_MAX];
     int               row_y, row_x1, row_x2;
+    /* One deadline for the WHOLE capture, not one per row. The per-row wait
+     * below is 2 s and it was the only bound there was, so an HTTP peer that
+     * went away mid-screenshot cost 2 s a row -- up to 240 of them on a full
+     * frame, which is eight minutes of the UI task not feeding a watchdog
+     * that fires at ninety seconds. Found while chasing exactly that reboot
+     * on 2026-10-04. */
+    int64_t           deadline_us;
 } s_cap;
+
+/* Five seconds for a screenshot nobody is collecting. A working peer answers
+ * each row in microseconds, so this can only fire on one that stopped. */
+#define CAP_TOTAL_US (5 * 1000 * 1000LL)
 
 /* Runs on the UI task, inside the repaint. */
 static void cap_slice(int x1, int y1, int x2, int y2,
@@ -7519,8 +7530,14 @@ static void cap_slice(int x1, int y1, int x2, int y2,
         s_cap.row_x1 = x1;
         s_cap.row_x2 = x2;
         xSemaphoreGive(s_cap.ready);
-        /* If the HTTP side has gone away, do not wedge the UI task. */
+        /* If the HTTP side has gone away, do not wedge the UI task. The
+         * per-row timeout alone did not achieve that: it bounded each row
+         * and nothing bounded the frame. */
         if (xSemaphoreTake(s_cap.taken, pdMS_TO_TICKS(2000)) != pdTRUE) return;
+        if (esp_timer_get_time() > s_cap.deadline_us) {
+            s_cap.want = false;        /* stop the slices still to come */
+            return;
+        }
     }
 }
 
@@ -7541,6 +7558,7 @@ static esp_err_t app_capture_screen(xapi_slice_fn cb, void *ctx,
 
     s_cap.err = ESP_FAIL;
     s_cap.done = false;
+    s_cap.deadline_us = esp_timer_get_time() + CAP_TOTAL_US;
     s_cap.want = true;
 
     /* Pump the rows on THIS task, which is the one httpd will accept. */

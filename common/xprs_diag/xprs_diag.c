@@ -21,6 +21,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+/* Not under the core-dump guard below: the watchdog capture is independent of
+ * it, and hiding the include there would break the build on the first board
+ * that ships without coredump-to-flash. */
+#include "esp_task_wdt.h"
+
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH && CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF
 #include "esp_core_dump.h"
 #define XD_HAVE_COREDUMP 1
@@ -125,6 +130,120 @@ static bool s_last_valid;
 static uint32_t rtc_check(const rtc_words_t *r)
 {
     return r->magic ^ (r->w * 2654435761u) ^ 0xa5a5a5a5u;
+}
+
+/* ── Which task starved the watchdog ────────────────────────────────────
+ *
+ * The task watchdog's ISR already knows the answer and prints it with
+ * ESP_EARLY_LOGE -- which goes straight to the console and does NOT pass
+ * through esp_log_set_vprintf, so it misses the log hook, the ring below,
+ * /api/log and the flash file alike. A board that dies unattended therefore
+ * takes the one fact worth having with it, and the crash record that DOES
+ * survive (`exc_task`) names the task that happened to be ON THE CPU, which
+ * for a core-1 trigger is almost always the highest-priority task there
+ * whether or not it was the one that starved. Two wrong diagnoses were
+ * chased on that difference before this was written (docs/esp32.md, "A
+ * directive asked for is not a directive taken" is the same shape of trap:
+ * the thing that tells you is not the thing you read).
+ *
+ * So the ISR writes the names into RTC memory of its own, which outlives the
+ * reboot, and the next boot reports them beside the core-dump task.
+ */
+#define XD_TWDT_MAGIC 0x58445457u   /* "XDTW" */
+#define XD_TWDT_LEN   48
+
+typedef struct {
+    uint32_t magic;
+    uint32_t cores;                 /* the cpus_fail bitmask */
+    char     who[XD_TWDT_LEN];      /* "ui (CPU 1)", or several */
+    uint32_t check;
+} rtc_twdt_t;
+
+static RTC_NOINIT_ATTR rtc_twdt_t s_twdt;
+static portMUX_TYPE s_twdt_mux = portMUX_INITIALIZER_UNLOCKED;
+static char s_twdt_who[XD_TWDT_LEN];   /* what the LAST boot recorded */
+static uint32_t s_twdt_cores;
+static bool s_twdt_valid;
+
+static uint32_t twdt_check(const rtc_twdt_t *t)
+{
+    uint32_t h = t->magic ^ (t->cores * 2246822519u) ^ 0x5a5a5a5au;
+    /* Over the names too. Without this a half-written `who` surviving a
+     * brownout reads as a valid answer, and a wrong name here is worse than
+     * none: it is what two wrong diagnoses were built on. */
+    for (size_t i = 0; i < XD_TWDT_LEN; i++)
+        h = (h * 16777619u) ^ (uint8_t)t->who[i];
+    return h;
+}
+
+/* Called from the watchdog ISR, once per fragment. The caption comes first
+ * and is skipped; everything after it is the names and their cores. No
+ * ESP_LOG, no allocation, no stack buffer, and the _ISR spinlock variant --
+ * this runs in interrupt context and the header says so in as many words.
+ * It is the diagnostic that must not be the thing that crashes the board. */
+static int s_twdt_frag;
+
+static void twdt_msg_isr(void *opaque, const char *msg)
+{
+    (void)opaque;
+    if (!msg) return;
+    if (s_twdt_frag++ == 0) return;          /* the caption */
+    portENTER_CRITICAL_ISR(&s_twdt_mux);
+    size_t o = strnlen(s_twdt.who, XD_TWDT_LEN - 1);
+    for (const char *c = msg; *c && o < XD_TWDT_LEN - 1; c++) {
+        /* IDF hands this over as "\n - <name> (CPU n)" per entry. Turn the
+         * newline into the separator and drop the bullet and the padding, so
+         * TWO starving tasks read as "ui (CPU 1),idx (CPU 1)" and not as one
+         * run-together name. Writing nothing here, as the first version did,
+         * made a second name indistinguishable from part of the first. */
+        char ch = *c;
+        if (ch == '\n' || ch == '\r') {
+            if (o > 0 && s_twdt.who[o - 1] != ',') s_twdt.who[o++] = ',';
+            continue;
+        }
+        if (ch == '-' && (o == 0 || s_twdt.who[o - 1] == ',')) continue;
+        if (ch == ' ' && (o == 0 || s_twdt.who[o - 1] == ' ' ||
+                          s_twdt.who[o - 1] == ',')) continue;
+        s_twdt.who[o++] = ch;
+    }
+    s_twdt.who[o] = 0;
+    portEXIT_CRITICAL_ISR(&s_twdt_mux);
+}
+
+void esp_task_wdt_isr_user_handler(void)
+{
+    int cores = 0;
+    portENTER_CRITICAL_ISR(&s_twdt_mux);
+    s_twdt.magic = XD_TWDT_MAGIC;
+    s_twdt.who[0] = 0;
+    portEXIT_CRITICAL_ISR(&s_twdt_mux);
+    s_twdt_frag = 0;
+    esp_task_wdt_print_triggered_tasks(twdt_msg_isr, NULL, &cores);
+    portENTER_CRITICAL_ISR(&s_twdt_mux);
+    s_twdt.cores = (uint32_t)cores;
+    s_twdt.check = twdt_check(&s_twdt);
+    portEXIT_CRITICAL_ISR(&s_twdt_mux);
+}
+
+/* At boot: lift what the ISR left, then clear it, so a later ordinary reboot
+ * does not report a watchdog that fired hours ago. */
+static void twdt_read_last(void)
+{
+    if (s_twdt.magic == XD_TWDT_MAGIC && s_twdt.check == twdt_check(&s_twdt) &&
+        s_twdt.who[0]) {
+        snprintf(s_twdt_who, sizeof s_twdt_who, "%.*s",
+                 (int)(XD_TWDT_LEN - 1), s_twdt.who);
+        s_twdt_cores = s_twdt.cores;
+        s_twdt_valid = true;
+    }
+    memset(&s_twdt, 0, sizeof s_twdt);
+}
+
+const char *xdiag_twdt_starved(uint32_t *cores)
+{
+    if (!s_twdt_valid) return NULL;
+    if (cores) *cores = s_twdt_cores;
+    return s_twdt_who;
 }
 
 /* Boards without a log on flash keep a short tail in RAM for cmd:zlog. */
@@ -277,6 +396,7 @@ void xdiag_init(const xdiag_cfg_t *cfg)
     s_crash_boot = s_reset == ESP_RST_PANIC || s_reset == ESP_RST_INT_WDT ||
                    s_reset == ESP_RST_TASK_WDT || s_reset == ESP_RST_WDT;
     read_core_summary();
+    twdt_read_last();
     last_words_recover();
     if (!s_cfg.log_cur) {
         /* 1.8 KB, internal: the only log this board will ever serve. */
@@ -288,6 +408,13 @@ void xdiag_init(const xdiag_cfg_t *cfg)
     ESP_LOGI(TAG, "over-the-air diagnostics: reset %s%s%s",
              reset_word(s_reset), s_core_valid ? ", crash in " : "",
              s_core_valid ? s_core_task : "");
+    /* The distinction that cost two wrong diagnoses: the task that STARVED
+     * the watchdog is not the task that was on the CPU when it fired. */
+    if (s_twdt_valid)
+        ESP_LOGE(TAG, "the task watchdog was starved by: %s (cores %lu)%s%s",
+                 s_twdt_who, (unsigned long)s_twdt_cores,
+                 s_core_valid ? "; the CPU was in " : "",
+                 s_core_valid ? s_core_task : "");
 }
 
 /* ── Helpers shared by the frames ───────────────────────────────────────── */
@@ -853,6 +980,13 @@ int xdiag_beacon_fields(char *buf, int cap)
         if (k > 0 && n + k < cap) n += k;
         else buf[n] = 0;
     }
+    /* Separate from zc: on purpose. zc: says where the CPU was; this says
+     * who stopped feeding the watchdog, and they are routinely different. */
+    if (s_twdt_valid) {
+        int k = snprintf(buf + n, cap - n, " zw:%s", s_twdt_who);
+        if (k > 0 && n + k < cap) n += k;
+        else buf[n] = 0;
+    }
     return n;
 }
 
@@ -871,6 +1005,20 @@ bool xdiag_console(const char *line)
         ESP_LOGE(TAG, "XDIAG_TEST_HOOKS: hanging with interrupts off on request");
         vTaskDelay(pdMS_TO_TICKS(50));
         portDISABLE_INTERRUPTS();
+        for (;;) { }
+    }
+    /* The TASK watchdog's shape, which `zhang` is not: interrupts stay ON,
+     * the scheduler keeps running, and this task simply stops feeding. That
+     * is the failure the T-Decks die of in `both` mode, and this is how the
+     * capture that NAMES the starving task is rehearsed rather than waited
+     * for (docs/esp32.md, "The crash record names the task that was
+     * running"). A console line is read on the UI task, so the starving task
+     * should come back as `ui`. */
+    if (strcmp(line, "cfg zstarve") == 0) {
+        ESP_LOGE(TAG, "XDIAG_TEST_HOOKS: starving the task watchdog on "
+                      "request -- interrupts stay on, this task stops "
+                      "feeding, the board should reboot naming it");
+        vTaskDelay(pdMS_TO_TICKS(50));
         for (;;) { }
     }
 #else

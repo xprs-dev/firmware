@@ -7,6 +7,7 @@
 #include "xapi_send.h"
 #include "xprs_auth.h"
 #include "xprs_ota.h"
+#include "xprs_diag.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -518,6 +519,17 @@ static esp_err_t h_diag(httpd_req_t *req)
         n += snprintf(out + n, cap - n,
                       ",\"crash\":{\"task\":\"%s\",\"pc\":\"0x%08lx\"}",
                       cd->exc_task, (unsigned long)cd->exc_pc);
+    /* `crash.task` is where the CPU WAS; this is who stopped feeding the
+     * watchdog. They are routinely different and reading one as the other
+     * cost two wrong diagnoses (xprs_diag.h, xdiag_twdt_starved). */
+    {
+        uint32_t cores = 0;
+        const char *starved = xdiag_twdt_starved(&cores);
+        if (starved && n > 0 && n < (int)cap)
+            n += snprintf(out + n, cap - n,
+                          ",\"starved\":{\"who\":\"%s\",\"cores\":%lu}",
+                          starved, (unsigned long)cores);
+    }
     if (n > 0 && n < (int)cap)
         n += snprintf(out + n, cap - n, "}");
     httpd_resp_set_type(req, "application/json");

@@ -1211,14 +1211,14 @@ Fix the floor first, then re-run the experiment.
 ### The FAT descriptor pool: count handles, not subsystems
 
 `CONFIG_SDCARD_MAX_FILES` was 3 on the T-Deck, chosen against a model of "one
-handle per subsystem — its index, its message store and its log". That model is
+handle per subsystem -- its index, its message store and its log". That model is
 wrong. **The index alone holds three open by construction:**
 
 | handle | closed only on |
 |---|---|
-| `xprsindex` `st->active_fp` — the current `seg_NNN` | a segment roll |
-| `xprsindex` `st->tail_fp` — the current type tail | a type change, or a query |
-| `xprs_app` `s_logfile` — `/idx/log/cur.txt` | 64 KB rotation |
+| `xprsindex` `st->active_fp` -- the current `seg_NNN` | a segment roll |
+| `xprsindex` `st->tail_fp` -- the current type tail | a type change, or a query |
+| `xprs_app` `s_logfile` -- `/idx/log/cur.txt` | 64 KB rotation |
 
 So the pool was full at rest, and every transient open failed. What that looked
 like:
@@ -1229,7 +1229,7 @@ E (600477) vfs_fat: open: no free file descriptors    <- again, ten minutes in
 ```
 
 Two at one timestamp is the signature of a single site doing an `r+b` then
-`w+b` fallback — `xi_zone_write`, reached from `xi_sync_card` **while both index
+`w+b` fallback -- `xi_zone_write`, reached from `xi_sync_card` **while both index
 handles are still held**. The 600 s one is `xst_stats_save` on its timer
 (`last_stats_save_s` starts at 0, so it first fires at exactly `now_s == 600`).
 
@@ -1238,7 +1238,7 @@ handles are still held**. The 600 s one is `xst_stats_save` on its timer
 nothing of their own, so the zone map, the statistics rings, the declared
 mailboxes, the regulars list and §36.11 mail retention had *all* stopped
 persisting with `vfs_fat`'s line as the only trace. They now log on a failed
-open (`XI_LOGE`). If you add a writer to this store, give it a failure line —
+open (`XI_LOGE`). If you add a writer to this store, give it a failure line --
 a `void` save function that cannot report is how this hid.
 
 Two lessons, and the second is the general one:
@@ -1248,8 +1248,8 @@ Two lessons, and the second is the general one:
    Six on the T-Deck.
 2. **Price it by measuring, not by reasoning.** Three extra ~4 KB `FIL`s reads
    like 12 KB of internal DRAM, and it is not: `CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y`
-   puts them in PSRAM. Measured on X3R8XX, `heap after hotspot` went 70,940 →
-   71,100 (unchanged) while PSRAM went 8,263,228 → 8,252,152. On a board with
+   puts them in PSRAM. Measured on X3R8XX, `heap after hotspot` went 70,940 to
+   71,100 (unchanged) while PSRAM went 8,263,228 to 8,252,152. On a board with
    no PSRAM the 4 KB is real and internal.
 3. **Where the 4 KB is real, give a handle back instead of buying one.** The
    T-Dongle cannot afford a bigger pool -- `CONFIG_SDCARD_MAX_FILES=3` is what
@@ -1295,7 +1295,7 @@ OTA until this is done by cable. Also: do not raise the baud on this link -- at 
 
 `CONFIG_BT_ENABLED=n` does not merely disable the radio: ESP-IDF's `bt`
 component then registers with an **empty `INCLUDE_DIRS`**, so *no* BLE header
-resolves — not `nimble/nimble_port.h`, and not `esp_bt.h` either, which is why
+resolves -- not `nimble/nimble_port.h`, and not `esp_bt.h` either, which is why
 selecting the tinynimble backend does not rescue it.
 
 XPRS treats BLE as optional at runtime via the board descriptor's `bool ble`
@@ -1303,16 +1303,16 @@ XPRS treats BLE as optional at runtime via the board descriptor's `bool ble`
 `xprs_bearer_ble/xprsble.c`, which is now `#if CONFIG_BT_ENABLED` with a stub
 arm returning `ESP_ERR_NOT_SUPPORTED` / `false` / `0` / `-1`. `xprsble.h`
 includes only `<stdint.h>`, `<stdbool.h>` and `"esp_err.h"`, so callers need no
-`#ifdef` at all — `xprsble_is_active()` answering false is already the path they
+`#ifdef` at all -- `xprsble_is_active()` answering false is already the path they
 take. `tinynimble` drops `tn_port_esp.c` under the same condition and keeps the
 IDF-free `tn_hci.c`. Cost on the M5Stack: `libxprs_bearer_ble.a` links as
 **27 bytes**.
 
-The M5Stack is not merely unconfigured, it is incapable — the original ESP32
+The M5Stack is not merely unconfigured, it is incapable -- the original ESP32
 defines `SOC_BLE_SUPPORTED` but **not** `SOC_BLE_50_SUPPORTED`, so it has only
 legacy 31-byte advertising and an XPRS frame does not fit.
 
-**None of `models/*/firmware` is in `tools/build.sh`** — it covers only the
+**None of `models/*/firmware` is in `tools/build.sh`** -- it covers only the
 seven `multiboard` targets. That is why m5stack-core stayed broken for ten
 hours after a shared component gained a new REQUIRES. Adding the three board
 projects to that script is outstanding.
@@ -1378,19 +1378,19 @@ like.
 Three rules that came out of doing it:
 
 1. **A splash that arrives after the boot is decoration; one that arrives
-   during it is information.** Give it the real step names — the sequence
-   already has them — and drain `stdin` for `'S'` while it is up, because
+   during it is information.** Give it the real step names -- the sequence
+   already has them -- and drain `stdin` for `'S'` while it is up, because
    `ui_task` is what normally answers a framedump request and it does not
    exist yet. Without that there is no way to photograph the splash *during*
    boot, and therefore no way to prove it was ever on screen.
 2. **Vectors, not a bitmap.** Ten stroked shapes are 212 bytes of `.rodata`
    and fit any panel; the same mark as 320x240 RGB565 is 153,600 bytes and
-   fits exactly one. `lv_line` does not copy its points — the array has to
+   fits exactly one. `lv_line` does not copy its points -- the array has to
    outlive the objects and be freed with them.
 3. **Only log what you can measure.** LVGL's pool is a fixed array on a board
    without PSRAM (`lv_mem_monitor` reports it exactly) and PSRAM on a board
    with it (`lv_mem_monitor` is inert). Free PSRAM across the splash's
-   lifetime is not a measure of the splash — the rest of the boot allocates
+   lifetime is not a measure of the splash -- the rest of the boot allocates
    tens of kilobytes in that window. Report the real figure where there is
    one and say nothing where there is not.
 
@@ -1740,6 +1740,149 @@ They all use `XPRS_WORK_CORE` now (`common/xprs_common/include/xprs_core.h`):
 for any new blocking task.** On one core the isolation this document is
 built around does not exist; only task priorities stand between the radios
 and the storage.
+
+### The crash record names the task that was running, not the one that starved
+
+`esp_core_dump_summary_t.exc_task` -- which is what `zc:`, `/api/diag`'s
+`crash.task` and the boot log all print -- comes from
+`xTaskGetCurrentTaskHandleForCore()`. It is **whatever was on the CPU when the
+panic fired.** On a task-watchdog trigger that is almost never the task you
+want: the abort runs on the failing task's core, and the task reported is the
+highest-priority one resident there at that instant.
+
+On the T-Deck both watched tasks are pinned to core 1 and `ui` is priority 4
+against `idx`'s 3, so **`exc_task == "ui"` is the expected answer for any
+core-1 watchdog trigger**, including one caused by `idx`. Two days of 2026-10-04
+went into diagnoses built on reading it as the culprit. It is not evidence of
+one.
+
+The watchdog's own ISR does know. It prints "The following tasks/users did not
+reset the watchdog in time: <name>" -- with `ESP_EARLY_LOGE`, which **does not
+go through `esp_log_set_vprintf`**, so it misses the log hook, the RTC ring,
+`/api/log` and the flash log alike. It reaches a live console and nothing
+else, and a board that dies unattended takes it with it.
+
+Two public hooks fix that, and `xprs_diag` uses both:
+
+```c
+void __attribute__((weak)) esp_task_wdt_isr_user_handler(void);
+esp_err_t esp_task_wdt_print_triggered_tasks(task_wdt_msg_handler, void *,
+                                             int *cpus_fail);
+```
+
+Implement the weak symbol, call the print function from it with a message
+handler of your own, and write the names into memory that survives a reboot.
+The handler runs in **interrupt context** -- the header says "the same
+limitations as the interrupt function. Do not use ESP_LOGx functions inside"
+-- so it uses `portENTER_CRITICAL_ISR`, no allocation and no stack buffer.
+`xdiag_log_line()` is NOT usable there as it stands, for exactly those
+reasons, which is why `xprs_diag` grew a separate ISR-safe slot writer.
+
+It is reported as `zw:` on the beacon and `starved` in `/api/diag`, beside
+`crash.task` rather than instead of it, **and the pair is the diagnosis
+because the two are usually different ends of the same fault.**
+
+Rehearsed on the bench 2026-10-04 with a deliberate spin on the `ui` task
+(`cfg zstarve` under `-DXDIAG_TEST_HOOKS`, which is the TASK watchdog's shape
+where `cfg zhang` is the interrupt watchdog's):
+
+```
+reason  : 6                                  ESP_RST_TASK_WDT
+crash   : {"task": "ui", "pc": "0x420af7b3"}  who was ON the CPU
+starved : {"who": "script (CPU 1)", ...}      who was DENIED it
+```
+
+The task that was made to spin is named by `crash.task`. The task the
+watchdog reports is a **different, lower-priority one that was starved of
+CPU by it** -- so `starved` can name a victim rather than a culprit, and
+`crash.task` can name the culprit rather than a victim, which is the exact
+reverse of how both fields read. Take them together: the runner is the
+suspect, the starved one is the evidence that it would not yield.
+
+Three tasks subscribe on these boards, all pinned to core 1: `ui` at priority
+4 (`xprs_app.c`), `idx` at 3, and `script` at 2 (`xprs_script.cpp`). A spin
+anywhere in that ladder starves everything below it, and the watchdog fires
+on whichever of those has gone longest unfed.
+
+**Also worth knowing before reading a watchdog panic on these boards:** the
+sdkconfig's `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/_CPU1=y` is revoked at
+runtime. `xprs_app` reconfigures the watchdog with `idle_core_mask = 0` and a
+90 s timeout, so the watched set is the two tasks that subscribe explicitly,
+`ui` and `idx`. A trigger means one iteration of one of those took longer than
+ninety seconds -- not that a core was starved.
+
+### Polling SPI does not yield, and you cannot bound it
+
+`spi_device_polling_transmit()` is `spi_device_polling_start(portMAX_DELAY)`
+followed by `spi_device_polling_end(portMAX_DELAY)`. The second is a **bare
+CPU spin**:
+
+```c
+while (!spi_hal_usr_is_done(&host->hal)) {
+    TickType_t end = xTaskGetTickCount();
+    if (end - start > ticks_to_wait) return ESP_ERR_TIMEOUT;
+}
+```
+
+At `portMAX_DELAY` that test can never be true, so a peripheral that never
+raises "done" hangs the calling task for ever, without yielding. On the T-Deck
+the caller is the `ui` task, which is watchdog-subscribed, so for ever means a
+panic and a reboot with no explanation in it.
+
+So the obvious move is to pass a real ceiling instead. **Do not.** That was
+tried on 2026-10-04, shipped to two T-Decks, and it cost one of them its
+radio:
+
+```
+E (425728) spi_master: spi_device_polling_start(1097): Cannot send polling
+    transaction while the previous polling transaction is not terminated.
+```
+
+Two reasons, both in the driver's own source:
+
+1. **`ticks_to_wait` is wall clock, not transfer time.** `start` comes from
+   `xTaskGetTickCount()` and the spin above is pre-emptible, so the clock
+   keeps running while the task is off the CPU. The panel slice is about
+   31 ms of SPI at 40 MHz, but `ui` runs at priority 4 and anything above it
+   on core 1 can hold it off for longer than any ceiling worth setting. The
+   timeout fires on a busy board, not on a broken one.
+2. **A timeout leaves the transaction live and there is no cancel.** Look at
+   where the `return ESP_ERR_TIMEOUT` sits: before `spi_post_trans()`, before
+   `host->polling = false`, before `spi_bus_lock_acquire_end()`. So the device
+   stays marked as polling, which is the error above on every later flush, and
+   the **bus lock is never released**. Once that happens the panel is the
+   least of it: SPI2 also carries the SX1262, and the radio's next
+   `polling_start` waits on a lock nobody will ever release. Measured, with
+   the other T-Deck on the same channel as the control:
+
+   | | X3HW9U (timeout fired) | X3DCK0 (control) |
+   |---|---|---|
+   | LoRa frames received, 383 s | **0** | 42 |
+   | airtime spent | 1,181 ms | 36,077 ms |
+   | reachable on the LAN at the end | no | yes |
+
+   The classifier counters were all zero, which reads exactly like a `both`
+   mode bug and was not one.
+
+This is the coupling the page already reasoned about for the **card** ("the
+kind of coupling that turns 'the archive is busy' into 'the station missed a
+packet'"), and the pair actually wired up and running is the **panel and the
+radio**. A display error path that keeps a shared bus is not an error path, it
+is a radio outage.
+
+So `st7789_flush` uses `spi_device_polling_transmit` and the watchdog risk is
+answered where it belongs: feed the watchdog inside any long display
+operation. `common/xprs_lvgl/lvgl_port.c` already did it mid-flush for the
+e-paper board; `common/xprs_ui/xprs_ui.c`, which is the T-Deck's path, did
+not, so a thirty-slice repaint was one unfed window. A genuinely dead panel
+still hangs that task, and that is a known gap, not a solved one: the price of
+closing it with this API is the radio.
+
+`esp_task_wdt_reset()` is safe to call from a task that never subscribed. It
+takes the `ESP_GOTO_ON_FALSE_ISR` path and returns `ESP_ERR_NOT_FOUND`
+**without logging**, which is what makes thirty calls a frame acceptable. Only
+the "TWDT was never initialized" branch logs, and `xprs_app` configures the
+watchdog at boot on every board.
 
 ### RISC-V has no backtrace in the crash summary
 

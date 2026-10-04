@@ -15,6 +15,7 @@
 #include <math.h>
 #include "lvgl.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 #include "xprs_art.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -268,6 +269,27 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
                          lv_color_t *color_p)
 {
     if (!s_flush_on) { lv_disp_flush_ready(drv); return; }   /* asleep */
+    /*
+     * ONE FEED PER SLICE, and it is what keeps a slow frame from being a
+     * reboot. This runs inside lv_timer_handler on the `ui` task, and that
+     * task feeds the watchdog exactly once, at the bottom of its loop, AFTER
+     * the whole repaint -- so a render plus a flush is one unfed window. A
+     * full screen is up to thirty slices, each a byte-swap over as much as
+     * 40 KB and then a transfer on a bus shared with the radio and the card
+     * slot, where queueing behind somebody else is normal. Any of that going
+     * slow used to spend the entire 90 s budget in one pass.
+     *
+     * The precedent is in this tree: common/xprs_lvgl/lvgl_port.c already
+     * feeds mid-flush for the e-paper board, whose refresh is slower still.
+     * The T-Deck's path is this file and it had no such call.
+     *
+     * esp_task_wdt_reset() on a task that is not subscribed takes the
+     * ESP_GOTO_ON_FALSE_ISR path, which returns ESP_ERR_NOT_FOUND WITHOUT
+     * logging. That matters: thirty calls a frame down a logging path would
+     * be worse than the stall. Only the "never initialized" branch logs, and
+     * xprs_app configures the watchdog at boot on every board.
+     */
+    esp_task_wdt_reset();
     uint32_t size = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
     uint16_t *px = (uint16_t *)color_p;
 
