@@ -1413,12 +1413,34 @@ airtime in those 20 minutes, which extrapolates to about 68% of its 360 s
 allowance. Two bridges on one channel, both translating every broadcast, is
 what that costs, and `broadcasts_per_hour` is the lever.
 
-### OPEN: a watchdog panic on a T-Deck in `both` mode (2026-10-03, revised 10-04)
+### FIXED, without the cause ever being named: the watchdog panic in `both` mode (2026-10-03, closed 10-04)
 
-**This mode is not finished.** The twenty minutes of soak above are real --
-the logged uptimes climb 643 to 1831 with no backward step on either station
--- but left alone afterwards, both T-Decks reboot every fifteen to thirty
-minutes with `ESP_RST_TASK_WDT`. A Heltec V3 on the same channel does not.
+**The reboots have stopped, and that is not the same as knowing why they
+happened.** Both T-Decks used to reboot every fifteen to thirty minutes in
+`both` mode with `ESP_RST_TASK_WDT`, while a Heltec V3 on the same channel did
+not. With the watchdog fed per flush slice and the screenshot capture given
+one deadline for the whole frame, both boards ran an hour unattended:
+
+| | X3DCK0 | X3HW9U |
+|---|---|---|
+| uptime at the end | 3,966 s | 3,937 s |
+| reboots | 0 | 0 |
+| `starved` reported | none, so it never fired | none |
+| heap floor | 15,360 to 13,200 | 13,300 flat |
+| packets classified | 507 | 475 |
+| `either` / `neither` | 0 / 0 | 0 / 0 |
+
+Then twenty-one more minutes on the shipped image, also clean. Twenty minutes
+proves nothing here, which is the mistake that let this be reported as stable
+once before; an hour is the bar.
+
+**`starved` is still empty, and that is the honest state of it.** The capture
+below works, rehearsed and proven, but the panic it was built to explain has
+not happened since the feeds went in. So the fix is a bound on the damage a
+slow pass can do, not a repair of whatever made a pass slow. If a board in
+this mode ever reboots again, `zw:` on the beacon and `starved` in `/api/diag`
+will name the task, and the branches at the end of this section say what to do
+with each answer.
 
 **The first two diagnoses here were wrong, and the way they were wrong is
 worth more than either of them.**
@@ -1464,7 +1486,9 @@ Note what that does to the four earlier records, which showed `crash.task` as
 `ui` three times and `idx` once: on the rehearsal's reading those name the
 task that would not yield, which puts the UI and indexer paths in the frame
 and leaves the classifier and the bridges out of it. That is a direction, not
-a cause, and `starved` is what will settle it.
+a cause, and `starved` is what will settle it. The direction did hold: what
+stopped the reboots was a feed in the UI flush path, and nothing in the
+classifier or either bridge was touched to achieve it.
 
 **Also established, and relevant whatever it names:**
 
@@ -1488,8 +1512,11 @@ a cause, and `starved` is what will settle it.
   an HTTP peer that walked away mid-screenshot could hold the UI task for
   eight minutes. One deadline for the whole capture now.
 
-Do not run `both` mode unattended on a station anybody relies on until the
-starving task has been named and fixed.
+`both` mode is usable on a station now, on the hour of evidence above. What is
+not closed is the mechanism: something was taking a UI pass over ninety
+seconds and the feeds mean it no longer has to finish to keep the board alive.
+Treat a reboot in this mode as a live lead rather than a known quantity, and
+read `starved` first.
 
 ## 15. Lessons learned
 
