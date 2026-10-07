@@ -127,6 +127,17 @@ void xgossip_note_hears(xgossip_t *g, const char *observer,
 void xgossip_pump(xgossip_t *g);
 
 /**
+ * At most @p max queued sightings onto the card, then return.
+ *
+ * What a station's main loop should call. A sighting is one or two bucket
+ * writes and every write ends in a FAT sync: measured on a T-Deck's internal
+ * flash, with its UI task busy on the same core, at 1.6-3.4 s per close, so one sighting is about five seconds and a
+ * full queue is a minute of the owner task doing nothing else -- no archive
+ * drain, no watchdog feed. One per pass keeps the rest of the loop running.
+ */
+void xgossip_pump_some(xgossip_t *g, int max);
+
+/**
  * @brief Where is @p call? Freshest first, L3 before L2.
  * @return sightings written (<= @p max).
  */

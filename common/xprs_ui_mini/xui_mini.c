@@ -209,6 +209,14 @@ void xui_table_rows(const xui_row_t *rows, int n)
     for (int i = 0; i < nc; i++) {
         uint8_t kind;
         const char *text = chat_kind_split(rows[i].cell[1], &kind);
+        /* The cell is cut to fit the big UI's table column (19 characters);
+         * the row's detail carries the whole saying as "from: text", and
+         * this screen wraps it. A reply's detail is phrased differently, so
+         * it keeps the cell, which already says who it answers. */
+        size_t fl = strlen(rows[i].cell[0]);
+        if (fl && strncmp(rows[i].detail, rows[i].cell[0], fl) == 0 &&
+            rows[i].detail[fl] == ':' && rows[i].detail[fl + 1] == ' ')
+            text = rows[i].detail + fl + 2;
         snprintf(s_chat[i].from, sizeof s_chat[i].from, "%.11s", rows[i].cell[0]);
         snprintf(s_chat[i].text, sizeof s_chat[i].text, "%.63s", text);
         s_chat[i].kind = kind;

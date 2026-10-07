@@ -152,10 +152,17 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
     if (!xprs_get_str(&pk, "f", from, sizeof from))
         return xapi_resp_error(req, "400 Bad Request", "no f:");
 
-    if (!send(w, wlen, bearer[0] ? bearer : NULL, took, sizeof took))
+    if (!send(w, wlen, bearer[0] ? bearer : NULL, took, sizeof took)) {
+        if (took[0]) {
+            /* Refused by the owner's policy, not lost (see the header). */
+            char why[64];
+            snprintf(why, sizeof why, "refused: %s", took);
+            return xapi_resp_error(req, "403 Forbidden", why);
+        }
         return xapi_resp_error(req, "503 Service Unavailable",
                                bearer[0] ? "that bearer did not take it"
                                          : "no bearer took it");
+    }
 
     /* Escaped straight into the answer rather than into a slice of its
      * own: one buffer less, and no reading from the object being written,

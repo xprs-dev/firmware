@@ -224,7 +224,12 @@ static void build_ui(void)
     lv_obj_set_style_text_font(s_chat_label, &lv_font_montserrat_10, 0);
     lv_obj_set_style_text_color(s_chat_label, lv_color_white(), 0);
     lv_obj_set_width(s_chat_label, s_w - 6);
-    lv_obj_set_pos(s_chat_label, 1, 0);
+    /* Anchored to the BOTTOM: the list reads oldest first, newest last, and
+     * on a 64-px OLED two wrapped messages fill the view. Pinned to the top
+     * the newest line was the one clipped off -- the Heltec showed a replay
+     * from the morning while the message just said sat below the glass. Now
+     * the overflow is lost at the top, where the oldest line is. */
+    lv_obj_align(s_chat_label, LV_ALIGN_BOTTOM_LEFT, 1, 0);
 
     lv_obj_clear_flag(s_body[XUM_VIEW_DEVICES], LV_OBJ_FLAG_HIDDEN);
 }

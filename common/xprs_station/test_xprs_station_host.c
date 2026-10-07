@@ -387,6 +387,45 @@ static void test_chat_peers(void)
     CHECK(n == 2, "cap respected, got %d", n);
 }
 
+/* A local-room message with its own ts:, as heard. */
+static void chat_said(const char *from, const char *ts, const char *text)
+{
+    xst_test_now_ms += 1;
+    char wire[160];
+    snprintf(wire, sizeof wire,
+             "t:message f:%s ts:%s scope:local m:%s", from, ts, text);
+    xprs_t p;
+    if (xprs_parse(wire, (int)strlen(wire), &p)) xst_chat_note(&p);
+}
+
+/* The mesh replays: a message from an hour ago arrives again. It must not
+ * come back as the newest saying, nor push a newer one out of a full ring
+ * (2026-10-07: screens showed replays and lost the C61's live messages). */
+static void test_chat_replay(void)
+{
+    char ts[24], text[16];
+    for (int i = 0; i < XST_CHAT_MAX; i++) {
+        snprintf(ts, sizeof ts, "2026-09-05_10:%02d:00", i);
+        snprintf(text, sizeof text, "fill %d", i);
+        chat_said("X1FILL", ts, text);
+    }
+    chat_said("X1OLD", "2026-09-05_09:00:00", "an hour-old replay");
+    chat_said("X1NEW", "2026-09-05_11:00:00", "said just now");
+    xst_chat_t rows[XST_CHAT_MAX];
+    int n = xst_chat(rows, XST_CHAT_MAX);
+    CHECK(n > 0 && strcmp(rows[0].text, "said just now") == 0,
+          "the newest saying is the newest row, whatever arrived after it");
+    bool replay = false;
+    for (int i = 0; i < n; i++)
+        if (strcmp(rows[i].from, "X1OLD") == 0) replay = true;
+    CHECK(!replay, "a replay older than a full ring stays out of it");
+    chat_said("X1LATE", "2026-09-05_10:59:30", "arrived after, said before");
+    n = xst_chat(rows, XST_CHAT_MAX);
+    CHECK(strcmp(rows[0].from, "X1NEW") == 0 &&
+          strcmp(rows[1].from, "X1LATE") == 0,
+          "ordered by when it was said, not by when it arrived");
+}
+
 static void test_heard(void)
 {
     reset();
@@ -413,6 +452,7 @@ int main(void)
     test_full_table();
     test_one_row_per_station();
     test_chat_peers();
+    test_chat_replay();
     test_heard();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

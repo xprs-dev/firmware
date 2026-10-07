@@ -36,6 +36,7 @@
 static uint64_t xi_card_total(const char *d) { (void)d; return 0; }
 static uint64_t xi_card_free(const char *d) { (void)d; return 0; }
 #else
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
@@ -108,9 +109,17 @@ static uint64_t xi_card_free(const char *d);
  * ring that a low-priority task drains. The radio path touches no card, and the
  * writer syncs once per batch instead of once per packet.
  */
-#define XI_QUEUE_LEN  8         /* records buffered before the writer runs.
-                                 * 8 x 320 B: this board has no PSRAM and the
-                                 * HTTP handlers need their allocation more. */
+/* Records buffered before the writer runs. 8 x 320 B where the board has no
+ * PSRAM, because the HTTP handlers need that allocation more. Where it does,
+ * the store is allocated there and the queue is deeper: a T-Deck's writer can
+ * be seconds into one flash sync, and eight slots dropped 141 records in
+ * three and a half minutes on X3HW9U while the bench talked. */
+#if defined(CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) && \
+    CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+#define XI_QUEUE_LEN  32
+#else
+#define XI_QUEUE_LEN  8
+#endif
 
 /*
  * How often the card is allowed to be busy at all.
@@ -177,12 +186,14 @@ struct xprsidx_s {
     bool     ready;
     char     epoch;
     uint32_t next_index;      /* index the next record will take */
+    uint32_t written_end;     /* one past the highest index ON THE CARD */
     uint32_t count;
     uint32_t nseg;
     FILE    *active_fp;
     uint32_t active_first;
     FILE    *read_fp;         /* scan cursor: one closed segment, held open */
     uint32_t read_first;
+    bool     read_missing;    /* read_first would not open: do not ask again */
     FILE    *tail_fp;         /* the one open type tail (see xi_type_append) */
     int      tail_type;       /* which type it is, -1 = none */
     uint32_t tail_warned;     /* bit per type already complained about */
@@ -612,6 +623,20 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
 {
     long off = (long)(index % XI_RECS_PER_SEG) * (long)sizeof(xi_rec_t);
 
+    /*
+     * Never ask a stream for a slot the writer has not put there yet.
+     *
+     * A record is numbered when it is ACCEPTED and written seconds later by
+     * the writer task, so the newest indices a query walks are, for a while,
+     * past the end of the file. Reading one fails, and on this VFS a failed
+     * read leaves the handle in error for good (docs/esp32.md, "do not probe
+     * for the end by reading past it") -- and the handle here is the one the
+     * writer appends with. Measured on a T-Deck whose writer had fallen
+     * behind: every read through it returned EIO, /api/xprs/history served
+     * 0 rows of 37 held, and the hotspot chat showed nothing at all.
+     */
+    if (index >= st->written_end) return false;
+
     /* The active segment is read through the handle that is writing it, never
      * by name. FatFs only updates a file's directory entry on sync or close, so
      * a second fopen() of the segment currently being appended sees the size it
@@ -630,13 +655,30 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
      * being scanned. Opening a segment by name costs ~25 ms on this mount — a
      * directory scan — and a range query reads many records from the same file,
      * so re-opening per record made the open the whole cost of the query. */
+    /*
+     * A segment that is not there stays not there for the rest of the walk,
+     * so it is asked once and not once per record. Every failed fopen
+     * is the same ~25 ms directory scan, and it runs under the store's lock:
+     * on a T-Deck whose volume would no longer create files (opened with
+     * "0 records", every create EACCES), /api/xprs/history spent
+     * 11-14 s failing to open the same file 361 times, the writer and every
+     * other reader waited behind it, and the task watchdog rebooted the
+     * station. The memo is dropped by xi_read_close(), which the writer calls
+     * before it creates the segment, and at the start of every query.
+     */
     uint32_t first = xi_seg_of(index);
+    if (!st->read_fp && st->read_missing && st->read_first == first)
+        return false;
     if (!st->read_fp || st->read_first != first) {
         if (st->read_fp) fclose(st->read_fp);
         char path[96];
         xi_seg_path(st, path, sizeof path, first);
         st->read_fp = fopen(path, "rb");
         st->read_first = first;
+        /* Only "not there" is remembered. A descriptor pool that is full
+         * for a moment (EMFILE: the log, a gossip bucket) is retried on the
+         * next record, as it always was. */
+        st->read_missing = !st->read_fp && errno == ENOENT;
         if (!st->read_fp) return false;
     }
     bool ok = fseek(st->read_fp, off, SEEK_SET) == 0 &&
@@ -650,6 +692,7 @@ static void xi_read_close(xprsidx_t *st)
 {
     if (st->read_fp) { fclose(st->read_fp); st->read_fp = NULL; }
     st->read_first = 0;
+    st->read_missing = false;
 }
 
 static void xi_to_public(const xi_rec_t *in, xprsidx_rec_t *out)
@@ -844,7 +887,15 @@ static uint32_t xi_scan_tail(xprsidx_t *st, uint32_t first)
 xprsidx_t *xprsindex_open(const char *dir)
 {
     if (!dir || !*dir) return NULL;
+#if defined(CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) && \
+    CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+    /* PSRAM first: the deeper queue above is ten kilobytes of it. */
+    xprsidx_t *st = heap_caps_calloc(1, sizeof *st,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!st) st = calloc(1, sizeof *st);
+#else
     xprsidx_t *st = calloc(1, sizeof *st);
+#endif
     if (!st) return NULL;
     xi_copy(st->dir, sizeof st->dir, dir, -1);
     st->epoch = 'A';
@@ -871,6 +922,7 @@ xprsidx_t *xprsindex_open(const char *dir)
     if (any) {
         uint32_t tail = xi_scan_tail(st, last_first);
         st->next_index = last_first + tail;
+        st->written_end = st->next_index;
         st->count = st->next_index;   /* eviction rewrites this below */
     }
     /* The oldest segment still on the card (eviction deletes from the
@@ -1305,7 +1357,7 @@ static bool xi_evict_locked(xprsidx_t *st)
         }
     }
     if (f) fclose(f);
-    if (st->read_fp && st->read_first == first) xi_read_close(st);
+    if (st->read_first == first) xi_read_close(st);
     unlink(path);
     st->nseg--;
     /* The next-lowest segment becomes the oldest. Probed with stat() rather
@@ -1348,12 +1400,23 @@ void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes)
 
 uint64_t xprsindex_budget(const char *mount, uint64_t base, bool always_on)
 {
-    if (!always_on) return base;
 #ifdef XPRSIDX_HOST_TEST
-    (void)mount;
+    (void)mount; (void)always_on;
     return base;
 #else
     uint64_t total = 0, freeb = 0;
+    if (!always_on) {
+        /* The ordinary budget, but never more than four fifths of the
+         * volume, for the reason given below: a store that fills its volume
+         * takes the log, the statistics and the conversation down with it.
+         * The Heltec V3's 3.8 MB volume was given 10 MB, so by design it
+         * ran to zero free -- and a zero-free volume cannot roll a segment,
+         * so eviction never got the chance to make room. */
+        if (!mount || esp_vfs_fat_info(mount, &total, &freeb) != ESP_OK || !total)
+            return base;
+        uint64_t cap = total - total / 5u;
+        return cap < base ? cap : base;
+    }
     if (!mount || esp_vfs_fat_info(mount, &total, &freeb) != ESP_OK || !total) {
         XI_LOGW("always-on: cannot size %s, keeping the %llu MB budget",
                 mount ? mount : "(null)",
@@ -1603,7 +1666,7 @@ static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec)
     uint32_t seg_first = xi_seg_of(r.index);
     if (!st->active_fp || st->active_first != seg_first) {
         if (st->active_fp) fclose(st->active_fp);
-        if (st->read_fp && st->read_first == seg_first) xi_read_close(st);
+        if (st->read_first == seg_first) xi_read_close(st);
         char path[96];
         xi_seg_path(st, path, sizeof path, seg_first);
         st->active_fp = fopen(path, "r+b");
@@ -1619,6 +1682,7 @@ static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec)
     if (fseek(st->active_fp, off, SEEK_SET) != 0) return false;
     if (fwrite(&r, sizeof r, 1, st->active_fp) != 1) return false;
     fflush(st->active_fp);
+    if (r.index + 1 > st->written_end) st->written_end = r.index + 1;
 
     /* Indexes AFTER the record: they are derived, so a power cut between the
      * two leaves them short and rebuildable rather than pointing at nothing. */
@@ -1786,6 +1850,7 @@ static size_t xi_query_locked(xprsidx_t *st, const xprsidx_query_t *q,
 {
     if (!st || !st->ready || !q) return 0;
     xi_sync(st);
+    st->read_missing = false;   /* a new question may find what the last did not */
     uint32_t limit = q->limit ? q->limit : XI_DEFAULT_LIMIT;
 
     /* The "most recent warnings" shape: a typed newest-first query never walks

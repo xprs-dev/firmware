@@ -426,8 +426,21 @@ static void log_drain(bool sync)
  * NOTHING here runs on a receive path: hearing a packet only copies it into
  * this ring, and idx_task (core 1) does every write, query and reply --
  * flash work on the radio cores is how stations go deaf. */
+/*
+ * How many heard packets wait for idx_task. That task also does every card
+ * write, and on a T-Deck one gossip bucket close costs seconds, so twelve
+ * slots were gone long before it came back: measured on X3HW9U, 662 of ~730
+ * packets heard in 145 s were turned away here and 31 reached the archive the
+ * hotspot chat reads. Where the board keeps .bss in PSRAM the ring goes there
+ * and grows, which also takes its three kilobytes out of internal DRAM;
+ * everywhere else it stays twelve slots and costs exactly what it did.
+ */
+#if CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+#define IDXQ_N 128
+#else
 #define IDXQ_N 12
-static struct {
+#endif
+static XPRS_PSRAM_BSS struct {
     char    wire[XPRSIDX_WIRE_MAX + 1];
     int16_t len;
     int8_t  rssi;
@@ -473,12 +486,24 @@ static volatile uint8_t s_askq_w, s_askq_r, s_askq_n;
 static volatile bool s_ask_over_pending;
 static volatile bool s_wipe_req;   /* Settings asked for the archive to go */
 
+/* Slots of the ring that heard traffic may not take. What this station
+ * sends -- a hotspot visitor's message among it -- is said once and never
+ * heard again, while a beacon comes round in a minute; when the ring backs up
+ * behind slow card work it was the station's own packets that were turned
+ * away at the door, and the visitor's message never reached the archive the
+ * chat page reads. */
+#define IDXQ_OWN_RESERVE 2
+
 static void idx_enqueue(const char *wire, int len, int rssi, uint8_t bearer)
 {
     if (!s_index || !xcfg_get_bool("index_on", true)) return;
     if (len > XPRSIDX_WIRE_MAX) return;
     int w = s_idxq_w, nw = (w + 1) % IDXQ_N;
-    if (nw == s_idxq_r) { s_idxq_dropped++; return; }   /* full: drop, count */
+    int used = (w - s_idxq_r + IDXQ_N) % IDXQ_N;
+    if (used >= IDXQ_N - 1 - IDXQ_OWN_RESERVE) {    /* full for heard: drop, count */
+        s_idxq_dropped++;
+        return;
+    }
     memcpy(s_idxq[w].wire, wire, len);
     s_idxq[w].wire[len] = 0;
     s_idxq[w].len = (int16_t)len;
@@ -5125,7 +5150,18 @@ static void ui_render(void)
         char me[XPRS_CALL_LEN];
         base_call(s_call, me, sizeof me);
         int mn = 0;
-        for (int i = cn - 1; i >= 0 && mn < XUI_CHAT_MSGS; i--) {
+        /* The NEWEST XUI_CHAT_MSGS of this room, drawn oldest first. Walking
+         * from the old end and stopping at the cap drew the oldest ones
+         * instead, so once a room held more than fit, nothing new ever
+         * appeared on the panel: on X3HW9U a message from the C61 reached
+         * the store, the archive and the dongle's screen, and not its own. */
+        int start = -1;
+        for (int i = 0, seen = 0; i < cn && seen < XUI_CHAT_MSGS; i++) {
+            if (room_of(&rows[i]) != s_room) continue;
+            start = i;
+            seen++;
+        }
+        for (int i = start; i >= 0 && mn < XUI_CHAT_MSGS; i--) {
             if (room_of(&rows[i]) != s_room) continue;
             xui_msg_t *m = &mm[mn++];
             char f[XPRS_CALL_LEN];
@@ -6033,6 +6069,37 @@ static void idx_task(void *arg)
     }
     if (err == ESP_OK && !s_idx_none) {
         s_index = xprsindex_open("/idx/xprs");
+        /*
+         * A volume that can hold nothing is formatted, out loud -- on the
+         * internal flash only, never on a board's own mount (a card may be
+         * somebody's photographs; see the e-paper's storage_mount).
+         *
+         * The shape: mounted, zero bytes free, and not one archive segment.
+         * A store that filled its volume honestly has segments; this is a
+         * FAT sector caught between erase and program by a reset, which
+         * leaves it 0xFF -- every cluster "end of chain", so nothing can be
+         * created and the archive directory is gone with it. Read off the
+         * Heltec V3 with IDF's own wear-levelling parser, 2026-10-07: 4,094
+         * of 4,096 FAT bytes 0xFF, 0 of 960 clusters free, the data still on
+         * the card. The station ran on like that, archiving nothing, logging
+         * nothing, answering every history ask with an empty page. What a
+         * dead FAT held is already unreachable; formatting loses nothing
+         * that can still be read.
+         */
+        if (!s_board->storage_mount && s_index) {
+            xprsidx_stats_t vs;
+            xprsindex_stats(s_index, &vs);
+            if (vs.segments == 0 && vs.total_bytes && vs.free_bytes == 0) {
+                ESP_LOGE(TAG, "storage: %llu bytes, none free, no archive -- "
+                              "the FAT is unusable; formatting /idx",
+                         (unsigned long long)vs.total_bytes);
+                xprsindex_close(s_index);
+                s_index = NULL;
+                esp_err_t fe = esp_vfs_fat_spiflash_format_rw_wl("/idx", "storage");
+                ESP_LOGE(TAG, "storage: format %s", esp_err_to_name(fe));
+                s_index = xprsindex_open("/idx/xprs");
+            }
+        }
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
          * An always-on station sizes to the volume instead -- which on a board whose
@@ -6584,8 +6651,16 @@ no_announce:
 
         /* Gossip's card work, on the task that owns the volume. Queued on
          * whichever radio task heard the packet; written here (esp32.md:
-         * never write from the task that heard it). */
-        xgossip_pump(s_goss);
+         * never write from the task that heard it). ONE sighting per pass:
+         * each is seconds of FAT syncs on internal flash, and twelve in a row
+         * held this task for 36-59 s -- the archive ring above overflowed
+         * and dropped a hotspot visitor's message, and the watchdog was a
+         * second away (xgossip.h). And only while the archive's own ring
+         * is nearly empty: what the hotspot chat reads goes first, and a
+         * sighting that waits too long is dropped and counted by gossip,
+         * which is best-effort by design. */
+        if ((s_idxq_w - s_idxq_r + IDXQ_N) % IDXQ_N <= 2)
+            xgossip_pump_some(s_goss, 1);
 
         /* And the one that did not fit while all of that was airing. */
         if (s_ask_over_pending) {
@@ -6847,9 +6922,13 @@ named_done:
             xprsindex_queue_stats(s_index, &waiting, &dropped);
             xprsidx_stats_t st2;
             xprsindex_stats(s_index, &st2);
-            ESP_LOGI(TAG, "index queue: waiting=%lu dropped=%lu held=%lu "
-                     "verified=%lu forged=%lu", (unsigned long)waiting,
-                     (unsigned long)dropped, (unsigned long)st2.count,
+            /* ring= is the door before the store (idx_enqueue): it was
+             * counted and never said, and on a T-Deck it was where most of
+             * what the station heard was being lost. */
+            ESP_LOGI(TAG, "index queue: waiting=%lu dropped=%lu ring=%lu "
+                     "held=%lu verified=%lu forged=%lu", (unsigned long)waiting,
+                     (unsigned long)dropped, (unsigned long)s_idxq_dropped,
+                     (unsigned long)st2.count,
                      (unsigned long)st2.verified, (unsigned long)st2.forged);
         }
 
@@ -7078,7 +7157,10 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         if (sender[0] && !ours && !safety && !pol_may_use(sender)) {
             ESP_LOGW(TAG, "refused to air for %s: use:%s (25.9)",
                      sender, xcfg_get("use", "all"));
-            if (took && took_cap) took[0] = 0;
+            /* Said, not swallowed: the door turns this into a 403 that
+             * names the policy (xapi_send.h). */
+            if (took && took_cap)
+                snprintf(took, took_cap, "use:%s", xcfg_get("use", "all"));
             return false;
         }
     }
@@ -8416,9 +8498,17 @@ void xapp_run(const xapp_board_t *board)
          * at 94 bytes a second and then failed to answer ping at all,
          * which the same page warns reads as a wedged server and is not
          * one. The T-Dongle and the M5Stack were lucky, not right. */
-        if (xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, 4, NULL,
+        /* Priority 1: below idx (3) and the index writer (2), which share
+         * this core. Flash erase yields every 20 ms, and at 4 the UI took
+         * the core back each time -- with the radar sweep repainting at
+         * 100 Hz, one FAT sync on a T-Deck took 1.6-3.4 s and the archive
+         * dropped most of what the station heard (X3HW9U, same traffic, UI
+         * at 4 then 1: 621 then 141 records turned away by the writer, 68
+         * then 195 stored). The screen waits for the card; nothing the card
+         * serves waits for the screen. */
+        if (xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, 1, NULL,
                                     XPRS_WORK_CORE) != pdPASS) {
-            if (xTaskCreatePinnedToCore(ui_task, "ui", 6144, NULL, 4, NULL,
+            if (xTaskCreatePinnedToCore(ui_task, "ui", 6144, NULL, 1, NULL,
                                         XPRS_WORK_CORE) != pdPASS)
                 ESP_LOGE(TAG, "UI task failed to start");
             else

@@ -375,14 +375,33 @@ static void xg_apply(xgossip_t *g, const xg_job_t *j)
 
 void xgossip_pump(xgossip_t *g)
 {
+    if (g) xgossip_pump_some(g, g->q_count);
+}
+
+void xgossip_pump_some(xgossip_t *g, int max)
+{
     if (!g || !g->ready) return;
-    while (g->q_count) {
+    /*
+     * The jobs that were waiting when the pump was called, and no more.
+     *
+     * The radio tasks keep queueing while this runs, and a job is a bucket
+     * scan plus one or two fopen/fclose pairs, every close a FAT sync and so
+     * a wear-levelled flash rewrite. Draining "while anything is queued" let
+     * the inflow outrun the card: on a T-Deck whose volume had just been
+     * repaired, idx never left this loop, never fed the task watchdog, and
+     * the station rebooted every two to three minutes (core dump: idx in
+     * xg_put's fclose, 113 s and 180 s after boot). Whatever arrives during a
+     * pass waits for the next one, 200 ms later, and a full queue drops and
+     * counts as it always has.
+     */
+    int n = g->q_count < max ? g->q_count : max;
+    for (; n > 0 && g->q_count; n--) {
         const xg_job_t job = g->queue[g->q_head];
         g->q_head = (uint8_t)((g->q_head + 1) % XG_QUEUE_LEN);
         g->q_count--;
         xg_apply(g, &job);
     }
-    g->st.queued = 0;
+    g->st.queued = g->q_count;
 }
 
 /* ── the feeds ───────────────────────────────────────────────────────────── */

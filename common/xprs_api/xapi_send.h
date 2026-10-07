@@ -47,6 +47,11 @@ int xapi_jesc(char *out, size_t cap, const char *in, int inlen);
  * it, comma-separated, into @p took (which may be empty), and true when at
  * least one did.
  *
+ * False with @p took NOT empty is a refusal rather than a failure: the
+ * station would not carry for this sender (XPRS.md 11.9 `use:`), and @p took
+ * says why, e.g. "use:listed". The door answers that 403, out loud, as 11.9
+ * asks, instead of the 503 that tells a visitor the radio is broken.
+ *
  * The single-bearer form exists for the bench: proving that a packet which
  * left on LoRa reached the LAN by way of two other stations is only possible
  * if it did not also leave on the LAN. Reaching for the config to switch

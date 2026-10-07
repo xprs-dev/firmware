@@ -68,7 +68,8 @@ typedef struct {
                                   * in slot order -- the least urgent row
                                   * gives way, wherever it sits -- so this
                                   * is what says which saying came last. */
-    uint32_t ep;                 /* epoch when heard, 0 before NTP */
+    uint32_t ep;                 /* epoch when said (its ts:), else when
+                                  * heard; 0 with neither */
 } xst_chat_t;
 
 /* Once at boot. [own_call] may be "" when the callsign firms up later

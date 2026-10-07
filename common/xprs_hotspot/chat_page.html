@@ -8,7 +8,10 @@
      example. Everything inline: captive WebViews have no internet, no
      secure context, often no localStorage. -->
 <html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- resizes-content: the keyboard shrinks the page instead of scrolling it,
+     so the header and the room chips stay on screen while typing. -->
+<meta name="viewport"
+      content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
 <title>XPRS</title>
 <style>
 /*FONTFACE*/
@@ -49,8 +52,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 #side .roomhead{padding:8px 12px 2px;font-size:10px;color:#555;
       text-transform:uppercase;letter-spacing:1px}
 #chatcol{flex:1;display:flex;flex-direction:column;min-width:0}
-@media (max-width:640px) and (orientation:portrait){
-  #content{flex-direction:column}
+/* Width alone. With the viewport resizing for the keyboard, a phone held
+   upright is briefly wider than tall, and an orientation test flipped the
+   page into the desktop rail mid-sentence. */
+@media (max-width:640px){
+  /* #chatwrap is the row that holds the rail and the chat column, so it is
+   * the one that has to stack. Turning only #content into a column left the
+   * room chips beside the conversation, squeezing the composer to a sliver. */
+  #content,#chatwrap{flex-direction:column}
+  /* Stacked, the chat column is a column-flex CHILD, and min-height:auto
+   * lets it grow to its messages: a long conversation pushed the composer
+   * off the bottom of the screen. Zero lets .messages scroll instead. */
+  #chatwrap,#chatcol{min-height:0}
   #side{width:auto;border-right:0;border-bottom:1px solid var(--border);
         display:flex;overflow-x:auto;overflow-y:hidden;padding:4px 8px;
         gap:4px;align-items:center}
@@ -61,6 +74,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 }
 .messages{flex:1;overflow-y:auto;padding:12px;display:flex;
         flex-direction:column;gap:8px}
+/* A short conversation sits above the composer, where the eye already is,
+   not at the top of an empty screen. margin-top:auto rather than
+   justify-content:flex-end, which stops a column from scrolling. */
+.messages>:first-child{margin-top:auto}
 .msg{max-width:85%}
 .msg .meta{font-size:11px;margin-bottom:2px}
 .msg .meta.under{margin-bottom:0;margin-top:2px}
@@ -96,6 +113,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
         padding:1px 5px;border-radius:3px;margin-left:6px}
 .badge.ok{background:#1b5e20;color:#81c784}
 .badge.bad{background:#b71c1c;color:#ef9a9a}
+.msg.failed .bubble{opacity:.55;border-style:dashed}
+.msg .why{font-size:11px;color:#ef9a9a;margin-top:2px}
 .mood{font-size:10px;font-style:italic;color:var(--accent);margin-left:4px}
 .input-area{border-top:1px solid var(--border);padding:8px;display:flex;
         gap:6px;align-items:center}
@@ -276,22 +295,26 @@ function signWire(canonical){
 // ---- sending: POST -> GET -> Image() (hostile WebViews) ----
 function postWire(wire,cb){
   var done=false;
-  function fin(ok){if(!done){done=true;if(cb)cb(ok);}}
+  function fin(ok,why){if(!done){done=true;if(cb)cb(ok,why);}}
   try{
     var x=new XMLHttpRequest();
     x.open('POST','/api/xprs/send',true);
     x.timeout=4000;
-    x.onload=function(){fin(x.status===200);};
+    x.onload=function(){fin(x.status===200,x.status===200?'':replyWhy(x));};
     x.onerror=x.ontimeout=function(){getFallback(wire,fin);};
     x.send(JSON.stringify({wire:wire}));
   }catch(e){getFallback(wire,fin);}
 }
+/* The station's own words for a refusal: {"ok":false,"error":"..."}. */
+function replyWhy(x){
+  try{return JSON.parse(x.responseText).error||('HTTP '+x.status);}
+  catch(e){return 'HTTP '+x.status;}}
 function getFallback(wire,fin){
   try{
     var x=new XMLHttpRequest();
     x.open('GET','/api/xprs/send?wire='+encodeURIComponent(wire),true);
     x.timeout=4000;
-    x.onload=function(){fin(x.status===200);};
+    x.onload=function(){fin(x.status===200,x.status===200?'':replyWhy(x));};
     x.onerror=x.ontimeout=function(){
       try{new Image().src='/api/xprs/send?wire='+encodeURIComponent(wire);}catch(e){}
       fin(true);};
@@ -330,10 +353,26 @@ function sendMsg(){
   /* On the screen immediately -- the archive round trip (index writer +
    * the next poll) takes seconds, and a sender should not wait on it.
    * The wire is archived verbatim, so marking it seen dedups the echo. */
-  render({from:mycall,ts:Math.floor(Date.now()/1000),sig:'verified',
+  var mine=render({from:mycall,ts:Math.floor(Date.now()/1000),sig:'verified',
           to:curRoom.slice(0,3)==='dm:'?curRoom.slice(3):'',wire:wire});
-  postWire(wire,function(ok){
-    if(!ok)snack('Send failed');});
+  postWire(wire,function(ok,why){
+    if(ok)return;
+    /* Said on the bubble, where it stays, and not only in a snackbar that
+     * is gone in three seconds: a bubble that still reads "signed" after the
+     * station refused it looks delivered. The station names its reason, e.g.
+     * "refused: use:listed" (XPRS 11.9: it carries only for listed people). */
+    var text=/^refused: use:/.test(why||'')?
+      'Not sent: this station only carries messages for people its owner listed':
+      'Not sent'+(why?' ('+why+')':'');
+    if(mine){
+      mine.className+=' failed';
+      var b=mine.querySelector('.badge');
+      if(b){b.className='badge bad';b.textContent='not sent';}
+      var w=document.createElement('div');
+      w.className='why';w.textContent=text;
+      mine.appendChild(w);
+    }
+    snack(text);});
 }
 
 // ---- receiving ----
@@ -574,9 +613,21 @@ function render(row){
     bub.appendChild(q);
   }
   bub.appendChild(document.createTextNode(text));
+  /* In the order things were SAID. The archive files a packet when it is
+   * heard, and the mesh replays: a catch-up brings an hour-old message in
+   * after this morning's, and appending put 14:05 below 13:28. A row with
+   * no time goes last, like a message being sent right now. */
   var box=document.getElementById('msgs');
-  box.appendChild(d);
-  box.scrollTop=box.scrollHeight;
+  var t=row.ts||0;
+  d.setAttribute('data-ts',t||9e9);
+  var at=null,kids=box.children;
+  if(t)for(var j=kids.length-1;j>=0;j--){
+    if(+kids[j].getAttribute('data-ts')<=t){at=kids[j].nextSibling;break;}
+    at=kids[j];}
+  var stick=box.scrollTop+box.clientHeight>=box.scrollHeight-40;
+  box.insertBefore(d,at);
+  if(stick||own)box.scrollTop=box.scrollHeight;
+  return d;
 }
 function clearChat(){
   toggleMenu();

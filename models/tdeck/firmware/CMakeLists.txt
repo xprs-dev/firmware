@@ -11,8 +11,16 @@ project(tdeck_xprs)
 # common/tinylv_mem/tinylv_mem.h). The four macros are #ifndef-guarded in
 # lv_conf_internal.h, so defining them on the command line wins and the
 # managed component stays unpatched.
-idf_build_get_property(build_components BUILD_COMPONENT_TARGETS)
-if("___idf_lvgl__lvgl" IN_LIST build_components)
+# Asked of CMake directly. This used to be `"___idf_lvgl__lvgl" IN_LIST
+# build_components`: three underscores where IDF uses two, and under
+# PlatformIO that property is empty here anyway, so it was never true and
+# LVGL fell back to plain malloc --
+# internal DRAM only on this config (SPIRAM_USE_CAPS_ALLOC) -- so every
+# object the UI ever made was taken from the heap this block exists to
+# protect. Opening the Chat panel on a T-Deck cost 14.5 KB of it, for good,
+# and a busy bench then ran the board to a 132-byte floor (2026-10-07).
+# Check after a build: `grep -c tinylv_malloc .pio/build/<env>/*.map`.
+if(TARGET __idf_lvgl__lvgl)
     idf_component_get_property(lvgl_lib lvgl__lvgl COMPONENT_LIB)
     target_compile_definitions(${lvgl_lib} PRIVATE
         LV_MEM_CUSTOM_INCLUDE="tinylv_mem.h"

@@ -173,6 +173,32 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
     dev_upsert(call, bearer ? bearer : "", rssi, 0);
 }
 
+/* `ts:` (XPRS 4, UTC "YYYY-MM-DD_HH:MM:SS") as seconds since 1970, or 0. */
+static uint32_t chat_ts_epoch(const xprs_t *p)
+{
+    char ts[24];
+    int y, mo, d, h, mi, se;
+    if (!xprs_get_str(p, "ts", ts, sizeof ts)) return 0;
+    if (sscanf(ts, "%4d-%2d-%2d_%2d:%2d:%2d", &y, &mo, &d, &h, &mi, &se) != 6)
+        return 0;
+    if (y < 1970 || mo < 1 || mo > 12 || d < 1 || d > 31) return 0;
+    /* Days from the civil date (Howard Hinnant's algorithm). */
+    y -= mo <= 2;
+    int era = y / 400, yoe = y - era * 400;
+    int doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = (long)era * 146097 + doe - 719468;
+    return (uint32_t)(days * 86400L + h * 3600L + mi * 60L + se);
+}
+
+/* Is a newer than b? By when it was SAID where both say, by arrival
+ * otherwise. */
+static bool chat_newer(const xst_chat_t *a, const xst_chat_t *b)
+{
+    if (a->ep && b->ep && a->ep != b->ep) return a->ep > b->ep;
+    return a->seq > b->seq;
+}
+
 void xst_chat_note(const xprs_t *p)
 {
     char from[XPRS_CALL_LEN], text[120];
@@ -205,7 +231,18 @@ void xst_chat_note(const xprs_t *p)
         row.kind = 1;                                  /* the local room */
     else
         row.kind = 0;                                  /* global, default */
-    row.ep = xst_epoch_now();
+    /* When it was SAID, not when it came past. The mesh replays: archivers
+     * answer history asks, stations re-air, and a message from an hour ago
+     * arrives again all day. Dated on arrival, every replay entered the ring
+     * as the newest saying, pushed real new ones out, and showed "31s" on a
+     * screen for something said fourteen minutes before (X3MEAV, X3WWAJ and
+     * X333SM, 2026-10-07). The arrival time stays the fallback for a packet
+     * with no ts:. A ts: in the future is clamped to now. */
+    {
+        uint32_t now = xst_epoch_now();
+        uint32_t said = chat_ts_epoch(p);
+        row.ep = said ? (now && said > now ? now : said) : now;
+    }
     {   /* XPRS 13.5: what a carrier sorts by when the store is full. */
         char u[XPRS_CALL_LEN];
         row.urg = 1;                                   /* normal by default */
@@ -249,7 +286,14 @@ void xst_chat_note(const xprs_t *p)
         }
         /* Everything already here outranks the newcomer: it takes the
          * least-urgent slot anyway rather than being silently dropped --
-         * the ring is a window on the conversation, not an archive. */
+         * the ring is a window on the conversation, not an archive. But a
+         * window on the NEWEST of it: a saying older than the one it would
+         * replace, at the same urgency, is a replay and stays out. */
+        if (row.urg == s_chat[slot].urg && row.ep && s_chat[slot].ep &&
+            row.ep < s_chat[slot].ep) {
+            UNLOCK();
+            return;
+        }
     }
     row.seq = (uint32_t)++s_chat_seq;
     s_chat[slot] = row;
@@ -623,13 +667,14 @@ int xst_chat(xst_chat_t *out, int max)
 {
     int n = 0;
     LOCK();
-    /* Newest first, by seq rather than by slot: a full ring gives up its
-     * least urgent row wherever that sits, so slot order stopped meaning
-     * arrival order. Insertion sort over 40 rows, once per render. */
+    /* Newest first, by when it was said (chat_newer), not by slot: a full
+     * ring gives up its least urgent row wherever that sits, and a replay
+     * arrives long after the saying. Insertion sort over 40 rows, once per
+     * render. */
     for (int i = 0; i < XST_CHAT_MAX; i++) {
         if (!s_chat[i].from[0]) continue;
         int at = n;
-        while (at > 0 && out[at - 1].seq < s_chat[i].seq) at--;
+        while (at > 0 && chat_newer(&s_chat[i], &out[at - 1])) at--;
         if (at >= max) continue;
         if (n < max) n++;
         for (int k = n - 1; k > at; k--) out[k] = out[k - 1];
