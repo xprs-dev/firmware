@@ -104,7 +104,7 @@ firmware:
   toolchain: esp-idf
   project: models/epaper-1in54/firmware
   env: epaper
-  version: 0.1.0
+  version: 0.1.1
   artifact: models/epaper-1in54/prebuilt/firmware.bin
   flash_port: native-usb
   flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"

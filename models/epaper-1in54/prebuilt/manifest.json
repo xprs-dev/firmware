@@ -1,6 +1,6 @@
 {
   "name": "XPRS ESP32-S3-ePaper-1.54",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "new_install_prompt_erase": true,
   "builds": [
     {

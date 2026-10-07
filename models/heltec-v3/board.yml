@@ -97,7 +97,7 @@ firmware:
   toolchain: esp-idf
   project: models/heltec-v3/firmware
   env: heltec_v3
-  version: 0.1.0
+  version: 0.1.1
   artifact: models/heltec-v3/prebuilt/firmware.bin
   flash_port: usb-serial
   flashing: "esptool over the CP2102 USB-serial port at 921600; an S3, so the bootloader goes at 0x0. The stub works here; none of the T-Dongle's --no-stub caveats apply."
