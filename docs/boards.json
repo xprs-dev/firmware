@@ -1287,9 +1287,9 @@
       ]
     },
     "physical": {
-      "dimensions_mm": null,
+      "dimensions_mm": "85 x 55 x 6.5",
       "weight_g": null,
-      "ip_rating": null,
+      "ip_rating": "IP65",
       "temp_c": null,
       "power": "battery"
     },
@@ -1356,7 +1356,26 @@
         "url": "https://github.com/meshtastic/firmware/tree/master/variants/nrf52840/tracker-t1000-e"
       }
     ],
-    "images": [],
+    "images": [
+      {
+        "file": "hardware/images/product-angle.jpg",
+        "caption": "The card, front, three-quarter view: the button with the LED beside it, and the boards under the clear case.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-t1000e/hardware/images/product-angle.jpg"
+      },
+      {
+        "file": "hardware/images/product-size.jpg",
+        "caption": "Dimensions: 85 x 55 x 6.5 mm, a credit card with some thickness.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-t1000e/hardware/images/product-size.jpg"
+      },
+      {
+        "file": "hardware/images/product-back.jpg",
+        "caption": "The back: the magnetic pogo-pin connector for the charging and data cable, the shielded modules, and the label.",
+        "credit": "Seeed Studio product photography",
+        "image_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-t1000e/hardware/images/product-back.jpg"
+      }
+    ],
     "screenshots": []
   },
   {

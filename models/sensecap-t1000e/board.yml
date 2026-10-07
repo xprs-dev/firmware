@@ -2,9 +2,10 @@
 #
 # Sources: the Seeed product page and wiki for SKU 114993369 (linked under
 # docs:), Meshtastic's tracker-t1000-e variant for the pin map, and this
-# bench (2026-10-07) for every bearer and role marked yes. Neither vendor page
-# publishes dimensions, weight, IP rating or the battery's capacity, so those
-# are null until somebody measures them.
+# bench (2026-10-07) for every bearer and role marked yes. Dimensions and the
+# IP rating are Seeed's, from the product photography (the dimensioned shot
+# below and the gallery's IP65 banner); weight and battery capacity are
+# published nowhere we found, so they stay null until somebody measures them.
 
 id: sensecap-t1000e
 name: SenseCAP Card Tracker T1000-E
@@ -108,9 +109,9 @@ io:
     - {name: QMA6100P accelerometer, note: "not read yet"}
 
 physical:
-  dimensions_mm: null
+  dimensions_mm: "85 x 55 x 6.5"
   weight_g: null
-  ip_rating: null
+  ip_rating: IP65
   temp_c: null
   power: battery
 
@@ -214,6 +215,15 @@ docs:
   - {title: "Seeed wiki", url: "https://wiki.seeedstudio.com/sensecap_t1000_e/"}
   - {title: "Meshtastic variant (pin map)", url: "https://github.com/meshtastic/firmware/tree/master/variants/nrf52840/tracker-t1000-e"}
 
-images: []
+images:
+  - file: hardware/images/product-angle.jpg
+    caption: "The card, front, three-quarter view: the button with the LED beside it, and the boards under the clear case."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/product-size.jpg
+    caption: "Dimensions: 85 x 55 x 6.5 mm, a credit card with some thickness."
+    credit: "Seeed Studio product photography"
+  - file: hardware/images/product-back.jpg
+    caption: "The back: the magnetic pogo-pin connector for the charging and data cable, the shielded modules, and the label."
+    credit: "Seeed Studio product photography"
 
 screenshots: []

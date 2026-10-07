@@ -1,5 +1,12 @@
 # T1000-E hardware
 
+![The card](images/product-angle.jpg)
+
+85 x 55 x 6.5 mm, IP65 (Seeed's figures). The back carries the magnetic
+pogo-pin connector the charging and data cable clips onto.
+
+![The back](images/product-back.jpg)
+
 The pin map is Meshtastic's (`variants/nrf52840/tracker-t1000-e`), which
 runs this board in production; `firmware/src/board.h` is the same table in
 code. Nordic pin numbers: P0.n is n, P1.n is 32 + n.
