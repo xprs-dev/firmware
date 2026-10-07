@@ -1178,6 +1178,189 @@
   },
   {
     "repo": "xprs-dev/firmware",
+    "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-t1000e",
+    "id": "sensecap-t1000e",
+    "name": "SenseCAP Card Tracker T1000-E",
+    "vendor": "Seeed Studio",
+    "sku": "114993369",
+    "product_url": "https://www.seeedstudio.com/SenseCAP-Card-Tracker-T1000-E-for-Meshtastic-p-5913.html",
+    "manual_url": "https://wiki.seeedstudio.com/sensecap_t1000_e/",
+    "tagline": "Credit-card LoRa tracker, nRF52840 + LR1110. A pocket XPRS station: relay, mailbox and position beacon.",
+    "summary": "Seeed SenseCAP Card Tracker T1000-E: nRF52840 (Cortex-M4F 64 MHz, 256 KB RAM, 1 MB flash), Semtech LR1110 LoRa (863-928 MHz), Airoha AG3335 GNSS, NTC temperature and light sensors, QMA6100P accelerometer, buzzer, one LED and one button, Bluetooth 5, a built-in battery and a magnetic charging cable. No WiFi, no screen. The XPRS station on it is carried by a person: it finds whether Meshtastic or MeshCore is around and lives on that one, repeats the native mesh, carries XPRS between Bluetooth and LoRa, beacons its position (asked of its owner's phone, or its own receiver), temperature and battery, and holds mail for the people it meets.",
+    "status": "shipping",
+    "silicon": {
+      "mcu": "nRF52840",
+      "family": "nrf52",
+      "core": "ARM Cortex-M4F single @ 64 MHz",
+      "ram_kb": 256,
+      "psram_mb": null,
+      "flash_mb": 1
+    },
+    "radios": {
+      "bluetooth": {
+        "version": "5.0 LE",
+        "extended_advertising": true,
+        "note": "nRF52840 with SoftDevice S140 v7.3.0; one advertising set"
+      },
+      "wifi": null,
+      "lora": {
+        "chip": "LR1110",
+        "band_mhz": "869.525 (Meshtastic LongFast) or 869.618 (MeshCore), detected; chip covers 863-928"
+      },
+      "other": []
+    },
+    "bearers": {
+      "ble5": "yes",
+      "ble5_note": "Measured 2026-10-07: hears the bench's stations and the C61 phone, bridges what is worth it onto LoRa, delivers held mail on the bearer the recipient was heard on. The scan listens 10% of the time and rises to 90% for a phone's advertising window, phase-locked to its minute.",
+      "lora": "yes",
+      "lora_note": "Measured 2026-10-07 against a T-Deck in `both` mode: the boot sweep heard its own probe carried back on MeshCore and moved there, and XPRS crosses in both directions in each network's framing. Driven by RadioLib 7.7.1; receive is duty-cycled (preamble sniffing), and the packet length must be re-sent after every transmit (firmware/README.md).",
+      "lan": "no",
+      "lan_note": "No WiFi radio on the nRF52840, so no LAN.",
+      "espnow": "no",
+      "espnow_note": "ESP-NOW is an Espressif WiFi protocol. No WiFi radio, no ESP-NOW."
+    },
+    "xprs": {
+      "beacon": "yes",
+      "digipeater": "yes",
+      "bridge": "yes",
+      "igate": "no",
+      "igate_note": "No IP on this board.",
+      "hotspot": "no",
+      "hotspot_note": "No WiFi radio.",
+      "api": "no",
+      "api_note": "No IP. It answers q:policy, q:pos, q:temp, q:batt and q:mail on the air.",
+      "indexer": "no",
+      "indexer_note": "It holds mail, not an archive: 64 records in 24 KB of raw flash, class 3 for callsigns whose t:mailbox names it, class 2 for its contacts of the last 30 days. It cannot answer cmd:history and does not announce archive.",
+      "share": "no",
+      "share_note": "Nothing to serve.",
+      "reticulum": "no",
+      "reticulum_note": "No IP.",
+      "ota": "untested",
+      "ota_note": "The signed GATT update of the P1-Pro (common/xprs_nrf52/update.cpp) is built in; not yet exercised on this card.",
+      "gossip": "no",
+      "gossip_note": "It is gossip's SUBJECT rather than a participant: its signed beacons carry hears: with link:ble, which writes it into the L2 visit history (XPRS.md 12.9.4) of every archiver that hears them.",
+      "dashboard": "no",
+      "dashboard_note": "No screen.",
+      "chat": "no",
+      "chat_note": "Nothing to type on and nothing to read it from.",
+      "mesh_session": "yes",
+      "vhf": "no",
+      "vhf_note": "No SA818.",
+      "note": "A pocket relay and mailbox. Meshtastic or MeshCore by detection, rechecked hourly."
+    },
+    "io": {
+      "screen": null,
+      "buttons": [
+        {
+          "name": "user",
+          "pin": "P0.06",
+          "note": "active high"
+        }
+      ],
+      "leds": [
+        {
+          "name": "user",
+          "pin": "P0.24",
+          "colour": null
+        }
+      ],
+      "gnss": "Airoha AG3335 (GPS / GLONASS / Galileo / BeiDou), UART at 115200",
+      "connectors": [
+        {
+          "name": "magnetic charging and data cable",
+          "note": "USB, the console and DFU"
+        }
+      ],
+      "sensors": [
+        {
+          "name": "NTC 10K B=4250",
+          "note": "the card's own temperature; near body heat in a pocket"
+        },
+        {
+          "name": "light",
+          "note": "analog, not read yet"
+        },
+        {
+          "name": "QMA6100P accelerometer",
+          "note": "not read yet"
+        }
+      ]
+    },
+    "physical": {
+      "dimensions_mm": null,
+      "weight_g": null,
+      "ip_rating": null,
+      "temp_c": null,
+      "power": "battery"
+    },
+    "firmware": {
+      "toolchain": "arduino-nrf52",
+      "project": "models/sensecap-t1000e/firmware",
+      "env": "t1000e",
+      "version": "0.1.0",
+      "artifact": "models/sensecap-t1000e/prebuilt/firmware.uf2",
+      "flash_port": "uf2",
+      "flashing": "Serial DFU from the app port (pio run -t upload --upload-port <port>; the 1200-baud touch drops it into the bootloader), or UF2 onto the T1000-E-BOOT volume. The UF2 must be made from the binary at 0x27000: the core's uf2conv.py misplaces an image converted from its hex.",
+      "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-t1000e/firmware",
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-t1000e/prebuilt/firmware.uf2"
+    },
+    "behaviour": [
+      {
+        "title": "The first minute",
+        "text": "The LED blinks three times when the radio is up. For about half a minute the card then listens on Meshtastic's LongFast and on MeshCore's default channel, asking each with a small probe that their repeaters carry. It settles on the one that answers (a repeater that carried the probe beats an XPRS station heard, which beats any traffic), remembers it across a restart, and asks again every hour. It only moves to the other network after two hourly checks in a row agree, so one quiet hour does not flip it. With nothing heard anywhere it stays where it was."
+      },
+      {
+        "title": "What it carries",
+        "text": "Everything XPRS it hears on LoRa is passed on over Bluetooth. From Bluetooth to LoRa it is choosy, because the channel is shared and every frame costs battery: messages, receipts, reactions, alerts, files, identities and mailbox declarations go out; presence chatter, anything marked scope:local, anything for a person already in Bluetooth range, replays older than half an hour and repeats within half an hour do not. It also repeats the native Meshtastic or MeshCore traffic of the network it is on, the way a stock repeater does, inside the same airtime budget (10% of each hour on the EU 869 MHz band, with a reserve for SOS)."
+      },
+      {
+        "title": "Where it says it is",
+        "text": "If its owner's phone is within Bluetooth range, the card asks the phone for its position (the XPRS app answers only cards it owns) and uses that, which costs the card almost nothing. Without the phone it switches on its own GPS for one fix, at most every 15 minutes, or every hour when two fixes in a row put it in the same place. It gives up after two minutes indoors. A position older than about 20 minutes is not sent at all."
+      },
+      {
+        "title": "What it sends, and how often",
+        "text": "On Bluetooth, every five minutes: position, accuracy, its temperature, battery percentage and voltage, how much mail it holds, and the callsigns it heard directly. On LoRa, every fifteen minutes, a shorter version of the same. Its identity every 30 minutes on Bluetooth and every 3 hours on LoRa, and once an hour a short service line saying it is a portable relay on battery. Everything is signed."
+      },
+      {
+        "title": "Your position is public",
+        "text": "The position in these beacons is meant to be heard: anyone on the mesh within range of the card, and anyone the network passes the beacon to, can read where the card is. When your phone answers the card, that is your position. Do not carry the card, or do not make it yours, if that is not what you want."
+      },
+      {
+        "title": "It holds mail for the people it meets",
+        "text": "The card keeps up to 64 letters. It holds mail for anyone whose own mailbox declaration names the card, and for people it has met in the last 30 days. When it next hears the recipient directly it hands the letters over on that link, a few at a time, retrying a copy after 30 seconds, 2 minutes and 10 minutes, and forgets a letter once the recipient's signed receipt arrives. Held mail and receipts survive a restart. Because its signed beacons list the devices it heard over Bluetooth, the network learns on its own that this card is the place to route mail for them."
+      },
+      {
+        "title": "Making it yours",
+        "text": "There is no claim over the air on this card yet. Connect it by USB and on its serial console (115200, DTR on) type `cfg set own1` followed by your npub, then `cfg set own1c` followed by your callsign; each line saves and restarts the card. From version 1.2.23 the XPRS app notices within a few minutes that the card is yours, starts answering its position questions, and names the card first in your mailbox declaration, so your mail can wait on it."
+      },
+      {
+        "title": "Battery",
+        "text": "Built for at least three days on a charge: most of the time the processor sleeps, Bluetooth listens a tenth of the time (more while your phone is advertising), and the LoRa radio only wakes to look for a preamble. The design figure is about 5 mA, roughly five days; it has not been measured over a full discharge yet. A busy mesh to repeat, and using its own GPS instead of your phone, both shorten it."
+      },
+      {
+        "title": "Good to know",
+        "text": "The temperature is the card's own, so in a pocket it reads close to body heat. The light sensor and the accelerometer are not used yet. The console prints only with DTR on, and answers one-letter commands (? for its state, S for sensors, w for position, m for mail). To go back to Meshtastic, send D on the console and copy Meshtastic's T1000-E UF2 onto the drive that appears."
+      }
+    ],
+    "docs": [
+      {
+        "title": "Product page",
+        "url": "https://www.seeedstudio.com/SenseCAP-Card-Tracker-T1000-E-for-Meshtastic-p-5913.html"
+      },
+      {
+        "title": "Seeed wiki",
+        "url": "https://wiki.seeedstudio.com/sensecap_t1000_e/"
+      },
+      {
+        "title": "Meshtastic variant (pin map)",
+        "url": "https://github.com/meshtastic/firmware/tree/master/variants/nrf52840/tracker-t1000-e"
+      }
+    ],
+    "images": [],
+    "screenshots": []
+  },
+  {
+    "repo": "xprs-dev/firmware",
     "source_url": "https://github.com/xprs-dev/firmware/tree/main/models/reolink-d340w",
     "id": "reolink-d340w",
     "name": "Video Doorbell WiFi (D340W)",
