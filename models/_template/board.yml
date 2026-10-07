@@ -83,6 +83,7 @@ firmware:
   flash_port:  # usb-serial | native-usb | uf2
   flashing:    # one line: how an image gets onto it
 
+behaviour: []  # optional - {title: ..., text: ...}: what it does and how it behaves
 docs: []       # - {title: ..., url: ...}
 
 images: []     # - {file: hardware/images/x.jpg, caption: ..., credit: ...}

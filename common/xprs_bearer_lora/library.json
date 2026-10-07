@@ -1,0 +1,13 @@
+{
+  "name": "xprs_bearer_lora",
+  "version": "1.0.0",
+  "description": "The platform-free parts of the XPRS LoRa bearer: which packets are worth LoRa, the auto-detect probe and its echo, the network detection state machine and a repeat-only flood. The ESP-IDF bearer itself (xprslora.c) is built by CMakeLists.txt, not here.",
+  "keywords": "xprs, lora, meshtastic, meshcore",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_meshtastic": "*", "xprs_meshcore": "*"},
+  "build": {
+    "srcFilter": ["+<lr_worth.c>", "+<lr_probe.c>", "+<lr_detect.c>", "+<lr_repeat.c>"],
+    "flags": ["-I."]
+  }
+}

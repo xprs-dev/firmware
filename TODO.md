@@ -341,7 +341,7 @@ Fixed the same day:
 **Status: step 1 is done (2026-09-05, by cable, 0.2.0 running); step 2 is
 the open one.**
 
-The remote-update feature (`models/sensecap-p1-pro/firmware/src/update.{h,cpp}`,
+The remote-update feature (`common/xprs_nrf52/update.{h,cpp}`,
 `tools/push_firmware_p1.py`, commit bc960b6) was tested over the air on
 2026-08-31 and every leg up to the station's door works: both signatures
 (publisher approval + owner cmd:update, test keys in `~/.xprs`), the gateway

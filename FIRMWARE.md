@@ -354,6 +354,20 @@ showed on the NTP-clocked ESP32 boards, whose commands arrive slightly in the
 past — it only surfaced on the clockless P1 whose clock lags. Fixed in the
 shared code, so every board benefits.
 
+**The T1000-E added five (2026-10-07)**, written up in
+`models/sensecap-t1000e/README.md`: the LR1110 keeps the length of the last
+frame it SENT as the longest it will RECEIVE until the packet parameters are
+re-sent (RadioLib re-sends them only in implicit-header mode), so a card that
+had just aired a 6-byte probe could not hear the 7-byte relay of it; duty-
+cycled receive needs `minSymbols` passed or it silently stays continuous; a
+generator seeded from the device ID repeats every boot's frames, which other
+repeaters then drop as duplicates; the AG3335's reset is active high; and the
+core's `uf2conv.py` misplaces an image converted from a hex with type-02
+records (`tools/scripts/collect_prebuilt.py` now converts the binary at the
+hex's own base). Flash written while the SoftDevice runs now goes through one
+owner of the SoC event, `common/xprs_nrf52/nrf_flash.cpp`, shared by the
+update and the card's mail store.
+
 **Bench note, not firmware:** an ESP32 used as the GATT server kept getting
 reverted by its *own* OTA rollback (it never marks a hand-flashed probe image
 valid), and a screen-heavy board crash-loops under load. For the GATT server
@@ -445,6 +459,14 @@ storage, signing, LoRa+BLE digipeating, and the **GATT over-the-air update** of
 §6.2. Its `firmware/README.md` carries the pin map and the three
 flash-vs-SoftDevice rules; §7 above is the general version of what it taught.
 
+### SenseCAP Card Tracker T1000-E — `models/sensecap-t1000e/` · shipping · own project
+The second nRF52840, carried by a person. **LoRa (LR1110) + BLE5**, no WiFi,
+a battery that must last three days. Detects Meshtastic or MeshCore and lives
+on that one (rechecked hourly), repeats it (`lr_repeat.c`), carries XPRS both
+ways, beacons its position (asked of its owner's phone first, its own AG3335
+otherwise), temperature and battery, and holds mail (`common/xprs_mailbox`).
+Shares `common/xprs_nrf52` with the P1-Pro.
+
 ### Reolink Video Doorbell WiFi (D340W) · `models/reolink-d340w/` · shipping · own project
 **Not a microcontroller.** A Novatek NT98566 (ARM Cortex-A9) running Linux
 4.19 off a read-only UBIFS, sold as a doorbell. Nothing of `common/` compiles
@@ -476,6 +498,7 @@ says so.
 | Work on the relay decision | `common/xprs_bearer/xprsbearer.c` |
 | Work on signing | `common/xprs_sig`, `common/xprs_id` |
 | Push firmware to a WiFi board | `tools/push_firmware.sh`, `common/xprs_ota` |
-| Push firmware to the P1-Pro | `tools/push_firmware_p1.py`, `models/sensecap-p1-pro/firmware/src/update.cpp` |
+| Push firmware to the P1-Pro | `tools/push_firmware_p1.py`, `common/xprs_nrf52/update.cpp` |
+| Work on the T1000-E card (detection, mail, position) | `models/sensecap-t1000e/`, `common/xprs_bearer_lora/lr_detect.c`, `common/xprs_mailbox` |
 | Bring a new non-ESP32 board up | `models/sensecap-p1-pro/` and §7 above |
 | Put XPRS on a device that runs its own Linux | `models/reolink-d340w/` and its `firmware/flashing.md` |

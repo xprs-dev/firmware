@@ -138,12 +138,13 @@ fix is one line and it is commented where it sits.
   `xprs_auth` gate, XPRS 25.8), delivered as XPRS packets over LoRa or BLE
   instead of HTTP, with a staged image, a RAM copier, and probation +
   rollback on a chip with no second app slot. `firmware/README.md`,
-  `firmware/src/update.cpp`, `tools/push_firmware_p1.py`. Bench-validated
+  `common/xprs_nrf52/update.cpp` (shared with the T1000-E since 2026-10-07),
+  `tools/push_firmware_p1.py`. Bench-validated
   end to end 2026-08-31: a new image pushed to the pole node over a private
   1:1 BLE GATT connection (not the broadcast plane), installed, booted, and
   kept -- callsign and keys intact across the update.
 
-- ~~Signing~~ **Done**: `lib/mbedtls_ecp` is a cut-down mbedtls, and
+- ~~Signing~~ **Done**: `common/mbedtls_ecp` is a cut-down mbedtls, and
   `common/xprs_sig` runs on it unchanged bar an `ESP_PLATFORM` seam for the
   hash, the entropy and the log. Key on the internal LittleFS, callsign
   from it, beacons and identity signed. `firmware/README.md` records the

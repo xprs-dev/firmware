@@ -164,6 +164,14 @@ station on another modulation is deaf to everyone on the default.
 
 ## 4. Auto-detect: which networks are actually reachable
 
+The probe and its echo are `common/xprs_bearer_lora/lr_probe.c`, and the
+sweep-and-verdict is `lr_detect.c` (host test `test_detect_host.sh`), shared
+by this bearer and the nRF52 cards. A card has one radio and no `both` mode,
+so it uses the verdict to LIVE on one network: at boot the best of the two
+(a probe carried back, then an XPRS station heard, then any frame), every
+hour the other network and its own again, and a move only after two sweeps
+in a row agree.
+
 `cfg detect [seconds]`, the T-Deck's "LoRa auto-detect" row, or
 `[lora] detect_s`. It walks the modes like the survey below, but on each
 mesh mode it ASKS: one small packet of the kind that network floods, and a
@@ -341,6 +349,18 @@ The app half of the same rules is in `app/docs/meshtastic.md` section 5.
     results, identities, mailboxes, files, requests. Presence stays on the
     cheap bearers. On XPRS's own channel (`xprs` mode) it carries everything,
     as it always did there.
+
+    **The exception: a carried card** (`models/sensecap-t1000e`, adopted
+    2026-10-07). A station a person carries has no other way to say where
+    that person is, so it airs a LEAN beacon on LoRa: `pos: acc: temp: batt:
+    mail:` and the most recent few of `hears:`, no `volt:`, every fifteen
+    minutes (an hour when it is still). It pays for that by being stricter
+    than rule 11 in the other direction: from Bluetooth it carries no packet
+    for somebody heard in the same room, no replay more than half an hour
+    old, nothing twice in half an hour, station-to-station commands and
+    results only toward a station heard on LoRa, and a phone's identity
+    once in three hours. On the bench that was three frames where rule 11
+    alone allowed thirty-eight.
 12. **Nothing slow runs on the LoRa task or under the bridge's mutex.** The
     curve work runs on the bearer tick; translations and receipts are parked
     by `mesh_deliver` and sent from `idx_task` on core 1. Every other

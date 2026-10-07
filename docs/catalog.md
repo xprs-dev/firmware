@@ -130,6 +130,13 @@ firmware:      toolchain, project, env, version, artifact, flashing,
                build_cmd:   OPTIONAL, a list of shell lines. A board whose
                image is not a `pio run` writes the recipe here and the page
                prints it verbatim instead of guessing a PlatformIO pair.
+behaviour:     OPTIONAL, list of {title, text}: what the station on this board
+               DOES and how it BEHAVES, in the words somebody who just
+               flashed it needs (what it sends and how often, what it asks
+               of their phone, how to make it theirs, what it costs the
+               battery). The page shows it under the summary as "What it
+               does". Plain sentences; the specs and roles below stay the
+               place for yes/no facts.
 docs:          list of {title, url}
 images:        list of {file, caption, credit} -- photographs of the HARDWARE
 screenshots:   list of {file, caption} -- what the FIRMWARE shows: the screen,

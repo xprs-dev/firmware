@@ -1,0 +1,11 @@
+{
+  "name": "xprs_nrf52",
+  "version": "1.0.0",
+  "description": "What every XPRS station on an nRF52840 shares (Adafruit nRF52 Arduino core): the key and callsign, the boot ordinal, the config file, the clock, signing, and the signed firmware update with its RAM copier. Used by models/sensecap-p1-pro and models/sensecap-t1000e.",
+  "frameworks": "arduino",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*", "xprs_sig": "*", "xprs_id": "*", "xprs_auth": "*", "xprs_nostr": "*", "tinynimble": "*", "xprs_bearer": "*"},
+  "build": {
+    "srcFilter": ["+<nrf_station.cpp>", "+<nrf_flash.cpp>", "+<update.cpp>"]
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "build": {
+    "arduino": {
+      "ldscript": "nrf52840_s140_v7.ld"
+    },
+    "core": "nRF5",
+    "cpu": "cortex-m4",
+    "extra_flags": "-DARDUINO_SEEED_T1000E -DNRF52840_XXAA -DSEEED_T1000E",
+    "f_cpu": "64000000L",
+    "hwids": [
+      ["0x2886", "0x0057"],
+      ["0x239A", "0x8029"]
+    ],
+    "mcu": "nrf52840",
+    "variant": "seeed_t1000e",
+    "softdevice": {
+      "sd_flags": "-DS140",
+      "sd_name": "s140",
+      "sd_version": "7.3.0",
+      "sd_fwid": "0x0123"
+    },
+    "bsp": {
+      "name": "adafruit"
+    },
+    "usb_product": "T1000-E XPRS"
+  },
+  "connectivity": ["bluetooth"],
+  "debug": {
+    "jlink_device": "nRF52840_xxAA",
+    "svd_path": "nrf52840.svd"
+  },
+  "frameworks": ["arduino"],
+  "name": "Seeed SenseCAP Card Tracker T1000-E (XPRS)",
+  "upload": {
+    "maximum_ram_size": 237568,
+    "maximum_size": 811008,
+    "protocol": "nrfutil",
+    "speed": 115200,
+    "protocols": ["jlink", "nrfjprog", "nrfutil"],
+    "use_1200bps_touch": true,
+    "require_upload_port": true,
+    "wait_for_upload_port": true
+  },
+  "url": "https://www.seeedstudio.com/SenseCAP-Card-Tracker-T1000-E-for-Meshtastic-p-5913.html",
+  "vendor": "Seeed Studio"
+}

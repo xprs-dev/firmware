@@ -10,8 +10,11 @@ what `pio run` left in <project>/.pio/build/<env>/, and produces:
   ESP32 family   bootloader.bin, partitions.bin, firmware.bin, manifest.json
                  (ESP Web Tools format; offsets from the chip and the
                  project's partitions.csv, app at the first ota_0/factory)
-  nRF52          firmware.uf2 (from firmware.hex, family 0xADA52840) -- copied
-                 onto the bootloader's mass-storage volume, no flasher needed
+  nRF52          firmware.uf2 (family 0xADA52840) -- copied onto the
+                 bootloader's mass-storage volume, no flasher needed. Made
+                 from a flat binary at the address the hex says, NOT from the
+                 hex: the core's uf2conv.py ignores type-02 records and put
+                 the T1000-E's image at 0x2000, over the SoftDevice.
 
 A board whose project has not been built is skipped and said so. Nothing
 here builds anything: the image in prebuilt/ is whatever was last built,
@@ -34,6 +37,32 @@ BOOT_OFFSET = {"esp32": 0x1000, "esp32s3": 0x0, "esp32c3": 0x0}
 CHIP_FAMILY = {"esp32": "ESP32", "esp32s3": "ESP32-S3", "esp32c3": "ESP32-C3"}
 UF2CONV = glob.glob(os.path.expanduser(
     "~/.platformio/packages/framework-arduinoadafruitnrf52/tools/uf2conv/uf2conv.py"))
+
+
+def hex_to_bin(path):
+    """Intel HEX (record types 00, 02, 04) to (base address, bytes), gaps 0xFF."""
+    data, upper = {}, 0
+    for line in open(path):
+        line = line.strip()
+        if not line.startswith(":"):
+            continue
+        raw = bytes.fromhex(line[1:])
+        n, addr, kind, body = raw[0], (raw[1] << 8) | raw[2], raw[3], raw[4:4 + raw[0]]
+        if (sum(raw) & 0xFF) != 0:
+            raise ValueError(f"{path}: bad checksum in {line[:20]}")
+        if kind == 0x00:
+            for i, b in enumerate(body):
+                data[upper + addr + i] = b
+        elif kind == 0x02:
+            upper = ((body[0] << 8) | body[1]) << 4
+        elif kind == 0x04:
+            upper = ((body[0] << 8) | body[1]) << 16
+        elif kind == 0x01:
+            break
+    if not data:
+        raise ValueError(f"{path}: no data")
+    lo, hi = min(data), max(data)
+    return lo, bytes(data.get(a, 0xFF) for a in range(lo, hi + 1))
 
 
 def app_offset(csv_path):
@@ -87,10 +116,15 @@ def collect(b):
         if not UF2CONV:
             return f"{b['id']}: uf2conv.py not found in the PlatformIO packages"
         os.makedirs(out, exist_ok=True)
+        base, image = hex_to_bin(hexf)
+        if base < 0x26000:
+            return f"{b['id']}: image starts at 0x{base:x}, inside the SoftDevice -- refusing"
+        binf = os.path.join(build, "firmware.prebuilt.bin")
+        open(binf, "wb").write(image)
         subprocess.run([sys.executable, UF2CONV[0], "-f", "0xADA52840", "-c",
-                        "-o", os.path.join(out, "firmware.uf2"), hexf],
+                        "-b", hex(base), "-o", os.path.join(out, "firmware.uf2"), binf],
                        check=True, stdout=subprocess.DEVNULL)
-        return f"{b['id']}: firmware.uf2 (v{version})"
+        return f"{b['id']}: firmware.uf2 at 0x{base:x}, {len(image)} bytes (v{version})"
 
     return f"{b['id']}: family {fam!r} not handled"
 

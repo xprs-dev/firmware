@@ -18,7 +18,8 @@ A headless XPRS LoRa station on an nRF52840. Not an ESP-IDF project — see
 | `lib/xprs_bearer` | symlink to `common/` — the relay decision, unmodified |
 | `lib/xprs_sig`, `lib/xprs_id` | symlinks to `common/` — the signature and the `sig:` field |
 | `lib/xprs_nostr` | symlink to `common/` — only `bech32.c` is built here, for the npub the callsign comes from |
-| `lib/mbedtls_ecp` | mbedtls 3.5.2 bignum + ECP over secp256k1, vendored: the curve maths `xprs_sig` needs and the Adafruit core does not ship |
+| `lib/mbedtls_ecp` | symlink to `common/mbedtls_ecp` — mbedtls 3.5.2 bignum + ECP over secp256k1, vendored: the curve maths `xprs_sig` needs and the Adafruit core does not ship |
+| `lib/xprs_nrf52` | symlink to `common/xprs_nrf52` — what both nRF52 stations share: key and callsign, configuration, clock, signing, raw flash, and the signed update (`update.cpp`) |
 
 ## Console
 
@@ -76,7 +77,7 @@ the port to say so.
 A pole is hard to reach, so this board takes a new image the way the ESP32
 boards do (XPRS 25.8, `common/xprs_ota`) -- the same two-key rule, the same
 `xprs_auth` gate -- but delivered as XPRS packets instead of over HTTP,
-because this chip has no WiFi. `src/update.{h,cpp}` and `tools/push_firmware_p1.py`.
+because this chip has no WiFi. `common/xprs_nrf52/update.{h,cpp}` and `tools/push_firmware_p1.py`.
 
 **Two signatures, two keys, on purpose.** The **publisher** key (`fwkey`)
 approves the *image*: a signature over `xprsfw1 <board> <version> <size>

@@ -158,5 +158,5 @@ clients that already parse it, which is a protocol decision and not a rename.
 BSD-3-Clause, copyright Max Brito and XPRS contributors. See [LICENSE](LICENSE).
 Third-party components keep their own licences: `common/jimmyw__ssh_cli_server/`
 (MIT), `common/xprs_wrench/` (MIT, Curt Hartung) and
-`models/sensecap-p1-pro/firmware/lib/mbedtls_ecp/` (Apache-2.0 or
+`common/mbedtls_ecp/` (Apache-2.0 or
 GPL-2.0-or-later).

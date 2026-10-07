@@ -309,6 +309,9 @@ tn_err_t tn_gatt_serve(const tn_gatt_cb_t *cb);   /* accept inbound links */
 /* SoftDevice port only: every SoC event the pump drains, for an
  * application that needs one (flash completion). Weak; override it. */
 void tn_soc_event(uint32_t evt);
+/* SoftDevice port only: an event is waiting, called from the interrupt.
+ * Weak; a station that sleeps overrides it to wake the task that pumps. */
+void tn_evt_isr(void);
 tn_err_t tn_gatt_dial(uint8_t addr_type, const uint8_t addr[6],
                        const tn_gatt_cb_t *cb);    /* SoftDevice port only */
 void      tn_gatt_pump(void);

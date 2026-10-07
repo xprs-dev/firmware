@@ -88,7 +88,12 @@ static void sd_fault(uint32_t id, uint32_t pc, uint32_t info)
     for (;;) { }
 }
 
-void SD_EVT_IRQHandler(void) { s_evt_flag = true; }
+/* Called from the interrupt when the SoftDevice has an event waiting, so a
+ * station that sleeps between events can be woken to pump. Weak and empty
+ * by default; it runs at interrupt level 6 and may only signal a task. */
+__attribute__((weak)) void tn_evt_isr(void) { }
+
+void SD_EVT_IRQHandler(void) { s_evt_flag = true; tn_evt_isr(); }
 
 /* Every SoC event the pump drains, offered to the application. Weak and
  * empty by default; a station that writes flash through sd_flash_write()

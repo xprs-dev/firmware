@@ -1,0 +1,9 @@
+{
+  "name": "xprs_gnss",
+  "version": "1.0.0",
+  "description": "NMEA 0183 RMC and GGA, byte by byte, without floating point. Platform-independent.",
+  "keywords": "xprs, gnss, nmea",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": { "srcFilter": ["+<nmea.c>"], "flags": ["-I."] }
+}

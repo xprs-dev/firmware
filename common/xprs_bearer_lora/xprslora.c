@@ -2,6 +2,7 @@
  * reference for how a radio hides behind xprs_bearer. */
 
 #include "xprslora.h"
+#include "lr_probe.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -441,9 +442,8 @@ static struct {
     bool            active, done, probe;
     uint32_t        per_ms, started_ms;
     uint32_t        probe_ms;        /* airtime our own probes cost */
-    uint32_t        probe_from, probe_id;   /* the Meshtastic one */
+    lrp_probe_t     pr;              /* what an echo must match (lr_probe.h) */
     uint8_t         probes;          /* how many we have aired in this mode */
-    uint32_t        probe_hash;              /* the MeshCore one */
     xprslora_mode_t home;
     xprslora_survey_mode_t m[XPRSLORA_MODE_TABLE];
 } s_survey;
@@ -1816,47 +1816,14 @@ static void survey_probe(void)
     if (!s_survey.probe || !s_radio) return;
     xprslora_survey_mode_t *m = &s_survey.m[s_mode];
     int n = 0;
+    /* The frames themselves are lr_probe.c's, shared with the nRF52 cards
+     * (the reasoning for each is written down there). */
     if (s_def->net == LR_NET_MT) {
-        mt_hdr_t h = { 0 };
-        h.to = MT_BROADCAST;
-        h.from = s_self;
-        h.id = lr_random() | 1u;
-        h.hop_limit = MT_HOP_DEFAULT;
-        h.hop_start = MT_HOP_DEFAULT;
-        /* LongFast's channel, NOT the XPRS one: a station running this
-         * firmware unwraps anything on the XPRS channel as a piece of an
-         * XPRS wire, parks the piece that never completes and so never
-         * repeats it. On the bench that made every XPRS neighbour deaf to
-         * the probe while stock routers would have carried it (measured
-         * 2026-09-20). The portnum stays private, so nobody reads it. */
-        h.channel = mt_longfast_hash();
-        h.relay_node = (uint8_t)s_self;
-        mt_hdr_build(&h, s_frames[0]);
-        mt_data_t d = { 0 };
-        uint8_t one = 0x01;            /* not a wrapped wire: nobody reads it */
-        d.portnum = MT_PORT_XPRS;
-        d.payload = &one;
-        d.payload_len = 1;
-        int dn = mt_data_encode(&d, s_frames[0] + MT_HDR_LEN,
-                                MT_FRAME_MAX - MT_HDR_LEN);
-        if (dn < 0) return;
-        n = MT_HDR_LEN + dn;
-        s_survey.probe_from = h.from;
-        s_survey.probe_id = h.id;
-    } else if (s_def->net == LR_NET_MC) {
-        uint8_t pl[4];
-        uint32_t r = lr_random();
-        for (int i = 0; i < 4; i++) pl[i] = (uint8_t)(r >> (8 * i));
-        mc_pkt_t p;
-        memset(&p, 0, sizeof p);
-        p.route = MC_ROUTE_FLOOD;
-        p.type = MC_PT_ACK;
-        p.hash_size = 1;
-        p.payload = pl;
-        p.payload_len = 4;
-        n = mc_build(&p, s_frames[0], MC_FRAME_MAX);
+        n = lrp_mt_build(&s_survey.pr, s_self, lr_random(), s_frames[0], MT_FRAME_MAX);
         if (!n) return;
-        s_survey.probe_hash = mc_packet_hash(&p);
+    } else if (s_def->net == LR_NET_MC) {
+        n = lrp_mc_build(&s_survey.pr, lr_random(), s_frames[0], MC_FRAME_MAX);
+        if (!n) return;
     } else {
         return;                        /* XPRS: its stations speak often */
     }
@@ -1876,17 +1843,8 @@ static void survey_probe(void)
 static bool survey_echo(const uint8_t *frame, int len)
 {
     if (!s_survey.probe) return false;
-    if (s_def->net == LR_NET_MT) {
-        mt_hdr_t h;
-        if (!mt_hdr_parse(frame, len, &h)) return false;
-        return h.from == s_survey.probe_from && h.id == s_survey.probe_id &&
-               h.hop_limit < h.hop_start;
-    }
-    if (s_def->net == LR_NET_MC) {
-        mc_pkt_t p;
-        if (!mc_parse(frame, len, &p)) return false;
-        return mc_packet_hash(&p) == s_survey.probe_hash && p.hops > 0;
-    }
+    if (s_def->net == LR_NET_MT) return lrp_mt_echo(&s_survey.pr, frame, len);
+    if (s_def->net == LR_NET_MC) return lrp_mc_echo(&s_survey.pr, frame, len);
     return false;
 }
 

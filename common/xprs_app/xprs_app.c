@@ -42,6 +42,7 @@
 #include "xprslan.h"
 #include "xprsble.h"
 #include "xprslora.h"
+#include "lr_worth.h"
 #include "xprsrns.h"
 #include "xprsid.h"
 #include "xprssig.h"
@@ -3323,50 +3324,18 @@ static bool command_to_us(const char *wire, int len)
     return false;
 }
 
-/* scope:local (XPRS.md 9.11.1) by a token walk, the way command_to_us
- * reads: this runs for every packet heard, on radio tasks. */
+/* scope:local (XPRS.md 9.11.1), and what deserves LoRa airtime when it is
+ * not our own: common/xprs_bearer_lora/lr_worth.c, shared with the nRF52
+ * cards so the rule is one rule. The reasoning is written down there. On
+ * XPRS's own channel (`lora_mode xprs`) LoRa carries everything. */
 static bool wire_scope_local(const char *wire, int len)
 {
-    static const char k[] = " scope:local";
-    const int kl = (int)sizeof k - 1;
-    for (int i = 0; i + kl <= len; i++) {
-        if (wire[i] != ' ') continue;
-        if (i + 3 < len && wire[i + 1] == 'm' && wire[i + 2] == ':') break;
-        if (memcmp(wire + i, k, (size_t)kl) == 0 &&
-            (i + kl == len || wire[i + kl] == ' '))
-            return true;
-    }
-    return false;
+    return lr_scope_local(wire, len);
 }
 
-/* Is this worth a LoRa transmission when it is not our own? Since the move
- * to Meshtastic's LongFast a frame is one to two seconds on the one EU
- * channel both networks share, and XPRS.md 30.1 binds unsolicited traffic
- * to the strictest bearer a station transmits on. A bench of BLE and LAN
- * stations beaconing every minute, bridged onto that channel, kept two
- * stations at their full 10% and the channel busy enough that a Meshtastic
- * node's DM never got through (2026-09-19). So LoRa carries what somebody
- * is waiting for -- a message, a receipt, a call for help, a command and its
- * result, a key to verify them with -- and leaves presence to the bearers
- * that are cheap. A token walk: t: is always first.
- *
- * On XPRS's own channel (`lora_mode xprs`: SF7, a frame a fifth of the
- * airtime, nobody else's traffic) LoRa carries everything, as it always did
- * there. */
 static bool lora_worth(const char *wire, int len)
 {
-    if (xprslora_mode() == XPRSLORA_MODE_XPRS) return true;
-    static const char *const carried[] = {
-        "message", "sos", "warning", "receipt", "reaction", "command",
-        "result", "identity", "mailbox", "file", "request",
-    };
-    if (len < 3 || wire[0] != 't' || wire[1] != ':') return false;
-    int n = 0;
-    while (2 + n < len && wire[2 + n] != ' ') n++;
-    for (size_t i = 0; i < sizeof carried / sizeof carried[0]; i++)
-        if ((int)strlen(carried[i]) == n && memcmp(wire + 2, carried[i], (size_t)n) == 0)
-            return true;
-    return false;
+    return lr_worth(wire, len, xprslora_mode() == XPRSLORA_MODE_XPRS);
 }
 
 static void bridge_out(const char *wire, int len, from_t from)

@@ -270,6 +270,19 @@ def tile(b, embed):
             f'<div class="tile-meta mono">{esc(fam)} · {esc(b.get("vendor"))}</div></div></a>')
 
 
+def behaviour_block(b):
+    """`behaviour:` in board.yml, OPTIONAL: what the station does and how it
+    behaves, in the words a person holding the device needs. A list of
+    {title, text}; rendered open, under the summary, before any spec."""
+    items = [i for i in (b.get("behaviour") or []) if i.get("title") and i.get("text")]
+    if not items:
+        return ""
+    rows = "".join(f'<div class="bh-item"><dt>{esc(i["title"])}</dt>'
+                   f'<dd>{esc(i["text"])}</dd></div>' for i in items)
+    return (f'<section class="behaviour" aria-label="What it does">'
+            f'<h3 class="bh-head">What it does</h3><dl class="bh-list">{rows}</dl></section>')
+
+
 def xprs_chips(b):
     xp = b.get("xprs") or {}
     cells = []
@@ -399,6 +412,7 @@ def card(b, embed):
     </div>
   </header>
   <p class="summary">{esc(b.get('summary'))}</p>
+  {behaviour_block(b)}
   {prebuilt}
   <div class="bearers" aria-label="XPRS bearers">{bearer_cells(b)}</div>
   <dl class="specs">{spec_rows(b)}</dl>
@@ -594,6 +608,11 @@ h1{font-size:clamp(30px,5vw,46px); font-weight:800; letter-spacing:-.02em;
 .s-legacy,.s-unsupported{color:var(--absent); border-color:currentColor}
 .ver{font-size:12px; color:var(--ink-dim)}
 .summary{margin:16px 0 20px; max-width:64ch}
+.behaviour{margin:0 0 22px; max-width:72ch}
+.bh-head{font-family:Archivo,"Helvetica Neue",Arial,sans-serif; font-size:15px; margin:0 0 8px}
+.bh-list{margin:0; display:grid; gap:10px}
+.bh-item dt{font-weight:700; font-size:14px}
+.bh-item dd{margin:2px 0 0; font-size:14px; line-height:1.5; color:var(--ink)}
 
 /* The spine: four fixed cells, same order on every card, so the answer reads
    down the page as well as across one board. */

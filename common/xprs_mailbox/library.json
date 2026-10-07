@@ -1,0 +1,10 @@
+{
+  "name": "xprs_mailbox",
+  "version": "1.0.0",
+  "description": "Store and forward on raw flash pages: mail by class, mailbox declarations, durable receipt releases, one state blob. Platform-independent; the store is four callbacks.",
+  "keywords": "xprs, mailbox, store-and-forward",
+  "frameworks": "*",
+  "platforms": "*",
+  "dependencies": {"xprs_codec": "*"},
+  "build": { "srcFilter": ["+<xmb.c>"], "flags": ["-I."] }
+}
