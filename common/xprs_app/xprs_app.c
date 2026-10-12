@@ -588,8 +588,10 @@ static int s_flow_n;
 
 
 /* LVGL's FontAwesome glyph bytes, without dragging lvgl.h into main.c:
- * HOME f015, GPS f124, ENVELOPE f0e0 -- the same values xprs_ui renders. */
+ * HOME f015, GPS f124, ENVELOPE f0e0, WIFI f1eb -- the same values xprs_ui
+ * renders. */
 #define LV_SYMBOL_HOME     "\xEF\x80\x95"
+#define LV_SYMBOL_WIFI     "\xEF\x87\xAB"
 #define LV_SYMBOL_GPS      "\xEF\x84\xA4"
 #define LV_SYMBOL_ENVELOPE "\xEF\x83\xA0"
 
@@ -3179,7 +3181,7 @@ static void echo_keep(const char *wire, int len)
     if (s_echo_n < ECHO_N) s_echo_n++;
 }
 
-static bool wire_scope_local(const char *wire, int len);
+static xprs_reach_t lora_reach(void);
 static bool lora_worth(const char *wire, int len);
 
 /* One step of the carousel, called about once a second from status_task. */
@@ -3217,13 +3219,14 @@ static void echo_tick(void)
          * just been heard by everybody present. */
         int slot = s_echo_cursor % s_echo_n;
         s_echo_cursor = (s_echo_cursor + 1) % s_echo_n;
-        /* 9.11.1: a Local-room packet heard on Bluetooth is not LoRa's to
+        /* 9.11: a Local-room packet heard on Bluetooth is not LoRa's to
          * repeat -- the carousel re-aired one onto the radio band twenty
          * seconds after boot (2026-09-19, heard back through a Meshtastic
-         * router) because only bridge_out knew the rule. */
-        if (i == 2 && ((wire_scope_local(s_echo[slot].wire, s_echo[slot].len) &&
-                        !xcfg_get_bool("lora_local", false)) ||
-                       !lora_worth(s_echo[slot].wire, s_echo[slot].len)))
+         * router) because only bridge_out knew the rule. Every bearer asks
+         * its own class now; the ring holds only packets heard in range. */
+        xprs_reach_t sc = xprs_scope_reach_wire(s_echo[slot].wire, s_echo[slot].len);
+        if (!xprs_reach_admits(sc, i == 2 ? lora_reach() : XPRS_REACH_LOCAL) ||
+            (i == 2 && !lora_worth(s_echo[slot].wire, s_echo[slot].len)))
             continue;
         static const char *const names[4] = { "lan", "espnow", "lora", "ble" };
         ESP_LOGI(TAG, "echo   %6s %3dB  %s", names[i], s_echo[slot].len,
@@ -3342,14 +3345,25 @@ static bool command_to_us(const char *wire, int len)
     return false;
 }
 
-/* scope:local (XPRS.md 9.11.1), and what deserves LoRa airtime when it is
- * not our own: common/xprs_bearer_lora/lr_worth.c, shared with the nRF52
- * cards so the rule is one rule. The reasoning is written down there. On
- * XPRS's own channel (`lora_mode xprs`) LoRa carries everything. */
-static bool wire_scope_local(const char *wire, int len)
+/* XPRS.md 9.11: the class of each bearer this station has. LoRa is
+ * regional, and local too where the operator says so ([lora] local). */
+static xprs_reach_t lora_reach(void)
 {
-    return lr_scope_local(wire, len);
+    return xcfg_get_bool("lora_local", false) ? XPRS_REACH_LOCAL : XPRS_REACH_REGIONAL;
 }
+
+static xprs_reach_t bearer_reach(const char *bearer)
+{
+    if (!bearer) return XPRS_REACH_LOCAL;
+    if (!strcmp(bearer, "lora")) return lora_reach();
+    if (!strcmp(bearer, "rns") || !strcmp(bearer, "tcp")) return XPRS_REACH_GLOBAL;
+    return XPRS_REACH_LOCAL;            /* ble, lan, espnow */
+}
+
+/* What deserves LoRa airtime when it is not our own:
+ * common/xprs_bearer_lora/lr_worth.c, shared with the nRF52 cards so the
+ * rule is one rule. On XPRS's own channel (`lora_mode xprs`) LoRa carries
+ * everything. */
 
 static bool lora_worth(const char *wire, int len)
 {
@@ -3359,19 +3373,27 @@ static bool lora_worth(const char *wire, int len)
 static void bridge_out(const char *wire, int len, from_t from)
 {
     if (command_to_us(wire, len)) return;
+    /* 9.11: a scope binds at both ends of a hop. A packet heard on a bearer
+     * wider than its scope -- scope:local off Reticulum, scope:regional
+     * off the internet -- has already left its range, and goes no further
+     * from here; nor does one whose scope word this station does not know.
+     * The archive keeps it (seen_note), marked out of range. */
+    xprs_reach_t scope = xprs_scope_reach_wire(wire, len);
+    xprs_reach_t heard = from == FROM_LORA ? lora_reach()
+                       : from == FROM_RNS  ? XPRS_REACH_GLOBAL : XPRS_REACH_LOCAL;
+    if (!xprs_reach_admits(scope, heard)) return;
     echo_keep(wire, len);
 
     bool bridge = xcfg_get_bool("bridge_on", true);
     bool igate  = xcfg_get_bool("igate_on", true);
-    /* 9.11.1: local names bearers -- Bluetooth, WiFi, a local network --
-     * and never a radio band or the internet. LoRa counts as local only
-     * where the operator says so ([lora] local = yes). This was not checked
-     * here at all until Meshtastic traffic arrived with it: a node that
-     * did not consent to MQTT is scope:local in XPRS, and must not reach
-     * Reticulum through this station. */
-    bool local = wire_scope_local(wire, len);
-    bool lora_ok = (!local || xcfg_get_bool("lora_local", false)) &&
-                   lora_worth(wire, len);
+    /* And on the way out, each bearer by its class: local names Bluetooth,
+     * WiFi, ESP-NOW and a local network; regional adds LoRa; only global
+     * reaches Reticulum. This was not checked here at all until Meshtastic
+     * traffic arrived with it: a node that did not consent to MQTT is
+     * scope:local in XPRS, and must not reach Reticulum through this
+     * station. */
+    bool local = !xprs_reach_admits(scope, XPRS_REACH_GLOBAL);
+    bool lora_ok = xprs_reach_admits(scope, lora_reach()) && lora_worth(wire, len);
 
     /* Onto the other bearers. */
     if (from != FROM_LAN  && igate)  xprslan_offer(wire, len);
@@ -3570,7 +3592,7 @@ static void mesh_out(const char *wire, int len)
 {
     echo_keep(wire, len);
     bool bridge = xcfg_get_bool("bridge_on", true);
-    bool local = wire_scope_local(wire, len);
+    bool local = !xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_GLOBAL);
     if (xcfg_get_bool("igate_on", true)) xprslan_send(wire, len);
     if (bridge && xcfg_get_bool("espnow_on", true)) xprsnow_send(wire, len);
     if (bridge && xprsble_is_active()) xprsble_send(wire, len);
@@ -4762,22 +4784,23 @@ static int s_panel;
  *
  * Only for a board that offers raw_key -- see xprs_app.h. Everything here
  * is the station's own web page rendered natively, including the rooms:
- * Local is scope:local, Global is the default scope, Social is t:status,
- * and a callsign is a 1:1 addressed with d:.
+ * Local is scope:local, Regional is scope:regional, Global is the default
+ * scope (XPRS.md 9.11), Social is t:status, and a callsign is a 1:1
+ * addressed with d:.
  */
-typedef enum { RM_LOCAL = 0, RM_GLOBAL, RM_SOCIAL, RM_FIXED } room_kind_t;
+typedef enum { RM_LOCAL = 0, RM_REGIONAL, RM_GLOBAL, RM_SOCIAL, RM_FIXED } room_kind_t;
 
-/* Six, because the rail holds twelve rows and three headings and the three
- * fixed rooms have already taken six of them. A peer that cannot be shown
+/* Five, because the rail holds twelve rows and three headings and the four
+ * fixed rooms have already taken seven of them. A peer that cannot be shown
  * cannot be chosen either, so there is no point remembering more. */
-#define CHAT_PEERS_MAX 6
+#define CHAT_PEERS_MAX 5
 
 static bool chat_active(void)   /* the interactive panel, not the table */
 {
     return s_panel == 1 && s_board && s_board->raw_key;
 }
 
-static int  s_room;                       /* 0..2 fixed, else a peer index */
+static int  s_room;                       /* 0..3 fixed, else a peer index */
 static char s_peer[CHAT_PEERS_MAX][XPRS_CALL_LEN];   /* callsigns offered for a 1:1  */
 static int  s_peer_n;
 /* The open conversation, remembered BY CALLSIGN, not by index -- an index
@@ -4841,7 +4864,7 @@ static int room_of(const xst_chat_t *c)
             if (strcasecmp(s_peer[i], peer) == 0) return RM_FIXED + i;
         return -1;
     }
-    return c->kind == 1 ? RM_LOCAL : RM_GLOBAL;
+    return c->kind == 1 ? RM_LOCAL : c->kind == 4 ? RM_REGIONAL : RM_GLOBAL;
 }
 
 /* Remember which conversation is open BY CALLSIGN (empty for a fixed room),
@@ -5460,8 +5483,8 @@ static void ui_render(void)
 
         static xui_room_t rr[XUI_CHAT_ROOMS];
         int rn = 0, sel = 0;
-        static const char *const fixed[RM_FIXED] = { "Local", "Global",
-                                                     "Social" };
+        static const char *const fixed[RM_FIXED] = { "Local", "Regional",
+                                                     "Global", "Social" };
         for (int i = 0; i < XUI_CHAT_ROOMS; i++) s_rail_room[i] = -1;
         snprintf(rr[rn].name, sizeof rr[rn].name, "ROOMS");
         rr[rn].heading = true; rr[rn].unread = false; rn++;
@@ -5546,8 +5569,9 @@ static void ui_render(void)
         }
         s_room_unread[s_room] = false;   /* looking at it IS reading it */
 
-        const char *head = s_room == RM_LOCAL  ? "Local"
-                         : s_room == RM_GLOBAL ? "Global"
+        const char *head = s_room == RM_LOCAL    ? "Local"
+                         : s_room == RM_REGIONAL ? "Regional"
+                         : s_room == RM_GLOBAL   ? "Global"
                          : s_room == RM_SOCIAL ? "Social"
                                                : s_peer[s_room - RM_FIXED];
 
@@ -5586,9 +5610,11 @@ static void ui_render(void)
             xst_chat_t *c = &rows[i];
             xui_row_t *r = &tr[i];
             snprintf(r->cell[0], sizeof r->cell[0], "%s", c->from);
-            /* The room at a glance (13.11): a house for scope:local, a
-             * pin for the global default, an envelope for a 1:1. */
+            /* The room at a glance (XPRS.md 9.11): a house for scope:local,
+             * the air for scope:regional, a pin for the global default, an
+             * envelope for a 1:1. */
             const char *ric = c->kind == 1 ? LV_SYMBOL_HOME
+                              : c->kind == 4 ? LV_SYMBOL_WIFI
                               : c->kind == 2 ? LV_SYMBOL_ENVELOPE
                                              : LV_SYMBOL_GPS;
             if (c->r[0]) {
@@ -6097,7 +6123,9 @@ static xprsidx_t *idx_open(void)
     uint64_t budget = xprsindex_budget("/idx", s_idx_base,
                                        xcfg_get_bool("index_always_on",
                                            xcfg_get_bool("index_super", false)));
-    return xprsindex_open2("/idx/xprs", xprsindex_seg_records(budget));
+    xprsidx_t *st = xprsindex_open2("/idx/xprs", xprsindex_seg_records(budget));
+    xprsindex_set_lora_local(st, xcfg_get_bool("lora_local", false));
+    return st;
 }
 
 static bool idx_is_always_on(void)
@@ -6250,6 +6278,7 @@ have:
 static struct {
     int n;
     bool more;
+    xprs_reach_t reach;           /* the class of the bearer it goes out on */
     char wire[HIST_PAGE][XPRSIDX_WIRE_MAX + 1];
     int16_t len[HIST_PAGE];
 } s_page;
@@ -6257,6 +6286,12 @@ static struct {
 static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
 {
     (void)ctx;
+    /* 9.11: never served out of range -- a record heard wider than its
+     * scope, or one whose scope does not admit the bearer the answer goes
+     * out on. A Local-room message asked for over Reticulum stays here. */
+    if (rec->flags & XI_F_OUTRANGE) return true;
+    if (!xprs_reach_admits(xprs_scope_reach_wire(rec->wire, rec->len), s_page.reach))
+        return true;
     if (s_page.n >= HIST_PAGE) { s_page.more = true; return false; }
     memcpy(s_page.wire[s_page.n], rec->wire, rec->len);
     s_page.wire[s_page.n][rec->len] = 0;
@@ -6371,6 +6406,7 @@ static void idx_answer_history(const char *ask_wire, int ask_len,
     };
     s_page.n = 0;
     s_page.more = false;
+    s_page.reach = bearer_reach(bearer);
     xprsindex_query(s_index, &q, hist_collect, NULL);
 
     if (s_page.n == 0) {
@@ -6912,6 +6948,13 @@ no_announce:
         }
 
         wk_tick();
+        /* [lora] local can change at run time; the archive and the rooms
+         * both read LoRa's class from it (XPRS.md 9.11.1). */
+        {
+            bool ll = xcfg_get_bool("lora_local", false);
+            xst_set_lora_local(ll);
+            if (s_index) xprsindex_set_lora_local(s_index, ll);
+        }
 
         /* 11.10: the end of a join somebody is waiting on. */
         if (s_wjoin.active) {
@@ -7082,6 +7125,7 @@ no_announce:
             if (q.until_ts) q.until_ts--;      /* strictly older */
             s_page.n = 0;
             s_page.more = false;
+            s_page.reach = bearer_reach(rbearer);
             xprsindex_query(s_index, &q, hist_collect, NULL);
             int aired = 0;
             uint32_t oldest = 0;               /* of what actually went out */
@@ -7406,9 +7450,11 @@ named_done:
                 snprintf(ts, sizeof ts, "epoch:0.%u",
                          (unsigned)(esp_timer_get_time() / 1000000));
             }
-            char where[16] = "";
+            char where[24] = "";
             if (s_outbox.kind == RM_LOCAL)
                 snprintf(where, sizeof where, " scope:local");
+            else if (s_outbox.kind == RM_REGIONAL)
+                snprintf(where, sizeof where, " scope:regional");
             else if (s_outbox.kind == RM_FIXED)
                 snprintf(where, sizeof where, " d:%s", s_outbox.to);
 
@@ -7703,12 +7749,15 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
      * bench needs to put a packet on LoRa and NOWHERE ELSE to prove that
      * what reaches the LAN got there through two other stations. */
     #define WANT(name) (!bearer || strcmp(bearer, name) == 0)
-    bool lan = WANT("lan")    && xprslan_send(wire, len);
-    bool now = WANT("espnow") && xcfg_get_bool("espnow_on", true) && xprsnow_send(wire, len);
-    /* 9.11.1 again: our own Local room stays off the radio band and the
-     * internet, unless the operator made this LoRa a local bearer. */
-    bool local = wire_scope_local(wire, len);
-    bool lora_ok = !local || xcfg_get_bool("lora_local", false);
+    /* 9.11 again, for our own rooms: Local stays on the local bearers,
+     * Regional adds LoRa, only Global reaches Reticulum. */
+    xprs_reach_t scope = xprs_scope_reach_wire(wire, len);
+    bool near = xprs_reach_admits(scope, XPRS_REACH_LOCAL);
+    bool local = !xprs_reach_admits(scope, XPRS_REACH_GLOBAL);
+    bool lora_ok = xprs_reach_admits(scope, lora_reach());
+    bool lan = WANT("lan")    && near && xprslan_send(wire, len);
+    bool now = WANT("espnow") && near && xcfg_get_bool("espnow_on", true) &&
+               xprsnow_send(wire, len);
     bool lra = WANT("lora")   && lora_ok && xprslora_is_active() &&
                xprslora_send(wire, len);
     /* A message of ours, or one a phone handed us, reaches the other
@@ -7718,7 +7767,7 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         xprslora_mt_offer(wire, len, MT_XPRS_OWN);
         xprslora_mc_offer(wire, len, MC_XPRS_OWN);
     }
-    bool ble = WANT("ble")    && xprsble_is_active() && xprsble_send(wire, len);
+    bool ble = WANT("ble")    && near && xprsble_is_active() && xprsble_send(wire, len);
     bool rns = WANT("rns")    && !local && xprsrns_is_up() &&
                xprsrns_send(wire, len);
     #undef WANT

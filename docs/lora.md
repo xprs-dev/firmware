@@ -122,6 +122,11 @@ LoRa (unless `[lora] local = yes`) and off Reticulum, in `bridge_out`,
 `api_send_wire` and the echo carousel. The carousel had put a Local-room
 message on LoRa twenty seconds after boot.
 
+Since 2026-10 LoRa is the regional bearer of XPRS.md 9.11: `scope:regional`
+is what LoRa carries and Reticulum does not, `scope:local` stays off it unless
+`[lora] local = yes`, and a packet heard on LoRa whose scope is narrower than
+LoRa's class is not passed on (docs/esp32.md, "Rooms by range").
+
 ## 3. The channel is a setting
 
 **Every board is not an 868 MHz board.** The same SX1262 is sold matched

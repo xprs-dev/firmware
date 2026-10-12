@@ -420,6 +420,7 @@ void xum_chat(const xum_chat_t *rows, int n)
      * bottom, the way a chat reads. */
     for (int i = n - 1; i >= 0; i--) {
         const char *k = rows[i].kind == 1 ? "*"        /* scope:local */
+                        : rows[i].kind == 4 ? "~"      /* scope:regional */
                         : rows[i].kind == 2 ? ">"      /* a 1:1 */
                                             : "";      /* global */
         o += snprintf(buf + o, sizeof buf - o, "%s%s%s: %.48s",

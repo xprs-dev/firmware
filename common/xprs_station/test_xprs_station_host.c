@@ -439,6 +439,47 @@ static void test_heard(void)
     CHECK(!xst_heard("X1NEAR", 300), "stale is not heard");
 }
 
+/* XPRS.md 9.11: the regional room, and a room's traffic heard out of range. */
+static void test_scope_rooms(void)
+{
+    reset();
+    struct { const char *w; const char *bearer; int kind; } c[] = {
+        { "t:message f:X1REG1 ts:2026-09-05_08:00:00 scope:regional m:valley", "lora", 4 },
+        { "t:message f:X1LOC1 ts:2026-09-05_08:00:01 scope:local m:room",      "ble",  1 },
+        { "t:message f:X1GLO1 ts:2026-09-05_08:00:02 m:world",                 "rns",  0 },
+        { "t:message f:X1FAR1 ts:2026-09-05_08:00:03 scope:local m:afar",      "rns", -1 },
+        { "t:message f:X1FAR2 ts:2026-09-05_08:00:04 scope:regional m:afar",   "rns", -1 },
+        { "t:message f:X1LOR1 ts:2026-09-05_08:00:05 scope:local m:lora",      "lora", -1 },
+    };
+    xst_set_lora_local(false);
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        xst_test_now_ms += 1;
+        xprs_t p;
+        CHECK(xprs_parse(c[i].w, (int)strlen(c[i].w), &p), "parse %zu", i);
+        xst_ingest_parsed(&p, c[i].bearer, -60);
+    }
+    xst_chat_t rows[16];
+    int n = xst_chat(rows, 16);
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        char call[8];
+        snprintf(call, sizeof call, "%.6s", c[i].w + 12);
+        int kind = -1;
+        for (int j = 0; j < n; j++) if (!strcmp(rows[j].from, call)) kind = rows[j].kind;
+        CHECK(kind == c[i].kind, "%s: kind %d, want %d", call, kind, c[i].kind);
+    }
+    /* The operator puts LoRa in the local class: the campsite's room. */
+    xst_set_lora_local(true);
+    xprs_t p;
+    const char *w = "t:message f:X1LOR2 ts:2026-09-05_08:00:06 scope:local m:camp";
+    xprs_parse(w, (int)strlen(w), &p);
+    xst_ingest_parsed(&p, "lora", -60);
+    n = xst_chat(rows, 16);
+    bool seen = false;
+    for (int j = 0; j < n; j++) if (!strcmp(rows[j].from, "X1LOR2")) seen = rows[j].kind == 1;
+    CHECK(seen, "a local LoRa wasn't a local room");
+    xst_set_lora_local(false);
+}
+
 int main(void)
 {
     printf("xprs_station host tests (XPRS.md 10.6.3, 10.6.4)\n");
@@ -453,6 +494,7 @@ int main(void)
     test_one_row_per_station();
     test_chat_peers();
     test_chat_replay();
+    test_scope_rooms();
     test_heard();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

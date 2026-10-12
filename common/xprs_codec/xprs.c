@@ -374,6 +374,53 @@ bool xprs_scope_local(const xprs_t *p)
     return v && vl == 5 && memcmp(v, "local", 5) == 0;
 }
 
+xprs_reach_t xprs_reach_of_value(const char *v, int vl)
+{
+    if (!v || vl <= 0) return XPRS_REACH_GLOBAL;
+    if (vl == 5 && memcmp(v, "local", 5) == 0) return XPRS_REACH_LOCAL;
+    if (vl == 8 && memcmp(v, "regional", 8) == 0) return XPRS_REACH_REGIONAL;
+    if (vl == 6 && memcmp(v, "global", 6) == 0) return XPRS_REACH_GLOBAL;
+    /* Country codes (9.11.2) are uppercase and comma-separated: global by
+     * class, bounded by the country, which is a position question. Any
+     * lowercase word other than the three is one this station does not
+     * know, and it does not pass the packet on (9.11). */
+    for (int i = 0; i < vl; i++)
+        if (v[i] >= 'a' && v[i] <= 'z') return XPRS_REACH_UNKNOWN;
+    return XPRS_REACH_GLOBAL;
+}
+
+xprs_reach_t xprs_scope_reach(const xprs_t *p)
+{
+    int vl = 0;
+    const char *v = xprs_get(p, "scope", &vl);
+    return xprs_reach_of_value(v, v ? vl : 0);
+}
+
+xprs_reach_t xprs_scope_reach_wire(const char *wire, int len)
+{
+    static const char k[] = " scope:";
+    const int kl = (int)sizeof k - 1;
+    for (int i = 0; i + kl <= len; i++) {
+        if (wire[i] != ' ') continue;
+        if (i + 3 < len && wire[i + 1] == 'm' && wire[i + 2] == ':') break;
+        if (memcmp(wire + i, k, (size_t)kl) != 0) continue;
+        int s = i + kl, e = s;
+        while (e < len && wire[e] != ' ') e++;
+        return xprs_reach_of_value(wire + s, e - s);
+    }
+    return XPRS_REACH_GLOBAL;
+}
+
+const char *xprs_reach_name(xprs_reach_t r)
+{
+    switch (r) {
+    case XPRS_REACH_LOCAL:    return "local";
+    case XPRS_REACH_REGIONAL: return "regional";
+    case XPRS_REACH_GLOBAL:   return "global";
+    default:                  return "unknown";
+    }
+}
+
 bool xprs_is_station(const char *addr, int len)
 {
     if (len <= 0) return false;

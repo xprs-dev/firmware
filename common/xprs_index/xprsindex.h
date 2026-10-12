@@ -116,6 +116,9 @@ const char *xprsidx_bearer_name(int code);
 #define XI_F_OUTGOING  0x02   /* this station originated or relayed it */
 #define XI_F_SIGNED    0x04   /* carried sig: */
 #define XI_F_VERIFIED  0x08   /* the signature checked out against a known key */
+/* Heard on a bearer wider than its scope (XPRS.md 9.11): kept, never relayed,
+ * never served, shown in no room. Decided once, when the record is accepted. */
+#define XI_F_OUTRANGE  0x10
 
 /**
  * How a record's authorship should be presented (XPRS.md section 9.1). Derived
@@ -308,6 +311,17 @@ bool       xprsindex_ready(const xprsidx_t *st);
  *                the packet states no ts: of its own.
  * @return true when a record was written.
  */
+/** Whether this station's LoRa also counts as a local bearer (the
+ *  operator's `[lora] local`, XPRS.md 9.11.1); it decides which records
+ *  heard on LoRa are out of range. Default no. */
+void xprsindex_set_lora_local(xprsidx_t *st, bool local);
+
+/** The reach class (xprs_reach_t) of a bearer code: ESP-NOW, LAN and BLE
+ *  local, LoRa regional (local when @p lora_local), Reticulum and TCP
+ *  global. XI_B_UNKNOWN is local: a record whose bearer is not known is one
+ *  this station wrote or was handed, never one heard from afar. */
+int xprsidx_bearer_reach(int bearer, bool lora_local);
+
 bool xprsindex_add(xprsidx_t *st, const char *wire, int len,
                    int rssi, bool outgoing, uint32_t ts_now);
 

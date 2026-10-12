@@ -1661,13 +1661,32 @@ retries three times on that and on a dead socket.
   Reticulum (that is UDP 42671, `xprs_lanwatch`, listen only) and not the
   internet.
 
-## Scoped rooms (XPRS 13.11) on a station
+## Rooms by range (XPRS.md 9.11) on a station
 
-The hotspot chat groups traffic into rooms by SCOPE, not by which bearer
-happened to carry a packet: the Local room is the `scope:local` conversation,
-Global is the unmarked default, and a `d:`-addressed message is a 1:1 room.
-Sending in Local appends `scope:local` to the wire; the station's bearers
-(ESP-NOW, LAN) are all local-class, so nothing else changes on this board.
+The hotspot chat, and the LCD's Chat panel, group traffic into three rooms by
+SCOPE, not by which bearer happened to carry a packet: Local is
+`scope:local`, Regional is `scope:regional`, Global is the unmarked default
+(a country scope files there too), and a `d:`-addressed message is a 1:1
+room. Sending in a room writes its scope; Global writes none.
+
+Every bearer has a class (`xprs_reach_t` in `xprs_codec`, the table in 9.11):
+ESP-NOW, the LAN and BLE are local, LoRa is regional (local too with
+`[lora] local = yes`), Reticulum is global. One rule decides every send, relay
+and replay, `xprs_reach_admits(scope, class)`, and it binds at both ends:
+
+- **Out:** `bridge_out`, the echo carousel, `api_send_wire`, `mesh_out` and
+  the Meshtastic/MeshCore bridges put a packet only on bearers its scope
+  admits.
+- **In:** a packet heard on a bearer wider than its scope (`scope:local` off
+  Reticulum) is out of range. `bridge_out` drops it, the archive marks the
+  record `XI_F_OUTRANGE` when it accepts it, `cmd:history` and the 36.8.1
+  re-air never serve it (`hist_collect`, which also checks the bearer the
+  answer goes out on), `/api/xprs/history` rows say `"out":true`, and the
+  page and the LCD file it in no room.
+- **An unknown scope word** (`scope:valley`) is read and never relayed.
+
+The rule and the archive flag read `[lora] local` live (`idx_task` copies it
+to `xst_set_lora_local` and `xprsindex_set_lora_local` each pass).
 
 Where the bearer DOES matter it is now recorded: `xprs_index` keeps a
 one-byte bearer code per record (`xprsidx_bearer_t`, written into what was an

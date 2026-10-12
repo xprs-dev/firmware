@@ -144,8 +144,36 @@ bool xprs_has_relay(const xprs_t *p);
 bool xprs_relay_next_is(const xprs_t *p, const char *self);
 
 /* scope:local — for the bearers in range now; never carried, never gatewayed
- * (section 13.11). */
+ * (section 9.11.1). */
 bool xprs_scope_local(const xprs_t *p);
+
+/*
+ * XPRS.md 9.11: how far a packet may go, as an ordered class, and the class
+ * of every bearer. A scope admits its own class and every narrower one.
+ * UNKNOWN is a lowercase scope word this implementation does not know: the
+ * packet may be read and must not be relayed, carried or gated.
+ */
+typedef enum {
+    XPRS_REACH_LOCAL = 0,      /* ble, wifi, espnow, lan */
+    XPRS_REACH_REGIONAL = 1,   /* lora, halow, vhf, uhf, hf, cb, pmr */
+    XPRS_REACH_GLOBAL = 2,     /* internet, satellite; also no scope at all */
+    XPRS_REACH_UNKNOWN = 3,
+} xprs_reach_t;
+
+/* A `scope:` value. NULL or empty, `global` and country codes are GLOBAL. */
+xprs_reach_t xprs_reach_of_value(const char *v, int vl);
+xprs_reach_t xprs_scope_reach(const xprs_t *p);
+/* The same off a raw wire, without parsing it: the first scope: before m:. */
+xprs_reach_t xprs_scope_reach_wire(const char *wire, int len);
+/* May a packet of scope @p scope go on (or have come from) a bearer of
+ * class @p bearer? Never for an unknown scope. */
+static inline bool xprs_reach_admits(xprs_reach_t scope, xprs_reach_t bearer)
+{
+    return scope != XPRS_REACH_UNKNOWN && bearer <= scope;
+}
+/* A scope's name in a JSON row or a room: "local", "regional", "global",
+ * "unknown". */
+const char *xprs_reach_name(xprs_reach_t r);
 
 /* Does [addr] name a station rather than a group (section 6.3)? A group name
  * is 1-16 uppercase letters; anything with a digit is a callsign — except an

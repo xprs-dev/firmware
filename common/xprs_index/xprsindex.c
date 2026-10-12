@@ -264,6 +264,7 @@ struct xprsidx_s {
      * there are none. Everything at or above it is the current format. */
     uint32_t legacy_end;
     uint32_t legacy_holes;    /* unfilled indices below legacy_end */
+    bool     lora_local;      /* [lora] local: LoRa counts as local too */
     /* Bulk writing (xprsindex_restore_mail): the active segment's table
      * entries wait here and go down in one write per segment. */
     uint32_t *pend;
@@ -1247,6 +1248,22 @@ xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
     st->boot_newest_ts = st->newest_ts;
     xi_decl_load(st);
     xi_reg_load(st);
+    /* The long dedup ring is RAM, and a restart emptied it: every chat
+     * message the mesh was still relaying came in again as a new record
+     * (a T-Deck, 2026-10-12: one message stored three times, once per relay
+     * path, after a reflash). Seeded from the newest messages kept. */
+    {
+        uint32_t idx[XI_MAIL_RING];
+        uint32_t got = xi_type_tail(st, XI_T_MESSAGE, 0, XI_MAIL_RING, idx, XI_MAIL_RING);
+        for (uint32_t i = 0; i < got; i++) {
+            xi_rec_t r;
+            if (idx[i] == 0 || idx[i] >= st->next_index || !xi_read_rec(st, idx[i], &r))
+                continue;
+            st->mail_seen[st->mail_pos] = xi_id_hash(r.id);
+            st->mail_pos = (st->mail_pos + 1) % XI_MAIL_RING;
+        }
+        xi_read_close(st);
+    }
     st->ready = true;
 #ifndef XPRSIDX_HOST_TEST
     /* Core 1, deliberately. The BLE controller and host are pinned to core 0
@@ -1774,6 +1791,21 @@ uint32_t xprsindex_seg_records(uint64_t budget)
     return recs;
 }
 
+void xprsindex_set_lora_local(xprsidx_t *st, bool local)
+{
+    if (st) st->lora_local = local;
+}
+
+int xprsidx_bearer_reach(int bearer, bool lora_local)
+{
+    switch (bearer) {
+    case XI_B_LORA: return lora_local ? XPRS_REACH_LOCAL : XPRS_REACH_REGIONAL;
+    case XI_B_RNS:
+    case XI_B_TCP:  return XPRS_REACH_GLOBAL;
+    default:        return XPRS_REACH_LOCAL;
+    }
+}
+
 void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes)
 {
     if (st) st->max_bytes = bytes;
@@ -2010,6 +2042,13 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
         for (int i = 0; i < XI_MAIL_RING; i++)
             if (st->mail_seen[i] == h) return false;    /* already kept */
     if (outgoing) r.flags |= XI_F_OUTGOING;
+    /* 9.11: a scope binds the bearer a packet was heard on too. What came
+     * from wider than its scope, or with a scope word nobody here knows, is
+     * kept and goes no further: replay, history and the rooms read this. */
+    if (!outgoing &&
+        !xprs_reach_admits(xprs_scope_reach(&p),
+                           (xprs_reach_t)xprsidx_bearer_reach(bearer, st->lora_local)))
+        r.flags |= XI_F_OUTRANGE;
     if (xprs_get(&p, "sig", &vlen)) r.flags |= XI_F_SIGNED;
     memcpy(r.wire, wire, (size_t)len);
 

@@ -254,11 +254,14 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     int n = snprintf(row, ROW,
         "%s{\"ts\":%lu,\"bearer\":\"%s\",\"rssi\":%d,\"from\":\"%s\","
         "\"to\":\"%s\",\"type\":\"%s\",\"sig\":\"%s\",\"own\":%s,"
-        "\"wire\":\"",
+        "\"out\":%s,\"wire\":\"",
         c->emitted ? "," : "", (unsigned long)rec->ts,
         xprsidx_bearer_name(rec->bearer), (int)rec->rssi,
         from_e, to_e, xprsidx_type_name(rec->type), sig,
-        own ? "true" : "false");
+        own ? "true" : "false",
+        /* Heard on a bearer wider than its scope (XPRS.md 9.11): kept,
+         * shown in no room. */
+        (rec->flags & XI_F_OUTRANGE) ? "true" : "false");
     if (n < 0 || n >= (int)ROW) return true;
     /* As in log_emit: the closing quote and brace are not optional. A
      * heavily escaped wire (every byte over 0x7e becomes six characters)

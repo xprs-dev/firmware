@@ -157,6 +157,32 @@ int main(void)
     const char *w1 = "t:message f:X1QZ3N d:X1RD89 scope:local urg:urgent m:x";
     CHECK(xprs_parse(w1, (int)strlen(w1), &p), "w1 parse");
     CHECK(xprs_scope_local(&p), "scope:local not seen");
+    /* 9.11: the classes and the rule that binds them. */
+    CHECK(xprs_scope_reach(&p) == XPRS_REACH_LOCAL, "local class");
+    struct { const char *w; xprs_reach_t want; } rc[] = {
+        { "t:message f:A m:x", XPRS_REACH_GLOBAL },
+        { "t:message f:A scope:global m:x", XPRS_REACH_GLOBAL },
+        { "t:message f:A scope:regional m:x", XPRS_REACH_REGIONAL },
+        { "t:message f:A scope:local m:x", XPRS_REACH_LOCAL },
+        { "t:warning f:A scope:PT,ES m:x", XPRS_REACH_GLOBAL },
+        { "t:message f:A scope:valley m:x", XPRS_REACH_UNKNOWN },
+        { "t:message f:A scope:local,PT m:x", XPRS_REACH_UNKNOWN },
+        { "t:message f:A m:say scope:local here", XPRS_REACH_GLOBAL },
+    };
+    for (size_t i = 0; i < sizeof rc / sizeof rc[0]; i++) {
+        int l = (int)strlen(rc[i].w);
+        CHECK(xprs_scope_reach_wire(rc[i].w, l) == rc[i].want,
+              "wire reach of '%s'", rc[i].w);
+        xprs_t q;
+        CHECK(xprs_parse(rc[i].w, l, &q) && xprs_scope_reach(&q) == rc[i].want,
+              "parsed reach of '%s'", rc[i].w);
+    }
+    CHECK(xprs_reach_admits(XPRS_REACH_REGIONAL, XPRS_REACH_LOCAL), "regional on ble");
+    CHECK(xprs_reach_admits(XPRS_REACH_REGIONAL, XPRS_REACH_REGIONAL), "regional on lora");
+    CHECK(!xprs_reach_admits(XPRS_REACH_REGIONAL, XPRS_REACH_GLOBAL), "regional on the internet");
+    CHECK(!xprs_reach_admits(XPRS_REACH_LOCAL, XPRS_REACH_REGIONAL), "local on lora");
+    CHECK(xprs_reach_admits(XPRS_REACH_GLOBAL, XPRS_REACH_GLOBAL), "global anywhere");
+    CHECK(!xprs_reach_admits(XPRS_REACH_UNKNOWN, XPRS_REACH_LOCAL), "unknown goes nowhere");
     CHECK(xprs_urg(&p) == XPRS_URG_URGENT, "urg:urgent");
     const char *w2 = "t:message f:A d:B urg:sideways m:x";
     CHECK(xprs_parse(w2, (int)strlen(w2), &p) && xprs_urg(&p) == XPRS_URG_NORMAL,

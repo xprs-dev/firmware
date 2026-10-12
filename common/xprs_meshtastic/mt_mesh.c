@@ -976,7 +976,10 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
         }
         return;
     }
-    if (xprs_scope_local(p)) return;       /* never onto a radio band */
+    /* XPRS.md 9.11: this network is a radio band, a regional bearer, so a
+     * local packet does not go on it and neither does one whose scope word
+     * this station does not know. Regional and global do. */
+    if (!xprs_reach_admits(xprs_scope_reach(p), XPRS_REACH_REGIONAL)) return;
 
     mt_data_t d = { 0 };
     d.portnum = MT_PORT_TEXT;

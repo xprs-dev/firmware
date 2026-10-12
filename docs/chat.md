@@ -81,9 +81,11 @@ the station and deletes nothing).
 
 ## Rooms
 
-`Local`, `Global` and `Social` plus one room per callsign heard, matching
-the rail on the board's own Chat panel. A row lands in a room by its
-`scope:` and `d:` fields, not by anything the page invents.
+`Local`, `Regional`, `Global` and `Social` plus one room per callsign heard,
+matching the rail on the board's own Chat panel. A row lands in a room by its
+`scope:` and `d:` fields (XPRS.md 9.11), not by anything the page invents,
+and a row the station marks `"out":true` (heard on a bearer wider than its
+scope) lands in none.
 
 ## Logging
 

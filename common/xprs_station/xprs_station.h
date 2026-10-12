@@ -61,7 +61,8 @@ typedef struct {
     char     id[XPRS_ID_LEN];    /* section 5, so replies can find it */
     char     r[XPRS_ID_LEN];     /* parent id when this is a reply (6.4) */
     uint8_t  kind;               /* 0 global, 1 scope:local, 2 direct (d:),
-                                  * 3 a published status (section 27) */
+                                  * 3 a published status (section 27),
+                                  * 4 scope:regional */
     uint8_t  urg;                /* urg: as a rank, 0 low .. 3 urgent
                                   * (XPRS 13.5). What survives a full ring. */
     uint32_t seq;                /* arrival order. The ring no longer fills
@@ -92,6 +93,11 @@ int  xst_tz(bool *known);
 bool xst_ingest(const char *wire, int len, const char *bearer, int rssi);
 /* Same, when the caller already parsed. Returns false on own echo/no f:. */
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi);
+
+/** Whether LoRa also counts as a local bearer here ([lora] local, XPRS.md
+ *  9.11.1): a chat heard on a bearer wider than its scope is not shown in a
+ *  room (9.11), and LoRa's class depends on it. */
+void xst_set_lora_local(bool local);
 
 /* Chat ring only -- for locally-sent messages (the API/console send path
  * hears no echo of its own wire). */

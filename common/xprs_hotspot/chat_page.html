@@ -350,6 +350,7 @@ function sendMsg(){
   }
   var where='';
   if(curRoom==='local')where=' scope:local';
+  else if(curRoom==='regional')where=' scope:regional';
   else if(curRoom.slice(0,3)==='dm:')where=' d:'+curRoom.slice(3);
   /* The Social feed publishes a status (27): kept and read later, not a
    * conversation. A reply to a status is itself a status carrying r:. */
@@ -468,7 +469,7 @@ function sendLike(id){
   else delete likes[id][baseCall(mycall)];
   refreshLikes(id);
   var par=idmap[id];
-  var sc=(par&&par.scopeLocal)?' scope:local':'';
+  var sc=par&&par.scope&&par.scope!=='global'?' scope:'+par.scope:'';
   var wire=signWire('t:reaction f:'+mycall+' ts:'+tsNow()+sc+' '+verb+':like r:'+id);
   postWire(wire,null);}
 
@@ -495,17 +496,29 @@ function menuAct(act,id,from){
 
 var clearedBefore=parseInt(stGet('xprs_cleared')||'0',10)||0;
 
-/* Rooms (XPRS 13.11): Local is the scope:local conversation -- the packets
- * honest stations keep off LoRa, radio and the internet. Global is the
- * default scope, which goes anywhere. A packet with d: naming a person is a
- * 1:1 and gets its own room. */
+/* Rooms (XPRS.md 9.11): Local is the scope:local conversation, kept to
+ * Bluetooth, ESP-NOW and the LAN; Regional is scope:regional, which adds
+ * LoRa and radio and never reaches the internet; Global is the default
+ * scope, which goes anywhere. A room is the scope its author wrote, never
+ * the bearer that delivered it, and a packet the station heard out of range
+ * (row.out) is in none of them. A packet with d: naming a person is a 1:1
+ * and gets its own room. */
 var curRoom=stGet('xprs_room')||'local';
 var allRows=[];              /* every row heard, for room switches */
 var dmPeers={};              /* callsign -> true */
 function baseCall(c){var i=c.indexOf('-');return i<0?c:c.slice(0,i);}
+/* The scope word before m:, as the room it files into. An unknown lowercase
+ * word is in no room: a station does not pass it on (9.11). */
+function scopeRoom(w){
+  var m=w.split(' m:')[0].match(/ scope:(\S+)/);
+  if(!m||m[1]==='global')return 'global';
+  if(m[1]==='local'||m[1]==='regional')return m[1];
+  return /[a-z]/.test(m[1])?null:'global';      /* PT,ES: a country */
+}
 function roomOf(row){
   var w=row.wire||'';
   var to=row.to||'';
+  if(row.out)return null;
   /* A status (27) is a feed post, not a conversation: its own timeline. */
   if((row.type||'')==='status'||w.indexOf('t:status ')===0)return 'social';
   if(to&&to[0]!=='#'){
@@ -513,15 +526,15 @@ function roomOf(row){
     if(baseCall(row.from)===baseCall(mycall))return 'dm:'+baseCall(to);
     return null;             /* somebody else's 1:1: not our room */
   }
-  return / scope:local(?: |$)/.test(w)?'local':'global';
+  return scopeRoom(w);
 }
 function roomLabel(r){
-  return r==='local'?'Local':r==='global'?'Global':
+  return r==='local'?'Local':r==='regional'?'Regional':r==='global'?'Global':
          r==='social'?'Social':r.slice(3);}
 function renderSide(){
   var el=document.getElementById('side');
   var htmlp='<div class="roomhead">Rooms</div>';
-  var rooms=['local','global'];
+  var rooms=['local','regional','global'];
   var peers=Object.keys(dmPeers).sort();
   var extra=peers.length?'<div class="roomhead">People</div>':'';
   el.innerHTML=htmlp+
@@ -548,6 +561,7 @@ function switchRoom(r){
   for(var i=0;i<allRows.length;i++)render(allRows[i]);
   document.getElementById('txt').placeholder=
     r==='local'?'Message (stays local)':
+    r==='regional'?'Message (stays regional)':
     r==='global'?'Message (goes everywhere)':
     r==='social'?'Status update (published to everyone)':
     'Message to '+r.slice(3);
@@ -561,7 +575,8 @@ function openDm(call){
 function render(row){
   var w=row.wire||'';
   if((row.type||'')==='reaction'||w.indexOf('t:reaction ')===0){
-    if(!seen[w]){seen[w]=1;applyReaction(row);}
+    var rk=wireId(w);
+    if(!seen[rk]){seen[rk]=1;applyReaction(row);}
     return;
   }
   var room=roomOf(row);
@@ -569,7 +584,10 @@ function render(row){
   if(room.slice(0,3)==='dm:')dmPeers[room.slice(3)]=true;
   if(allRows.indexOf(row)<0)allRows.push(row);
   if(room!==curRoom){renderSide();return;}
-  if(seen[w])return;seen[w]=1;
+  /* One bubble per message (XPRS.md 5): copies that came round by other
+   * relays differ only in via:, which the identifier leaves out. */
+  var sk=wireId(w);
+  if(seen[sk])return;seen[sk]=1;
   var mi=w.indexOf(' m:');
   var text=mi>=0?w.slice(mi+3):'';
   if(!text)return;
@@ -580,7 +598,7 @@ function render(row){
   var rootm=w.match(/ root:([0-9a-f]{6})/);
   idmap[id]={from:row.from,text:text,r:rm?rm[1]:'',
              root:rootm?rootm[1]:'',
-             scopeLocal:/ scope:local(?: |$)/.test(w)};
+             scope:scopeRoom(w)||'global'};
   var d=document.createElement('div');
   d.className='msg '+(own?'local':'remote');
   var when=row.ts?new Date(row.ts*1000).toLocaleTimeString():'';

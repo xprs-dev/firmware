@@ -226,11 +226,13 @@ void xst_chat_note(const xprs_t *p)
         row.kind = 3;                                  /* a publication */
     else if (direct)
         row.kind = 2;                                  /* a 1:1 */
-    else if (xprs_get_str(p, "scope", sc, sizeof sc) &&
-             strcmp(sc, "local") == 0)
+    else if (xprs_scope_reach(p) == XPRS_REACH_LOCAL)
         row.kind = 1;                                  /* the local room */
+    else if (xprs_scope_reach(p) == XPRS_REACH_REGIONAL)
+        row.kind = 4;                                  /* the regional room */
     else
         row.kind = 0;                                  /* global, default */
+    (void)sc;
     /* When it was SAID, not when it came past. The mesh replays: archivers
      * answer history asks, stations re-air, and a message from an hour ago
      * arrives again all day. Dated on arrival, every replay entered the ring
@@ -302,13 +304,27 @@ void xst_chat_note(const xprs_t *p)
     UNLOCK();
 }
 
+static bool s_lora_local;
+
+void xst_set_lora_local(bool local)
+{
+    s_lora_local = local;
+}
+
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
 {
     char call[XPRS_CALL_LEN];
     if (!xprs_get_str(p, "f", call, sizeof call)) return false;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return false;
 
-    xst_chat_note(p);
+    /* 9.11: a room shows what was said in its range. A packet heard on a
+     * bearer wider than its scope (scope:local off Reticulum) did not come
+     * from there, and one with an unknown scope word is in no room. */
+    xprs_reach_t heard = !bearer ? XPRS_REACH_LOCAL
+        : !strcmp(bearer, "lora") ? (s_lora_local ? XPRS_REACH_LOCAL : XPRS_REACH_REGIONAL)
+        : (!strcmp(bearer, "rns") || !strcmp(bearer, "tcp")) ? XPRS_REACH_GLOBAL
+        : XPRS_REACH_LOCAL;
+    if (xprs_reach_admits(xprs_scope_reach(p), heard)) xst_chat_note(p);
 
     uint32_t ep = xst_epoch_now();
     if (ep) {

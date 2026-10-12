@@ -1408,6 +1408,17 @@ static void test_mail_is_kept_once(const char *dir)
     CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 1,
           "the same mail was kept %d times", xprsindex_mail_count(st, "X1BOA3", 99));
     xprsindex_close(st);
+    /* And after a restart, when the relays are still airing it. */
+    st = xprsindex_open(dir);
+    const char *chat = "t:message f:X1QZ3N ts:" TS_2025 " scope:local m:room chat";
+    xprsindex_add(st, chat, (int)strlen(chat), 0, false, 0);
+    xprsindex_close(st);
+    st = xprsindex_open(dir);
+    const char *again = "t:message f:X1QZ3N ts:" TS_2025 " scope:local via:X1RLY1 m:room chat";
+    CHECK(!xprsindex_add(st, again, (int)strlen(again), 0, false, 0),
+          "a relayed copy was stored again after a restart");
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 1, "mail kept twice after a restart");
+    xprsindex_close(st);
 }
 
 /* The chat page's question, message+reaction+status newest first, answered
@@ -1445,6 +1456,34 @@ static void test_chat_kinds_from_tails(const char *dir)
     bool same = a.n == b.n;
     for (int i = 0; same && i < a.n; i++) same = a.idx[i] == b.idx[i];
     CHECK(a.n == 60 && same, "tails gave %d, the walk %d, same order %d", a.n, b.n, same);
+    xprsindex_close(st);
+}
+
+/* XPRS.md 9.11: a record heard on a bearer wider than its scope is marked
+ * out of range when it is accepted; the LoRa switch moves LoRa into local. */
+static void test_out_of_range_is_marked(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    struct { const char *w; int bearer; bool lora_local; bool out; } c[] = {
+        { "t:message f:X1AA01 ts:" TS_2026 " scope:local m:a",    XI_B_BLE,  false, false },
+        { "t:message f:X1AA02 ts:" TS_2026 " scope:local m:b",    XI_B_RNS,  false, true  },
+        { "t:message f:X1AA03 ts:" TS_2026 " scope:local m:c",    XI_B_LORA, false, true  },
+        { "t:message f:X1AA04 ts:" TS_2026 " scope:local m:d",    XI_B_LORA, true,  false },
+        { "t:message f:X1AA05 ts:" TS_2026 " scope:regional m:e", XI_B_LORA, false, false },
+        { "t:message f:X1AA06 ts:" TS_2026 " scope:regional m:f", XI_B_RNS,  false, true  },
+        { "t:message f:X1AA07 ts:" TS_2026 " m:g",                XI_B_RNS,  false, false },
+        { "t:message f:X1AA08 ts:" TS_2026 " scope:valley m:h",   XI_B_BLE,  false, true  },
+    };
+    for (size_t i = 0; i < sizeof c / sizeof c[0]; i++) {
+        xprsindex_set_lora_local(st, c[i].lora_local);
+        CHECK(xprsindex_add2(st, c[i].w, (int)strlen(c[i].w), 0, false, 0, c[i].bearer),
+              "add %zu", i);
+        xprsidx_rec_t r;
+        CHECK(xprsindex_get(st, (uint32_t)i, &r) &&
+              !!(r.flags & XI_F_OUTRANGE) == c[i].out,
+              "case %zu: out of range should be %d", i, c[i].out);
+    }
     xprsindex_close(st);
 }
 
@@ -1486,6 +1525,7 @@ int main(void)
     test_restore_across_segments(dir);
     test_mail_is_kept_once(dir);
     test_chat_kinds_from_tails(dir);
+    test_out_of_range_is_marked(dir);
     rm_rf(dir);
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

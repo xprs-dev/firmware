@@ -886,7 +886,11 @@ static uint32_t s_newest_ts, s_newest_ts_ms;
 
 static bool ble_to_lora(const char *wire, int len)
 {
-    if (!lr_worth(wire, len, false) || lr_scope_local(wire, len)) return false;
+    /* XPRS.md 9.11: LoRa is regional; a local packet stays on Bluetooth,
+     * and so does one whose scope word this card does not know. */
+    if (!lr_worth(wire, len, false) ||
+        !xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_REGIONAL))
+        return false;
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return false;
     char d[16] = "", ts[24] = "", t[16] = "", f[10] = "";
@@ -1003,7 +1007,11 @@ static void on_lora(const char *wire, int len, uint64_t peer, int rssi)
     mail_heard(wire, len, &s_lora, direct_of(wire, len));
     if (command_for_us(&s_lora, wire, len)) return;
     if (answer_request(&s_lora, wire, len)) return;
-    if (s_ble_up) xb_offer(&s_ble, wire, len);
+    /* XPRS.md 9.11: heard on LoRa, a regional bearer, so a local packet
+     * here has already left its range and is not passed on. */
+    if (s_ble_up &&
+        xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_REGIONAL))
+        xb_offer(&s_ble, wire, len);
 }
 
 static void on_ble(const char *wire, int len, uint64_t peer, int rssi)
