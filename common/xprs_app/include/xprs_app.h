@@ -190,10 +190,10 @@ typedef struct {
      * A board whose flash cannot hold it mounts a volume at /idx itself (a
      * microSD card, a smaller partition) and says how many bytes of archive
      * that volume will take. Zero keeps the log, statistics and conversation
-     * there and runs no archive, which is the honest answer for a volume
-     * smaller than one index segment (4096 records of 320 bytes, 1.3 MB): the
-     * segment being written can never be evicted, so it would fill the volume
-     * and take the log down with it.
+     * there and runs no archive. The segment being written can never be
+     * evicted, so a volume needs room for the budget plus one whole segment,
+     * and segments are sized to the budget for that reason
+     * (xprsindex_seg_records).
      *
      * Called once, on the storage task, which is the only task that touches
      * /idx. Returns ESP_OK when something is mounted there.
@@ -232,6 +232,44 @@ typedef struct {
      *  operator's `cfg set report_s <seconds>` overrides it (0 stops them). */
     int report_s;
 } xapp_board_t;
+
+/**
+ * The archive a board with 4 MB of flash keeps on its 832 KB "storage"
+ * partition (xapp_board_t.storage_mount): what is left after the log (two
+ * 64 KB files), the gossip store beside the archive (capped at 256 KB) and
+ * some 64 KB for the FAT, the statistics and the archive's own index files.
+ * About 2,100 messages of 120 bytes, never fewer than ~1,050 of 250.
+ */
+#define XAPP_ARCHIVE_832K  (384u * 1024u)
+
+/** The archive on a microSD card: room the flash never had. xprsindex_budget
+ *  still keeps it under four fifths of the card. */
+#define XAPP_ARCHIVE_CARD  (64ull * 1024u * 1024u)
+/** The archive on a 16 MB board's own flash (the default mount's). */
+#define XAPP_ARCHIVE_FLASH (10u * 1024u * 1024u)
+
+/**
+ * For a board's storage_mount: a microSD card at /idx, on SDMMC (1-bit, any
+ * pins on an S3) or on SPI, beside whatever else is on that bus. A card is
+ * never formatted -- one that does not mount may be somebody's photographs --
+ * and nothing is said beyond a log line when there is none. ESP_OK when the
+ * card is mounted.
+ */
+esp_err_t xapp_mount_card_sdmmc(int clk, int cmd, int d0);
+esp_err_t xapp_mount_card_sdspi(int spi_host, int sclk, int mosi, int miso, int cs);
+
+/** The fallback: the board's own "storage" flash partition at /idx, formatted
+ *  when it will not mount, and marked as the board's own
+ *  (xapp_storage_own_flash). */
+esp_err_t xapp_mount_flash(void);
+
+/**
+ * Called by a board's storage_mount when what it mounted at /idx is its own
+ * "storage" flash partition, never a card. Such a volume may be formatted
+ * when it is found damaged (mail rescued first, XPRS.md 12.11); a card never
+ * is. The default mount needs no call.
+ */
+void xapp_storage_own_flash(void);
 
 /** Run the station. Does not return: it is the body of app_main().
  *  The pointer must stay valid forever (a static is the expected form). */

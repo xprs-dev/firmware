@@ -287,6 +287,11 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
         q.until_ts = parse_when(p);
     if (httpd_query_key_value(query, "only", p, sizeof p) == ESP_OK)
         q.type = xprsidx_type_code(p);
+    /* Several types at once (comma-separated), e.g. the chat page's
+     * message,reaction,status: asking for the newest N of everything gave
+     * it N beacons and no conversation once a busy hour had passed. */
+    if (httpd_query_key_value(query, "kind", p, sizeof p) == ESP_OK)
+        q.types = xprsidx_type_mask(p);     /* literal commas, not %2C */
     if (httpd_query_key_value(query, "limit", p, sizeof p) == ESP_OK)
         q.limit = (uint32_t)strtoul(p, NULL, 10);
     if (q.limit == 0 || q.limit > 200) q.limit = 200;
@@ -705,6 +710,89 @@ static esp_err_t h_coredump(httpd_req_t *req)
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
+/* ---- /api/wifi ----------------------------------------------------------- */
+
+static esp_err_t h_wifi_get(httpd_req_t *req)
+{
+    if (!s_cfg->wifi_json) return xapi_resp_error(req, "404 Not Found", "no wifi");
+    char *buf = s_api_buf;
+    int n = snprintf(buf, API_BUF_SIZE, "{\"ok\":true,");
+    n += s_cfg->wifi_json(buf + n, API_BUF_SIZE - n - 2);
+    if (n < 0 || n > API_BUF_SIZE - 2) return xapi_resp_error(req, "500 Internal Server Error", "too long");
+    buf[n++] = '}';
+    xapi_resp_json(req);
+    return httpd_resp_send(req, buf, n);
+}
+
+static esp_err_t h_wifi_scan_get(httpd_req_t *req)
+{
+    if (!s_cfg->wifi_scan_json) return xapi_resp_error(req, "404 Not Found", "no wifi");
+    char *buf = s_api_buf;
+    int n = snprintf(buf, API_BUF_SIZE, "{\"ok\":true,");
+    n += s_cfg->wifi_scan_json(buf + n, API_BUF_SIZE - n - 2);
+    if (n < 0 || n > API_BUF_SIZE - 2) return xapi_resp_error(req, "500 Internal Server Error", "too long");
+    buf[n++] = '}';
+    xapi_resp_json(req);
+    return httpd_resp_send(req, buf, n);
+}
+
+static esp_err_t h_wifi_scan_post(httpd_req_t *req)
+{
+    if (!s_cfg->wifi_scan_start) return xapi_resp_error(req, "404 Not Found", "no wifi");
+    char why[48] = "";
+    if (s_cfg->wifi_scan_start(why, sizeof why))
+        return xapi_resp_error(req, "409 Conflict", why);
+    xapi_resp_json(req);
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"state\":\"scanning\"}");
+}
+
+/* %XX and '+' in a form value, in place. */
+static void form_decode(char *s)
+{
+    char *o = s;
+    for (; *s; s++) {
+        if (*s == '+') { *o++ = ' '; continue; }
+        if (*s == '%' && isxdigit((unsigned char)s[1]) && isxdigit((unsigned char)s[2])) {
+            char h[3] = { s[1], s[2], 0 };
+            *o++ = (char)strtol(h, NULL, 16);
+            s += 2;
+            continue;
+        }
+        *o++ = *s;
+    }
+    *o = 0;
+}
+
+/* application/x-www-form-urlencoded: ssid=...&pass=... */
+static esp_err_t h_wifi_post(httpd_req_t *req)
+{
+    if (!s_cfg->wifi_join) return xapi_resp_error(req, "404 Not Found", "no wifi");
+    char *body = s_api_buf;
+    if (req->content_len <= 0 || req->content_len > 400)
+        return xapi_resp_error(req, "400 Bad Request", "ssid= and pass=, form encoded");
+    int got = 0;
+    while (got < (int)req->content_len) {
+        int r = httpd_req_recv(req, body + got, req->content_len - got);
+        if (r <= 0) return xapi_resp_error(req, "400 Bad Request", "short body");
+        got += r;
+    }
+    body[got] = 0;
+    char *ssid = s_api_buf + 512, *pass = s_api_buf + 640;
+    ssid[0] = pass[0] = 0;
+    httpd_query_key_value(body, "ssid", ssid, 128);
+    httpd_query_key_value(body, "pass", pass, 200);
+    form_decode(ssid);
+    form_decode(pass);
+    char why[64] = "";
+    int code = s_cfg->wifi_join(ssid, pass, why, sizeof why);
+    memset(pass, 0, 200);
+    memset(body, 0, (size_t)got);
+    if (code == 409) return xapi_resp_error(req, "409 Conflict", why);
+    if (code) return xapi_resp_error(req, "400 Bad Request", why);
+    xapi_resp_json(req);
+    return httpd_resp_sendstr(req, "{\"ok\":true,\"join\":\"joining\"}");
+}
+
 esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
 {
     if (s_httpd) return ESP_OK;
@@ -722,7 +810,9 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
      * before this was raised. Thirty seconds still reaps a dead client. */
     hc.recv_wait_timeout = 30;
     hc.send_wait_timeout = 30;
-    hc.max_uri_handlers = 20;   /* 13 here + OTA + 4 from the config share */
+    /* 17 here + OTA + 3 from the hotspot + 4 from the config share, and
+     * room: a handler past the cap is refused without a word. */
+    hc.max_uri_handlers = 28;
     hc.lru_purge_enable = true;
     /* Claimed here, while the heap is still one large block, and never
      * released. A server that cannot answer is worse than one that never
@@ -754,6 +844,10 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/diag", .method = HTTP_GET, .handler = h_diag },
         { .uri = "/api/screen", .method = HTTP_GET, .handler = h_screen },
         { .uri = "/api/coredump", .method = HTTP_GET, .handler = h_coredump },
+        { .uri = "/api/wifi", .method = HTTP_GET, .handler = h_wifi_get },
+        { .uri = "/api/wifi", .method = HTTP_POST, .handler = h_wifi_post },
+        { .uri = "/api/wifi/scan", .method = HTTP_GET, .handler = h_wifi_scan_get },
+        { .uri = "/api/wifi/scan", .method = HTTP_POST, .handler = h_wifi_scan_post },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(s_httpd, &uris[i]);

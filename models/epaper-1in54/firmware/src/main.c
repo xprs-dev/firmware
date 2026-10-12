@@ -13,9 +13,9 @@
  * one thing only this board knows, the room's temperature and humidity,
  * which is pushed from here with xup_set_climate().
  *
- * The archive lives on the microSD card when one is in the slot: the 4 MB
- * of flash leave 832 KB for files, which is less than a single index
- * segment (see storage_mount below).
+ * The archive lives on the microSD card when one is in the slot, and is
+ * small without one: the 4 MB of flash leave 832 KB for files (see
+ * storage_mount below).
  *
  * The two buttons turn the page a quarter at a time, for however the cable
  * lets the board stand.
@@ -426,49 +426,21 @@ static int battery_mv(void)
 /* The station's files at /idx (xapp_board_t.storage_mount). Called once, on
  * the storage task.
  *
- * The card, when there is one: the archive gets the same 10 MB every other
- * board keeps. It is NEVER formatted from here: a card that does not mount
- * may be somebody's photographs, and a station that wipes it to make room
- * for packets has done something nobody asked for. It is reported and the
+ * The card, when there is one: the archive gets 64 MB of it
+ * (XAPP_ARCHIVE_CARD). It is NEVER formatted (xapp_mount_card_sdmmc): a card
+ * that does not mount may be somebody's photographs. It is reported and the
  * board falls back to its flash.
  *
  * The flash otherwise: the 832 KB "storage" partition holds the log, the
- * statistics and the conversation, and no archive, because one index
- * segment is 1.3 MB and the segment being written can never be evicted. */
+ * statistics, the conversation and a 384 KB archive (XAPP_ARCHIVE_832K). */
 static esp_err_t storage_mount(uint64_t *archive_bytes)
 {
-    esp_vfs_fat_sdmmc_mount_config_t sd_mc = {
-        .format_if_mount_failed = false,
-        .max_files = CONFIG_SDCARD_MAX_FILES,
-        .allocation_unit_size = 16 * 1024,
-    };
-    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot.width = 1;
-    slot.clk = SD_PIN_CLK;
-    slot.cmd = SD_PIN_CMD;
-    slot.d0 = SD_PIN_D0;
-    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    sdmmc_card_t *card = NULL;
-    esp_err_t err = esp_vfs_fat_sdmmc_mount("/idx", &host, &slot, &sd_mc, &card);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "storage: microSD at /idx, %llu MB; the archive is there",
-                 (unsigned long long)card->csd.capacity *
-                 card->csd.sector_size / (1024u * 1024u));
-        *archive_bytes = 10u * 1024u * 1024u;
+    if (xapp_mount_card_sdmmc(SD_PIN_CLK, SD_PIN_CMD, SD_PIN_D0) == ESP_OK) {
+        *archive_bytes = XAPP_ARCHIVE_CARD;
         return ESP_OK;
     }
-    ESP_LOGW(TAG, "storage: no usable microSD (%s); using the flash, "
-                  "without an archive", esp_err_to_name(err));
-
-    static wl_handle_t wl = WL_INVALID_HANDLE;
-    const esp_vfs_fat_mount_config_t mc = {
-        .max_files = CONFIG_SDCARD_MAX_FILES,
-        .format_if_mount_failed = true,     /* our own partition, never a card */
-        .allocation_unit_size = 4096,
-    };
-    *archive_bytes = 0;
-    return esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage", &mc, &wl);
+    *archive_bytes = XAPP_ARCHIVE_832K;
+    return xapp_mount_flash();
 }
 
 /* ── This board ─────────────────────────────────────────────────────────── */

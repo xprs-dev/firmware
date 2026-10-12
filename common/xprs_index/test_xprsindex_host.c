@@ -356,9 +356,11 @@ static void test_a_hole_is_not_a_record(const char *dir)
           "first record not stored");
     xprsindex_close(st);
 
-    /* Slot 1: never written, and holding what the card had. */
+    /* Slot 1: a table entry pointing at bytes that are not a record --
+     * appended log text, the way a cluster holding the rotated log reads.
+     * Slot 2: an entry a power cut left pointing past the end of the file. */
     char path[256];
-    snprintf(path, sizeof path, "%s/seg_%010u.bin", dir, 0u);
+    snprintf(path, sizeof path, "%s/seg_%010u.v2", dir, 0u);
     FILE *f = fopen(path, "r+b");
     CHECK(f != NULL, "no segment to punch");
     if (f) {
@@ -366,18 +368,14 @@ static void test_a_hole_is_not_a_record(const char *dir)
             "xprs: ble -79 dBm 131B t:observation f:X3H3MZ link:ble peers:2\n"
             "I (239679) wifi:state: run -> init (0)\n"
             "W (241788) health: station up: http api+ lan bearer+\n";
-        char slot[320];
-        memset(slot, 0, sizeof slot);
-        memcpy(slot, junk, sizeof junk - 1);
-        /* Stale bytes that pass for a written slot: a length in range and an
-         * index that is somebody else's. This is the shape that got served --
-         * `len != 0` was the whole test, and old log text satisfies it. */
-        uint32_t stale_index = 4242;
-        uint16_t plausible_len = 131;
-        memcpy(slot + 0,  &stale_index,   sizeof stale_index);
-        memcpy(slot + 12, &plausible_len, sizeof plausible_len);
-        fseek(f, 320L, SEEK_SET);
-        fwrite(slot, sizeof slot, 1, f);
+        fseek(f, 0, SEEK_END);
+        uint32_t at = (uint32_t)ftell(f);
+        fwrite(junk, sizeof junk - 1, 1, f);
+        fseek(f, 8 + 1 * 4, SEEK_SET);
+        fwrite(&at, 4, 1, f);
+        uint32_t past = at + 100000u;
+        fseek(f, 8 + 2 * 4, SEEK_SET);
+        fwrite(&past, 4, 1, f);
         fclose(f);
     }
 
@@ -603,9 +601,9 @@ static void test_evicts_on_real_bytes(const char *dir)
     xprsindex_stats(st, &s0);
     CHECK(s0.segments == 2, "wanted 2 segments, got %u", (unsigned)s0.segments);
 
-    /* 1.5 MB. The store holds ~4101 records = ~1.31 MB and is INSIDE it;
-     * billed by the segment it would read as 2 * 4096 * 320 = 2.5 MB and
-     * evict. */
+    /* 1.5 MB. The store holds ~4101 short records, under half a megabyte,
+     * and is INSIDE it; billed as two full segments of 320-byte slots it
+     * would read as 2.5 MB and evict. */
     xprsindex_set_max_bytes(st, 1536u * 1024u);
     snprintf(w, sizeof w, "t:info f:X1LST2 ts:2026-02-02_09:00:00 m:the trigger");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "trigger add");
@@ -621,7 +619,7 @@ static void test_evicts_on_real_bytes(const char *dir)
           "the oldest record was evicted while the store was inside its budget");
 
     /* Past the budget for real, and it must still evict. */
-    xprsindex_set_max_bytes(st, 512u * 1024u);
+    xprsindex_set_max_bytes(st, 256u * 1024u);
     snprintf(w, sizeof w, "t:info f:X1LST3 ts:2026-02-03_09:00:00 m:over");
     xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
     xprsidx_stats_t s2;
@@ -775,7 +773,7 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
                  i % 90, i);
         xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
     }
-    xprsindex_set_max_bytes(st, 1u * 1024u * 1024u);
+    xprsindex_set_max_bytes(st, 512u * 1024u);
     snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
 
@@ -786,9 +784,7 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
           "the declarer's mail was evicted -- 36.11 keeps it longest");
 
     /* Eviction really ran, so the choice above was a choice: the 9000 filler
-     * records filled three segments and at least one was retired. (`count`
-     * is cumulative -- records ever accepted -- so segments is what says a
-     * segment went.) */
+     * records filled three segments and at least one was retired. */
     xprsidx_stats_t s;
     xprsindex_stats(st, &s);
     CHECK(s.segments < 3, "nothing was evicted (%u segments)",
@@ -933,8 +929,12 @@ static void test_retention_priorities(const char *dir)
         xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
     }
 
-    /* Cap below the store's size: eviction must fire on the next add. */
-    xprsindex_set_max_bytes(st, 1u * 1024u * 1024u);   /* ~3276 records */
+    /* Cap below the store's size: eviction must fire on the next add. The
+     * 9000 fillers are about a megabyte in three segments; at 300 KB the
+     * store is still over budget once the oldest segment goes, so class 2
+     * cannot be carried. */
+    const uint64_t cap = 300u * 1024u;
+    xprsindex_set_max_bytes(st, cap);
     snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "post-cap add");
 
@@ -958,23 +958,15 @@ static void test_retention_priorities(const char *dir)
                            .limit = 5 };
     collect_t c2 = { 0 };
     size_t custody = xprsindex_query(st, &q2, collect, &c2);
-    xprsidx_stats_t pressure;
-    xprsindex_stats(st, &pressure);
-    const uint64_t after = (uint64_t)pressure.segments * 4096u * 320u;
-    if (after > 1u * 1024u * 1024u) {
-        CHECK(custody == 0,
-              "custody mail outlived the budget it should have paid");
-    } else {
-        CHECK(custody >= 1, "custody mail dropped while there was room");
-    }
+    CHECK(custody == 0, "custody mail outlived the budget it should have paid");
     xprsidx_query_t q3 = { .type = -1, .from = "X1SP00", .limit = 500,
                            .trusted = true };
     collect_t c3 = { 0 };
     size_t remaining = xprsindex_query(st, &q3, collect, &c3);
     xprsidx_stats_t xs;
     xprsindex_stats(st, &xs);
-    CHECK((uint64_t)xs.segments * 4096u * 320u <= 1u * 1024u * 1024u + 4096u * 320u,
-          "store did not shrink under its cap (%u segments)",
+    CHECK(xs.used_bytes <= cap, "store did not shrink under its cap "
+          "(%llu bytes in %u segments)", (unsigned long long)xs.used_bytes,
           (unsigned)xs.segments);
     (void)remaining;
 
@@ -983,6 +975,479 @@ static void test_retention_priorities(const char *dir)
           (int)strlen(TS_2026)), "newest ts wrong");
     xprsindex_close(st);
 }
+
+/* ── variable-length records ─────────────────────────────────────────────── */
+
+/* A record costs its header and its own bytes, not a 320-byte slot. */
+static void test_records_take_only_their_bytes(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    CHECK(xprsindex_ready(st), "store did not open");
+
+    char w[300];
+    uint64_t wire = 0;
+    for (int i = 0; i < 100; i++) {
+        int n = snprintf(w, sizeof w, "t:message f:X1AB%02d d:X1CD%02d ts:" TS_2026
+                         " m:hi %d", i % 50, i % 7, i);
+        CHECK(xprsindex_add(st, w, n, -50, false, 0), "add %d", i);
+        wire += (uint64_t)n;
+    }
+    /* A full-size packet round-trips byte for byte. */
+    memset(w, 'x', sizeof w);
+    int head = snprintf(w, sizeof w, "t:info f:X1BIG0 ts:" TS_2026 " m:");
+    w[head] = 'x';
+    w[250] = '\0';
+    CHECK(xprsindex_add(st, w, 250, -50, false, 0), "a 250-byte packet");
+    wire += 250;
+
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    const uint64_t expect = 8u + 256u * 4u + 101u * 56u + wire;
+    CHECK(s.used_bytes == expect, "used %llu bytes, expected %llu",
+          (unsigned long long)s.used_bytes, (unsigned long long)expect);
+    CHECK(s.used_bytes * 2 < 101u * 320u,
+          "short packets still cost more than half a fixed slot each");
+
+    xprsidx_rec_t r;
+    CHECK(xprsindex_get(st, 100, &r) && r.len == 250 && memcmp(r.wire, w, 250) == 0,
+          "the 250-byte packet did not come back whole");
+    CHECK(xprsindex_get(st, 3, &r) && strcmp(r.from, "X1AB03") == 0 &&
+          strcmp(r.to, "X1CD03") == 0 && (r.flags & 0x01),
+          "the metadata did not come back");
+    xprsindex_close(st);
+
+    /* And all of it after a reopen. */
+    st = xprsindex_open2(dir, 256);
+    CHECK(xprsindex_get(st, 100, &r) && r.len == 250, "lost across a reopen");
+    xprsindex_stats(st, &s);
+    CHECK(s.used_bytes == expect, "reopen counted %llu bytes, expected %llu",
+          (unsigned long long)s.used_bytes, (unsigned long long)expect);
+    const char *more = "t:status f:X1MORE ts:" TS_2026 " m:after";
+    CHECK(xprsindex_add(st, more, (int)strlen(more), 0, false, 0), "add after reopen");
+    CHECK(xprsindex_latest_index(st) == 101, "next index after reopen is %u",
+          (unsigned)xprsindex_latest_index(st));
+    xprsindex_close(st);
+}
+
+/* A store keeps the segment size it was made with: a record's segment is
+ * index / slots, and a reopen with another number would look in the wrong
+ * file for every record. */
+static void test_segment_size_is_the_stores(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    char w[300];
+    for (int i = 0; i < 600; i++) {
+        int n = snprintf(w, sizeof w, "t:info f:X1S%03d ts:" TS_2026 " m:%d", i, i);
+        xprsindex_add(st, w, n, 0, false, 0);
+    }
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    CHECK(s.segments == 3, "600 records in 256-slot segments are 3, got %u",
+          (unsigned)s.segments);
+    xprsindex_close(st);
+
+    st = xprsindex_open(dir);                  /* asks for the default 4096 */
+    xprsidx_rec_t r;
+    CHECK(xprsindex_get(st, 599, &r) && strcmp(r.from, "X1S599") == 0,
+          "a reopen with another size lost record 599");
+    CHECK(xprsindex_add(st, "t:info f:X1NEXT ts:" TS_2026 " m:n", 33, 0, false, 0),
+          "add after a reopen with another size");
+    xprsindex_stats(st, &s);
+    CHECK(s.segments == 3, "a reopen with another size made a new segment (%u)",
+          (unsigned)s.segments);
+    xprsindex_close(st);
+}
+
+/* Small segments are what let a sub-megabyte volume hold an archive: the
+ * segment being written is never evicted, so it bounds what the budget can
+ * get back to. 1000+ messages under 300 KB, and the oldest go first. */
+static void test_small_volume_keeps_a_thousand(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    const uint64_t cap = 300u * 1024u;
+    xprsindex_set_max_bytes(st, cap);
+    char w[300];
+    for (int i = 0; i < 5000; i++) {
+        int n = snprintf(w, sizeof w, "t:message f:X1T%03d ts:" TS_2026
+                         " m:a message of an ordinary length, number %d", i % 500, i);
+        xprsindex_add(st, w, n, 0, false, 0);
+    }
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    CHECK(s.used_bytes <= cap, "over budget: %llu bytes",
+          (unsigned long long)s.used_bytes);
+    xprsidx_query_t q = { .type = -1, .limit = 5000, .trusted = true };
+    collect_t c = { 0 };
+    size_t held = xprsindex_query(st, &q, collect, &c);
+    CHECK(held >= 1000, "a 300 KB store held only %zu messages", held);
+    CHECK(c.n > 0 && strstr(c.last.wire, "number 4999") != NULL,
+          "the newest message is not the last one kept");
+    xprsidx_rec_t r;
+    CHECK(!xprsindex_get(st, 0, &r), "the oldest message survived eviction");
+    /* The message tail indexes what is kept, not everything ever heard. */
+    char tail[256];
+    snprintf(tail, sizeof tail, "%s/t/00.idx", dir);
+    FILE *tf = fopen(tail, "rb");
+    long tsize = -1;
+    if (tf) { fseek(tf, 0, SEEK_END); tsize = ftell(tf); fclose(tf); }
+    CHECK(tsize > 0 && tsize < (long)(held * 4 + 2048),
+          "the message tail is %ld bytes for %zu kept records", tsize, held);
+    xprsidx_query_t qt = { .type = 0, .newest_first = true, .limit = 3,
+                           .trusted = true };
+    collect_t ct = { 0 };
+    CHECK(xprsindex_query(st, &qt, collect, &ct) == 3 &&
+          strstr(ct.first.wire, "number 4999") != NULL,
+          "the trimmed tail no longer finds the newest messages");
+    xprsindex_close(st);
+}
+
+/* The record layout every store wrote before this format, mirrored here so
+ * a test can lay one down the way a station already in the field has it. */
+typedef struct __attribute__((packed)) {
+    uint32_t index, ts;
+    int8_t rssi;
+    uint8_t flags, type, bearer;
+    uint16_t len;
+    char id[8], from[16], to[16];
+    char wire[251];
+    uint8_t pad[15];
+} old_rec_t;
+
+static void old_write(FILE *f, uint32_t index, const char *from, const char *wire)
+{
+    old_rec_t r;
+    memset(&r, 0, sizeof r);
+    r.index = index;
+    r.ts = xi_expect_ts(TS_2025);
+    r.type = 9;                                  /* info */
+    r.len = (uint16_t)strlen(wire);
+    snprintf(r.from, sizeof r.from, "%s", from);
+    memcpy(r.wire, wire, r.len);
+    fseek(f, (long)index * 320L, SEEK_SET);
+    fwrite(&r, sizeof r, 1, f);
+}
+
+/* A station updated in the field keeps its archive: the old 320-byte
+ * segments are read as they are, new records go into new-format segments
+ * after them, and eviction retires the old ones like any other. */
+static void test_old_segments_still_read(const char *dir)
+{
+    rm_rf(dir);
+    char sub[256];
+    snprintf(sub, sizeof sub, "mkdir -p '%s'", dir);
+    if (system(sub) != 0) { CHECK(0, "mkdir"); return; }
+    CHECK(sizeof(old_rec_t) == 320, "the mirrored old record is not 320 bytes");
+
+    char path[256];
+    snprintf(path, sizeof path, "%s/seg_%010u.bin", dir, 0u);
+    FILE *f = fopen(path, "w+b");
+    CHECK(f != NULL, "could not lay down an old segment");
+    if (!f) return;
+    old_write(f, 1, "X1OLD1", "t:info f:X1OLD1 ts:" TS_2025 " m:from before");
+    old_write(f, 2, "X1OLD2", "t:info f:X1OLD2 ts:" TS_2025 " m:also before");
+    fclose(f);
+
+    xprsidx_t *st = xprsindex_open2(dir, 256);   /* old segments are 4096 */
+    xprsidx_rec_t r;
+    CHECK(xprsindex_get(st, 1, &r) && strcmp(r.from, "X1OLD1") == 0,
+          "an old record did not read back");
+    CHECK(xprsindex_get(st, 2, &r) && strstr(r.wire, "also before") != NULL,
+          "the second old record did not read back");
+    xprsidx_stats_t ss;
+    xprsindex_stats(st, &ss);
+    CHECK(ss.count == 3, "held counts the old segment's empty slots: %u",
+          (unsigned)ss.count);
+
+    const char *n1 = "t:info f:X1NEW1 ts:" TS_2026 " m:after the update";
+    CHECK(xprsindex_add(st, n1, (int)strlen(n1), 0, false, 0), "new record");
+    CHECK(xprsindex_latest_index(st) == 4096,
+          "the new record should start the next segment, got index %u",
+          (unsigned)xprsindex_latest_index(st));
+    xprsidx_query_t q = { .type = -1, .limit = 10, .trusted = true };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 3, "wanted old+old+new, got %d", c.n);
+    CHECK(strcmp(c.first.from, "X1OLD1") == 0 && strcmp(c.last.from, "X1NEW1") == 0,
+          "out of order: %s .. %s", c.first.from, c.last.from);
+    xprsindex_close(st);
+
+    /* Reopened: still both formats, and the next record follows the last. */
+    st = xprsindex_open(dir);
+    const char *n2 = "t:info f:X1NEW2 ts:" TS_2026 " m:later";
+    CHECK(xprsindex_add(st, n2, (int)strlen(n2), 0, false, 0), "second new record");
+    CHECK(xprsindex_latest_index(st) == 4097, "index after reopen is %u",
+          (unsigned)xprsindex_latest_index(st));
+    CHECK(xprsindex_get(st, 1, &r) && strcmp(r.from, "X1OLD1") == 0,
+          "old record lost across a reopen");
+    xprsindex_stats(st, &ss);
+    CHECK(ss.count == 5, "held after a reopen: %u", (unsigned)ss.count);
+
+    /* Over budget: the old segment is the oldest, so it is the one to go. */
+    xprsindex_set_max_bytes(st, 4096);
+    const char *n3 = "t:info f:X1NEW3 ts:" TS_2026 " m:trigger";
+    xprsindex_add(st, n3, (int)strlen(n3), 0, false, 0);
+    CHECK(!xprsindex_get(st, 1, &r), "the old segment was not evicted");
+    CHECK(xprsindex_get(st, 4096, &r) && strcmp(r.from, "X1NEW1") == 0,
+          "eviction took the new segment instead");
+    FILE *gone = fopen(path, "rb");
+    CHECK(gone == NULL, "the old segment file is still there");
+    if (gone) fclose(gone);
+    xprsindex_stats(st, &ss);
+    CHECK(ss.count == 3, "held after the old segment went: %u", (unsigned)ss.count);
+    xprsindex_close(st);
+}
+
+/* A T-Deck's first boot after the update made its first new-format segment
+ * and was reset before the file's size reached the directory, so its second
+ * boot read no slot count, took the board's own (2048) and laid that segment
+ * down again with it. With old segments on the volume the slot count is
+ * 4096 whatever is asked, and a segment in another layout starts over. */
+static void test_old_segments_fix_the_slot_count(const char *dir)
+{
+    rm_rf(dir);
+    char sub[256];
+    snprintf(sub, sizeof sub, "mkdir -p '%s'", dir);
+    if (system(sub) != 0) { CHECK(0, "mkdir"); return; }
+    char path[256];
+    snprintf(path, sizeof path, "%s/seg_%010u.bin", dir, 0u);
+    FILE *f = fopen(path, "w+b");
+    if (!f) { CHECK(0, "old segment"); return; }
+    old_write(f, 0, "X1OLD1", "t:info f:X1OLD1 ts:" TS_2025 " m:one");
+    old_write(f, 1, "X1OLD2", "t:info f:X1OLD2 ts:" TS_2025 " m:two");
+    fclose(f);
+    /* The 2048-slot segment, with one record in it. */
+    snprintf(path, sizeof path, "%s/seg_%010u.v2", dir, 4096u);
+    f = fopen(path, "w+b");
+    if (!f) { CHECK(0, "new segment"); return; }
+    struct __attribute__((packed)) { uint32_t m; uint16_t v, slots; } h =
+        { 0x32564958u, 2, 2048 };
+    fwrite(&h, sizeof h, 1, f);
+    uint32_t off = 8 + 2048 * 4;
+    fwrite(&off, 4, 1, f);
+    for (int i = 1; i < 2048; i++) { uint32_t z = 0; fwrite(&z, 4, 1, f); }
+    char junk[300];
+    memset(junk, 0x5A, sizeof junk);
+    fwrite(junk, sizeof junk, 1, f);
+    fclose(f);
+
+    xprsidx_t *st = xprsindex_open2(dir, 2048);
+    xprsidx_stats_t ss;
+    xprsindex_stats(st, &ss);
+    CHECK(ss.count == 2, "held: %u", (unsigned)ss.count);
+    xprsidx_rec_t r;
+    CHECK(!xprsindex_get(st, 4096, &r), "read a record out of another layout");
+    const char *n1 = "t:info f:X1NEW1 ts:" TS_2026 " m:after";
+    CHECK(xprsindex_add(st, n1, (int)strlen(n1), 0, false, 0), "new record");
+    CHECK(xprsindex_latest_index(st) == 4096, "new record at %u",
+          (unsigned)xprsindex_latest_index(st));
+    CHECK(xprsindex_get(st, 4096, &r) && strcmp(r.from, "X1NEW1") == 0,
+          "the new record did not read back");
+    CHECK(xprsindex_get(st, 1, &r) && strcmp(r.from, "X1OLD2") == 0,
+          "an old record was lost");
+    xprsindex_close(st);
+    st = xprsindex_open2(dir, 256);
+    CHECK(xprsindex_get(st, 4096, &r) && strcmp(r.from, "X1NEW1") == 0,
+          "the new record did not survive a reopen");
+    xprsindex_stats(st, &ss);
+    CHECK(ss.count == 3, "held after reopen: %u", (unsigned)ss.count);
+    xprsindex_close(st);
+}
+
+/* The newest segment cut off before its header was down: the slot count
+ * comes from an older one, not from what the caller asks. */
+static void test_torn_newest_keeps_the_slot_count(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    char wire[128];
+    for (int i = 0; i < 300; i++) {
+        snprintf(wire, sizeof wire, "t:info f:X1TORN ts:" TS_2026 " m:number %d", i);
+        xprsindex_add(st, wire, (int)strlen(wire), 0, false, 0);
+    }
+    xprsindex_close(st);
+    char path[256];
+    snprintf(path, sizeof path, "%s/seg_%010u.v2", dir, 256u);
+    FILE *f = fopen(path, "w");   /* truncated to nothing */
+    if (f) fclose(f);
+    st = xprsindex_open2(dir, 2048);
+    xprsidx_rec_t r;
+    CHECK(xprsindex_get(st, 5, &r) && strstr(r.wire, "number 5 ") == NULL &&
+          strstr(r.wire, "number 5") != NULL, "an old record moved");
+    const char *n1 = "t:info f:X1TORN ts:" TS_2026 " m:after";
+    CHECK(xprsindex_add(st, n1, (int)strlen(n1), 0, false, 0), "new record");
+    uint32_t at = xprsindex_latest_index(st);
+    CHECK(at == 256 && xprsindex_get(st, at, &r) && strstr(r.wire, "m:after"),
+          "the new record went to %u", (unsigned)at);
+    xprsindex_close(st);
+}
+
+static void test_seg_records_follow_the_budget(void)
+{
+    CHECK(xprsindex_seg_records(384u * 1024u) == 256, "832 KB flash: %u",
+          (unsigned)xprsindex_seg_records(384u * 1024u));
+    CHECK(xprsindex_seg_records(3000u * 1024u) == 1024, "Heltec V3: %u",
+          (unsigned)xprsindex_seg_records(3000u * 1024u));
+    CHECK(xprsindex_seg_records(9000u * 1024u) == 2048, "11 MB flash: %u",
+          (unsigned)xprsindex_seg_records(9000u * 1024u));
+    CHECK(xprsindex_seg_records(1ull << 30) == 4096, "always-on: %u",
+          (unsigned)xprsindex_seg_records(1ull << 30));
+    CHECK(xprsindex_seg_records(0) == 256, "no budget: %u",
+          (unsigned)xprsindex_seg_records(0));
+}
+
+/* A volume that has to be formatted keeps what 12.11 keeps longest: the
+ * declarations and the mail, declared mail first; the spool is left. */
+static void test_rescue_keeps_the_mail(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    xprsindex_set_own(st, "X3ARC1");
+    char w[300];
+    snprintf(w, sizeof w, "t:mailbox f:X1DECL ts:" TS_2026 " hold:X3ARC1");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    snprintf(w, sizeof w, "t:message f:X1QZ3N d:X1HERE ts:" TS_2025 " m:for the regular");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    snprintf(w, sizeof w, "t:message f:X1QZ3N d:X1DECL ts:" TS_2025 " m:for the declarer");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    snprintf(w, sizeof w, "t:message f:X1QZ3N d:X1HERE ts:" TS_2025
+             " until:2025-01-02_00:00:00 m:expired");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    for (int i = 0; i < 50; i++) {
+        snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:spool %d", i, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    }
+
+    static uint8_t buf[8192];
+    uint32_t nrec = 0;
+    size_t used = xprsindex_rescue_mail(st, buf, sizeof buf, &nrec);
+    CHECK(nrec == 2, "rescued %u mail records, wanted 2", (unsigned)nrec);
+
+    /* Too small for both: the declared one is the one kept. */
+    static uint8_t small[90];
+    uint32_t nsmall = 0;
+    size_t used_small = xprsindex_rescue_mail(st, small, sizeof small, &nsmall);
+    xprsindex_close(st);
+
+    rm_rf(dir);
+    st = xprsindex_open(dir);
+    xprsindex_set_own(st, "X3ARC1");
+    CHECK(xprsindex_restore_mail(st, buf, used) == 2, "restore wrote too few");
+    CHECK(xprsindex_mail_count(st, "X1DECL", 99) == 1, "declared mail lost");
+    CHECK(xprsindex_mail_count(st, "X1HERE", 99) == 1,
+          "other mail lost, or the expired one came back");
+    xprsidx_stats_t ss;
+    xprsindex_stats(st, &ss);
+    CHECK(ss.count == 2, "the spool came back: %u held", (unsigned)ss.count);
+    /* The declaration came across: rescued again, declared mail goes first. */
+    uint32_t again = 0;
+    xprsindex_rescue_mail(st, small, sizeof small, &again);
+    xprsindex_close(st);
+
+    rm_rf(dir);
+    st = xprsindex_open(dir);
+    CHECK(nsmall == 1 && xprsindex_restore_mail(st, small, used_small) == 1,
+          "a small buffer kept %u records", (unsigned)nsmall);
+    CHECK(xprsindex_mail_count(st, "X1DECL", 99) == 1 &&
+          xprsindex_mail_count(st, "X1HERE", 99) == 0,
+          "a small buffer kept the wrong mail");
+    CHECK(again == 1, "after a restore the declaration was gone");
+    xprsindex_close(st);
+}
+
+/* A restore that fills several segments: each one's table goes down when the
+ * next one starts, and every record reads back. */
+static void test_restore_across_segments(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    char w[300];
+    for (int i = 0; i < 600; i++) {
+        snprintf(w, sizeof w, "t:message f:X1QZ3N d:X1R%03d ts:" TS_2025 " m:mail %d",
+                 i % 500, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    }
+    static uint8_t buf[128 * 1024];
+    uint32_t n = 0;
+    size_t used = xprsindex_rescue_mail(st, buf, sizeof buf, &n);
+    xprsindex_close(st);
+    CHECK(n == 600, "rescued %u of 600", (unsigned)n);
+    rm_rf(dir);
+    st = xprsindex_open2(dir, 256);
+    CHECK(xprsindex_restore_mail(st, buf, used) == 600, "restore fell short");
+    CHECK(xprsindex_mail_count(st, NULL, 1000) == 600, "mail count after restore: %d",
+          xprsindex_mail_count(st, NULL, 1000));
+    xprsidx_rec_t r;
+    CHECK(xprsindex_get(st, 255, &r) && xprsindex_get(st, 256, &r) &&
+          xprsindex_get(st, 599, &r) && strstr(r.wire, "mail 599"),
+          "a record at a segment edge did not read back");
+    xprsindex_close(st);
+    st = xprsindex_open2(dir, 256);
+    CHECK(xprsindex_get(st, 599, &r) && strstr(r.wire, "mail 599"),
+          "the last segment's table did not survive a reopen");
+    xprsindex_close(st);
+}
+
+/* Mail re-aired every few minutes among a busy channel's beacons is kept
+ * once, not once per re-air. */
+static void test_mail_is_kept_once(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    const char *m = "t:message f:X1QZ3N d:X1BOA3 ts:" TS_2025 " m:once only";
+    char w[200];
+    for (int round = 0; round < 20; round++) {
+        xprsindex_add(st, m, (int)strlen(m), 0, false, 0);
+        for (int i = 0; i < 50; i++) {
+            snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:round %d %d",
+                     i, round, i);
+            xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+        }
+    }
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 1,
+          "the same mail was kept %d times", xprsindex_mail_count(st, "X1BOA3", 99));
+    xprsindex_close(st);
+}
+
+/* The chat page's question, message+reaction+status newest first, answered
+ * from the type tails: the same records, in the same order, as a full walk. */
+typedef struct { int n; uint32_t idx[300]; } idxlist_t;
+static bool collect_idx(const xprsidx_rec_t *r, void *ctx)
+{
+    idxlist_t *l = ctx;
+    if (l->n < 300) l->idx[l->n++] = r->index;
+    return true;
+}
+static void test_chat_kinds_from_tails(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    char w[200];
+    for (int i = 0; i < 900; i++) {
+        if (i % 9 == 0)
+            snprintf(w, sizeof w, "t:message f:X1QZ3N ts:" TS_2026 " m:chat %d", i);
+        else if (i % 31 == 0)
+            snprintf(w, sizeof w, "t:status f:X1QZ3N ts:" TS_2026 " m:status %d", i);
+        else
+            snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:noise %d", i % 40, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    }
+    uint32_t mask = xprsidx_type_mask("message,reaction,status");
+    xprsidx_query_t fast = { .type = -1, .types = mask, .newest_first = true,
+                             .limit = 60, .trusted = true };
+    idxlist_t a = { 0 }, b = { 0 };
+    xprsindex_query(st, &fast, collect_idx, &a);
+    /* The walk: the same question with a time range forces the range path. */
+    xprsidx_query_t walk = fast;
+    walk.since_ts = 1;
+    xprsindex_query(st, &walk, collect_idx, &b);
+    bool same = a.n == b.n;
+    for (int i = 0; same && i < a.n; i++) same = a.idx[i] == b.idx[i];
+    CHECK(a.n == 60 && same, "tails gave %d, the walk %d, same order %d", a.n, b.n, same);
+    xprsindex_close(st);
+}
+
 int main(void)
 {
     const char *dir = "/tmp/xprsidx_test";
@@ -1010,6 +1475,17 @@ int main(void)
     test_epoch_is_anchored(dir);
     test_only_is_a_callsign(dir);
     test_kind_takes_a_list(dir);
+    test_records_take_only_their_bytes(dir);
+    test_segment_size_is_the_stores(dir);
+    test_small_volume_keeps_a_thousand(dir);
+    test_old_segments_still_read(dir);
+    test_seg_records_follow_the_budget();
+    test_old_segments_fix_the_slot_count(dir);
+    test_torn_newest_keeps_the_slot_count(dir);
+    test_rescue_keeps_the_mail(dir);
+    test_restore_across_segments(dir);
+    test_mail_is_kept_once(dir);
+    test_chat_kinds_from_tails(dir);
     rm_rf(dir);
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

@@ -53,6 +53,7 @@
 
 #include "xprs_app.h"
 #include "xprs_setup.h"
+#include "xapi_send.h"
 
 /* The board this station is running on. Set once by xapp_run(), read
  * everywhere; never NULL after that. */
@@ -112,6 +113,11 @@ static uint32_t heap_floor(void);   /* the board's, or the default above */
 #include "rns_tcp.h"
 #include "esp_vfs_fat.h"
 #include "wear_levelling.h"
+#include "driver/sdmmc_host.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include "sdmmc_cmd.h"
+#include "soc/soc_caps.h"
 #include "esp_sntp.h"
 #include "esp_heap_caps.h"
 #include "esp_task_wdt.h"
@@ -456,6 +462,8 @@ static xprsidx_t *s_index;
  * what the board's storage_mount said), and whether the board said none. */
 static uint64_t s_idx_base = 10u * 1024u * 1024u;
 static bool s_idx_none;
+/* /idx is this board's own "storage" partition, so it may be formatted. */
+static bool s_idx_own_flash;
 static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it */
 
 /*
@@ -1505,6 +1513,32 @@ static struct {
     volatile bool    reverting;
     uint8_t  fail_reason;          /* why the NEW network failed */
 } s_wjoin;
+static void wifi_join_arm(const char *to, const char *id, const char *bearer,
+                          const char *old_ssid, const char *old_pass);
+/* Web page joins (POST /api/wifi), parked by the HTTP task for idx_task. */
+enum { WWEB_IDLE, WWEB_JOINING, WWEB_JOINED, WWEB_FAILED };
+static struct {
+    volatile bool pending;
+    char ssid[33];
+    char pass[64];
+} s_wweb_req;
+static volatile uint8_t s_wweb_state;
+static char s_wweb_why[32];
+static volatile bool s_wk_gotip;       /* set by the event handler */
+static bool s_wk_inet_noted;
+static uint32_t s_wk_noinet_since;     /* ms; 0 while the internet answers */
+static uint32_t s_wk_next_ms;          /* no rotation before this */
+static int s_wk_rot;                   /* networks tried since one worked */
+/* The network search on the settings page (GET/POST /api/wifi/scan). */
+#define WSCAN_MAX 12
+enum { WSCAN_IDLE, WSCAN_WANT, WSCAN_RUNNING, WSCAN_DONE, WSCAN_FAILED };
+typedef struct { char ssid[33]; int8_t rssi; uint8_t open; } wscan_t;
+static XPRS_PSRAM_BSS wscan_t s_scan[WSCAN_MAX];
+static int s_scan_n;
+static volatile uint8_t s_scan_state;
+static volatile bool s_scan_event;      /* WIFI_EVENT_SCAN_DONE, from the handler */
+static uint32_t s_scan_deadline;
+static char s_scan_why[32];
 
 /* The hotspot, switched by an owner, after the answer has gone out on it. */
 static volatile int s_ap_want = -1;   /* -1 nothing to do, 0 off, 1 on */
@@ -2176,23 +2210,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
     }
     if (join) {
         if (!s_ssid[0]) { snprintf(why, why_cap, "no network: send ssid: first"); return 400; }
-        xcfg_set_bool("wifi_on", true);
-        snprintf(s_wjoin.to, sizeof s_wjoin.to, "%s", from);
-        snprintf(s_wjoin.id, sizeof s_wjoin.id, "%s", id);
-        snprintf(s_wjoin.bearer, sizeof s_wjoin.bearer, "%s", bearer);
-        s_wjoin.fails = 0;
-        s_wjoin.reason = 0;
-        s_wjoin.got_ip = false;
-        s_wjoin.reverting = false;
-        /* What to go back to if this does not work: a network that was up,
-         * or nothing. */
-        bool had = old_ssid[0] && s_ip_str[0] &&
-                   (strcmp(old_ssid, s_ssid) != 0 || strcmp(old_pass, s_pass) != 0);
-        snprintf(s_wjoin.prev_ssid, sizeof s_wjoin.prev_ssid, "%s", had ? old_ssid : "");
-        snprintf(s_wjoin.prev_pass, sizeof s_wjoin.prev_pass, "%s", had ? old_pass : "");
-        s_wjoin.deadline_ms = now_ms() + 30000;
-        s_wjoin.active = true;
-        wifi_rejoin();
+        wifi_join_arm(from, id, bearer, old_ssid, old_pass);
     }
     memset(old_pass, 0, sizeof old_pass);
 
@@ -4040,6 +4058,8 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
          * flashed station, the one that has no network by definition,
          * restarted every half second (seen on the C3, 2026-09-11). */
         if (s_ssid[0]) esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        s_scan_event = true;
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         /* Leaving the access point's channel on purpose (§23.7) looks exactly
          * like losing the link. Reconnecting here would drag us home before the
@@ -4078,6 +4098,7 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         snprintf(s_ip_str, sizeof s_ip_str, IPSTR, IP2STR(&e->ip_info.ip));
         if (s_wjoin.active) s_wjoin.got_ip = true;
+        s_wk_gotip = true;
         ESP_LOGI(TAG, "wifi up on channel %u, ip %s", xprsnow_channel(),
                  s_ip_str);
     }
@@ -4107,7 +4128,7 @@ static void wifi_rejoin(void)
         ESP_LOGE(TAG, "wifi: new network not taken: %s", esp_err_to_name(e));
         return;
     }
-    ESP_LOGW(TAG, "joining \"%s\" as its owner asked (11.10)", s_ssid);
+    ESP_LOGW(TAG, "joining \"%s\"", s_ssid);
     if (!was_up) esp_wifi_connect();
 }
 
@@ -4127,6 +4148,372 @@ static const char *wifi_fail_word(uint8_t reason)
         return "no network by that name";
     default:
         return "could not join";
+    }
+}
+
+/*
+ * Remembered networks.
+ *
+ * Every network the station has joined is kept (NVS "xprswifi"), and when
+ * the one it is on cannot be reached the next is tried, most recently
+ * working first. A network goes on the list only by working, and nothing
+ * takes one off it but room: there is no delete, from the page or anywhere
+ * else, so somebody on the hotspot can add a network but cannot take the
+ * station's way to the internet away. When the list is full the one that
+ * worked longest ago makes room.
+ *
+ * Read from NVS when needed rather than held: eight entries are 840 bytes,
+ * and the boards without PSRAM have none to spare for a list that is
+ * consulted a few times a day.
+ */
+#define WK_MAX 8
+typedef struct {
+    char     ssid[33];
+    char     pass[64];
+    uint8_t  inet;         /* reached the internet through it, at least once */
+    uint8_t  pad[2];
+    uint32_t rank;         /* higher: worked more recently */
+} wk_t;
+
+static int wk_load(wk_t *out)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprswifi", NVS_READONLY, &h) != ESP_OK) return 0;
+    size_t len = sizeof(wk_t) * WK_MAX;
+    int n = 0;
+    if (nvs_get_blob(h, "known", out, &len) == ESP_OK) n = (int)(len / sizeof(wk_t));
+    nvs_close(h);
+    return n;
+}
+
+static void wk_save(const wk_t *in, int n)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprswifi", NVS_READWRITE, &h) != ESP_OK) {
+        ESP_LOGE(TAG, "wifi: remembered networks not saved");
+        return;
+    }
+    if (nvs_set_blob(h, "known", in, sizeof(wk_t) * (size_t)n) != ESP_OK ||
+        nvs_commit(h) != ESP_OK)
+        ESP_LOGE(TAG, "wifi: remembered networks not saved");
+    nvs_close(h);
+}
+
+/* Most recently working first. */
+static void wk_sort(wk_t *k, int n)
+{
+    for (int i = 1; i < n; i++)
+        for (int j = i; j > 0 && k[j].rank > k[j - 1].rank; j--) {
+            wk_t t = k[j]; k[j] = k[j - 1]; k[j - 1] = t;
+        }
+}
+
+/* The network just worked: put it first, with the password it worked with. */
+static void wk_note(const char *ssid, const char *pass, bool inet)
+{
+    if (!ssid || !ssid[0]) return;
+    wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+    if (!k) return;
+    int n = wk_load(k);
+    uint32_t top = 0;
+    int at = -1;
+    for (int i = 0; i < n; i++) {
+        if (k[i].rank > top) top = k[i].rank;
+        if (!strcmp(k[i].ssid, ssid)) at = i;
+    }
+    bool changed = true;
+    if (at < 0) {
+        wk_sort(k, n);
+        at = n < WK_MAX ? n++ : WK_MAX - 1;     /* full: the stalest goes */
+        memset(&k[at], 0, sizeof k[at]);
+        snprintf(k[at].ssid, sizeof k[at].ssid, "%s", ssid);
+        ESP_LOGW(TAG, "wifi: \"%s\" remembered (%d known)", ssid, n);
+    } else if (!strcmp(k[at].pass, pass ? pass : "") && k[at].rank == top &&
+               (k[at].inet || !inet)) {
+        changed = false;            /* first already, nothing new: no write */
+    }
+    if (changed) {
+        snprintf(k[at].pass, sizeof k[at].pass, "%s", pass ? pass : "");
+        if (inet) k[at].inet = 1;
+        if (k[at].rank != top || top == 0) k[at].rank = top + 1;
+        wk_sort(k, n);
+        wk_save(k, n);
+    }
+    memset(k, 0, sizeof(wk_t) * WK_MAX);
+    free(k);
+}
+
+
+static void wifi_join_arm(const char *to, const char *id, const char *bearer,
+                          const char *old_ssid, const char *old_pass)
+{
+    xcfg_set_bool("wifi_on", true);
+    snprintf(s_wjoin.to, sizeof s_wjoin.to, "%s", to ? to : "");
+    snprintf(s_wjoin.id, sizeof s_wjoin.id, "%s", id ? id : "");
+    snprintf(s_wjoin.bearer, sizeof s_wjoin.bearer, "%s", bearer ? bearer : "");
+    s_wjoin.fails = 0;
+    s_wjoin.reason = 0;
+    s_wjoin.got_ip = false;
+    s_wjoin.reverting = false;
+    /* What to go back to if this does not work: a network that was up,
+     * or nothing. */
+    bool had = old_ssid[0] && s_ip_str[0] &&
+               (strcmp(old_ssid, s_ssid) != 0 || strcmp(old_pass, s_pass) != 0);
+    snprintf(s_wjoin.prev_ssid, sizeof s_wjoin.prev_ssid, "%s", had ? old_ssid : "");
+    snprintf(s_wjoin.prev_pass, sizeof s_wjoin.prev_pass, "%s", had ? old_pass : "");
+    s_wjoin.deadline_ms = now_ms() + 30000;
+    s_wjoin.active = true;
+    wifi_rejoin();
+}
+
+/* POST /api/wifi, on the HTTP task: check and park, nothing more. Anybody
+ * who can reach the page may ask; see the note above wk_load for why that
+ * is safe to allow. */
+static int api_wifi_join(const char *ssid, const char *pass, char *why, size_t cap)
+{
+    const char *bad = xsetup_check("ssid", ssid);
+    if (!bad && pass && pass[0]) bad = xsetup_check("pass", pass);
+    if (bad) { snprintf(why, cap, "%s", bad); return 400; }
+    if (s_wweb_req.pending || s_wjoin.active) {
+        snprintf(why, cap, "a join is already running");
+        return 409;
+    }
+    snprintf(s_wweb_req.ssid, sizeof s_wweb_req.ssid, "%s", ssid);
+    snprintf(s_wweb_req.pass, sizeof s_wweb_req.pass, "%s", pass ? pass : "");
+    s_wweb_state = WWEB_JOINING;
+    s_wweb_why[0] = 0;
+    s_wweb_req.pending = true;
+    return 0;
+}
+
+/* GET /api/wifi, on the HTTP task: the network, the verdict of the last
+ * join asked for here, and the names the station knows. Never a password. */
+static int api_wifi_json(char *buf, size_t cap)
+{
+    static const char *const st[] = { "idle", "joining", "joined", "failed" };
+    char e1[72], e2[72];
+    xapi_jesc(e1, sizeof e1, s_ssid, (int)strlen(s_ssid));
+    xapi_jesc(e2, sizeof e2, s_wweb_why, (int)strlen(s_wweb_why));
+    int n = snprintf(buf, cap,
+        "\"ssid\":\"%s\",\"up\":%s,\"internet\":%s,\"join\":\"%s\",\"why\":\"%s\","
+        "\"known\":[",
+        e1, s_ip_str[0] ? "true" : "false",
+        !s_inet_known || !s_ip_str[0] ? "null" : (s_inet_up ? "true" : "false"),
+        st[s_wweb_state & 3], e2);
+    wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+    int kn = k ? wk_load(k) : 0;
+    for (int i = 0; i < kn && n > 0 && n < (int)cap - 80; i++) {
+        xapi_jesc(e1, sizeof e1, k[i].ssid, (int)strlen(k[i].ssid));
+        n += snprintf(buf + n, cap - n, "%s{\"ssid\":\"%s\",\"internet\":%s}",
+                      i ? "," : "", e1, k[i].inet ? "true" : "false");
+    }
+    if (k) { memset(k, 0, sizeof(wk_t) * WK_MAX); free(k); }
+    if (n > 0 && n < (int)cap - 1) n += snprintf(buf + n, cap - n, "]");
+    return n;
+}
+
+/* POST /api/wifi/scan, on the HTTP task: ask; idx_task runs it. */
+static int api_wifi_scan_start(char *why, size_t cap)
+{
+    if (s_scan_state == WSCAN_WANT || s_scan_state == WSCAN_RUNNING) return 0;
+    if (s_wjoin.active) { snprintf(why, cap, "a join is running"); return 409; }
+    s_scan_why[0] = 0;
+    s_scan_state = WSCAN_WANT;
+    return 0;
+}
+
+/* GET /api/wifi/scan: what the last search found, strongest first. */
+static int api_wifi_scan_json(char *buf, size_t cap)
+{
+    static const char *const st[] = { "idle", "scanning", "scanning", "done", "failed" };
+    char e[72];
+    xapi_jesc(e, sizeof e, s_scan_why, (int)strlen(s_scan_why));
+    int n = snprintf(buf, cap, "\"state\":\"%s\",\"why\":\"%s\",\"nets\":[",
+                     st[s_scan_state % 5], e);
+    if (s_scan_state == WSCAN_DONE) {
+        wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+        int kn = k ? wk_load(k) : 0;
+        for (int i = 0; i < s_scan_n && n > 0 && n < (int)cap - 100; i++) {
+            bool known = false;
+            for (int j = 0; j < kn; j++) if (!strcmp(k[j].ssid, s_scan[i].ssid)) known = true;
+            xapi_jesc(e, sizeof e, s_scan[i].ssid, (int)strlen(s_scan[i].ssid));
+            n += snprintf(buf + n, cap - n,
+                          "%s{\"ssid\":\"%s\",\"rssi\":%d,\"open\":%s,\"known\":%s}",
+                          i ? "," : "", e, s_scan[i].rssi,
+                          s_scan[i].open ? "true" : "false", known ? "true" : "false");
+        }
+        if (k) { memset(k, 0, sizeof(wk_t) * WK_MAX); free(k); }
+    }
+    if (n > 0 && n < (int)cap - 1) n += snprintf(buf + n, cap - n, "]");
+    return n;
+}
+
+/* On idx_task: start the search, then collect it. Asked for by a person on
+ * the page, so it runs when asked; like every connect it is a scan that
+ * takes the hotspot off its channel for a second or two. */
+static void wscan_tick(uint32_t now)
+{
+    if (s_scan_state == WSCAN_WANT) {
+        wifi_scan_config_t sc = { .show_hidden = false,
+                                  .scan_type = WIFI_SCAN_TYPE_ACTIVE };
+        sc.scan_time.active.min = 50;
+        sc.scan_time.active.max = 120;
+        s_scan_event = false;
+        esp_err_t err = esp_wifi_scan_start(&sc, false);
+        if (err != ESP_OK) {
+            snprintf(s_scan_why, sizeof s_scan_why, "%s",
+                     err == ESP_ERR_WIFI_STATE ? "busy connecting, try again"
+                                               : esp_err_to_name(err));
+            s_scan_state = WSCAN_FAILED;
+            return;
+        }
+        s_scan_deadline = now + 12000;
+        s_scan_state = WSCAN_RUNNING;
+        return;
+    }
+    if (s_scan_state != WSCAN_RUNNING) return;
+    if (!s_scan_event) {
+        if ((int32_t)(now - s_scan_deadline) >= 0) {
+            esp_wifi_scan_stop();
+            snprintf(s_scan_why, sizeof s_scan_why, "no answer from the radio");
+            s_scan_state = WSCAN_FAILED;
+        }
+        return;
+    }
+    s_scan_event = false;
+    uint16_t got = 24;
+    wifi_ap_record_t *r = malloc(sizeof(wifi_ap_record_t) * got);
+    if (!r) {
+        esp_wifi_clear_ap_list();
+        snprintf(s_scan_why, sizeof s_scan_why, "out of memory");
+        s_scan_state = WSCAN_FAILED;
+    } else {
+        if (esp_wifi_scan_get_ap_records(&got, r) != ESP_OK) got = 0;
+        s_scan_n = 0;
+        for (int i = 0; i < got && s_scan_n < WSCAN_MAX; i++) {     /* strongest first */
+            const char *ss = (const char *)r[i].ssid;
+            if (!ss[0]) continue;
+            bool dup = false;
+            for (int j = 0; j < s_scan_n; j++) if (!strcmp(s_scan[j].ssid, ss)) dup = true;
+            if (dup) continue;
+            snprintf(s_scan[s_scan_n].ssid, sizeof s_scan[0].ssid, "%s", ss);
+            s_scan[s_scan_n].rssi = r[i].rssi;
+            s_scan[s_scan_n].open = r[i].authmode == WIFI_AUTH_OPEN;
+            s_scan_n++;
+        }
+        free(r);
+        s_scan_state = WSCAN_DONE;
+        ESP_LOGI(TAG, "wifi: search found %d network(s)", s_scan_n);
+    }
+    /* A connect asked for while the search ran was refused; ask again. */
+    if (!s_ip_str[0] && s_ssid[0]) esp_wifi_connect();
+}
+
+/* Switch to the next remembered network after @p cur, best first. */
+static bool wk_rotate(bool want_inet, const char *because)
+{
+    wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+    if (!k) return false;
+    int n = wk_load(k);
+    wk_sort(k, n);
+    int cur = -1;
+    for (int i = 0; i < n; i++) if (!strcmp(k[i].ssid, s_ssid)) cur = i;
+    int pick = -1;
+    for (int step = 1; step <= n && pick < 0; step++) {
+        int i = (cur + step + n) % n;
+        if (i == cur || (want_inet && !k[i].inet)) continue;
+        pick = i;
+    }
+    if (pick >= 0) {
+        ESP_LOGW(TAG, "wifi: \"%s\" %s; trying \"%s\"", s_ssid, because, k[pick].ssid);
+        snprintf(s_ssid, sizeof s_ssid, "%s", k[pick].ssid);
+        snprintf(s_pass, sizeof s_pass, "%s", k[pick].pass);
+        wifi_rejoin();
+    }
+    memset(k, 0, sizeof(wk_t) * WK_MAX);
+    free(k);
+    return pick >= 0;
+}
+
+/* On idx_task, every pass. */
+static void wk_tick(void)
+{
+    uint32_t now = now_ms();
+    wscan_tick(now);
+
+    if (s_wweb_req.pending && !s_wjoin.active) {
+        char old_ssid[33], old_pass[64];
+        snprintf(old_ssid, sizeof old_ssid, "%s", s_ssid);
+        snprintf(old_pass, sizeof old_pass, "%s", s_pass);
+        snprintf(s_ssid, sizeof s_ssid, "%s", s_wweb_req.ssid);
+        snprintf(s_pass, sizeof s_pass, "%s", s_wweb_req.pass);
+        memset(s_wweb_req.pass, 0, sizeof s_wweb_req.pass);
+        s_wweb_req.pending = false;
+        xcfg_set("ssid", s_ssid);
+        xcfg_set("pass", s_pass);
+        ESP_LOGW(TAG, "wifi: the web page asked for \"%s\"", s_ssid);
+        wifi_join_arm("", "", "", old_ssid, old_pass);
+        memset(old_pass, 0, sizeof old_pass);
+        return;
+    }
+
+    if (s_wk_gotip) {
+        s_wk_gotip = false;
+        s_wk_inet_noted = false;
+        s_wk_noinet_since = 0;
+        s_wk_rot = 0;
+        s_wk_next_ms = 0;
+        wk_note(s_ssid, s_pass, false);
+        /* The network that works is the one to start on after a restart. */
+        if (strcmp(xcfg_get("ssid", ""), s_ssid) || strcmp(xcfg_get("pass", ""), s_pass)) {
+            xcfg_set("ssid", s_ssid);
+            xcfg_set("pass", s_pass);
+        }
+    }
+    if (s_wjoin.active || !xcfg_get_bool("wifi_on", true)) return;
+
+    if (s_ip_str[0] && s_inet_known) {
+        if (s_inet_up) {
+            s_wk_noinet_since = 0;
+            if (!s_wk_inet_noted) {
+                s_wk_inet_noted = true;
+                wk_note(s_ssid, s_pass, true);
+            }
+        } else if (!s_wk_noinet_since) {
+            s_wk_noinet_since = now ? now : 1;
+        } else if (now - s_wk_noinet_since > 10u * 60u * 1000u) {
+            /* Up, and no internet for ten minutes, on a network that never
+             * had any: move to one that did, if the station knows one. A
+             * network that has had internet keeps its place through an
+             * outage, and one with none is left alone when nothing better
+             * is known -- a LAN with no way out is a station's whole job in
+             * some places. */
+            s_wk_noinet_since = 0;
+            wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+            bool never = true;
+            int n = k ? wk_load(k) : 0;
+            for (int i = 0; i < n; i++)
+                if (!strcmp(k[i].ssid, s_ssid) && k[i].inet) never = false;
+            free(k);
+            if (never) wk_rotate(true, "has no internet");
+        }
+        return;
+    }
+
+    /* Down: three tries on this network, then the next one. Once every
+     * remembered network has had its turn, the round starts again five
+     * minutes later rather than at once: each try is a scan that takes the
+     * hotspot off its channel. */
+    if (!s_ip_str[0] && (!s_ssid[0] || s_sta_fails >= 3) &&
+        (int32_t)(now - s_wk_next_ms) >= 0) {
+        if (!wk_rotate(false, s_ssid[0] ? "cannot be reached" : "is not set")) {
+            s_wk_next_ms = now + 300000;
+            return;
+        }
+        wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+        int n = k ? wk_load(k) : 0;
+        free(k);
+        if (++s_wk_rot >= n) { s_wk_rot = 0; s_wk_next_ms = now + 300000; }
     }
 }
 
@@ -5520,6 +5907,199 @@ static void idx_result_m(const char *bearer, const char *to,
 #define ALWAYS_ON_MIN_BYTES  (64u * 1024u * 1024u)   /* ~200k records */
 static uint64_t s_idx_budget;
 
+static xprsidx_t *idx_open(void);
+
+void xapp_storage_own_flash(void)
+{
+    s_idx_own_flash = true;
+}
+
+static const esp_vfs_fat_mount_config_t k_card_mc = {
+    .format_if_mount_failed = false,        /* never a card: see the header */
+    .max_files = CONFIG_SDCARD_MAX_FILES,
+    .allocation_unit_size = 16 * 1024,
+};
+
+static void card_said(const sdmmc_card_t *card, const char *bus)
+{
+    ESP_LOGI(TAG, "storage: microSD on %s at /idx, %llu MB; the archive is there",
+             bus, (unsigned long long)card->csd.capacity * card->csd.sector_size /
+                  (1024u * 1024u));
+}
+
+esp_err_t xapp_mount_card_sdmmc(int clk, int cmd, int d0)
+{
+#if SOC_SDMMC_HOST_SUPPORTED && SOC_SDMMC_USE_GPIO_MATRIX
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot.width = 1;
+    slot.clk = clk;
+    slot.cmd = cmd;
+    slot.d0 = d0;
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    sdmmc_card_t *card = NULL;
+    esp_err_t err = esp_vfs_fat_sdmmc_mount("/idx", &host, &slot, &k_card_mc, &card);
+    if (err == ESP_OK) card_said(card, "SDMMC");
+    else ESP_LOGW(TAG, "storage: no usable microSD (%s)", esp_err_to_name(err));
+    return err;
+#else
+    (void)clk; (void)cmd; (void)d0;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
+/*
+ * A card on a bus the board shares (the T-Deck's carries the panel and the
+ * SX1262). The bus is set up here if nobody has yet, with the ceiling the
+ * radio asks for, because whoever initialises first sets it for everybody;
+ * the others accept ESP_ERR_INVALID_STATE, and so does this. The card driver
+ * takes the bus per command, like the radio, so the two queue rather than
+ * collide.
+ */
+esp_err_t xapp_mount_card_sdspi(int spi_host, int sclk, int mosi, int miso, int cs)
+{
+    spi_bus_config_t bus = {
+        .mosi_io_num = mosi,
+        .miso_io_num = miso,
+        .sclk_io_num = sclk,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 32768,
+    };
+    esp_err_t err = spi_bus_initialize(spi_host, &bus, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "storage: SPI bus for the card: %s", esp_err_to_name(err));
+        return err;
+    }
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = spi_host;
+    sdspi_device_config_t dev = SDSPI_DEVICE_CONFIG_DEFAULT();
+    dev.host_id = spi_host;
+    dev.gpio_cs = cs;
+    sdmmc_card_t *card = NULL;
+    err = esp_vfs_fat_sdspi_mount("/idx", &host, &dev, &k_card_mc, &card);
+    if (err == ESP_OK) card_said(card, "SPI");
+    else ESP_LOGW(TAG, "storage: no usable microSD (%s)", esp_err_to_name(err));
+    return err;
+}
+
+esp_err_t xapp_mount_flash(void)
+{
+    static wl_handle_t wl = WL_INVALID_HANDLE;
+    const esp_vfs_fat_mount_config_t mc = {
+        .max_files = CONFIG_SDCARD_MAX_FILES,
+        .format_if_mount_failed = true,     /* our own partition, never a card */
+        .allocation_unit_size = 4096,
+    };
+    esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage", &mc, &wl);
+    if (err == ESP_OK) xapp_storage_own_flash();
+    else ESP_LOGE(TAG, "storage did not mount: %s", esp_err_to_name(err));
+    return err;
+}
+
+/* What the files under @p dir occupy, in 4 KB clusters (every flash volume
+ * here is formatted with them), directories included. An entry claiming more
+ * than the volume is a damaged directory sector read as a file, and counts
+ * nothing. */
+static uint64_t idx_bytes_in_files(const char *dir, uint64_t total, int depth)
+{
+    uint64_t sum = 4096;
+    if (depth > 4) return sum;
+    DIR *d = opendir(dir);
+    if (!d) return sum;
+    struct dirent *e;
+    char path[320];
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+        struct stat sb;
+        if (stat(path, &sb) != 0) continue;
+        if (S_ISDIR(sb.st_mode)) {
+            sum += idx_bytes_in_files(path, total, depth + 1);
+        } else if ((uint64_t)sb.st_size <= total) {
+            sum += ((uint64_t)sb.st_size + 4095u) / 4096u * 4096u;
+        }
+    }
+    closedir(d);
+    return sum;
+}
+
+/*
+ * /idx is nearly full, and its files account for little of it: the FAT
+ * marks clusters used that no file owns. Seen on a T-Deck, 2026-10-12: 2,799
+ * of 2,880 clusters taken, 57 of them by the one archive segment left, the
+ * rest by nothing, and the archive directory's first sector all 0xFF. The
+ * store could create no segment (ENOSPC), and deleting its records would
+ * have given back 57 clusters. A power cut between erase and program in the
+ * wear-levelling layer leaves this. Only a format gets that space back.
+ *
+ * The Heltec V3's dead FAT (2026-10-07: every cluster "end of chain") is the
+ * same shape with nothing readable left, and is caught by the same test.
+ */
+static bool idx_volume_damaged(void)
+{
+    uint64_t total = 0, freeb = 0;
+    if (esp_vfs_fat_info("/idx", &total, &freeb) != ESP_OK || !total) return false;
+    if (freeb >= total / 16u) return false;
+    uint64_t files = idx_bytes_in_files("/idx", total, 0);
+    uint64_t used = total - freeb;
+    bool damaged = used > files + total / 4u;
+    if (damaged)
+        ESP_LOGE(TAG, "storage: %llu KB of %llu used, files hold %llu KB -- "
+                      "the FAT has lost the rest",
+                 (unsigned long long)(used / 1024u),
+                 (unsigned long long)(total / 1024u),
+                 (unsigned long long)(files / 1024u));
+    return damaged;
+}
+
+/*
+ * Format a damaged /idx, keeping what XPRS.md 12.11 keeps longest: the
+ * mailbox declarations and the mail, declared mail first. The spool goes,
+ * which is what the section drops first anyway. The mail waits in PSRAM
+ * where there is some; a board without it has a few kilobytes of internal
+ * heap for it, and what does not fit is lost, out loud. With no buffer at all
+ * the format still runs: a volume that cannot create a file archives nothing.
+ */
+static void idx_rescue_and_format(void)
+{
+    uint8_t *buf = NULL;
+    size_t cap = 0;
+#if CONFIG_SPIRAM
+    cap = 1024u * 1024u;
+    buf = heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+    if (!buf) { cap = 8192; buf = malloc(cap); }
+    if (!buf) { cap = 2048; buf = malloc(cap); }
+    if (!buf) cap = 0;
+    size_t used = 0;
+    uint32_t n = 0;
+    if (buf && s_index) used = xprsindex_rescue_mail(s_index, buf, cap, &n);
+    ESP_LOGE(TAG, "storage: formatting /idx; %lu mail record(s) kept in %u "
+                  "bytes, the spool and the log are lost",
+             (unsigned long)n, (unsigned)used);
+    if (s_index) {
+        xprsindex_close(s_index);
+        s_index = NULL;
+    }
+    esp_err_t fe = esp_vfs_fat_spiflash_format_rw_wl("/idx", "storage");
+    ESP_LOGE(TAG, "storage: format %s", esp_err_to_name(fe));
+    s_index = idx_open();
+    if (s_index && used) xprsindex_restore_mail(s_index, buf, used);
+    free(buf);
+}
+
+/* Open the archive at /idx/xprs, its segments sized to the budget this
+ * volume gets (xprsindex_seg_records): 256 records on 832 KB of flash, a few
+ * thousand on a card. A store already there keeps the size it was made with. */
+static xprsidx_t *idx_open(void)
+{
+    uint64_t budget = xprsindex_budget("/idx", s_idx_base,
+                                       xcfg_get_bool("index_always_on",
+                                           xcfg_get_bool("index_super", false)));
+    return xprsindex_open2("/idx/xprs", xprsindex_seg_records(budget));
+}
+
 static bool idx_is_always_on(void)
 {
     /* `index_super` is the old name for this key, read once so a board
@@ -6035,40 +6615,15 @@ static void idx_task(void *arg)
                           "for one; the log and statistics are kept there");
     } else {
         err = esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage", &mc, &wl);
+        s_idx_own_flash = true;
     }
     if (err == ESP_OK && !s_idx_none) {
-        s_index = xprsindex_open("/idx/xprs");
-        /*
-         * A volume that can hold nothing is formatted, out loud -- on the
-         * internal flash only, never on a board's own mount (a card may be
-         * somebody's photographs; see the e-paper's storage_mount).
-         *
-         * The shape: mounted, zero bytes free, and not one archive segment.
-         * A store that filled its volume honestly has segments; this is a
-         * FAT sector caught between erase and program by a reset, which
-         * leaves it 0xFF -- every cluster "end of chain", so nothing can be
-         * created and the archive directory is gone with it. Read off the
-         * Heltec V3 with IDF's own wear-levelling parser, 2026-10-07: 4,094
-         * of 4,096 FAT bytes 0xFF, 0 of 960 clusters free, the data still on
-         * the card. The station ran on like that, archiving nothing, logging
-         * nothing, answering every history ask with an empty page. What a
-         * dead FAT held is already unreachable; formatting loses nothing
-         * that can still be read.
-         */
-        if (!s_board->storage_mount && s_index) {
-            xprsidx_stats_t vs;
-            xprsindex_stats(s_index, &vs);
-            if (vs.segments == 0 && vs.total_bytes && vs.free_bytes == 0) {
-                ESP_LOGE(TAG, "storage: %llu bytes, none free, no archive -- "
-                              "the FAT is unusable; formatting /idx",
-                         (unsigned long long)vs.total_bytes);
-                xprsindex_close(s_index);
-                s_index = NULL;
-                esp_err_t fe = esp_vfs_fat_spiflash_format_rw_wl("/idx", "storage");
-                ESP_LOGE(TAG, "storage: format %s", esp_err_to_name(fe));
-                s_index = xprsindex_open("/idx/xprs");
-            }
-        }
+        /* Before the store opens: the walk below must not race its writer,
+         * and the FAT VFS deadlocks a directory walk against one
+         * (docs/esp32.md). */
+        bool damaged = s_idx_own_flash && idx_volume_damaged();
+        s_index = idx_open();
+        if (damaged) idx_rescue_and_format();
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
          * An always-on station sizes to the volume instead -- which on a board whose
@@ -6356,6 +6911,8 @@ no_announce:
             }
         }
 
+        wk_tick();
+
         /* 11.10: the end of a join somebody is waiting on. */
         if (s_wjoin.active) {
             int code = 0;
@@ -6391,8 +6948,16 @@ no_announce:
                 s_wjoin.prev_ssid[0] = 0;
                 char st[160];
                 setup_state(st, sizeof st);
-                cmdset_result(s_wjoin.to, s_wjoin.bearer, s_wjoin.id, "", code, st, why);
-                ESP_LOGW(TAG, "join for %s: %d %s", s_wjoin.to, code, why ? why : st);
+                if (s_wjoin.to[0]) {
+                    cmdset_result(s_wjoin.to, s_wjoin.bearer, s_wjoin.id, "", code, st, why);
+                } else {
+                    /* Asked from the web page: nobody to air an answer to,
+                     * the page reads it from /api/wifi. */
+                    snprintf(s_wweb_why, sizeof s_wweb_why, "%s", why ? why : "");
+                    s_wweb_state = code == 200 ? WWEB_JOINED : WWEB_FAILED;
+                }
+                ESP_LOGW(TAG, "join for %s: %d %s",
+                         s_wjoin.to[0] ? s_wjoin.to : "the web page", code, why ? why : st);
             }
         }
 
@@ -6925,7 +7490,7 @@ named_done:
                 }
                 closedir(d);
             }
-            if (!s_idx_none) s_index = xprsindex_open("/idx/xprs");
+            if (!s_idx_none) s_index = idx_open();
         xprsindex_set_own(s_index, s_call);
         /* The FAT partition is ~11 MB here; leave room for the log + stats.
          * An always-on station sizes to the volume instead -- which on a board whose
@@ -7518,6 +8083,10 @@ static xprs_api_cfg_t s_api_cfg = {
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,
+    .wifi_json = api_wifi_json,
+    .wifi_join = api_wifi_join,
+    .wifi_scan_start = api_wifi_scan_start,
+    .wifi_scan_json = api_wifi_scan_json,
     .devices_json = api_devices_json,
     .stats_json = api_stats_json,
     .peers_json = api_peers_json,

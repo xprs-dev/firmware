@@ -82,10 +82,10 @@ bytes; an XPRS beacon is 112 to 173. Bluetooth stays off, which also leaves
 its RAM and airtime to WiFi. The M5Stack Core, the same chip, runs the same
 way.
 
-**No archive.** Two app slots on 4 MB leave an 832 KB volume for the log,
-the statistics and the conversation. One index segment is 1.3 MB and the
-one being written can never be evicted, so there is no archive and nothing
-to share from one (`storage_mount` in `firmware/src/main.c`). A board with
+**A small archive.** Two app slots on 4 MB leave an 832 KB volume for the
+log, the statistics, the conversation and a 384 KB archive in 256-record
+segments: about 2,100 messages of 120 bytes, never fewer than ~1,050 at the
+250-byte maximum (`storage_mount` in `firmware/src/main.c`). A board with
 more flash still gets the 4 MB layout, so one image fits them all.
 
 ## Where the settings come from
@@ -95,7 +95,7 @@ so `sdkconfig.defaults` carries its proven settings: the capped WiFi and TCP
 buffers that let a firmware push finish on a board with no PSRAM, the
 signed plain-HTTP update path, rollback and the 90 s watchdog. The shape is
 the C3's: no display (`display_init = NULL`, `common/xprs_ui_none`), the
-serial console kept, and no archive.
+serial console kept, and the same small archive.
 
 ## Built, 2026-09-11
 

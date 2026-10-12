@@ -459,6 +459,25 @@ static const xprslora_cfg_t k_tdeck_lora = {
     .use_dio2_rf_switch = true,
 };
 
+/* ── Storage ────────────────────────────────────────────────────────────── */
+
+/* The archive on the microSD card when there is one, the 11 MB flash
+ * partition when there is not. The card is on SPI2 with the panel and the
+ * SX1262: its driver takes the bus per command, as the radio does, so a
+ * card write queues behind a radio transaction rather than across one
+ * (docs/esp32.md, "The SD card"). The peripheral rail that powers the slot
+ * is up before xapp_run(), in board_power_up(). */
+static esp_err_t storage_mount(uint64_t *archive_bytes)
+{
+    if (xapp_mount_card_sdspi(SPI2_HOST, TDECK_SPI_SCLK, TDECK_SPI_MOSI,
+                              TDECK_SPI_MISO, TDECK_SD_CS) == ESP_OK) {
+        *archive_bytes = XAPP_ARCHIVE_CARD;
+        return ESP_OK;
+    }
+    *archive_bytes = XAPP_ARCHIVE_FLASH;
+    return xapp_mount_flash();
+}
+
 static xapp_board_t k_tdeck = {
     .board_id = TDECK_BOARD_ID,
     .banner = "ESP-NOW + LAN + LoRa 868 + BLE5",
@@ -482,6 +501,7 @@ static xapp_board_t k_tdeck = {
     /* Somebody walks up to this board with a phone, and it has the room
      * for the access point that serves them (xprs_app.h). */
     .hotspot = true,
+    .storage_mount = storage_mount,
 
     /* BENCH KEY, temporary. The private half is
      * 0101..01 and is in the shell history of whoever set this up, which is

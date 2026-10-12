@@ -170,9 +170,22 @@ is placement: nearer the router this board would do better on every line.
 
 ## Storage
 
-The 832 KB `storage` partition holds the log, the statistics and the
-conversation, and no archive: one index segment is 1.3 MB and could never
-be evicted from a volume that small (`storage_mount` in `firmware/src/main.c`).
+The 832 KB `storage` partition holds the log (two 64 KB files), the
+statistics, the conversation, the gossip store (capped at 256 KB) and a
+384 KB archive (`storage_mount` in `firmware/src/main.c`).
+
+The archive used to be impossible here: every record was a 320-byte slot
+and a segment held 4096 of them, 1.3 MB, and the segment being written can
+never be evicted. Records are now a 56-byte header plus the packet's own
+bytes, and segments are sized to the budget (`xprsindex_seg_records`),
+256 records here, so the largest is under 80 KB. Simulated on the host at this budget:
+
+| packet length | messages kept |
+|---|---|
+| 80 B | ~2,600 |
+| 120 B | ~2,100 |
+| 180 B | ~1,550 |
+| 250 B (the maximum) | ~1,050 |
 
 ## Measured, 2026-09-11
 

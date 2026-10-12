@@ -144,7 +144,9 @@ function nsecDecode(str){var d=bech32Decode(str);
   return b.length===32?b:null;}
 
 // ---- identity helpers ----
-function callsignFromNpub(npub){var s='X3';
+// X1: a person (XPRS.md section 3). X3 is a fixed station, which is what
+// the board serving this page is, not the person typing into it.
+function callsignFromNpub(npub){var s='X1';
   for(var i=5;i<9;i++)s+=npub[i].toUpperCase();return s;}
 function pubkeyX(privBytes){var Pt=mulG(b2n(privBytes));return n2b(Pt[0],32);}
 

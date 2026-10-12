@@ -221,6 +221,7 @@ typedef struct {
     char     epoch;
     /* Authorship, since boot. `forged` counts records refused, not stored. */
     uint32_t verified, unverified, forged;
+    uint64_t used_bytes;    /* what the store's segments occupy */
 } xprsidx_stats_t;
 
 /** Return false to stop the query early. */
@@ -234,6 +235,44 @@ typedef struct xprsidx_s xprsidx_t;
  * or short. NULL when there is no card or no memory.
  */
 xprsidx_t *xprsindex_open(const char *dir);
+
+/**
+ * xprsindex_open with the number of records a segment holds. Eviction deletes
+ * a whole segment and the one being written is never deleted, so this is what
+ * a store on a small volume turns down: 4096 (the default, and what 0 means)
+ * suits a volume of megabytes, a few hundred one of under a megabyte.
+ *
+ * A store already on the volume keeps the size it was made with; this only
+ * applies to a new one.
+ */
+xprsidx_t *xprsindex_open2(const char *dir, uint32_t records_per_segment);
+
+/**
+ * The records per segment for a store of @p budget bytes: the most, up to
+ * 4096, for which a segment of full-size packets is no more than an eighth of
+ * the budget, and never fewer than 256. Eviction then frees at most an eighth
+ * at a time, and the segment being written, which cannot be evicted, never
+ * holds a large share of the volume. 832 KB of flash gets 256, a 3.8 MB
+ * volume 1024, an 11 MB one 2048.
+ */
+uint32_t xprsindex_seg_records(uint64_t budget);
+
+/**
+ * Copy what XPRS.md 12.11 keeps longest out of the store, for a volume that is
+ * about to be formatted: the mailbox declarations, then declared mail, then
+ * other mail, oldest first within each. The spool is left behind. What does
+ * not fit in @p cap is what the section drops first. Records past their
+ * until: are not copied.
+ *
+ * Reads every segment, so it belongs on the task that owns the storage.
+ *
+ * @return bytes used in @p buf; @p out_records gets the mail records copied.
+ */
+size_t xprsindex_rescue_mail(xprsidx_t *st, uint8_t *buf, size_t cap,
+                             uint32_t *out_records);
+
+/** Put back what xprsindex_rescue_mail copied out. @return records written. */
+uint32_t xprsindex_restore_mail(xprsidx_t *st, const uint8_t *buf, size_t len);
 
 /**
  * @brief How much mail this station holds for @p call (XPRS.md 13.12.3).

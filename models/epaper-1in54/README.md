@@ -160,15 +160,15 @@ duty-cycled channel, so a longer period is kinder to a busy network.
 ## Storage
 
 The V1 board has 4 MB of flash. Two 1.5 MB app slots for over-the-air
-updates leave 832 KB for files, and one index segment is 1.3 MB, so the
-archive cannot live in the flash: the segment being written can never be
-evicted and would fill the volume. So `storage_mount` in `main.c` mounts:
+updates leave 832 KB for files, which holds only a small archive. So
+`storage_mount` in `main.c` mounts:
 
 - **the microSD card at `/idx`**, when one is in the slot. The archive gets the
   same 10 MB as on every other board. The card is **never formatted** by the
   firmware: a card that does not mount is reported and left alone.
 - **the flash otherwise**, holding the log, the statistics and the
-  conversation, with no archive. The boot log says so (`archive: none`).
+  conversation and a 384 KB archive in 256-record segments (about 2,100
+  messages of 120 bytes).
 
 `xapp_board_t.storage_mount` (in `common/xprs_app/include/xprs_app.h`) is
 the hook that makes this possible. Boards that do not set it behave exactly

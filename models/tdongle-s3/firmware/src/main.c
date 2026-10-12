@@ -36,6 +36,7 @@
 #include "esp_timer.h"
 
 #include "model_init.h"
+#include "model_config.h"
 #include "st7735.h"
 #include "xprs_app.h"
 
@@ -145,6 +146,21 @@ static xapp_key_t input_poll(void)
 
 /* ── The board ──────────────────────────────────────────────────────────── */
 
+/* The archive on the microSD card under the USB-A cap when there is one,
+ * the flash partition when there is not. The card was dropped at 0.4.0
+ * because a dongle with an empty slot kept nothing (partitions.csv); with
+ * the flash behind it, an empty slot keeps what the flash holds. */
+static esp_err_t storage_mount(uint64_t *archive_bytes)
+{
+    if (xapp_mount_card_sdmmc(TDONGLE_SD_CLK_PIN, TDONGLE_SD_CMD_PIN,
+                              TDONGLE_SD_D0_PIN) == ESP_OK) {
+        *archive_bytes = XAPP_ARCHIVE_CARD;
+        return ESP_OK;
+    }
+    *archive_bytes = XAPP_ARCHIVE_FLASH;
+    return xapp_mount_flash();
+}
+
 static const xapp_board_t k_board = {
     .board_id = "tdongle-s3",
     .banner   = "BLE5 bridge and digipeater, 160x80, no PSRAM",
@@ -190,6 +206,7 @@ static const xapp_board_t k_board = {
      * at 21 KB free. Seeded as a default, so `cfg set ap_on 1` still turns
      * it on for anyone who wants it and knows what it costs. */
     .hotspot = false,
+    .storage_mount = storage_mount,
 
     /* This board's own tripwire, not the fleet default. Measured on the
      * firmware this one replaces (docs/esp32.md): the end of boot sat around

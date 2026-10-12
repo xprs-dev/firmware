@@ -88,6 +88,22 @@ typedef struct {
      *  2 daily. Braces excluded, as above. */
     int (*stats_json)(char *buf, size_t cap, int view);
 
+    /** The station's internet WiFi, for GET /api/wifi: the network, the
+     *  last join asked for from the page, and the remembered names (never a
+     *  password). Braces excluded. NULL: the endpoint answers 404. */
+    int (*wifi_json)(char *buf, size_t cap);
+
+    /** POST /api/wifi: join @p ssid (with @p pass, "" for an open network).
+     *  Runs on the HTTP task, so it checks and parks the request and returns
+     *  at once: 0 when taken, else the HTTP status with @p why filled. */
+    int (*wifi_join)(const char *ssid, const char *pass, char *why, size_t why_cap);
+
+    /** POST /api/wifi/scan starts a search for networks in range (0, or the
+     *  HTTP status with @p why); GET /api/wifi/scan reports it. Both run on
+     *  the HTTP task and only ask or read; the board scans elsewhere. */
+    int (*wifi_scan_start)(char *why, size_t why_cap);
+    int (*wifi_scan_json)(char *buf, size_t cap);
+
     /** The rotating log files (newest lines at the END of cur). NULL when
      *  the board keeps no log. */
     const char *log_cur, *log_prev;

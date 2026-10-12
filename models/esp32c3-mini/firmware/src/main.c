@@ -10,8 +10,8 @@
  * WHAT IS DIFFERENT ABOUT THIS CHIP. One core: everything docs/esp32.md
  * pins to core 1 goes wherever it can on this one (XPRS_WORK_CORE,
  * common/xprs_common/include/xprs_core.h). No PSRAM: every buffer is
- * internal RAM. 4 MB of flash: two app slots leave 832 KB for files, which
- * is less than one archive segment (see storage_mount below).
+ * internal RAM. 4 MB of flash: two app slots leave 832 KB for files, so the
+ * archive is small and its segments are too (see storage_mount below).
  *
  * NOT USED: the LED on GPIO8 and the BOOT button on GPIO9. On a SuperMini
  * the LED is a plain one, on a DevKitM-1 it is a WS2812 on the same pin,
@@ -32,11 +32,12 @@
 static const char *TAG = "c3mini";
 
 /* The station's files at /idx (xapp_board_t.storage_mount): the log, the
- * statistics and the conversation, on the 832 KB "storage" partition, and
- * NO archive. An index segment is 4096 records of 320 bytes, 1.3 MB, and
- * the segment being written can never be evicted, so an archive here would
- * fill the volume and take the log down with it. The e-paper board solves
- * this with its microSD card; this one has none. */
+ * statistics, the conversation and the archive, on the 832 KB "storage"
+ * partition.
+ *
+ * The archive gets XAPP_ARCHIVE_832K, 384 KB, in 256-record segments
+ * (xprsindex_seg_records sizes them to the budget), so the one being
+ * written is at most ~80 KB and eviction gives space back in small steps. */
 static esp_err_t storage_mount(uint64_t *archive_bytes)
 {
     static wl_handle_t wl = WL_INVALID_HANDLE;
@@ -45,10 +46,12 @@ static esp_err_t storage_mount(uint64_t *archive_bytes)
         .format_if_mount_failed = true,     /* our own partition */
         .allocation_unit_size = 4096,
     };
-    *archive_bytes = 0;
+    *archive_bytes = XAPP_ARCHIVE_832K;
     esp_err_t err = esp_vfs_fat_spiflash_mount_rw_wl("/idx", "storage", &mc, &wl);
     if (err != ESP_OK)
         ESP_LOGE(TAG, "storage did not mount: %s", esp_err_to_name(err));
+    else
+        xapp_storage_own_flash();
     return err;
 }
 

@@ -155,6 +155,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 .kv{width:100%;border-collapse:collapse;font-size:13px}
 .kv td{padding:3px 8px 3px 0;border-bottom:1px solid #1c1c1c}
 .kv td:first-child{color:var(--muted);white-space:nowrap;width:42%}
+.wform{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.wform input{flex:1 1 140px;min-width:0;background:transparent;color:var(--text);
+  border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:14px}
+.wform button{background:none;border:1px solid var(--border);color:var(--text);
+  border-radius:4px;padding:6px 12px}
+.kv tr.net{cursor:pointer}
 h3{font-size:11px;color:#555;text-transform:uppercase;font-weight:normal;
   margin:14px 0 5px}
 h3:first-child{margin-top:0}
@@ -183,6 +189,9 @@ img.shot{max-width:100%;image-rendering:pixelated;border:1px solid var(--border)
     <span class="my-callsign" id="call"></span>
     <button class="menu-btn" onclick="toggleMenu()">&#9776;</button>
     <div class="menu-panel" id="menu">
+      <button onclick="openView('stats')">Stats</button>
+      <button onclick="openView('station')">Station</button>
+      <button onclick="openView('settings')">Settings</button>
       <button onclick="clearChat()">Clear chat view</button>
       <button onclick="showNpub()">Show my npub</button>
       <button onclick="exportNsec()">Export nsec</button>
@@ -196,8 +205,6 @@ img.shot{max-width:100%;image-rendering:pixelated;border:1px solid var(--border)
   <button data-tab="chat" class="on" onclick="showTab('chat')">Chat</button>
   <button data-tab="traffic" onclick="showTab('traffic')">Traffic</button>
   <button data-tab="devices" onclick="showTab('devices')">Devices</button>
-  <button data-tab="stats" onclick="showTab('stats')">Stats</button>
-  <button data-tab="station" onclick="showTab('station')">Station</button>
 </div>
 <div id="content">
   <div id="chatwrap">
@@ -221,6 +228,7 @@ img.shot{max-width:100%;image-rendering:pixelated;border:1px solid var(--border)
   <div class="view hide" id="v-devices">loading&hellip;</div>
   <div class="view hide" id="v-stats">loading&hellip;</div>
   <div class="view hide" id="v-station">loading&hellip;</div>
+  <div class="view hide" id="v-settings"></div>
 </div>
 <div class="snackbar" id="snack"></div>
 <div id="msgmenu"></div>
@@ -637,14 +645,19 @@ function clearChat(){
   document.getElementById('msgs').innerHTML='';
   snack('Chat view cleared');
 }
+var chatLoaded=false;
 function load(){
   try{
     var x=new XMLHttpRequest();
-    x.open('GET','/api/xprs/history?limit=80',true);
+    // The whole conversation once, then only the newest: this runs every three
+    // seconds, and every read holds the archive against its writer.
+    x.open('GET','/api/xprs/history?kind=message,reaction,status&limit='+
+           (chatLoaded?40:200),true);
     x.timeout=4000;
     x.onload=function(){
       try{
         var d=JSON.parse(x.responseText);
+        chatLoaded=true;
         var rows=(d.rows||[]).slice().reverse();
         for(var i=0;i<rows.length;i++){
           var t=rows[i].type||'';
@@ -670,7 +683,7 @@ function load(){
 // reply; four phones polling five endpoints each would be the whole budget
 // spent on nobody looking.
 var tab='chat', tabTimer=null;
-var TAB_MS={chat:3000,traffic:5000,devices:5000,stats:60000,station:10000};
+var TAB_MS={chat:3000,traffic:5000,devices:5000,stats:60000,station:10000,settings:5000};
 
 function el(id){return document.getElementById(id);}
 function esc(t){return String(t==null?'':t)
@@ -722,7 +735,7 @@ function showTab(t){
   for(var i=0;i<bs.length;i++)
     bs[i].className=bs[i].getAttribute('data-tab')===t?'on':'';
   el('chatwrap').className=t==='chat'?'':'hide';
-  var views=['traffic','devices','stats','station'];
+  var views=['traffic','devices','stats','station','settings'];
   for(var j=0;j<views.length;j++)
     el('v-'+views[j]).className='view'+(views[j]===t?'':' hide');
   if(tabTimer)clearInterval(tabTimer);
@@ -735,7 +748,10 @@ function tick(){
   else if(tab==='devices')loadDevices();
   else if(tab==='stats')loadStats();
   else if(tab==='station')loadStation();
+  else if(tab==='settings')loadSettings();
 }
+// Stats, Station and Settings live behind the menu, not in the tab row.
+function openView(t){toggleMenu();showTab(t);}
 
 // Traffic: every packet the station filed, not only the ones chat shows.
 //
@@ -889,6 +905,95 @@ function loadStation(){
       var m=el('st-more'); if(m)m.innerHTML=h2;
     });
   });
+}
+
+// ---- settings: the internet WiFi. Any visitor may add a network; none can
+// be removed (docs/esp32.md). Built once and only updated after, so a
+// refresh never closes a phone's keyboard or moves a field being typed in.
+function loadSettings(){
+  var v=el('v-settings');
+  if(!el('wf-st')){
+    v.innerHTML='<h3>Internet WiFi</h3><table class="kv" id="wf-st"></table>'+
+      '<h3>Join a network</h3><div class="wform">'+
+      '<button onclick="wifiScan()" id="wf-scan">Search</button></div>'+
+      '<table class="kv" id="wf-nets"></table>'+
+      '<div class="wform"><input id="wf-ssid" maxlength="32" placeholder="Network name"'+
+      ' autocomplete="off" autocapitalize="off"><input id="wf-pass" type="password"'+
+      ' maxlength="63" placeholder="Password" autocomplete="off">'+
+      '<button onclick="wifiJoin()">Join</button></div><p class="dim" id="wf-msg"></p>';
+  }
+  wifiShow();
+}
+function wifiShow(){
+  getJSON('/api/wifi',function(w){
+    var t=el('wf-st');
+    if(!w||!t)return;
+    var k=w.known||[],names=[];
+    for(var i=0;i<k.length;i++)
+      names.push(esc(k[i].ssid)+(k[i].internet?'':' <span class="dim">(no internet)</span>'));
+    t.innerHTML=row('Network',w.ssid?esc(w.ssid):'<span class="dim">none</span>')+
+      row('Connected',w.up?(w.internet?'yes, with internet':w.internet===false?
+          'yes, no internet':'yes'):'no')+
+      row('Remembered',names.length?names.join(', '):'<span class="dim">none yet</span>');
+    var m=el('wf-msg');
+    if(w.join==='joining')m.textContent='Joining…';
+    else if(w.join==='failed')m.textContent='Could not join'+(w.why?': '+w.why:'')+'.';
+    else if(w.join==='joined')m.textContent='Joined.';
+  });
+}
+var scanTries=0;
+function wifiScan(){
+  el('wf-scan').disabled=true;
+  el('wf-nets').innerHTML=row('','Searching…');
+  var x=new XMLHttpRequest();
+  x.open('POST','/api/wifi/scan');
+  x.onload=function(){scanTries=0;setTimeout(scanPoll,2500);};
+  x.onerror=function(){el('wf-scan').disabled=false;
+    el('wf-nets').innerHTML=row('','No answer. Try again.');};
+  x.send('');
+}
+function scanPoll(){
+  getJSON('/api/wifi/scan',function(r){
+    if(r&&r.state==='scanning'&&++scanTries<10){setTimeout(scanPoll,1000);return;}
+    el('wf-scan').disabled=false;
+    var t=el('wf-nets');
+    if(!r||r.state!=='done'){
+      t.innerHTML=row('','The search did not finish'+(r&&r.why?': '+esc(r.why):'')+'.');
+      return;
+    }
+    var n=r.nets||[],h='';
+    if(!n.length)h=row('','No networks in range.');
+    for(var i=0;i<n.length;i++){
+      var bars=n[i].rssi>-60?'strong':n[i].rssi>-75?'good':'weak';
+      h+='<tr class="net" data-i="'+i+'"><td>'+esc(n[i].ssid)+'</td><td>'+bars+
+         (n[i].open?', open':'')+(n[i].known?', remembered':'')+'</td></tr>';
+    }
+    t.innerHTML=h;
+    var rows=t.getElementsByTagName('tr');
+    for(var j=0;j<rows.length;j++)rows[j].onclick=(function(net){return function(){
+      el('wf-ssid').value=net.ssid;
+      el('wf-pass').value='';
+      if(net.open)el('wf-msg').textContent='Open network: press Join.';
+      else el('wf-pass').focus();
+    };})(n[+rows[j].getAttribute('data-i')]);
+  });
+}
+function wifiJoin(){
+  var s=el('wf-ssid').value,p=el('wf-pass').value,m=el('wf-msg');
+  if(!s)return;
+  m.textContent='Sending…';
+  var x=new XMLHttpRequest();
+  x.open('POST','/api/wifi');
+  x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+  x.onload=function(){
+    var j=null;
+    try{j=JSON.parse(x.responseText);}catch(e){}
+    if(j&&j.ok){el('wf-pass').value='';m.textContent='Joining…';}
+    else m.textContent='Not taken'+(j&&j.error?': '+j.error:'')+'.';
+  };
+  // A join can take the hotspot off its channel for a moment.
+  x.onerror=function(){m.textContent='No answer. Reload in a minute.';};
+  x.send('ssid='+encodeURIComponent(s)+'&pass='+encodeURIComponent(p));
 }
 
 // ---- boot: an identity exists before the first keystroke ----

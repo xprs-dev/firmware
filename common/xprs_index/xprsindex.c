@@ -2,7 +2,11 @@
  * The XPRS index — see xprsindex.h for what it is and why it is not SQLite.
  *
  * On disk, under <dir>:
- *   seg_%010u.bin   fixed 320-byte records, XI_RECS_PER_SEG per file
+ *   seg_%010u.v2    a segment: a header, one 4-byte offset per slot, then the
+ *                   records, each a 56-byte header and only the bytes its
+ *                   packet has (see "On-disk shapes")
+ *   seg_%010u.bin   a segment from before that: fixed 320-byte records. Read,
+ *                   never written, and gone once eviction reaches it
  *   zone.idx        one 16-byte entry per segment, in segment order
  *   t/%02d.idx      per type: 4-byte record numbers, newest last
  *
@@ -65,7 +69,10 @@ static uint64_t xi_card_free(const char *d);
 #define XI_UNLOCK(st)  do { if ((st)->lock) xSemaphoreGive((st)->lock); } while (0)
 #endif
 
+/* Slots per segment, unless the store already on the volume says otherwise
+ * (xprsindex_open2). Segments of the old fixed format always hold this many. */
 #define XI_RECS_PER_SEG   4096u
+#define XI_RECS_MIN       64u
 /* Directory entries kept in the store. Matches XPRS_DIR_MAX, what the only
  * caller asks for; an ask for more than this is served by a full walk. */
 #define XI_DIR_MAX        32
@@ -87,6 +94,14 @@ static uint64_t xi_card_free(const char *d);
  */
 #define XI_PRESENCE_RING  12
 #define XI_DEDUP_RING     32
+/*
+ * Mail and chat get a longer memory than the rest. Mail is re-aired for its recipient
+ * every few minutes (36.8.1) and replayed by every catch-up, while a busy
+ * channel turns the ring above over in under a minute: a T-Deck's archive,
+ * 2026-10-12, held 49 messages of which 7 were distinct, one of them 17
+ * times. 128 ids are 512 bytes.
+ */
+#define XI_MAIL_RING      128
 #define XI_DEFAULT_LIMIT  64
 /* Recent segments cached in RAM. The zone file is the real map — an index that
  * kept every segment in memory would cost 384 KB on a full card, which is the
@@ -151,6 +166,10 @@ static uint64_t xi_card_free(const char *d);
 
 /* ── On-disk shapes ─────────────────────────────────────────────────────── */
 
+/* A record as the store handles it in RAM (the write queue, a read), and the
+ * layout of the old fixed segments, which held exactly this: 320 bytes
+ * whatever the packet's length. An XPRS packet is at most 250 bytes and most
+ * are much shorter, so most of every slot was padding. */
 typedef struct __attribute__((packed)) {
     uint32_t index;
     uint32_t ts;
@@ -166,6 +185,54 @@ typedef struct __attribute__((packed)) {
     uint8_t  _pad2[15];
 } xi_rec_t;
 _Static_assert(sizeof(xi_rec_t) == 320, "record must be 320 bytes");
+
+/*
+ * The segment format records are written in now.
+ *
+ *   [0, 8)                 xi_seghdr_t: magic, version, slots in this segment
+ *   [8, 8 + 4 * slots)     one uint32 per slot: where its record starts, 0 = none
+ *   [8 + 4 * slots, ...)   records, appended in the order they are written
+ *
+ * A record is xi_vhdr_t followed by `len` bytes of wire, no padding and no
+ * terminator: the same metadata as before, and only the bytes the packet has.
+ *
+ * The offset table is written out in full, zeroed, when the segment is
+ * created. A slot that was never written then reads as 0 rather than as
+ * whatever the cluster held before (docs/esp32.md, "a slot that was never
+ * written is not zeroes"), and every later write lands inside the file or at
+ * its end, never past it.
+ *
+ * Which bytes are a record is decided by the record, not by the table: magic,
+ * its own index, a length in range and a CRC over header and wire. A table
+ * entry that a power cut left pointing at nothing, or at bytes the next
+ * append wrote over, fails that test and reads as a hole.
+ */
+#define XI_SEG_MAGIC   0x32564958u   /* "XIV2" */
+#define XI_REC_MAGIC   0xA7u
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint16_t version;     /* 2 */
+    uint16_t slots;       /* records this segment numbers */
+} xi_seghdr_t;
+_Static_assert(sizeof(xi_seghdr_t) == 8, "segment header must be 8 bytes");
+
+typedef struct __attribute__((packed)) {
+    uint8_t  magic;
+    uint8_t  flags;
+    uint8_t  type;
+    uint8_t  bearer;
+    uint32_t index;
+    uint32_t ts;
+    int8_t   rssi;
+    uint8_t  len;         /* bytes of wire that follow; at most 250 */
+    uint16_t crc;         /* CRC-16/CCITT over this header (crc 0) and the wire */
+    char     id[8];
+    char     from[XPRSIDX_CALL_LEN];
+    char     to[XPRSIDX_CALL_LEN];
+} xi_vhdr_t;
+_Static_assert(sizeof(xi_vhdr_t) == 56, "record header must be 56 bytes");
+_Static_assert(XPRSIDX_WIRE_MAX <= 255, "a record length is one byte");
 
 typedef struct __attribute__((packed)) {
     uint32_t first_index;
@@ -189,10 +256,25 @@ struct xprsidx_s {
     uint32_t written_end;     /* one past the highest index ON THE CARD */
     uint32_t count;
     uint32_t nseg;
+    /* Slots per segment. Fixed for the life of a store: a record's segment
+     * is index / recs, so it is read from the segments already on the volume
+     * and only a new store takes what the board asked for. */
+    uint32_t recs;
+    /* Indices below this live in old fixed-format (.bin) segments; 0 when
+     * there are none. Everything at or above it is the current format. */
+    uint32_t legacy_end;
+    uint32_t legacy_holes;    /* unfilled indices below legacy_end */
+    /* Bulk writing (xprsindex_restore_mail): the active segment's table
+     * entries wait here and go down in one write per segment. */
+    uint32_t *pend;
+    uint32_t pend_lo, pend_hi;
+    uint64_t used_bytes;      /* every segment file, as the volume counts it */
     FILE    *active_fp;
     uint32_t active_first;
+    uint32_t active_end;      /* where the active segment's next record goes */
     FILE    *read_fp;         /* scan cursor: one closed segment, held open */
     uint32_t read_first;
+    uint32_t read_size;       /* that segment's size when it was opened */
     bool     read_missing;    /* read_first would not open: do not ask again */
     FILE    *tail_fp;         /* the one open type tail (see xi_type_append) */
     int      tail_type;       /* which type it is, -1 = none */
@@ -202,6 +284,8 @@ struct xprsidx_s {
     bool     zone_dirty;
     uint32_t since_flush;     /* adds since the zone entry last hit the card */
     uint32_t dedup[XI_DEDUP_RING];
+    uint32_t mail_seen[XI_MAIL_RING];
+    int      mail_pos;
     int      dedup_pos;
     /* Presence repeats: same words, new timestamp. See xi_presence_hash. */
     uint32_t pres[XI_PRESENCE_RING];
@@ -324,9 +408,52 @@ static bool xi_ieq(const char *a, const char *b)
     return *a == *b;
 }
 
+/* Is the segment starting at [first] one of the old fixed-format files? */
+static bool xi_is_legacy(const xprsidx_t *st, uint32_t first)
+{
+    return first < st->legacy_end;
+}
+
 static void xi_seg_path(const xprsidx_t *st, char *out, size_t cap, uint32_t first)
 {
-    snprintf(out, cap, "%s/seg_%010u.bin", st->dir, (unsigned)first);
+    snprintf(out, cap, "%s/seg_%010u.%s", st->dir, (unsigned)first,
+             xi_is_legacy(st, first) ? "bin" : "v2");
+}
+
+/* Bytes before the first record of a current-format segment. */
+static uint32_t xi_hdr_bytes(const xprsidx_t *st)
+{
+    return (uint32_t)sizeof(xi_seghdr_t) + st->recs * 4u;
+}
+
+/* A file's size, by stat() and never by ftell(): after SEEK_END, ftell()
+ * returns -1 on this FatFs mount (docs/esp32.md, "The SD card"). */
+static uint32_t xi_file_size(const char *path)
+{
+    struct stat sb;
+    if (stat(path, &sb) != 0 || sb.st_size < 0) return 0;
+    return (uint32_t)sb.st_size;
+}
+
+/* CRC-16/CCITT-FALSE. A bit at a time: a record is ~300 bytes and this runs
+ * on the writer task and the readers, never on a radio's thread. */
+static uint16_t xi_crc16(uint16_t crc, const void *data, size_t n)
+{
+    const uint8_t *p = (const uint8_t *)data;
+    while (n--) {
+        crc ^= (uint16_t)(*p++ << 8);
+        for (int b = 0; b < 8; b++)
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+    }
+    return crc;
+}
+
+static uint16_t xi_vhdr_crc(const xi_vhdr_t *h, const char *wire)
+{
+    xi_vhdr_t c = *h;
+    c.crc = 0;
+    uint16_t crc = xi_crc16(0xFFFF, &c, sizeof c);
+    return xi_crc16(crc, wire, h->len);
 }
 static void xi_zone_path(const xprsidx_t *st, char *out, size_t cap)
 {
@@ -435,9 +562,34 @@ static void xi_zone_write(xprsidx_t *st, uint32_t n, const xi_zone_t *z)
     fclose(f);
 }
 
+/* Records held: the indices from the oldest segment on, less the ones the
+ * newest old-format segment never filled. Records dropped after their index
+ * was taken (xi_judge_rec) are subtracted as they happen, until this runs
+ * again. */
+static void xi_count_held(xprsidx_t *st)
+{
+    uint32_t n = st->next_index - st->oldest_first;
+    if (st->oldest_first < st->legacy_end && n >= st->legacy_holes)
+        n -= st->legacy_holes;
+    st->count = n;
+}
+
+/* Whether an open current-format segment was laid down with this store's
+ * slot count. One that was not cannot be read with this store's table
+ * offsets, and is treated as absent. */
+static bool xi_seg_hdr_ok(const xprsidx_t *st, FILE *f)
+{
+    xi_seghdr_t h;
+    if (fseek(f, 0, SEEK_SET) != 0 || fread(&h, sizeof h, 1, f) != 1) return false;
+    return h.magic == XI_SEG_MAGIC && h.version == 2 && h.slots == st->recs;
+}
+
 /* The segment a record index belongs to. */
-static uint32_t xi_seg_of(uint32_t index) { return (index / XI_RECS_PER_SEG) * XI_RECS_PER_SEG; }
-static uint32_t xi_seg_no(uint32_t index) { return index / XI_RECS_PER_SEG; }
+static uint32_t xi_seg_of(const xprsidx_t *st, uint32_t index)
+{
+    return (index / st->recs) * st->recs;
+}
+static uint32_t xi_seg_no(const xprsidx_t *st, uint32_t index) { return index / st->recs; }
 
 /* How many records may go by before the active segment's zone entry is put on
  * the card. Losing it to a power cut costs nothing — it is rebuilt from the
@@ -460,13 +612,13 @@ static void xi_zone_flush(xprsidx_t *st)
  * and every reader goes through xi_zone_flush() first. */
 static void xi_zone_touch(xprsidx_t *st, const xi_rec_t *r)
 {
-    uint32_t n = xi_seg_no(r->index);
-    if (!st->zone_dirty && st->active_zone.first_index != xi_seg_of(r->index)) {
+    uint32_t n = xi_seg_no(st, r->index);
+    if (!st->zone_dirty && st->active_zone.first_index != xi_seg_of(st, r->index)) {
         /* First touch of this segment in this session: take whatever the card
          * already holds so a reopened segment keeps its earlier window. */
         if (!xi_zone_read(st, n, &st->active_zone) ||
-            st->active_zone.first_index != xi_seg_of(r->index)) {
-            st->active_zone.first_index = xi_seg_of(r->index);
+            st->active_zone.first_index != xi_seg_of(st, r->index)) {
+            st->active_zone.first_index = xi_seg_of(st, r->index);
             st->active_zone.min_ts   = r->ts;
             st->active_zone.max_ts   = r->ts;
             st->active_zone.type_mask = 0;
@@ -475,8 +627,8 @@ static void xi_zone_touch(xprsidx_t *st, const xi_rec_t *r)
     } else if (n != st->active_zone_no) {
         xi_zone_flush(st);                       /* the segment rolled */
         if (!xi_zone_read(st, n, &st->active_zone) ||
-            st->active_zone.first_index != xi_seg_of(r->index)) {
-            st->active_zone.first_index = xi_seg_of(r->index);
+            st->active_zone.first_index != xi_seg_of(st, r->index)) {
+            st->active_zone.first_index = xi_seg_of(st, r->index);
             st->active_zone.min_ts   = r->ts;
             st->active_zone.max_ts   = r->ts;
             st->active_zone.type_mask = 0;
@@ -619,10 +771,61 @@ static bool xi_slot_used(const xi_rec_t *r)
     return r->len > 0 && r->len <= XPRSIDX_WIRE_MAX;
 }
 
+/*
+ * Read slot [index] of an open segment of [size] bytes into [out].
+ *
+ * Every offset is checked against [size] before the stream is asked for it:
+ * on this VFS a read past the end leaves the handle in error for good
+ * (docs/esp32.md, "do not probe for the end by reading past it"), and the
+ * handle is either the writer's or the scan cursor every later read uses.
+ */
+static bool xi_load(const xprsidx_t *st, FILE *f, uint32_t size, bool legacy,
+                    uint32_t index, xi_rec_t *out)
+{
+    uint32_t slot = index % st->recs;
+    if (legacy) {
+        uint32_t off = slot * (uint32_t)sizeof(xi_rec_t);
+        if (off + sizeof *out > size) return false;
+        bool ok = fseek(f, (long)off, SEEK_SET) == 0 &&
+                  fread(out, sizeof *out, 1, f) == 1;
+        return ok && xi_rec_is(out, index);
+    }
+
+    uint32_t at = (uint32_t)sizeof(xi_seghdr_t) + slot * 4u;
+    uint32_t off = 0;
+    if (at + 4u > size) return false;
+    if (fseek(f, (long)at, SEEK_SET) != 0 || fread(&off, 4, 1, f) != 1) return false;
+    if (off < xi_hdr_bytes(st) || off + sizeof(xi_vhdr_t) > size) return false;
+
+    xi_vhdr_t h;
+    if (fseek(f, (long)off, SEEK_SET) != 0 || fread(&h, sizeof h, 1, f) != 1)
+        return false;
+    if (h.magic != XI_REC_MAGIC || h.index != index) return false;
+    if (h.len == 0 || h.len > XPRSIDX_WIRE_MAX) return false;
+    if (off + sizeof h + h.len > size) return false;
+
+    memset(out, 0, sizeof *out);
+    if (fread(out->wire, h.len, 1, f) != 1) return false;
+    if (xi_vhdr_crc(&h, out->wire) != h.crc) return false;
+
+    out->index  = h.index;
+    out->ts     = h.ts;
+    out->rssi   = h.rssi;
+    out->flags  = h.flags;
+    out->type   = h.type;
+    out->bearer = h.bearer;
+    out->len    = h.len;
+    memcpy(out->id, h.id, sizeof out->id);
+    memcpy(out->from, h.from, sizeof out->from);
+    memcpy(out->to, h.to, sizeof out->to);
+    out->id[sizeof out->id - 1] = '\0';
+    out->from[sizeof out->from - 1] = '\0';
+    out->to[sizeof out->to - 1] = '\0';
+    return true;
+}
+
 static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
 {
-    long off = (long)(index % XI_RECS_PER_SEG) * (long)sizeof(xi_rec_t);
-
     /*
      * Never ask a stream for a slot the writer has not put there yet.
      *
@@ -637,6 +840,8 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
      */
     if (index >= st->written_end) return false;
 
+    uint32_t first = xi_seg_of(st, index);
+
     /* The active segment is read through the handle that is writing it, never
      * by name. FatFs only updates a file's directory entry on sync or close, so
      * a second fopen() of the segment currently being appended sees the size it
@@ -644,11 +849,9 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
      * back as nothing. POSIX has no such rule, so a host test cannot catch it;
      * the dongle failed exactly this way. The next write fseek()s to its own
      * offset, so moving the position here is safe. */
-    if (st->active_fp && xi_seg_of(index) == st->active_first) {
+    if (st->active_fp && first == st->active_first) {
         fflush(st->active_fp);
-        bool ok = fseek(st->active_fp, off, SEEK_SET) == 0 &&
-                  fread(out, sizeof *out, 1, st->active_fp) == 1;
-        return ok && xi_rec_is(out, index);
+        return xi_load(st, st->active_fp, st->active_end, false, index, out);
     }
 
     /* Anything older is read through a cursor that stays open on the segment
@@ -666,7 +869,6 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
      * station. The memo is dropped by xi_read_close(), which the writer calls
      * before it creates the segment, and at the start of every query.
      */
-    uint32_t first = xi_seg_of(index);
     if (!st->read_fp && st->read_missing && st->read_first == first)
         return false;
     if (!st->read_fp || st->read_first != first) {
@@ -680,10 +882,17 @@ static bool xi_read_rec(xprsidx_t *st, uint32_t index, xi_rec_t *out)
          * next record, as it always was. */
         st->read_missing = !st->read_fp && errno == ENOENT;
         if (!st->read_fp) return false;
+        /* A closed segment, so the name lookup sees its whole size. */
+        st->read_size = xi_file_size(path);
+        if (!xi_is_legacy(st, first) && !xi_seg_hdr_ok(st, st->read_fp)) {
+            fclose(st->read_fp);
+            st->read_fp = NULL;
+            st->read_missing = true;
+            return false;
+        }
     }
-    bool ok = fseek(st->read_fp, off, SEEK_SET) == 0 &&
-              fread(out, sizeof *out, 1, st->read_fp) == 1;
-    return ok && xi_rec_is(out, index);
+    return xi_load(st, st->read_fp, st->read_size, xi_is_legacy(st, first),
+                   index, out);
 }
 
 /* Drop the scan cursor — before a segment it might hold becomes the one being
@@ -692,6 +901,7 @@ static void xi_read_close(xprsidx_t *st)
 {
     if (st->read_fp) { fclose(st->read_fp); st->read_fp = NULL; }
     st->read_first = 0;
+    st->read_size = 0;
     st->read_missing = false;
 }
 
@@ -840,18 +1050,16 @@ static void xi_mkdirs(const xprsidx_t *st)
     mkdir(path, 0777);
 }
 
-/* How many records the last segment actually holds (a power cut can leave a
- * short one). Reads back to front and stops at the first written record. */
+/* How many slots of a segment anything was written into (a power cut can
+ * leave a short one): one past the LAST used slot, not the first gap. A
+ * dropped write leaves a hole with real records after it, and stopping at the
+ * hole both hid them and pointed the next write at them. The weak test,
+ * deliberately -- see xi_slot_used. */
 static uint32_t xi_scan_tail(xprsidx_t *st, uint32_t first)
 {
     char path[96];
     xi_seg_path(st, path, sizeof path, first);
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
-
-    /* How many slots the file has.
-     *
-     * stat(), not ftell(): ftell() after SEEK_END returns -1 on this FatFs
+    /* stat(), not ftell(): ftell() after SEEK_END returns -1 on this FatFs
      * mount, `end / 320` was then 0, and this scan returned 0 on every board
      * with a card. next_index fell back to the segment's base number and the
      * station rewrote that segment from its front on every reboot, over the
@@ -861,30 +1069,60 @@ static uint32_t xi_scan_tail(xprsidx_t *st, uint32_t first)
      * Probing for the end by reading past it is not the way round either:
      * once a read fails, this VFS keeps the handle in error and every later
      * read fails with it, so the scan that followed found nothing at all. */
-    struct stat sb;
-    uint32_t slots = 0;
-    if (stat(path, &sb) == 0 && sb.st_size > 0) {
-        slots = (uint32_t)((size_t)sb.st_size / sizeof(xi_rec_t));
-        if (slots > XI_RECS_PER_SEG) slots = XI_RECS_PER_SEG;
-    }
+    uint32_t size = xi_file_size(path);
+    if (!size) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
 
-    /* The LAST slot anything was written into, not the first gap: a dropped
-     * write leaves a hole with real records after it, and stopping at the
-     * hole both hid them and pointed the next write at them. The weak test,
-     * deliberately -- see xi_slot_used. */
-    (void)first;
     uint32_t n = 0;
-    xi_rec_t r;
-    for (uint32_t i = 0; i < slots; i++) {
-        if (fseek(f, (long)i * (long)sizeof(xi_rec_t), SEEK_SET) != 0) break;
-        if (fread(&r, sizeof r, 1, f) != 1) break;
-        if (xi_slot_used(&r)) n = i + 1;
+    if (xi_is_legacy(st, first)) {
+        uint32_t slots = size / (uint32_t)sizeof(xi_rec_t);
+        if (slots > st->recs) slots = st->recs;
+        xi_rec_t r;
+        for (uint32_t i = 0; i < slots; i++) {
+            if (fseek(f, (long)i * (long)sizeof(xi_rec_t), SEEK_SET) != 0) break;
+            if (fread(&r, sizeof r, 1, f) != 1) break;
+            if (xi_slot_used(&r)) n = i + 1;
+        }
+    } else {
+        /* A slot is used when its offset points at bytes the file has. The
+         * table is read a window at a time: 4096 slots are 16 KB, more than
+         * this board can spare at once. */
+        uint32_t hdr = xi_hdr_bytes(st);
+        uint32_t win[64];
+        uint32_t slots = xi_seg_hdr_ok(st, f) ? st->recs : 0;
+        for (uint32_t i = 0; i < slots; i += 64) {
+            uint32_t take = st->recs - i < 64 ? st->recs - i : 64;
+            uint32_t at = (uint32_t)sizeof(xi_seghdr_t) + i * 4u;
+            if (at + take * 4u > size) break;
+            if (fseek(f, (long)at, SEEK_SET) != 0) break;
+            if (fread(win, 4, take, f) != take) break;
+            for (uint32_t k = 0; k < take; k++)
+                if (win[k] >= hdr && win[k] < size) n = i + k + 1;
+        }
     }
     fclose(f);
     return n;
 }
 
+/* The slot count a current-format segment says it has, or 0. */
+static uint32_t xi_seg_slots(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    xi_seghdr_t h;
+    bool ok = fread(&h, sizeof h, 1, f) == 1;
+    fclose(f);
+    if (!ok || h.magic != XI_SEG_MAGIC || h.version != 2) return 0;
+    return h.slots;
+}
+
 xprsidx_t *xprsindex_open(const char *dir)
+{
+    return xprsindex_open2(dir, 0);
+}
+
+xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
 {
     if (!dir || !*dir) return NULL;
 #if defined(CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY) && \
@@ -900,55 +1138,107 @@ xprsidx_t *xprsindex_open(const char *dir)
     xi_copy(st->dir, sizeof st->dir, dir, -1);
     st->epoch = 'A';
     st->tail_type = -1;
+    if (recs < XI_RECS_MIN || recs > 0xFFFFu) recs = XI_RECS_PER_SEG;
+    st->recs = recs;
 #ifndef XPRSIDX_HOST_TEST
     st->lock = xSemaphoreCreateMutex();
 #endif
     xi_mkdirs(st);
 
-    /* Find the highest segment on the card. */
-    uint32_t last_first = 0;
-    bool any = false;
+    /* Every segment on the volume: which is the newest and the oldest, which
+     * are the old fixed format, and what they all weigh. One readdir; the
+     * sizes are a stat() each, the same order of cost as the zone pass
+     * below. */
+    uint32_t last_first = 0, last_v2 = 0, oldest_v2 = 0, oldest = 0, legacy_last = 0;
+    bool any = false, any_v2 = false, any_legacy = false;
     DIR *d = opendir(st->dir);
     if (d) {
         struct dirent *de;
         while ((de = readdir(d)) != NULL) {
             if (strncmp(de->d_name, "seg_", 4) != 0) continue;
-            uint32_t first = (uint32_t)strtoul(de->d_name + 4, NULL, 10);
+            char *end = NULL;
+            uint32_t first = (uint32_t)strtoul(de->d_name + 4, &end, 10);
+            bool legacy = end && strcmp(end, ".bin") == 0;
+            if (!legacy && !(end && strcmp(end, ".v2") == 0)) continue;
+            char path[96];
+            snprintf(path, sizeof path, "%s/seg_%010u.%s", st->dir,
+                     (unsigned)first, legacy ? "bin" : "v2");
+            st->used_bytes += xi_file_size(path);
             st->nseg++;
-            if (!any || first > last_first) { last_first = first; any = true; }
+            if (!any || first > last_first) last_first = first;
+            if (!any || first < oldest) oldest = first;
+            any = true;
+            if (legacy) {
+                if (!any_legacy || first > legacy_last) legacy_last = first;
+                any_legacy = true;
+            } else {
+                if (!any_v2 || first > last_v2) last_v2 = first;
+                if (!any_v2 || first < oldest_v2) oldest_v2 = first;
+                any_v2 = true;
+            }
         }
         closedir(d);
     }
+
+    /* The volume decides the slot count, not the caller: a record's segment
+     * is index / recs, so a store reopened with a different number would
+     * look for every record in the wrong file. The old format always held
+     * XI_RECS_PER_SEG. */
+    if (any_legacy) {
+        /* Old segments map an index to its file by 4096, and so does every
+         * segment made while they were on the volume. */
+        st->recs = XI_RECS_PER_SEG;
+    } else if (any_v2) {
+        char path[96];
+        snprintf(path, sizeof path, "%s/seg_%010u.v2", st->dir, (unsigned)last_v2);
+        uint32_t on_disk = xi_seg_slots(path);
+        if (on_disk < XI_RECS_MIN) {
+            /* The newest was cut off before its header was down. */
+            snprintf(path, sizeof path, "%s/seg_%010u.v2", st->dir,
+                     (unsigned)oldest_v2);
+            on_disk = xi_seg_slots(path);
+        }
+        if (on_disk >= XI_RECS_MIN && on_disk != st->recs) {
+            XI_LOGW("store holds %u-slot segments; keeping that, not %u",
+                    (unsigned)on_disk, (unsigned)st->recs);
+            st->recs = on_disk;
+        }
+    }
+    if (any_legacy) st->legacy_end = legacy_last + XI_RECS_PER_SEG;
+
     if (any) {
         uint32_t tail = xi_scan_tail(st, last_first);
+        /* The indices the newest old segment never filled are holes; they
+         * are not records held. */
+        if (any_legacy) {
+            uint32_t lt = legacy_last == last_first ? tail
+                                                    : xi_scan_tail(st, legacy_last);
+            st->legacy_holes = st->legacy_end - (legacy_last + lt);
+        }
         st->next_index = last_first + tail;
+        /*
+         * The newest segment is the old format: it is never appended to, so
+         * the store carries on in a new segment at the next boundary. The
+         * indices left over in the old one are holes, which every reader
+         * already survives; the records in it are read as they always were
+         * and go when eviction reaches them.
+         */
+        if (xi_is_legacy(st, last_first) && st->next_index < st->legacy_end) {
+            XI_LOGI("old fixed-size segments end at %u; new records start there",
+                    (unsigned)st->legacy_end);
+            st->next_index = st->legacy_end;
+        }
         st->written_end = st->next_index;
-        st->count = st->next_index;   /* eviction rewrites this below */
     }
     /* The oldest segment still on the card (eviction deletes from the
      * front, so the lowest seg_ number is it), and the newest packet ts
      * (from the zone map -- cheap, one pass over 16-byte entries). */
-    st->oldest_first = 0;
-    {
-        bool first_seen = false;
-        DIR *d2 = opendir(st->dir);
-        if (d2) {
-            struct dirent *de2;
-            while ((de2 = readdir(d2)) != NULL) {
-                if (strncmp(de2->d_name, "seg_", 4) != 0) continue;
-                uint32_t f2 = (uint32_t)strtoul(de2->d_name + 4, NULL, 10);
-                if (!first_seen || f2 < st->oldest_first) {
-                    st->oldest_first = f2;
-                    first_seen = true;
-                }
-            }
-            closedir(d2);
-        }
-        for (uint32_t zn = 0;; zn++) {
-            xi_zone_t z;
-            if (!xi_zone_read(st, zn, &z)) break;
-            if (z.max_ts > st->newest_ts) st->newest_ts = z.max_ts;
-        }
+    st->oldest_first = any ? oldest : 0;
+    xi_count_held(st);
+    for (uint32_t zn = 0;; zn++) {
+        xi_zone_t z;
+        if (!xi_zone_read(st, zn, &z)) break;
+        if (z.max_ts > st->newest_ts) st->newest_ts = z.max_ts;
     }
     /* The catch-up since: (36.10). Snapshot NOW: by the time an archiver
      * peer is sighted, newest_ts has already moved past the hole -- fresh
@@ -978,8 +1268,9 @@ xprsidx_t *xprsindex_open(const char *dir)
         return NULL;
     }
 #endif
-    XI_LOGI("open %s: %u records, %u segments", st->dir,
-            (unsigned)st->count, (unsigned)st->nseg);
+    XI_LOGI("open %s: %u records, %u segments of %u slots, %llu bytes",
+            st->dir, (unsigned)st->count, (unsigned)st->nseg,
+            (unsigned)st->recs, (unsigned long long)st->used_bytes);
     return st;
 }
 
@@ -1268,19 +1559,94 @@ static uint32_t xi_rec_until(const xi_rec_t *r)
 
 /* Over budget? Delete the oldest segment, carrying mail forward (36.11).
  * Writer task only, lock held. One segment per call -- the writer loops. */
-/* Bytes the store actually occupies.
+/* Bytes the store actually occupies: every segment file, as the volume
+ * counts it. Summed at open and kept as records are appended and segments go.
  *
- * Records are contiguous from the oldest kept index to the next one to be
- * written, so the span IS the occupancy. Billing nseg * XI_RECS_PER_SEG
- * over-counted: the active segment is nearly always part-full, so a store
- * with two segments and one record in the second was charged for 8192
- * records and evicted at half its real budget. On the dongle's 256 MB that
- * threw away up to 4096 records -- a whole segment of other people's mail --
- * every time the writer crossed a segment boundary. */
+ * It used to be the index span times 320, which was right while every record
+ * was 320 bytes. Before that it billed nseg * XI_RECS_PER_SEG, which charged
+ * the part-full active segment as full: a store with two segments and one
+ * record in the second was charged for 8192 records and evicted at half its
+ * real budget. */
 static uint64_t xi_used_bytes(const xprsidx_t *st)
 {
-    if (st->next_index <= st->oldest_first) return 0;
-    return (uint64_t)(st->next_index - st->oldest_first) * sizeof(xi_rec_t);
+    return st->used_bytes;
+}
+
+/* On the host there is no card, no FatFs and no power cut, so fsync buys
+ * nothing a test can observe — while costing everything. The host build has no
+ * writer task to batch behind (xi_write_rec_fwd calls this per record), and the
+ * suite writes 18,000 of them: 1,913 fsyncs at ~15 ms each turned a 3-second
+ * test into 4m34s of a process blocked in the ext4 journal. It looks hung, and
+ * it was killed as such more than once.
+ *
+ * fflush stays. That is the half the test can see: it pushes stdio's buffer out
+ * so any reopen inside the test reads what was written. Every assertion keeps
+ * its meaning; only the durability guarantee, which no host test can exercise,
+ * is dropped. */
+#ifdef XPRSIDX_HOST_TEST
+#define XI_FSYNC(fp) ((void)0)
+#else
+#define XI_FSYNC(fp) fsync(fileno(fp))
+#endif
+
+/*
+ * Drop the entries of each type tail that point below the oldest kept record.
+ *
+ * A tail gains four bytes for every record of its type and nothing ever took
+ * them out, so it outgrew the records it indexes: a year of traffic is a few
+ * hundred kilobytes of pointers at segments long gone, which on a volume
+ * under a megabyte is the whole archive budget. Entries are ascending (carried
+ * mail is renumbered upward), so the dead ones are a prefix. A tail is only
+ * rewritten once that prefix is worth the copy.
+ *
+ * Writer task, lock held, read cursor already closed (it runs at the end of
+ * an eviction), so the copy has the descriptors it needs.
+ */
+#define XI_TAIL_TRIM_MIN  1024u   /* bytes of dead prefix worth a rewrite */
+
+static void xi_tails_trim(xprsidx_t *st)
+{
+    xi_tail_close(st);
+    for (int t = 0; t < XI_T__COUNT; t++) {
+        char path[96], tmp[100];
+        xi_type_path(st, path, sizeof path, t);
+        uint32_t size = xi_file_size(path);
+        if (size < XI_TAIL_TRIM_MIN) continue;
+        FILE *src = fopen(path, "rb");
+        if (!src) continue;
+        /* Count the dead prefix. */
+        uint32_t win[64], dead = 0, total = size / 4u;
+        bool more = true;
+        while (more && dead < total) {
+            uint32_t take = total - dead < 64 ? total - dead : 64;
+            if (fseek(src, (long)dead * 4L, SEEK_SET) != 0 ||
+                fread(win, 4, take, src) != take) break;
+            for (uint32_t k = 0; k < take; k++) {
+                if (win[k] >= st->oldest_first) { more = false; dead += k; break; }
+                if (k == take - 1) dead += take;
+            }
+        }
+        if (dead * 4u < XI_TAIL_TRIM_MIN) { fclose(src); continue; }
+        snprintf(tmp, sizeof tmp, "%s.new", path);
+        FILE *dst = fopen(tmp, "wb");
+        bool ok = dst != NULL;
+        for (uint32_t i = dead; ok && i < total; i += 64) {
+            uint32_t take = total - i < 64 ? total - i : 64;
+            ok = fseek(src, (long)i * 4L, SEEK_SET) == 0 &&
+                 fread(win, 4, take, src) == take &&
+                 fwrite(win, 4, take, dst) == take;
+        }
+        fclose(src);
+        if (dst) {
+            if (ok) { fflush(dst); XI_FSYNC(dst); }
+            fclose(dst);
+        }
+        /* The tail is derived (see the header): losing it to a cut here
+         * costs the fast path for that type until it refills, never a
+         * record. */
+        if (ok && unlink(path) == 0 && rename(tmp, path) == 0) continue;
+        unlink(tmp);
+    }
 }
 
 static bool xi_evict_locked(xprsidx_t *st)
@@ -1294,10 +1660,17 @@ static bool xi_evict_locked(xprsidx_t *st)
 
     char path[96];
     xi_seg_path(st, path, sizeof path, first);
-    FILE *f = fopen(path, "rb");
+    /* The size BEFORE anything is carried: what deleting it gives back. */
+    const uint32_t seg_size = xi_file_size(path);
+    /* Read through the scan cursor, which knows both formats and never reads
+     * past what the file holds. */
+    xi_read_close(st);
+    xi_rec_t peek;
+    (void)xi_read_rec(st, first, &peek);
+    const bool readable = st->read_fp != NULL;
     /* Not fatal -- the segment is still dropped -- but it means 36.11 carried
      * nothing forward, so mail somebody asked for is gone. Never silently. */
-    if (!f) XI_LOGE("evicting %s WITHOUT carry-forward: %s", path, strerror(errno));
+    if (!readable) XI_LOGE("evicting %s WITHOUT carry-forward: %s", path, strerror(errno));
     uint32_t now = (uint32_t)time(NULL);
     if (now < 1700000000u) now = 0;
     int carried = 0;
@@ -1313,21 +1686,20 @@ static bool xi_evict_locked(xprsidx_t *st)
      * over budget, class 2 is what pays: dropping other people's carried mail
      * is the price of keeping the mail of stations that chose this one. */
     const uint64_t used_now = xi_used_bytes(st);
-    const uint64_t seg_bytes = (uint64_t)XI_RECS_PER_SEG * sizeof(xi_rec_t);
-    const uint64_t after_evict = used_now > seg_bytes ? used_now - seg_bytes : 0;
+    const uint64_t after_evict = used_now > seg_size ? used_now - seg_size : 0;
     const bool room_for_class2 = after_evict <= st->max_bytes;
-    for (int pass = 0; pass < 2 && f; pass++) {
-        if (pass == 1) {
-            if (!room_for_class2) {
-                XI_LOGI("evict: over budget after the segment goes - "
-                        "carried mail dropped, declared mail kept");
-                break;
-            }
-            rewind(f);
+    const uint32_t seg_end = first + st->recs;
+    for (int pass = 0; pass < 2 && readable; pass++) {
+        if (pass == 1 && !room_for_class2) {
+            XI_LOGI("evict: over budget after the segment goes - "
+                    "carried mail dropped, declared mail kept");
+            break;
         }
         xi_rec_t r;
-        while (fread(&r, sizeof r, 1, f) == 1) {
-            if (!r.len) continue;
+        for (uint32_t i = first; i < seg_end && i < st->written_end; i++) {
+            /* Writing a carried record may roll the active segment and take
+             * the cursor with it; xi_read_rec reopens it by name. */
+            if (!xi_read_rec(st, i, &r)) continue;
             uint32_t until = xi_rec_until(&r);
             if (until && now && now > until) continue;        /* expired */
             int cls = xi_class_of(st, &r);
@@ -1352,24 +1724,23 @@ static bool xi_evict_locked(xprsidx_t *st)
             if (!(r.flags & XI_F_MAIL)) continue;
 
             r.index = st->next_index++;
-            st->count++;
             if (xi_write_rec(st, &r)) carried++;
         }
     }
-    if (f) fclose(f);
-    if (st->read_first == first) xi_read_close(st);
+    xi_read_close(st);
     unlink(path);
     st->nseg--;
+    st->used_bytes = st->used_bytes > seg_size ? st->used_bytes - seg_size : 0;
     /* The next-lowest segment becomes the oldest. Probed with stat() rather
      * than walked with readdir(): the FAT VFS deadlocks a directory walk
      * against a concurrent writer on the same volume (docs/esp32.md), and
      * eviction runs while the station is up, not at boot. Segment firsts are
-     * multiples of XI_RECS_PER_SEG, so stepping is exact; the loop only ever
+     * multiples of the slot count, so stepping is exact; the loop only ever
      * steps past a gap left by a segment removed out of band, and stops at
      * the active segment, which always exists. */
     uint32_t next_oldest = st->active_first;
-    for (uint32_t cand = first + XI_RECS_PER_SEG;
-         cand <= st->active_first; cand += XI_RECS_PER_SEG) {
+    for (uint32_t cand = first + st->recs;
+         cand <= st->active_first; cand += st->recs) {
         char probe[96];
         xi_seg_path(st, probe, sizeof probe, cand);
         struct stat sb;
@@ -1379,6 +1750,8 @@ static bool xi_evict_locked(xprsidx_t *st)
         }
     }
     st->oldest_first = next_oldest;
+    xi_count_held(st);
+    xi_tails_trim(st);
     /* A dropped segment can take a callsign's last record with it, and the
      * cache cannot know which -- rebuild on the next ask. */
     st->dir_valid = false;
@@ -1391,6 +1764,14 @@ void xprsindex_set_own(xprsidx_t *st, const char *call)
 {
     if (!st || !call) return;
     xi_copy(st->own, sizeof st->own, call, -1);
+}
+
+uint32_t xprsindex_seg_records(uint64_t budget)
+{
+    const uint64_t full = sizeof(xi_vhdr_t) + XPRSIDX_WIRE_MAX + 4u;
+    uint32_t recs = XI_RECS_PER_SEG;
+    while (recs > 256u && (uint64_t)recs * full > budget / 8u) recs /= 2u;
+    return recs;
 }
 
 void xprsindex_set_max_bytes(xprsidx_t *st, uint64_t bytes)
@@ -1622,6 +2003,12 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     r.len   = (uint16_t)len;
     r.flags = 0;
     if (r.to[0]) r.flags |= XI_F_MAIL;
+    /* Mail, and the conversation: a chat message comes back round as a
+     * relay's re-air (via:) long after the short ring has turned over. */
+    bool talk = r.to[0] || code == XI_T_MESSAGE;
+    if (talk)
+        for (int i = 0; i < XI_MAIL_RING; i++)
+            if (st->mail_seen[i] == h) return false;    /* already kept */
     if (outgoing) r.flags |= XI_F_OUTGOING;
     if (xprs_get(&p, "sig", &vlen)) r.flags |= XI_F_SIGNED;
     memcpy(r.wire, wire, (size_t)len);
@@ -1647,6 +2034,10 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     /* Decided, and accepted. */
     st->dedup[st->dedup_pos] = h;
     st->dedup_pos = (st->dedup_pos + 1) % XI_DEDUP_RING;
+    if (talk) {
+        st->mail_seen[st->mail_pos] = h;
+        st->mail_pos = (st->mail_pos + 1) % XI_MAIL_RING;
+    }
     if (ph) {
         st->pres[st->pres_pos] = ph;
         st->pres_pos = (st->pres_pos + 1) % XI_PRESENCE_RING;
@@ -1658,30 +2049,134 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
 
 /* The half that touches the card. Runs on the writer task (or, on the host,
  * straight from xi_add_locked). The lock is already held. */
+/* Lay a new segment down: header and a zeroed offset table, written out in
+ * full so no slot of it is ever bytes the file never covered. */
+static bool xi_seg_init(xprsidx_t *st, FILE *f)
+{
+    xi_seghdr_t h = { XI_SEG_MAGIC, 2, (uint16_t)st->recs };
+    if (fseek(f, 0, SEEK_SET) != 0 || fwrite(&h, sizeof h, 1, f) != 1) return false;
+    static const uint32_t zeros[64];
+    for (uint32_t i = 0; i < st->recs; i += 64) {
+        uint32_t take = st->recs - i < 64 ? st->recs - i : 64;
+        if (fwrite(zeros, 4, take, f) != take) return false;
+    }
+    /* Synced now, not at the next periodic sync: FatFs writes a file's size
+     * to its directory entry only on sync or close, so a reset before then
+     * leaves an empty file, and the next boot cannot read the slot count
+     * from it. Seen on a T-Deck reset a minute after its first update. */
+    fflush(f);
+    XI_FSYNC(f);
+    return true;
+}
+
+/* Put the table entries a bulk write has been holding into the active
+ * segment, in one write. */
+static void xi_pend_flush(xprsidx_t *st)
+{
+    if (!st->pend || !st->active_fp || st->pend_hi <= st->pend_lo) return;
+    uint32_t at = (uint32_t)sizeof(xi_seghdr_t) + st->pend_lo * 4u;
+    uint32_t n = st->pend_hi - st->pend_lo;
+    if (fseek(st->active_fp, (long)at, SEEK_SET) != 0 ||
+        fwrite(st->pend + st->pend_lo, 4, n, st->active_fp) != n)
+        XI_LOGE("bulk: %u table entries not written", (unsigned)n);
+    fflush(st->active_fp);
+    memset(st->pend, 0, (size_t)st->recs * 4u);
+    st->pend_lo = st->recs;
+    st->pend_hi = 0;
+}
+
 static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec)
 {
     const xi_rec_t r = *rec;
     int code = r.type;
 
-    uint32_t seg_first = xi_seg_of(r.index);
+    uint32_t seg_first = xi_seg_of(st, r.index);
+    /* Old fixed-format segments are read, never written: the store opens
+     * past them, so only a bug could get here. */
+    if (xi_is_legacy(st, seg_first)) return false;
+    if (r.len == 0 || r.len > XPRSIDX_WIRE_MAX) return false;
     if (!st->active_fp || st->active_first != seg_first) {
+        xi_pend_flush(st);
         if (st->active_fp) fclose(st->active_fp);
         if (st->read_first == seg_first) xi_read_close(st);
         char path[96];
         xi_seg_path(st, path, sizeof path, seg_first);
+        /* Closed everywhere else, so stat() sees the whole file. */
+        uint32_t size = xi_file_size(path);
         st->active_fp = fopen(path, "r+b");
+        bool fresh = false;
         if (!st->active_fp) {
             st->active_fp = fopen(path, "w+b");
             if (st->active_fp) st->nseg++;
+            fresh = true;
+        } else if (size < xi_hdr_bytes(st) || !xi_seg_hdr_ok(st, st->active_fp)) {
+            /* Created and cut off before its table was down, or laid down
+             * with another slot count, which this store cannot read: its
+             * table is zeroed again and what it held is lost. */
+            if (size >= sizeof(xi_seghdr_t))
+                XI_LOGW("segment %s: not this store's layout; starting it again",
+                        path);
+            st->used_bytes = st->used_bytes > size ? st->used_bytes - size : 0;
+            size = 0;
+            fresh = true;
         }
         st->active_first = seg_first;
+        if (!st->active_fp) return false;
+        if (fresh) {
+            if (!xi_seg_init(st, st->active_fp)) {
+                XI_LOGE("segment %s: could not lay down its table (size %u, errno %d)",
+                        path, (unsigned)size, errno);
+                fclose(st->active_fp);
+                st->active_fp = NULL;
+                return false;
+            }
+            st->used_bytes += xi_hdr_bytes(st) > size ? xi_hdr_bytes(st) - size : 0;
+            size = xi_hdr_bytes(st);
+        }
+        st->active_end = size;
     }
     if (!st->active_fp) return false;
 
-    long off = (long)(r.index % XI_RECS_PER_SEG) * (long)sizeof(xi_rec_t);
-    if (fseek(st->active_fp, off, SEEK_SET) != 0) return false;
-    if (fwrite(&r, sizeof r, 1, st->active_fp) != 1) return false;
-    fflush(st->active_fp);
+    /* The record, then the table entry that points at it: a power cut
+     * between the two leaves bytes nothing points at, never an entry that
+     * points at nothing yet. */
+    uint8_t buf[sizeof(xi_vhdr_t) + XPRSIDX_WIRE_MAX];
+    xi_vhdr_t h;
+    memset(&h, 0, sizeof h);
+    h.magic  = XI_REC_MAGIC;
+    h.flags  = r.flags;
+    h.type   = r.type;
+    h.bearer = r.bearer;
+    h.index  = r.index;
+    h.ts     = r.ts;
+    h.rssi   = r.rssi;
+    h.len    = (uint8_t)r.len;
+    memcpy(h.id, r.id, sizeof h.id);
+    memcpy(h.from, r.from, sizeof h.from);
+    memcpy(h.to, r.to, sizeof h.to);
+    h.crc = xi_vhdr_crc(&h, r.wire);
+    memcpy(buf, &h, sizeof h);
+    memcpy(buf + sizeof h, r.wire, r.len);
+    uint32_t n = (uint32_t)sizeof h + r.len;
+
+    uint32_t off = st->active_end;
+    if (fseek(st->active_fp, (long)off, SEEK_SET) != 0) return false;
+    if (fwrite(buf, n, 1, st->active_fp) != 1) return false;
+    uint32_t slot = r.index % st->recs;
+    if (st->pend) {
+        /* Two sectors a record otherwise -- the bytes and the table entry --
+         * and on flash each is an erase. */
+        st->pend[slot] = off;
+        if (slot < st->pend_lo) st->pend_lo = slot;
+        if (slot + 1 > st->pend_hi) st->pend_hi = slot + 1;
+    } else {
+        uint32_t at = (uint32_t)sizeof(xi_seghdr_t) + slot * 4u;
+        if (fseek(st->active_fp, (long)at, SEEK_SET) != 0) return false;
+        if (fwrite(&off, 4, 1, st->active_fp) != 1) return false;
+        fflush(st->active_fp);
+    }
+    st->active_end += n;
+    st->used_bytes += n;
     if (r.index + 1 > st->written_end) st->written_end = r.index + 1;
 
     /* Indexes AFTER the record: they are derived, so a power cut between the
@@ -1708,22 +2203,6 @@ static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec)
  * Once per drained batch rather than once per record: a batch is a fraction of
  * a second of traffic, and per-record it was the SD bus running constantly
  * underneath the radio. */
-/* On the host there is no card, no FatFs and no power cut, so fsync buys
- * nothing a test can observe — while costing everything. The host build has no
- * writer task to batch behind (xi_write_rec_fwd calls this per record), and the
- * suite writes 18,000 of them: 1,913 fsyncs at ~15 ms each turned a 3-second
- * test into 4m34s of a process blocked in the ext4 journal. It looks hung, and
- * it was killed as such more than once.
- *
- * fflush stays. That is the half the test can see: it pushes stdio's buffer out
- * so any reopen inside the test reads what was written. Every assertion keeps
- * its meaning; only the durability guarantee, which no host test can exercise,
- * is dropped. */
-#ifdef XPRSIDX_HOST_TEST
-#define XI_FSYNC(fp) ((void)0)
-#else
-#define XI_FSYNC(fp) fsync(fileno(fp))
-#endif
 
 static void xi_sync_card(xprsidx_t *st)
 {
@@ -1788,6 +2267,78 @@ static size_t xi_query_recent_typed(xprsidx_t *st, const xprsidx_query_t *q,
 }
 
 /*
+ * Newest first over a few types at once -- the hotspot chat's message,
+ * reaction and status -- from their tails, merged by record number, so it
+ * costs what the single-type query costs and never walks segments. The chat
+ * page asks this every three seconds; the range walk it fell back to read
+ * every record in the store to find fifty-five, held the store's lock while
+ * it did, and the writer starved behind it until its queue overflowed.
+ * Small windows: this runs on the HTTP task's stack.
+ */
+#define XI_MULTI_MAX  4
+#define XI_MULTI_WIN  16
+static size_t xi_query_recent_types(xprsidx_t *st, const xprsidx_query_t *q,
+                                    xprsidx_emit_cb_t cb, void *ctx,
+                                    uint32_t limit)
+{
+    struct { int type; uint32_t buf[XI_MULTI_WIN]; uint32_t pos, skip; bool done; }
+        c[XI_MULTI_MAX];
+    int nc = 0;
+    for (int t = 0; t < 32 && nc < XI_MULTI_MAX; t++)
+        if (q->types & (1u << t)) {
+            c[nc].type = t;
+            c[nc].pos = 0;
+            c[nc].skip = 0;
+            c[nc].done = false;
+            nc++;
+        }
+    size_t emitted = 0;
+    uint32_t scanned = 0, last = UINT32_MAX;
+    bool zero_seen = false;
+    xi_rec_t r;
+    xprsidx_rec_t pub;
+    while (emitted < limit && scanned < XI_TAIL_MAX_SCAN) {
+        int best = -1;
+        for (int i = 0; i < nc; i++) {
+            if (c[i].pos == 0 && !c[i].done) {
+                uint32_t got = xi_type_tail(st, c[i].type, c[i].skip, XI_MULTI_WIN,
+                                            c[i].buf, XI_MULTI_WIN);
+                c[i].skip += got;
+                c[i].pos = got;
+                if (got < XI_MULTI_WIN) c[i].done = true;
+            }
+            if (c[i].pos && (best < 0 ||
+                             c[i].buf[c[i].pos - 1] > c[best].buf[c[best].pos - 1]))
+                best = i;
+        }
+        if (best < 0) break;
+        uint32_t n = c[best].buf[--c[best].pos];
+        scanned++;
+        /* A zero is record 0 or a torn tail's hole (see above). Here it is
+         * read, once: the record says which index it holds, and the mail
+         * count and the chat page both start at the first record kept. */
+        if (n >= st->next_index || n == last) continue;
+        if (n == 0) { if (zero_seen) continue; zero_seen = true; }
+        last = n;
+        if (!xi_read_rec(st, n, &r)) continue;
+        if (!xi_matches(&r, q)) continue;
+        xi_to_public(&r, &pub);
+        emitted++;
+        if (cb && !cb(&pub, ctx)) return emitted;
+    }
+    /* Record 0 is never in a tail (xi_type_append), and newest first it
+     * comes last: asked after the tails ran out. */
+    if (emitted < limit && scanned < XI_TAIL_MAX_SCAN && !zero_seen &&
+        st->oldest_first == 0 && st->next_index > 0 &&
+        xi_read_rec(st, 0, &r) && xi_matches(&r, q)) {
+        xi_to_public(&r, &pub);
+        emitted++;
+        if (cb) cb(&pub, ctx);
+    }
+    return emitted;
+}
+
+/*
  * A time range. Segments are written in time order, so the zone map answers
  * "which segments can possibly contain this range" without opening any of them
  * — and type_mask drops the segments that hold none of the wanted type.
@@ -1795,7 +2346,7 @@ static size_t xi_query_recent_typed(xprsidx_t *st, const xprsidx_query_t *q,
 static size_t xi_query_range(xprsidx_t *st, const xprsidx_query_t *q,
                              xprsidx_emit_cb_t cb, void *ctx, uint32_t limit)
 {
-    uint32_t nseg = st->next_index ? xi_seg_no(st->next_index - 1) + 1 : 0;
+    uint32_t nseg = st->next_index ? xi_seg_no(st, st->next_index - 1) + 1 : 0;
     size_t emitted = 0;
     xi_rec_t r;
     xprsidx_rec_t pub;
@@ -1803,7 +2354,7 @@ static size_t xi_query_range(xprsidx_t *st, const xprsidx_query_t *q,
     for (uint32_t s = 0; s < nseg && emitted < limit; s++) {
         uint32_t sn = q->newest_first ? (nseg - 1 - s) : s;
         xi_zone_t z;
-        if (xi_zone_read(st, sn, &z) && z.first_index == sn * XI_RECS_PER_SEG) {
+        if (xi_zone_read(st, sn, &z) && z.first_index == sn * st->recs) {
             /* Skip whole segments the range or the type cannot be in. */
             if (q->until_ts && z.min_ts && z.min_ts > q->until_ts) continue;
             if (q->since_ts && z.max_ts && z.max_ts < q->since_ts) continue;
@@ -1817,8 +2368,8 @@ static size_t xi_query_range(xprsidx_t *st, const xprsidx_query_t *q,
                 continue;
             }
         }
-        uint32_t first = sn * XI_RECS_PER_SEG;
-        uint32_t last  = first + XI_RECS_PER_SEG - 1;
+        uint32_t first = sn * st->recs;
+        uint32_t last  = first + st->recs - 1;
         if (last >= st->next_index) last = st->next_index ? st->next_index - 1 : 0;
         for (uint32_t k = 0; k <= last - first && emitted < limit; k++) {
             uint32_t i = q->newest_first ? (last - k) : (first + k);
@@ -1857,6 +2408,10 @@ static size_t xi_query_locked(xprsidx_t *st, const xprsidx_query_t *q,
      * segments, however big the card is. */
     if (q->newest_first && q->type >= 0 && q->type < XI_T__COUNT) {
         return xi_query_recent_typed(st, q, cb, ctx, limit);
+    }
+    if (q->newest_first && q->type < 0 && q->types &&
+        __builtin_popcount(q->types) <= XI_MULTI_MAX) {
+        return xi_query_recent_types(st, q, cb, ctx, limit);
     }
     return xi_query_range(st, q, cb, ctx, limit);
 }
@@ -1973,7 +2528,13 @@ static void xi_writer_task(void *arg)
             st->writer_gone = true;
             vTaskDelete(NULL);
         }
-        if (st->paused) continue;         /* a reader has the card */
+        /* A reader has the card: wait it out, it is one request. Skipping
+         * the whole turn instead starved the writer under a page that asks
+         * every three seconds -- the queue filled and the newest records,
+         * the ones being chatted, were dropped. */
+        for (int w = 0; st->paused && w < 100 && !st->closing; w++)
+            vTaskDelay(pdMS_TO_TICKS(20));
+        if (st->paused) continue;
 
         int n = 0;
         for (;;) {
@@ -2219,7 +2780,14 @@ void xprsindex_pause_writes(xprsidx_t *st, bool paused)
 {
     if (!st) return;
     st->paused = paused;
+#ifndef XPRSIDX_HOST_TEST
+    if (!paused) {
+        if (st->writer && st->q_count) xTaskNotifyGive(st->writer);
+        return;
+    }
+#else
     if (!paused) return;
+#endif
     /* Take and release the lock once: when this returns, the writer is not
      * inside a record, so the caller has the card to itself. */
     XI_LOCK(st);
@@ -2262,6 +2830,147 @@ void xprsindex_set_verifier(xprsidx_t *st, xprsidx_verify_cb_t cb)
     XI_UNLOCK(st);
 }
 
+/* ── Rescue (XPRS.md 12.11, applied to a volume that has to be formatted) ──
+ * A buffer of entries, each a kind byte then its body:
+ *   'D' len call             a station whose t:mailbox hold: names this one
+ *   'R' bearer flags rssi ts(4, little-endian) len wire    a mail record
+ * Declarations first, then declared mail, then other mail: what does not
+ * fit is what 12.11 drops first. */
+
+static bool xi_rescue_put(uint8_t *buf, size_t cap, size_t *at,
+                          const void *p, size_t n)
+{
+    if (*at + n > cap) return false;
+    memcpy(buf + *at, p, n);
+    *at += n;
+    return true;
+}
+
+size_t xprsindex_rescue_mail(xprsidx_t *st, uint8_t *buf, size_t cap,
+                             uint32_t *out_records)
+{
+    if (out_records) *out_records = 0;
+    if (!st || !buf) return 0;
+    size_t at = 0;
+    XI_LOCK(st);
+    for (int i = 0; i < st->decl_n; i++) {
+        uint8_t hdr[2] = { 'D', (uint8_t)strnlen(st->decl[i], XPRSIDX_CALL_LEN) };
+        size_t mark = at;
+        if (!xi_rescue_put(buf, cap, &at, hdr, 2) ||
+            !xi_rescue_put(buf, cap, &at, st->decl[i], hdr[1])) {
+            at = mark;
+            break;
+        }
+    }
+    XI_UNLOCK(st);
+
+    uint32_t now = (uint32_t)time(NULL);
+    if (now < 1700000000u) now = 0;
+    uint32_t n = 0;
+    bool full = false;
+    for (int cls = 3; cls >= 2 && !full; cls--) {
+        for (uint32_t i = st->oldest_first; i < st->written_end && !full; i++) {
+            xi_rec_t r;
+            XI_LOCK(st);
+            bool ok = xi_read_rec(st, i, &r) && (r.flags & XI_F_MAIL) &&
+                      xi_class_of(st, &r) == cls;
+            XI_UNLOCK(st);
+            if (!ok || r.len == 0 || r.len > XPRSIDX_WIRE_MAX) continue;
+            uint32_t until = xi_rec_until(&r);
+            if (until && now && now > until) continue;      /* expired */
+            uint8_t hdr[9] = { 'R', r.bearer, r.flags, (uint8_t)r.rssi,
+                               (uint8_t)r.ts, (uint8_t)(r.ts >> 8),
+                               (uint8_t)(r.ts >> 16), (uint8_t)(r.ts >> 24),
+                               (uint8_t)r.len };
+            size_t mark = at;
+            if (!xi_rescue_put(buf, cap, &at, hdr, sizeof hdr) ||
+                !xi_rescue_put(buf, cap, &at, r.wire, r.len)) {
+                at = mark;
+                full = true;
+                break;
+            }
+            n++;
+        }
+    }
+    XI_LOCK(st);
+    xi_read_close(st);
+    XI_UNLOCK(st);
+    if (full) XI_LOGW("rescue: %u bytes hold %u mail record(s); the rest does not fit",
+                      (unsigned)cap, (unsigned)n);
+    if (out_records) *out_records = n;
+    return at;
+}
+
+uint32_t xprsindex_restore_mail(xprsidx_t *st, const uint8_t *buf, size_t len)
+{
+    if (!st || !buf) return 0;
+    uint32_t n = 0;
+    size_t at = 0;
+    XI_LOCK(st);
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+    st->pend = heap_caps_calloc(st->recs, 4, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#endif
+    if (!st->pend) st->pend = calloc(st->recs, 4);   /* else one write a record */
+    st->pend_lo = st->recs;
+    st->pend_hi = 0;
+    while (at < len) {
+        uint8_t kind = buf[at];
+        if (kind == 'D' && at + 2 <= len) {
+            uint8_t cl = buf[at + 1];
+            if (at + 2 + cl > len) break;
+            char call[XPRSIDX_CALL_LEN];
+            xi_copy(call, sizeof call, (const char *)buf + at + 2, cl);
+            if (call[0] && !xi_declared(st, call) && st->decl_n < XPRSIDX_DECL_MAX) {
+                xi_copy(st->decl[st->decl_n++], XPRSIDX_CALL_LEN, call, -1);
+                st->decl_dirty = true;
+            }
+            at += 2u + cl;
+        } else if (kind == 'R' && at + 9 <= len) {
+            const uint8_t *h = buf + at;
+            uint8_t wl = h[8];
+            if (wl == 0 || wl > XPRSIDX_WIRE_MAX || at + 9 + wl > len) break;
+            xi_rec_t r;
+            memset(&r, 0, sizeof r);
+            r.bearer = h[1];
+            r.flags = h[2];
+            r.rssi = (int8_t)h[3];
+            r.ts = (uint32_t)h[4] | ((uint32_t)h[5] << 8) |
+                   ((uint32_t)h[6] << 16) | ((uint32_t)h[7] << 24);
+            r.len = wl;
+            memcpy(r.wire, h + 9, wl);
+            r.wire[wl] = '\0';
+            xprs_t p;
+            if (!xprs_parse(r.wire, r.len, &p)) { at += 9u + wl; continue; }
+            char tbuf[16];
+            xprs_type(&p, tbuf, sizeof tbuf);
+            r.type = (uint8_t)xprsidx_type_code(tbuf);
+            xprs_id_of(r.wire, r.len, r.id);
+            char cb[XPRSIDX_CALL_LEN];
+            if (xprs_get_str(&p, "f", cb, sizeof cb)) xi_copy(r.from, sizeof r.from, cb, -1);
+            if (xprs_get_str(&p, "d", cb, sizeof cb)) xi_copy(r.to, sizeof r.to, cb, -1);
+            r.index = st->next_index++;
+            if (xi_write_rec(st, &r)) n++;
+            if (r.to[0]) {          /* heard again after the format: kept */
+                st->mail_seen[st->mail_pos] = xi_id_hash(r.id);
+                st->mail_pos = (st->mail_pos + 1) % XI_MAIL_RING;
+            }
+            at += 9u + wl;
+        } else {
+            break;
+        }
+    }
+    xi_pend_flush(st);
+    free(st->pend);
+    st->pend = NULL;
+    if (st->decl_dirty) xi_decl_save(st);
+    xi_count_held(st);
+    xi_sync_card(st);
+    XI_UNLOCK(st);
+    XI_LOGI("rescue: %u mail record(s) and %d declaration(s) restored",
+            (unsigned)n, st->decl_n);
+    return n;
+}
+
 void xprsindex_stats(xprsidx_t *st, xprsidx_stats_t *out)
 {
     if (!out) return;
@@ -2270,6 +2979,7 @@ void xprsindex_stats(xprsidx_t *st, xprsidx_stats_t *out)
     out->count        = st->count;
     out->latest_index = xprsindex_latest_index(st);
     out->segments     = st->nseg;
+    out->used_bytes   = st->used_bytes;
     out->epoch        = st->epoch;
     out->total_bytes  = xi_card_total(st->dir);
     out->free_bytes   = xi_card_free(st->dir);

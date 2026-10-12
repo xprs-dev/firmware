@@ -375,21 +375,53 @@ Two consequences worth building around:
 
 ## What a station can actually hold
 
-A record is **320 bytes**, fixed, and a segment file holds **4096** of them.
+A record is a **56-byte header plus the packet's own bytes** (at most 250),
+so 306 bytes at the very most and typically 150 to 200. A segment
+(`seg_<first>.v2`) is an 8-byte header, a table of one 4-byte offset per
+slot, then the records, appended. The slot count follows the budget
+(`xprsindex_seg_records`): the most, up to 4096, for which a segment of
+full-size packets is at most an eighth of the budget, and never under 256.
+That is 256 on the 832 KB boards (C3 mini, generic, the e-paper without a
+card), 1024 on the Heltec V3, 2048 on the 16 MB boards and 4096 for an
+always-on archiver on a card. A store already on a volume keeps the slot
+count it was made with, and one holding old-format segments stays at 4096.
+
+Until 2026-10 every record was a fixed **320-byte** slot whatever the
+packet's length, in `seg_<first>.bin`. Those segments are still read; a
+store that finds one starts its new records in a new-format segment at the
+next boundary, and the old ones go when eviction reaches them. Nothing is
+converted, so an update loses nothing and costs no boot time.
+
 The archive budget is a hardcoded **10 MiB** base (`xprs_app.c`,
-`xprsindex_budget`), so an ordinary archiver keeps **~28-32k records** --
-eviction retires a whole segment, so occupancy swings 28,672 to 32,768.
+`xprsindex_budget`). Eviction is billed on the bytes the segment files
+really occupy, so what fits depends on the traffic: about 55,000 records of
+a 120-byte average in 10 MiB, against ~28-32k when every record was 320.
+Eviction retires a whole segment at a time, so occupancy swings by up to one
+segment. The per-type tail files are trimmed at each eviction to what the
+store still holds; before that they grew four bytes per record forever.
 
-No board in this firmware stores to an SD card. Everything mounts the
-internal wear-levelled FAT partition at `/idx`; the T-Dongle's card was
-demoted at 0.4.0 (`models/tdongle-s3/firmware/partitions.csv` says why).
+The 832 KB boards (C3 mini, generic, the e-paper without its card) keep a
+**384 KB** archive (`XAPP_ARCHIVE_832K`)
+in 256-record segments, beside the log (128 KB) and gossip (256 KB cap):
+about 2,100 messages of 120 bytes, never fewer than ~1,050 at the maximum
+size (host simulation; see `models/esp32c3-mini/README.md` for the board).
 
-| Board | `storage` partition | Note |
-|---|---|---|
-| T-Dongle-S3 | 11.375 MiB | card present, deliberately unused |
-| T-Deck | 11.375 MiB | SPI-SD shares the bus with the SX1262, so also unused |
-| M5Stack Core | 11.625 MiB | |
-| Heltec V3 | **3.81 MiB** | smaller than the 10 MiB budget, so eviction never fires and FAT free space is the real bound (~12k records) |
+**A card when there is one, the flash when there is not** (2026-10). A
+board with a microSD slot mounts the card at `/idx` and gives the archive
+64 MB of it (`XAPP_ARCHIVE_CARD`); with no card, or one that will not mount,
+it falls back to its own flash partition and the variable-length archive
+above. `xapp_mount_card_sdmmc()`, `xapp_mount_card_sdspi()` and
+`xapp_mount_flash()` in `xprs_app.c` are the three doors; a card is never
+formatted, and the damaged-volume repair below runs on the flash only.
+
+| Board | Card | `storage` partition | Note |
+|---|---|---|---|
+| T-Dongle-S3 | SDMMC 1-bit | 11.375 MiB | the card was dropped at 0.4.0 because an empty slot kept nothing; with the flash behind it, it is back. Heap with the card is **unmeasured** on this board, which has no PSRAM and the least room in the fleet: the old SDMMC mount cost ~32 KB here |
+| T-Deck | SPI, on SPI2 with the panel and the SX1262 | 11.375 MiB | the card driver takes the bus per command, as the radio does. Tested 2026-10-12 with an empty slot only: 0.1 s probe, flash fallback, panel and LoRa up. Radio reception with a busy card is **unmeasured** |
+| e-paper 1.54 | SDMMC 1-bit | 832 KB | the first board to do this |
+| M5Stack Core | SPI, shared with the LCD | 11.625 MiB | not wired: its card pins are not in this repo |
+| Heltec V3 | none | **3.81 MiB** | the budget is held under four fifths of the volume |
+| C3 mini, generic | none | 832 KB | `XAPP_ARCHIVE_832K` |
 
 **Always-on budgets need 64 MiB** (`ALWAYS_ON_MIN_BYTES`), so no ESP32 board
 here can honestly spend them, and `idx_is_always_on()` declines out loud. That
@@ -408,17 +440,113 @@ and an old station's `archive,super` is heard, correctly, as `archive`.
 Config: `[indexer] always_on` and `archivers` -- `super` and `supers` are still
 read so a configured board keeps its settings.
 
-Eviction follows XPRS.md 36.11 and nothing else: class first (declared mail,
+Eviction follows XPRS.md 12.11 and nothing else: class first (declared mail,
 then other mail, then the spool), age second, and no packet outlives its
 `until:`. It used to filter the spool by `urg:` as well, which read section
 13.5 -- what a CARRIER drops -- as if it governed what an ARCHIVER keeps.
 
 Two counters that do not mean what their names suggest:
 
-- `xprsidx_stats_t.count` is **cumulative** -- records ever accepted, not
-  records on disk. Eviction never decrements it. `segments` is what shrinks.
+- `xprsidx_stats_t.count` is the record numbers from the oldest segment on,
+  less the slots the newest old-format segment never filled: records held,
+  give or take one whose number was taken and whose write failed. It used
+  to be cumulative (records ever accepted, never decremented by eviction);
+  since 2026-10 eviction lowers it, so "held" on the API means held.
 - `mail:` on the service beacon and in `q:mail` is a **bounded** count (99):
   the field is a hint by 10.6.5, and counting further costs card reads.
+
+### A full volume that is not full of records
+
+Eviction frees space that records hold, so it cannot help a volume whose
+FAT has lost track of its clusters. A T-Deck, 2026-10-12, read off over
+esptool: 2,799 of 2,880 clusters marked used, 57 of them owned by a file
+(the one archive segment left, 641 records), the first sector of `/xprs`
+all 0xFF. Every new segment failed with `errno 28` (ENOSPC). Evicting all
+641 records would have given back 57 clusters.
+
+At boot, before the store opens (a directory walk must not race its writer,
+see the SD card section), `idx_volume_damaged()` compares what the FAT says
+is used with what the files under `/idx` occupy. Under a sixteenth free and
+more than a quarter of the volume owned by nothing is damage, and on a
+board's own flash partition (never a card; `xapp_storage_own_flash()`)
+`idx_rescue_and_format()` keeps what XPRS.md 12.11 keeps longest: the
+mailbox declarations, then declared mail, then other mail, copied out with
+`xprsindex_rescue_mail()`, formatted, and put back with
+`xprsindex_restore_mail()`. The spool and the log go, which is what the
+section drops first anyway. The mail waits in 1 MB of PSRAM where there is
+some, else 8 KB (or 2 KB) of internal heap, about 30 records of 250 bytes;
+what does not fit is dropped declared-mail-last and the boot log says how
+many were kept. This replaces the older check, which formatted only a
+volume with no segment at all and therefore missed this one.
+
+## The internet WiFi: anyone may add a network, nobody may remove one
+
+The hotspot page's menu (top right) opens **Settings**, with the internet
+WiFi: the network, the remembered ones, a **Search** for networks in range
+(`POST`/`GET /api/wifi/scan`: asked on the HTTP task, run on `idx_task` as a
+non-blocking scan, 12 strongest kept) and a join form (`GET` and
+`POST /api/wifi`, `xprs_api.c`; the state in `xprs_app.c`, "Remembered
+networks"). Stats and Station moved into the same menu; the tab row is Chat,
+Traffic and Devices. A search left the station on its LAN: 60 of 60 pings
+answered across one. Anybody who can open the page may ask the station to join a
+network. This is deliberately not owner-only: a station whose router
+changed is fixed by whoever is standing next to it.
+
+- **A network is remembered by working, and only by working.** Every
+  network that gives the station an address goes on a list in NVS
+  (`xprswifi`/`known`, up to eight, most recently working first); a join
+  that fails is not remembered and the station goes back to the network it
+  was on (the `s_wjoin` revert, shared with `cmd:set`). Nothing removes a
+  network from the list: there is no delete, so a visitor can add a way out
+  but cannot take one away. When the list is full the network that worked
+  longest ago makes room.
+- **Reused when reachable.** Three failed tries on the current network and
+  the next remembered one is tried; once every one has had its turn, the
+  round starts again five minutes later, because each try is a scan that
+  pulls the hotspot off its channel (see "Reconnecting is a scan").
+- **Internet beats no internet, but a LAN is not a fault.** A network that
+  has reached 1.1.1.1 (`inet_probe_task`) is marked. Up for ten minutes
+  with no internet on a network that never had any, the station moves to a
+  remembered one that did. A network that has had internet keeps its place
+  through an outage, and with nothing better known the station stays where
+  it is: a LAN with no way out is the whole job in some places.
+- **The handler only parks.** `POST /api/wifi` checks the name and password
+  (`xsetup_check`) and leaves them for `idx_task`, which owns `s_ssid`,
+  `s_pass` and the join; the page polls `GET /api/wifi` for the verdict.
+  Passwords are never sent back.
+- The page keeps the form out of the ten-second Station redraw: rebuilding
+  it closed a phone's keyboard and moved the fields under the finger.
+
+Tested on the T-Deck from the C61's browser, 2026-10-12: a name that does not
+exist answered "Could not join: no network by that name" in about 18 s and
+the station was back on its network; with `cfg set ssid` pointed at a
+missing network and a restart, three tries, then the remembered network,
+up 26 s after boot.
+
+### The chat page must not starve the archive's writer
+
+The page polls the archive every three seconds, and a query holds the
+store's lock for its whole length. Asked for "the newest 200 of message,
+reaction and status" it fell back to the range walk, which read every one of
+~1,000 records to find 55; meanwhile the writer woke, found writes paused,
+and skipped its turn. Its 32-entry queue filled, 8 of 10 test messages were
+dropped, and what was still queued was lost at the next reset (2026-10-12,
+T-Deck: "held" 1,014 before a reset, 999 after, and the chat that was there
+was gone). Three changes, each measured on the device:
+
+- a newest-first query over up to four types reads their tail files and
+  merges them (`xi_query_recent_types`), the cost of the single-type query;
+- the writer waits out a pause instead of skipping two seconds, and ending a
+  pause wakes it;
+- the page asks for 200 once and the newest 40 after.
+
+After: 10 of 10 and 3 of 3 stored with the page open, and all of them still
+there after a hard reset a minute later.
+
+**Who the page is.** A visitor's callsign is `X1` (a person, XPRS.md
+section 3); the page used to make it `X3`, the class of the station serving
+it. The firmware's key check (`xauth_call_matches_npub`) never read the
+class digit, so nothing else changed.
 
 ## Heap is the binding constraint -- check it first
 
@@ -1524,8 +1652,8 @@ retries three times on that and on a dead socket.
 
 - `xprs_msgstore` -- the APRS archives (`/sdcard/aprs/msg`, `.../beacon`),
   192-byte records, served by `/api/aprs` and `/api/beacons`.
-- `xprs_index` -- every XPRS packet heard, verbatim, 320-byte records in
-  segments, with a zone map for time ranges and a tail index per type. Serves
+- `xprs_index` -- every XPRS packet heard, verbatim, variable-length records
+  in segments, with a zone map for time ranges and a tail index per type. Serves
   `/api/xprs` and the GATT `xprs_query`. Section 36 of `XPRS.md` is enforced in
   the store: a packet with `d:` is held and never handed to a third party.
 - `xprs_bearer_lan` -- XPRS as UDP broadcast on the LAN, port 4242, the same
@@ -1543,8 +1671,8 @@ Sending in Local appends `scope:local` to the wire; the station's bearers
 
 Where the bearer DOES matter it is now recorded: `xprs_index` keeps a
 one-byte bearer code per record (`xprsidx_bearer_t`, written into what was an
-explicit pad byte -- the record stays 320 bytes and stores written before the
-field read on untouched, reporting "unknown"). `xprsindex_add2()` takes the
+explicit pad byte of the old fixed record, and kept in the variable-length
+header that replaced it; records written before the field read "unknown"). `xprsindex_add2()` takes the
 code; the plain `add()` writes unknown. The HTTP API's `bearer` row field
 comes from it.
 
