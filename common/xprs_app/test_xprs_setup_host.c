@@ -137,11 +137,52 @@ static void test_values(void)
     CHECK(xsetup_check("owner", "X1QZ3N"), "not a setup key");
 }
 
+/* 6.4.2: an issued callsign, refused exactly where the app refuses one
+ * (xprsIssuedCallsignRefusal), so a phone and a station agree. */
+static void test_call(void)
+{
+    CHECK(xsetup_is_key("call") && !xsetup_is_secret("call"), "call is a clear key");
+    const char *ok[] = { "CT1ABC", "G0XYZ/P", "2E0ABC", "4U1ITU", "W1AW",
+                         "CT1ABC-9", "CT1ABC-10/P", "ct1abc", " CT1ABC ",
+                         "derived" };
+    for (size_t i = 0; i < sizeof ok / sizeof ok[0]; i++)
+        CHECK(!xsetup_check("call", ok[i]), "%s refused: %s", ok[i],
+              xsetup_check("call", ok[i]));
+    const char *bad[] = {
+        "",                 /* nothing */
+        "X1QZ3N", "X3RLY7", "x5ab", /* a key made them */
+        "MTA1B2C3D4",       /* another network's node */
+        "CT1 ABC", "CT1.ABC", /* charset */
+        "CT1ABC-9-2", "G0XYZ/P/M", "-CT1ABC", "/P", "CT1ABC-", "G0XYZ/",
+        "CT1ABC-0", "CT1ABC-100", "CT1ABC-A", "G0XYZ/P-9",
+        "ROOFNORTH",        /* no digit: a group name */
+        "12345",            /* no letter */
+        "ABCD1EF",          /* the numeral comes too late */
+        "CT1ABC/PORT1",     /* five after the slash */
+        "CT1ABCDEFGHI",     /* 12: wider than a callsign row */
+        "DERIVED",          /* the word, not a callsign */
+    };
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++)
+        CHECK(xsetup_check("call", bad[i]), "'%s' was accepted", bad[i]);
+
+    char out[16];
+    CHECK(xsetup_call_norm(" ct1abc-9 ", out, sizeof out) == 8 &&
+          strcmp(out, "CT1ABC-9") == 0, "normalised: '%s'", out);
+    CHECK(xsetup_call_norm("CT1ABCDEFGHIJKLMNOP", out, 8) < 0, "too long for out");
+
+    /* One clear field among the others in a sealed body. */
+    xsetup_kv_t kv[XSETUP_KV_MAX];
+    int n = xsetup_lines("cmd:set\ncall:CT1ABC\nnick:roof", kv, XSETUP_KV_MAX);
+    CHECK(n == 2 && !strcmp(kv[0].key, "call") && !strcmp(kv[0].val, "CT1ABC"),
+          "call in lines: n=%d", n);
+}
+
 int main(void)
 {
     test_lines();
     test_keys();
     test_values();
+    test_call();
     printf("xprs_setup: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

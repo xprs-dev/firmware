@@ -17,6 +17,8 @@
  *   zone   auto | an offset             either
  *   ap     on | off                     either
  *   key    new                          either
+ *   call   an issued callsign, or       either
+ *          derived (6.4.2)
  *
  * 11.10 says pass and nsec only ever travel sealed; ssid travels with its
  * password, so it is sealed here too, and a clear one is refused the same
@@ -34,9 +36,9 @@ extern "C" {
 #endif
 
 /** Setup fields one command may carry. The widest real one is five, and
- *  the vocabulary is eleven: a cap below it turns a legitimate command
+ *  the vocabulary is twelve: a cap below it turns a legitimate command
  *  into a parse error. */
-#define XSETUP_KV_MAX   11
+#define XSETUP_KV_MAX   12
 /** The longest value: a WPA2 passphrase or an nsec, 63, and the NUL. */
 #define XSETUP_VAL_MAX  66
 
@@ -44,6 +46,11 @@ typedef struct {
     char key[8];
     char val[XSETUP_VAL_MAX];
 } xsetup_kv_t;
+
+/** The longest issued callsign a station carries: XPRS_CALL_LEN (12) less
+ *  its NUL, which is the width of every callsign row the station keeps. The
+ *  format has no ceiling (XPRS.md 3); the app's is 15, set by its HAL. */
+#define XSETUP_CALL_MAX 11
 
 /** One of the keys above? */
 bool xsetup_is_key(const char *key);
@@ -66,6 +73,19 @@ int xsetup_lines(const char *plain, xsetup_kv_t *kv, int max);
  * @return NULL when it is, else the reason, short enough for an `m:`.
  */
 const char *xsetup_check(const char *key, const char *val);
+
+/**
+ * Trimmed and uppercased into @p out, which is what a callsign always is
+ * (XPRS.md 3). @return its length, or -1 when it does not fit @p cap.
+ */
+int xsetup_call_norm(const char *in, char *out, size_t cap);
+
+/**
+ * Could an authority have issued @p val (XPRS.md 6.4.1, 6.4.2)? Lowercase is
+ * read as uppercase. `derived`, going back to the key's own, is accepted.
+ * @return NULL when it may be set, else the reason, short enough for an `m:`.
+ */
+const char *xsetup_call_refusal(const char *val);
 
 #ifdef __cplusplus
 }

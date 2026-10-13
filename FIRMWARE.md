@@ -189,6 +189,7 @@ the phone, and from there:
 | WiFi | `ssid` and `pass` sealed in `x:` to the station's key, joined at once, answered `202 wifi:joining` then `200 wifi:up ip:` or `500 wifi:failed m:<why>` | `setup_apply()`, `wifi_rejoin()`, the join watch in `idx_task` |
 | name, zone, hotspot | `cmd:set nick: zone: ap:`, in the clear | `setup_apply()`, `ap_apply()` |
 | identity | `key:new`, or an `nsec` sealed; `202 k:<new npub>` under the old key, a restart, `t:identity` and `200` under the new one | `setup_apply()`, `keyres_step()` |
+| licensed callsign | `cmd:set call:CT1ABC`, or `call:derived` to go back; `202` under the old name, a restart, `t:identity f:CT1ABC k:<same npub>` and `200 k:<same npub>` under the new one. The key does not change, and the derived callsign still reaches the station (XPRS.md 6.4.2) | `setup_call()`, `call_load()`, `keyres_step()` |
 | stats | `cmd:zdiag`, owner only | `common/xprs_diag` |
 
 Secrets travel only sealed, and are opened only after the signature and the

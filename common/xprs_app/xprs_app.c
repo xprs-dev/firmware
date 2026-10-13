@@ -184,6 +184,28 @@ static void derive_callsign(void)
     s_call[6] = 0;
 }
 
+/* The callsign this station's key derives (section 3), kept here when its
+ * owner has given it one an authority issued instead (6.4.2, `call:` in
+ * 11.10). Everything goes out under s_call, and this one stays an address:
+ * the app answers to both of its names, and so does a station, so an owner
+ * whose phone missed the change can still reach the box and undo it. Empty
+ * when s_call is the derived one. */
+static char s_derived[XPRS_CALL_LEN];
+
+/* One person, compared bare (3.1) and whole (3.0.1): X3ABCD-2 is X3ABCD, and
+ * X3AB is not X3ABCD. */
+static bool same_base(const char *a, const char *b)
+{
+    size_t na = strcspn(a, "-"), nb = strcspn(b, "-");
+    return na && na == nb && strncasecmp(a, b, na) == 0;
+}
+
+/* Is [call] this station, under either of its names? */
+static bool is_self(const char *call)
+{
+    return same_base(call, s_call) || (s_derived[0] && same_base(call, s_derived));
+}
+
 /* ── Signing, and whose word we take ────────────────────────────────────── */
 
 /* One key per station we have heard a t:identity from (§9.3), first speaker
@@ -1950,7 +1972,7 @@ static const char *const k_pol_keys[] = { "owner", "use", "first", "serve" };
  * all. Add a key here when it is added to xprs_setup's vocabulary. */
 static const char *const k_setup_clear[] = {
     "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora",
-    "freq", "region"
+    "freq", "region", "call"
 };
 
 static bool has_any(const xprs_t *p, const char *const *keys, int n)
@@ -2071,6 +2093,67 @@ static void clock_from_owner(const char *ts)
     ESP_LOGW(TAG, "no clock: took the owner's, %s UTC (NTP will correct it)", ts);
 }
 
+/* Who to tell, and by which command, once the restart a new key or a new
+ * callsign takes is over (keyres_step): the command's id, the owner, the
+ * bearer it came by, and the callsign it was addressed to. */
+static void keyres_note(const char *from, const char *bearer, const char *id)
+{
+    nvs_handle_t h;
+    if (nvs_open("xprskey", NVS_READWRITE, &h) != ESP_OK) return;
+    char rec[48];
+    snprintf(rec, sizeof rec, "%.7s %.15s %.7s %.11s", id, from, bearer, s_call);
+    nvs_set_str(h, "keyres", rec);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/*
+ * 11.10 `call:`, XPRS.md 6.4.2: transmit under a callsign an authority
+ * issued to the owner, or go back to the derived one (`derived`). What the
+ * app does when an operator sets one on their profile, done the way a
+ * station takes a new key: the name is in the BLE advertisement, the
+ * hotspot, the Reticulum announce and every row the station signs, so it is
+ * taken at a restart rather than half of it at once. The key does not
+ * change. After the restart t:identity binds the new name to it, and the
+ * 200 carries k:, so the phone can tell it is the same station.
+ *
+ * Nothing here can tell whether the callsign was issued to this owner
+ * (6.4.2); xsetup_call_refusal turns away only what certainly was not.
+ */
+static int setup_call(const char *call, const char *from, const char *bearer,
+                      const char *id, char *why, int why_cap)
+{
+    char want[XPRS_CALL_LEN] = "";
+    if (strcmp(call, "derived") != 0 &&
+        xsetup_call_norm(call, want, sizeof want) <= 0) {
+        snprintf(why, why_cap, "call: at most %d characters", XSETUP_CALL_MAX);
+        return 400;
+    }
+    const char *now = s_derived[0] ? s_call : "";
+    if (!strcmp(want, now)) return 200;          /* already so: nothing to take */
+
+    nvs_handle_t h;
+    if (nvs_open("xprskey", NVS_READWRITE, &h) != ESP_OK) {
+        snprintf(why, why_cap, "could not keep the callsign");
+        return 500;
+    }
+    esp_err_t e = want[0] ? nvs_set_str(h, "call", want) : nvs_erase_key(h, "call");
+    if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;
+    if (e == ESP_OK) e = nvs_commit(h);
+    nvs_close(h);
+    if (e != ESP_OK) {
+        snprintf(why, why_cap, "could not keep the callsign: %s", esp_err_to_name(e));
+        return 500;
+    }
+    keyres_note(from, bearer, id);
+    s_rekey_at_ms = now_ms() + 4000;
+    s_restart_why = "the new callsign";
+    s_rekey_reboot = true;
+    ESP_LOGW(TAG, "callsign %s taken at the restart in 4 s (6.4.2)",
+             want[0] ? want : s_derived);
+    return 202;
+}
+
 /*
  * 11.10: the setup keys, from the clear fields and the sealed lines alike.
  * Returns the code to answer; the caller answers.
@@ -2085,7 +2168,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
 {
     const char *ssid = NULL, *pass = NULL, *nsec = NULL, *wifi = NULL;
     const char *nick = NULL, *zone = NULL, *ap = NULL, *key = NULL;
-    const char *lora = NULL, *freq = NULL, *region = NULL;
+    const char *lora = NULL, *freq = NULL, *region = NULL, *call = NULL;
     for (int i = 0; i < n; i++) {
         const char *k = kv[i].key, *v = kv[i].val;
         if (!xsetup_is_key(k)) {
@@ -2111,8 +2194,13 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         else if (!strcmp(k, "lora")) lora = v;
         else if (!strcmp(k, "freq")) freq = v;
         else if (!strcmp(k, "region")) region = v;
+        else if (!strcmp(k, "call")) call = v;
     }
     if (nsec && key) { snprintf(why, why_cap, "key:new or nsec:, not both"); return 400; }
+    /* A restart cuts short whatever else the command started (a join, a
+     * new key), so a new callsign goes on its own. */
+    if (call && n > 1) { snprintf(why, why_cap, "call: goes on its own"); return 400; }
+    if (call) return setup_call(call, from, bearer, id, why, why_cap);
     /* 14.8, decided before anything is written: a mode this firmware does
      * not have changes nothing and says so. */
     xprslora_mode_t lmode = xprslora_mode();
@@ -2243,15 +2331,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         if (!ok) { memset(nsecbuf, 0, sizeof nsecbuf); snprintf(why, why_cap, "nsec: not a key"); return 400; }
         xcfg_set("nsec", nsecbuf);
         memset(nsecbuf, 0, sizeof nsecbuf);
-        /* Who to tell, and by which command, after the restart. */
-        nvs_handle_t h;
-        if (nvs_open("xprskey", NVS_READWRITE, &h) == ESP_OK) {
-            char rec[48];
-            snprintf(rec, sizeof rec, "%.7s %.15s %.7s %.11s", id, from, bearer, s_call);
-            nvs_set_str(h, "keyres", rec);
-            nvs_commit(h);
-            nvs_close(h);
-        }
+        keyres_note(from, bearer, id);
         snprintf(extra, extra_cap, "k:%s", npub);
         s_rekey_at_ms = now_ms() + 4000;
         s_restart_why = "the new key";
@@ -2541,15 +2621,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (strcmp(type, "command") != 0) break;
         if (!xprs_get_str(&sp, "cmd", cmd, sizeof cmd) ||
             strcmp(cmd, "history") != 0) break;
-        if (xprs_get_str(&sp, "d", dst, sizeof dst)) {
-            char *dash = strchr(dst, '-');
-            if (dash) *dash = 0;              /* base callsign, section 3.1 */
-            char base[16];
-            snprintf(base, sizeof base, "%s", s_call);
-            dash = strchr(base, '-');
-            if (dash) *dash = 0;
-            if (strcasecmp(dst, base) != 0) break;
-        }
+        if (xprs_get_str(&sp, "d", dst, sizeof dst) && !is_self(dst)) break;
         const int depth = idx_is_always_on() ? ASKQ_MAX : 1;
         if (s_askq_n >= depth) {
             /* Full. Keep the newest for a 429 rather than saying nothing;
@@ -2589,7 +2661,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
          * a core-1 task does the signature and the reply. */
         char dst[16] = "";
         if (!xprs_get_str(&sp, "d", dst, sizeof dst) || !dst[0]) break;
-        if (strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        if (!is_self(dst)) break;
         if (s_upd.pending) break;
         memcpy(s_upd.wire, wire, len);
         s_upd.wire[len] = 0;
@@ -2630,13 +2702,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         xprs_type(&sp, type, sizeof type);
         if (strcmp(type, "message") != 0) break;
         if (!xprs_get_str(&sp, "d", dst, sizeof dst) || !dst[0]) break;
-        char *dash = strchr(dst, '-');
-        if (dash) *dash = 0;                  /* base callsign, section 3.1 */
-        char base[16];
-        snprintf(base, sizeof base, "%s", s_call);
-        dash = strchr(base, '-');
-        if (dash) *dash = 0;
-        if (strcasecmp(dst, base) != 0) break;   /* not ours to acknowledge */
+        if (!is_self(dst)) break;             /* not ours to acknowledge */
 
         if (exchanged_with(call) && !s_rcpt_out.pending) {
             memcpy(s_rcpt_out.wire, wire, len);
@@ -2659,7 +2725,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!xprs_get_str(&sp, "q", q, sizeof q) || strcmp(q, "mail") != 0)
             break;
         if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
-            strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+            !is_self(dst)) break;
         if (s_qmail.pending) break;              /* one at a time */
         char asker[XPRS_CALL_LEN] = "";
         if (!xprs_get_str(&sp, "f", asker, sizeof asker) || !asker[0]) break;
@@ -2680,7 +2746,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!xprs_get_str(&sp, "q", q, sizeof q) || strcmp(q, "policy") != 0)
             break;
         if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
-            strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+            !is_self(dst)) break;
         if (s_qpol.pending) break;
         char asker[XPRS_CALL_LEN] = "";
         if (!xprs_get_str(&sp, "f", asker, sizeof asker) || !asker[0]) break;
@@ -2698,7 +2764,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         xprs_type(&sp, type, sizeof type);
         if (strcmp(type, "command") != 0) break;
         if (!xprs_get_str(&sp, "d", dst, sizeof dst)) break;
-        if (strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+        if (!is_self(dst)) break;
         int vl = 0;
         bool has_cmd = xprs_get_str(&sp, "cmd", cmd, sizeof cmd);
         bool sealed = !has_cmd && xprs_get(&sp, "x", &vl);
@@ -2716,6 +2782,10 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         /* A phone's advertisement repeats until the phone stops it: the
          * copies of a command just answered are not news. */
         char id[8];
+        /* Nor is the command a restart was taken for: keyres_step answers
+         * it, and the replay rule would only add a 408 beside the 200. */
+        if (s_keyres_id[0] && xprs_id_of(wire, len, id) && !strcmp(id, s_keyres_id))
+            break;
         if (s_cmdset_last.id[0] && xprs_id_of(wire, len, id) &&
             strcmp(id, s_cmdset_last.id) == 0 &&
             (uint32_t)(esp_timer_get_time() / 1000) - s_cmdset_last.answered_ms < 15000)
@@ -2752,7 +2822,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!xprs_get_str(&sp, "q", q, sizeof q) ||
             strcmp(q, "identity") != 0) break;
         if (xprs_get_str(&sp, "d", dst, sizeof dst) &&
-            strncasecmp(dst, s_call, strlen(s_call)) != 0) break;
+            !is_self(dst)) break;
         s_qid_pending = true;
     } while (0);
 
@@ -2931,7 +3001,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
             cu_peer_t *r = cu_find(rfrom, false);
             if (!r || !r->await) break;
             if (!xprs_get_str(&sp, "d", rto, sizeof rto)) break;
-            if (strncasecmp(rto, s_call, strlen(rto)) != 0) break;
+            if (!is_self(rto)) break;
             if (!xprs_get_str(&sp, "code", code, sizeof code)) break;
             const int c = atoi(code);
             if (c == 202) break;                /* "starting": not an answer */
@@ -3334,13 +3404,16 @@ static uint32_t lan_peer_of(const char *wire, int len)
 static bool command_to_us(const char *wire, int len)
 {
     if (len < 12 || strncmp(wire, "t:command ", 10) != 0) return false;
-    size_t cl = strlen(s_call);
-    for (int i = 9; i + 3 + (int)cl <= len; i++) {
+    for (int i = 9; i + 3 < len; i++) {
         if (wire[i] != ' ' || wire[i + 1] != 'd' || wire[i + 2] != ':') continue;
-        const char *d = wire + i + 3;
-        if (strncasecmp(d, s_call, cl) != 0) return false;
-        char e = (i + 3 + (int)cl < len) ? d[cl] : ' ';
-        return e == ' ' || e == '-';
+        /* Under either name: a command to the derived callsign of a station
+         * that transmits under an issued one is still a command to it. */
+        char d[XPRS_CALL_LEN + 4];
+        int k = 0;
+        for (int j = i + 3; j < len && wire[j] != ' ' && k < (int)sizeof d - 1; j++)
+            d[k++] = wire[j];
+        d[k] = 0;
+        return is_self(d);
     }
     return false;
 }
@@ -5200,9 +5273,17 @@ static void ui_render(void)
             nr++; } while (0)
         char val[26], det[160];   /* val matches the table cell size */
 
-        NROW("Callsign", s_call,
-             "Station callsign, derived from the signing key so a receiver "
-             "can re-derive and check it.");
+        if (s_derived[0]) {
+            snprintf(det, sizeof det,
+                     "Issued callsign its owner set, bound to the signing key by "
+                     "this station's t:identity. The key derives %s, which "
+                     "still reaches it.", s_derived);
+            NROW("Callsign", s_call, det);
+        } else {
+            NROW("Callsign", s_call,
+                 "Station callsign, derived from the signing key so a receiver "
+                 "can re-derive and check it.");
+        }
 
         const char *npub = nostr_keys_get_npub();
         if (npub && npub[0]) {
@@ -6559,6 +6640,30 @@ static void life_save(void)
     nvs_close(h);
 }
 
+/* 6.4.2: the issued callsign an owner set (11.10 `call:`), in place of the
+ * derived one, which stays in s_derived as a second address. Only with a
+ * key: an issued callsign is bound to the key that signs for it, and with
+ * no key there is nothing to bind it to. */
+static void call_load(void)
+{
+    if (!nostr_keys_get_npub() || !nostr_keys_get_npub()[0]) return;
+    char c[XPRS_CALL_LEN] = "";
+    nvs_handle_t h;
+    if (nvs_open("xprskey", NVS_READONLY, &h) != ESP_OK) return;
+    size_t n = sizeof c;
+    esp_err_t e = nvs_get_str(h, "call", c, &n);
+    nvs_close(h);
+    if (e != ESP_OK || !c[0]) return;
+    if (!strcmp(c, "derived") || xsetup_call_refusal(c)) {
+        ESP_LOGW(TAG, "stored callsign %s refused, staying %s", c, s_call);
+        return;
+    }
+    snprintf(s_derived, sizeof s_derived, "%s", s_call);
+    snprintf(s_call, sizeof s_call, "%s", c);
+    ESP_LOGW(TAG, "transmitting as %s, issued; the key derives %s (6.4.2)",
+             s_call, s_derived);
+}
+
 static void keyres_load(void)
 {
     nvs_handle_t h;
@@ -6574,7 +6679,10 @@ static void keyres_load(void)
 /* The answer a new key gives under its own name (11.10): its public key,
  * which the callsign derives from and the signature verifies under, so a
  * phone that missed the 202 and the t:identity can still believe it; and
- * where the WiFi stands. The rest of the state does not fit beside a key. */
+ * where the WiFi stands. The rest of the state does not fit beside a key.
+ * The same answer follows a new callsign, where k: is the key the phone
+ * already holds for this station, which is how it knows the new name is
+ * the same box. */
 static void keyres_answer(const char *to, const char *bearer, const char *id)
 {
     char f[240];
@@ -6607,6 +6715,12 @@ static void keyres_step(uint32_t now_s)
         air_identity();
         stage = 1;
     } else if ((stage == 1 && now_s >= 10) || (stage == 2 && now_s >= 40)) {
+        /* Again before the second answer. A new key's 200 is believable on
+         * its own (its callsign derives from the k: it carries), but an
+         * issued callsign derives from nothing: only a t:identity binds it
+         * to the key (6.4.2), and a phone that missed the first one reads
+         * every answer under the new name as unverified. */
+        if (stage == 2 && s_derived[0]) air_identity();
         keyres_answer(to, bearer, id);
         ESP_LOGW(TAG, "new key in use: told %s under r:%s", to, id);
         stage++;
@@ -7732,7 +7846,7 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
             xprs_type(&up, stype, sizeof stype);
             xprs_get_str(&up, "f", sender, sizeof sender);
         }
-        bool ours = sender[0] && strncasecmp(sender, s_call, strlen(s_call)) == 0;
+        bool ours = sender[0] && is_self(sender);
         bool safety = strcmp(stype, "sos") == 0 || strcmp(stype, "warning") == 0;
         if (sender[0] && !ours && !safety && !pol_may_use(sender)) {
             ESP_LOGW(TAG, "refused to air for %s: use:%s (25.9)",
@@ -8731,6 +8845,7 @@ void xapp_run(const xapp_board_t *board)
     if (nostr_keys_get_callsign() && nostr_keys_get_callsign()[0]) {
         snprintf(s_call, sizeof s_call, "%s", nostr_keys_get_callsign());
     }
+    call_load();
     ESP_LOGI(TAG, "%s XPRS station %s — %s",
              board->board_id, s_call, board->banner);
     xui_set_call(s_call);   /* the top bar names its owner, not the format */

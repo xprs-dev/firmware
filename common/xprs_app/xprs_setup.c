@@ -9,7 +9,7 @@
 
 static const char *const k_keys[] = {
     "ssid", "pass", "nsec", "wifi", "nick", "zone", "ap", "key", "lora",
-    "freq", "region",
+    "freq", "region", "call",
 };
 
 bool xsetup_is_key(const char *key)
@@ -72,6 +72,87 @@ static bool printable(const char *v)
     for (; *v; v++)
         if ((unsigned char)*v < 0x20 || (unsigned char)*v > 0x7e) return false;
     return true;
+}
+
+static bool c_digit(char c) { return c >= '0' && c <= '9'; }
+static bool c_upper(char c) { return c >= 'A' && c <= 'Z'; }
+
+int xsetup_call_norm(const char *in, char *out, size_t cap)
+{
+    if (!in || !out || !cap) return -1;
+    while (*in == ' ' || *in == '\t') in++;
+    size_t n = strlen(in);
+    while (n && (in[n - 1] == ' ' || in[n - 1] == '\t')) n--;
+    if (n >= cap) return -1;
+    for (size_t i = 0; i < n; i++) {
+        char c = in[i];
+        out[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    out[n] = 0;
+    return (int)n;
+}
+
+/*
+ * The app's xprsIssuedCallsignRefusal (lib/services/xprs/xprs_callsign.dart),
+ * rule for rule, so a phone and a station refuse the same callsigns. It
+ * rejects only what certainly was not issued: XPRS.md 6.4.2 is explicit that
+ * nothing in the format can tell whether a callsign was issued to the person
+ * setting it, so a shape this file has not met still gets through.
+ */
+const char *xsetup_call_refusal(const char *val)
+{
+    if (!val) return "missing value";
+    if (strcmp(val, "derived") == 0) return NULL;
+    char c[XSETUP_VAL_MAX];
+    int n = xsetup_call_norm(val, c, sizeof c);
+    if (n < 0) return "call: too long";
+    if (n == 0) return "call: the callsign on your licence, or derived";
+    for (int i = 0; i < n; i++)
+        if (!c_upper(c[i]) && !c_digit(c[i]) && c[i] != '-' && c[i] != '/')
+            return "call: letters, digits, - and / only";
+    if (n > XSETUP_CALL_MAX) return "call: at most 11 characters";
+    /* 3: X1 to X5 and a few key characters is a name a key generated. */
+    if (n >= 3 && c[0] == 'X' && c[1] >= '1' && c[1] <= '5')
+        return "call: X1 to X5 come from a key, no authority issues them";
+    /* 3.2: a node number of another network, the whole string. */
+    if (n == 10 && c[0] == 'M' && (c[1] == 'T' || c[1] == 'C')) {
+        bool hex = true;
+        for (int i = 2; i < 10; i++)
+            if (!c_digit(c[i]) && !(c[i] >= 'A' && c[i] <= 'F')) hex = false;
+        if (hex) return "call: a node number of another network";
+    }
+    const char *dash = strchr(c, '-'), *slash = strchr(c, '/');
+    if (dash && strchr(dash + 1, '-')) return "call: one - only, as in CT1ABC-9";
+    if (slash && strchr(slash + 1, '/')) return "call: one / only, as in G0XYZ/P";
+    if (c[0] == '-' || c[0] == '/') return "call: starts with a letter or a digit";
+    if (c[n - 1] == '-' || c[n - 1] == '/') return "call: finish the suffix, or remove it";
+    if (slash && dash && slash < dash) return "call: the -number goes before the /";
+    /* The base: up to the first - or /. */
+    int base = n;
+    if (dash) base = (int)(dash - c);
+    else if (slash) base = (int)(slash - c);
+    if (dash) {
+        /* 3.1: a device number, 1 to 99, and never -0. */
+        const char *d = dash + 1;
+        int dl = slash ? (int)(slash - d) : (int)strlen(d);
+        if (dl < 1 || dl > 2 || !c_digit(d[0]) || (dl == 2 && !c_digit(d[1])) ||
+            d[0] == '0')
+            return "call: a device number runs 1 to 99, as in CT1ABC-9";
+    }
+    if (slash && strlen(slash + 1) > 4) return "call: up to 4 after the /";
+    bool letter = false, digit = false;
+    for (int i = 0; i < base; i++) {
+        if (c_upper(c[i])) letter = true;
+        else if (c_digit(c[i])) digit = true;
+        else return "call: letters and digits before the suffix";
+    }
+    if (!digit) return "call: a callsign has a digit in it";
+    if (!letter) return "call: a callsign has a letter in it";
+    /* A prefix of one to three, then the numeral that separates it. */
+    if (!((base > 1 && c_digit(c[1])) || (base > 2 && c_digit(c[2])) ||
+          (base > 3 && c_digit(c[3]))))
+        return "call: not shaped like a callsign";
+    return NULL;
 }
 
 const char *xsetup_check(const char *key, const char *val)
@@ -173,6 +254,7 @@ const char *xsetup_check(const char *key, const char *val)
         }
         return NULL;
     }
+    if (strcmp(key, "call") == 0) return xsetup_call_refusal(val);
     if (strcmp(key, "zone") == 0) {
         int off;
         if (strcmp(val, "auto") == 0) return NULL;

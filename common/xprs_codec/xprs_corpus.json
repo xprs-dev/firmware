@@ -190,6 +190,11 @@
 "id": "e1e55c"
 },
 {
+"wire": "t:identity f:X1QZ3N ts:2026-08-09_09:00:00 nick:joao file:- sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:-",
+"bytes": null,
+"id": "37f564"
+},
+{
 "wire": "t:identity f:CT1ABC ts:2026-08-08_14:26:40 k:npub1qz3n7fu9j9uenmyva7ha6x9eqwymytv2847ccv4vxdmn45y50q7h7k5f sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 171,
 "id": "52f750"
@@ -490,9 +495,19 @@
 "id": "d03014"
 },
 {
+"wire": "t:message f:X1QZ3N ts:2026-08-08_14:26:40 scope:regional m:road to the bridge is flooded, go round by the mill",
+"bytes": null,
+"id": "deedff"
+},
+{
 "wire": "t:message f:X16JK8 ts:2026-08-19_14:37:08 scope:local sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:hello from the Chat wapp, locally",
 "bytes": null,
 "id": "81ed04"
+},
+{
+"wire": "t:message f:X1QZ3N ts:2026-08-19_14:51:30 scope:regional m:anyone on the valley mesh tonight?",
+"bytes": null,
+"id": "543ed6"
 },
 {
 "wire": "t:message f:X9WEB ts:2026-08-19_14:58:01 m:round two global",
@@ -950,6 +965,26 @@
 "id": "411557"
 },
 {
+"wire": "t:command f:X1QZ3N d:X3M4Q8 ts:2026-08-08_14:35:00 cmd:set call:CT1ABC-9 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 137,
+"id": "9dd468"
+},
+{
+"wire": "t:result f:X3M4Q8 d:X1QZ3N ts:2026-08-08_14:35:01 r:9dd468 code:202 wifi:up ip:192.168.1.40 ap:off nick:roof-north zone:+01:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 191,
+"id": "0bba88"
+},
+{
+"wire": "t:identity f:CT1ABC-9 ts:2026-08-08_14:35:12 k:npub1m4q8ce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvd sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 175,
+"id": "826df8"
+},
+{
+"wire": "t:result f:CT1ABC-9 d:X1QZ3N ts:2026-08-08_14:35:13 r:9dd468 code:200 k:npub1m4q8ce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvd wifi:up ip:192.168.1.40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 224,
+"id": "0920eb"
+},
+{
 "wire": "t:command f:X1QZ3N d:X3IDX1 ts:2026-08-17_14:00:00 cmd:history only:X1BOA3 since:2026-08-17_13:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 165,
 "id": "fed792"
@@ -1098,6 +1133,16 @@
 "wire": "t:service f:X3DCK0 serve:archive,meshtastic count:212 ts:2026-09-19_12:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 141,
 "id": "0c5d1a"
+},
+{
+"wire": "t:channel f:X3DCK0 freq:869.525MHz mode:lora bw:250kHz ch:public power:14dBm kind:gateway ts:2026-09-20_12:00:00",
+"bytes": 112,
+"id": "a5e674"
+},
+{
+"wire": "t:service f:X3DCK0 serve:archive,meshcore count:212 ts:2026-09-20_12:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 139,
+"id": "beb854"
 },
 {
 "wire": "t:observation f:X1BOA3 pos:38.6902,-9.4012 spd:6kt dir:275deg o:262degm type:boat ts:2026-08-08_14:26:40",
