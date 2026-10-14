@@ -479,7 +479,7 @@ what does not fit is dropped declared-mail-last and the boot log says how
 many were kept. This replaces the older check, which formatted only a
 volume with no segment at all and therefore missed this one.
 
-## The internet WiFi: anyone may add a network, nobody may remove one
+## The internet WiFi: anyone may add a network, only the station's own screen may remove one
 
 The hotspot page's menu (top right) opens **Settings**, with the internet
 WiFi: the network, the remembered ones, a **Search** for networks in range
@@ -494,12 +494,23 @@ changed is fixed by whoever is standing next to it.
 
 - **A network is remembered by working, and only by working.** Every
   network that gives the station an address goes on a list in NVS
-  (`xprswifi`/`known`, up to eight, most recently working first); a join
-  that fails is not remembered and the station goes back to the network it
-  was on (the `s_wjoin` revert, shared with `cmd:set`). Nothing removes a
-  network from the list: there is no delete, so a visitor can add a way out
-  but cannot take one away. When the list is full the network that worked
-  longest ago makes room.
+  (`xprswifi`/`known`, up to ten, most recently working first). A join
+  that fails is not written anywhere, from the page, from an owner's
+  `cmd:set` or from the screen: the handlers set `s_ssid`/`s_pass` and arm
+  the join, and only `wk_tick`, on the address, writes the `ssid`/`pass`
+  settings and the list. The station goes back to the network it was on
+  (the `s_wjoin` revert, shared with `cmd:set`); with none to go back to it
+  drops the failed name and walks the remembered ones. The WiFi driver's
+  own copy is off (`WIFI_STORAGE_RAM`), or every `set_config`, a wrong
+  password included, would sit in `nvs.net80211`. An owner's `ssid:` sent
+  on its own (the two-packet case) waits in `s_wset_ssid` for its `pass:`
+  and the station stays on its network meanwhile.
+- **Nobody removes a network from afar.** There is no delete on the page or
+  over the air, so a visitor or a distant owner can add a way out but
+  cannot take one away. The one exception is the person holding the
+  station: the T-Deck's WiFi screen has **Forget** (`wk_forget`, on
+  `idx_task`). When the list is full the network that worked longest ago
+  makes room.
 - **Reused when reachable.** Three failed tries on the current network and
   the next remembered one is tried; once every one has had its turn, the
   round starts again five minutes later, because each try is a scan that
@@ -516,6 +527,48 @@ changed is fixed by whoever is standing next to it.
   Passwords are never sent back.
 - The page keeps the form out of the ten-second Station redraw: rebuilding
   it closed a phone's keyboard and moved the fields under the finger.
+
+### The WiFi screen on a board with a keyboard
+
+On the T-Deck (any board with `raw_key`) the Settings row **WiFi / LAN**
+shows the network it is on and opens a WiFi screen instead of toggling:
+the on/off switch, **Search for networks**, the remembered networks with
+**Connect** and **Forget**, and for a network found in range a password
+entry (masked, the last character shown). Boards without a keyboard keep
+the toggle and use the hotspot page.
+
+- **The UI task decides nothing about the radio.** Join, connect-by-name and
+  forget go through `wifi_park()`, the hotspot page's own slot, taken under
+  `s_wweb_mux` and drained by `wk_tick` on `idx_task`. The verdict comes
+  back in `s_wweb_state`/`s_wweb_why`, which the screen and the page both
+  read. The screen's state is one heap block, PSRAM first, taken the first
+  time it opens: 8 bytes of internal `.bss` in all.
+- **The typed password does not linger.** It is wiped on Join, Back, Esc,
+  leaving the panel and the screen going to sleep. While it is being typed
+  every key is the password's, capitals and digits included; Ctrl-S
+  (0x13) still takes a screenshot from the console.
+- **Pressing the screen from a script.** The console line `tap X Y` drives
+  one touch through `xui_touch_inject()`: the pointer reads pressed for two
+  polls and released on the third, and LVGL's hit test and the event ring
+  do the rest, exactly as for a finger. Serial only; a tap over HTTP would
+  let anybody on the LAN drive the station.
+
+Tested on the T-Deck X3HW9U, 2026-10-14, by `tap`, keys and screenshots:
+search found 9 networks; Forget took the only remembered network off the
+list and the station off the LAN; a wrong password answered "Failed: wrong
+password. Nothing was saved." with `cfg get ssid` empty; the right one
+answered "Connected, saved", and after a restart the station was back on
+it 5 s into the boot with LoRa still in `both`. A hotspot-page join to a
+name that does not exist answered "no network by that name", and the
+station stayed on its network with nothing added.
+
+The owner's path over Bluetooth, the same day: with the T-Deck's only network
+forgotten on its screen (so off the LAN, and BLE the one way in), the C61's
+Firmwares app found it as the owner's station without a claim (it had been
+given its owner by cable), and sent the network sealed over a BLE5 advert
+("cmd:set parked from ble"). A wrong password answered 500 `wrong password`
+and left `ssid` and `pass` empty; the right one answered `200 wifi:up`, and
+the network was back on the station's list and screen.
 
 Tested on the T-Deck from the C61's browser, 2026-10-12: a name that does not
 exist answered "Could not join: no network by that name" in about 18 s and
@@ -1473,6 +1526,13 @@ Three rules that came out of building it:
    discharging, so a bench station never goes dark, and a station fresh off
    the charger keeps its screen for the first minute. That is the
    conservative error, and it is deliberate.
+
+A table row tap never reached the app until 2026-10-14: `table_click_cb`
+listened for `LV_EVENT_CLICKED`, and `lv_table` forgets the pressed cell on
+`LV_EVENT_RELEASED`, which LVGL sends first, so the handler always read "no
+cell". It listens for `LV_EVENT_VALUE_CHANGED` now, which the table sends on
+the release while the cell is still known and only when the press was not a
+scroll. Found with the console's `tap`; bar taps had always worked.
 
 And the settings bug that every board carried: `ui_render()` excluded panel 6
 from the one block that calls `xui_table_select()`, so the highlight never

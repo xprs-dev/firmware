@@ -197,8 +197,17 @@ cfg set own1 npub18364...8whm6
 cfg get fwkey
 ```
 
+An owner set by cable is a key, and the station cannot know the prefix its
+holder chose, so 11.9's `owner:` names a derived `X3...` until the owner's
+first command teaches it. `cfg set own1c X1ABCD` (a callsign, not an npub)
+sets it by cable too. The phone app also recognises itself by the key-derived
+part of the callsign, so a station owned this way is listed as yours either
+way.
+
 On the app boards (T-Deck, M5Stack) the console is single-key; a line is
-gathered only when it starts with `cfg`, so the key vocabulary is untouched.
+gathered only when it starts with `cfg` or `tap`, so the key vocabulary is
+untouched. `tap X Y` presses a touch screen at those coordinates, through
+the same path a finger takes (nothing on a board without one).
 
 ### Pushing, from the desk
 

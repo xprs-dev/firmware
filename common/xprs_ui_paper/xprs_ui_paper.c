@@ -794,4 +794,5 @@ void xui_splash_status(const char *what) { (void)what; }
 bool xui_splash_dismiss(void) { return true; }   /* was never up */
 
 void xui_touch_enable(xui_touch_fn fn) { (void)fn; }
+void xui_touch_inject(int x, int y) { (void)x; (void)y; }
 bool xui_ev_pop(xui_ev_t *out) { (void)out; return false; }

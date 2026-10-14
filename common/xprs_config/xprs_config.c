@@ -861,11 +861,18 @@ bool xcfg_share_running(void)
 /* ---- the cable: cfg get/set/del on a serial console ---------------------- */
 
 /* Shape rules for values that are keys. own1..own4 hold an npub (63 chars,
- * bech32 charset); every *key (fwkey, the script publisher) holds 64 hex. */
+ * bech32 charset); every *key (fwkey, the script publisher) holds 64 hex.
+ * own1c is not a key but the callsign slot 1's owner goes by: a station
+ * owned by cable cannot learn it from a command the owner has no reason to
+ * send yet, and without it 11.9's owner: names a key-derived X3 nobody is. */
 static const char *key_shape_error(const char *key, const char *val)
 {
     size_t n = strlen(val);
-    if (strncmp(key, "own", 3) == 0) {
+    if (strcmp(key, "own1c") == 0) {
+        if (n < 4 || n > 12) return "a callsign is 4 to 12 characters";
+        for (const char *c = val; *c; c++)
+            if (!isalnum((unsigned char)*c) && *c != '-') return "a callsign is letters, digits and -";
+    } else if (strncmp(key, "own", 3) == 0) {
         if (n != 63 || strncmp(val, "npub1", 5) != 0) return "an npub is 63 chars starting npub1";
         for (const char *c = val + 5; *c; c++)
             if (!strchr("qpzry9x8gf2tvdw0s3jn54khce6mua7l", *c)) return "not a bech32 npub";

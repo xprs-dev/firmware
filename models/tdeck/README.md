@@ -94,7 +94,18 @@ click) drops the draft and returns to the Radar.
 The keyboard feeds the station's console handler, so every key a serial console
 understands works from the device: `S` takes a screenshot over serial, `1`-`8`
 jump to a panel, `U`/`D` move the selection, `K` is OK, `W` wipes the archive.
-Typing text needs a UI that can accept text, which does not exist yet.
+Ctrl-S (0x13) also takes a screenshot, and works while a password is being
+typed. The console line `tap X Y` presses the screen at those coordinates.
+
+### WiFi from the device
+
+Settings, **WiFi / LAN** (Enter, or tap it twice) opens the WiFi screen:
+search for networks in range, pick one, type its password on the keyboard,
+Enter. A network is saved only once it has joined, up to ten are kept and
+joined whenever they are in range, and a saved one can be connected to or
+forgotten from here. Forgetting is only possible on the device: the hotspot
+page and the phone app can add networks, never remove them. The firmware
+ships with no network in it.
 
 ## Power
 

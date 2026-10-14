@@ -1539,15 +1539,29 @@ static struct {
 } s_wjoin;
 static void wifi_join_arm(const char *to, const char *id, const char *bearer,
                           const char *old_ssid, const char *old_pass);
-/* Web page joins (POST /api/wifi), parked by the HTTP task for idx_task. */
+/* Joins asked for by a person at the station rather than over the air:
+ * the hotspot page (POST /api/wifi, on the HTTP task) or the station's own
+ * screen (on the UI task). Parked for idx_task, which owns s_ssid and the
+ * NVS writes; the verdict comes back in s_wweb_state/s_wweb_why, and both
+ * askers read it from there. WREQ_FORGET is the screen's alone. */
 enum { WWEB_IDLE, WWEB_JOINING, WWEB_JOINED, WWEB_FAILED };
+enum { WREQ_JOIN = 0, WREQ_JOIN_KNOWN, WREQ_FORGET };
 static struct {
-    volatile bool pending;
+    volatile bool pending;      /* the slot is taken (under s_wweb_mux)  */
+    volatile bool ready;        /* and filled: idx_task may read it      */
+    uint8_t op;
     char ssid[33];
     char pass[64];
 } s_wweb_req;
+static portMUX_TYPE s_wweb_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint8_t s_wweb_state;
 static char s_wweb_why[32];
+static volatile uint8_t s_wk_gen;      /* bumped on every save of the list */
+/* An owner's ssid: that came without its pass: (11.10, the two-packet
+ * case), held here until the pass: arrives. Not in s_ssid: the station
+ * stays on the network it has until the new one is joined, and nothing is
+ * stored until it has been. Only idx_task touches it. */
+static XPRS_PSRAM_BSS char s_wset_ssid[33];
 static volatile bool s_wk_gotip;       /* set by the event handler */
 static bool s_wk_inet_noted;
 static uint32_t s_wk_noinet_since;     /* ms; 0 while the internet answers */
@@ -2277,32 +2291,39 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         }
     }
 
-    bool join = false;
-    char old_ssid[33], old_pass[64];
-    snprintf(old_ssid, sizeof old_ssid, "%s", s_ssid);
-    snprintf(old_pass, sizeof old_pass, "%s", s_pass);
-    if (ssid) {
-        xcfg_set("ssid", ssid);
-        snprintf(s_ssid, sizeof s_ssid, "%.32s", ssid);
-        /* A new network with the last one's password is not a network. */
-        if (!pass) { xcfg_set("pass", ""); s_pass[0] = 0; }
+    /* Nothing here is stored. The station stays on the network it has, the
+     * new one is tried, and only an address from it writes the name and
+     * password anywhere (wk_tick, "Remembered networks"). An ssid: on its
+     * own is the first half of a pair too long for one packet and waits in
+     * s_wset_ssid for its pass:. */
+    bool join = (pass != NULL) || (wifi && !strcmp(wifi, "join"));
+    if (ssid && !join) {
+        snprintf(s_wset_ssid, sizeof s_wset_ssid, "%.32s", ssid);
     }
-    if (pass) {
-        xcfg_set("pass", pass);
-        snprintf(s_pass, sizeof s_pass, "%.63s", pass);
-        join = true;
-    }
-    if (wifi && !strcmp(wifi, "join")) join = true;
     if (wifi && !strcmp(wifi, "off")) {
         xcfg_set_bool("wifi_on", false);
         s_wjoin.active = false;
+        s_wset_ssid[0] = 0;
         esp_wifi_disconnect();
     }
     if (join) {
-        if (!s_ssid[0]) { snprintf(why, why_cap, "no network: send ssid: first"); return 400; }
+        /* The network: named now, named by the packet before, or (a pass:
+         * alone, or a bare wifi:join) the one the station is set to. A
+         * new network with the last one's password is not a network. */
+        const char *to_ssid = ssid ? ssid : s_wset_ssid[0] ? s_wset_ssid : s_ssid;
+        const char *to_pass = pass ? pass : (ssid || s_wset_ssid[0]) ? "" : s_pass;
+        if (!to_ssid[0]) { snprintf(why, why_cap, "no network: send ssid: first"); return 400; }
+        char old_ssid[33], old_pass[64];
+        snprintf(old_ssid, sizeof old_ssid, "%s", s_ssid);
+        snprintf(old_pass, sizeof old_pass, "%s", s_pass);
+        char nssid[33];
+        snprintf(nssid, sizeof nssid, "%.32s", to_ssid);
+        snprintf(s_pass, sizeof s_pass, "%.63s", to_pass);
+        snprintf(s_ssid, sizeof s_ssid, "%s", nssid);
+        s_wset_ssid[0] = 0;
         wifi_join_arm(from, id, bearer, old_ssid, old_pass);
+        memset(old_pass, 0, sizeof old_pass);
     }
-    memset(old_pass, 0, sizeof old_pass);
 
     if (key || nsec) {
         /* The new key goes where a key from config.ini always went: the boot
@@ -4129,7 +4150,9 @@ static int s_sta_fails;
 static void sta_retry_cb(void *arg)
 {
     (void)arg;
-    esp_wifi_connect();
+    /* A network forgotten on the screen leaves no name: a connect now would
+     * be a scan for nothing (see STA_START). */
+    if (s_ssid[0]) esp_wifi_connect();
 }
 
 static uint32_t sta_retry_ms(void)
@@ -4251,17 +4274,22 @@ static const char *wifi_fail_word(uint8_t reason)
  *
  * Every network the station has joined is kept (NVS "xprswifi"), and when
  * the one it is on cannot be reached the next is tried, most recently
- * working first. A network goes on the list only by working, and nothing
- * takes one off it but room: there is no delete, from the page or anywhere
- * else, so somebody on the hotspot can add a network but cannot take the
+ * working first. A network goes on the list only by working: a name and
+ * password that never gave the station an address are not written
+ * anywhere, from the page, from an owner's cmd:set or from the screen.
+ *
+ * Nothing takes one off it but room, with one exception: the person
+ * holding the station can forget a network on its own screen (wk_forget).
+ * There is no delete from the page or over the air, so somebody on the
+ * hotspot, and an owner far away, can add a network but cannot take the
  * station's way to the internet away. When the list is full the one that
  * worked longest ago makes room.
  *
- * Read from NVS when needed rather than held: eight entries are 840 bytes,
+ * Read from NVS when needed rather than held: ten entries are 1,050 bytes,
  * and the boards without PSRAM have none to spare for a list that is
  * consulted a few times a day.
  */
-#define WK_MAX 8
+#define WK_MAX 10
 typedef struct {
     char     ssid[33];
     char     pass[64];
@@ -4288,10 +4316,13 @@ static void wk_save(const wk_t *in, int n)
         ESP_LOGE(TAG, "wifi: remembered networks not saved");
         return;
     }
-    if (nvs_set_blob(h, "known", in, sizeof(wk_t) * (size_t)n) != ESP_OK ||
-        nvs_commit(h) != ESP_OK)
+    esp_err_t e = n > 0 ? nvs_set_blob(h, "known", in, sizeof(wk_t) * (size_t)n)
+                        : nvs_erase_key(h, "known");
+    if (e == ESP_ERR_NVS_NOT_FOUND) e = ESP_OK;     /* nothing to erase */
+    if (e != ESP_OK || nvs_commit(h) != ESP_OK)
         ESP_LOGE(TAG, "wifi: remembered networks not saved");
     nvs_close(h);
+    s_wk_gen++;                 /* the screen's copy of the names is stale */
 }
 
 /* Most recently working first. */
@@ -4338,6 +4369,56 @@ static void wk_note(const char *ssid, const char *pass, bool inet)
     free(k);
 }
 
+/* The password a remembered network worked with, for a join asked for by
+ * name alone (the screen's Connect). False when it is not remembered. */
+static bool wk_pass_of(const char *ssid, char *pass, size_t cap)
+{
+    wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+    if (!k) return false;
+    int n = wk_load(k);
+    bool found = false;
+    for (int i = 0; i < n && !found; i++)
+        if (!strcmp(k[i].ssid, ssid)) {
+            snprintf(pass, cap, "%s", k[i].pass);
+            found = true;
+        }
+    memset(k, 0, sizeof(wk_t) * WK_MAX);
+    free(k);
+    return found;
+}
+
+/* The one way a network leaves the list before room pushes it off: the
+ * person at the station's own screen forgets it. On idx_task, which owns
+ * s_ssid. Forgetting the network the station is on leaves it, and the
+ * down-branch of wk_tick moves to the next remembered one. */
+static void wk_forget(const char *ssid)
+{
+    wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+    if (!k) return;
+    int n = wk_load(k), w = 0;
+    for (int i = 0; i < n; i++)
+        if (strcmp(k[i].ssid, ssid)) k[w++] = k[i];
+    if (w != n) {
+        wk_save(k, w);
+        ESP_LOGW(TAG, "wifi: \"%s\" forgotten on the screen (%d known)", ssid, w);
+    }
+    memset(k, 0, sizeof(wk_t) * WK_MAX);
+    free(k);
+    /* The boot network too, or a restart would bring it back. */
+    if (!strcmp(xcfg_get("ssid", ""), ssid)) {
+        xcfg_set("ssid", "");
+        xcfg_set("pass", "");
+    }
+    if (!strcmp(s_ssid, ssid)) {
+        s_ssid[0] = 0;
+        memset(s_pass, 0, sizeof s_pass);
+        if (s_sta_retry) esp_timer_stop(s_sta_retry);
+        wifi_config_t wc = {0};
+        esp_wifi_disconnect();
+        esp_wifi_set_config(WIFI_IF_STA, &wc);
+        s_wk_next_ms = 0;          /* the next remembered one, now */
+    }
+}
 
 static void wifi_join_arm(const char *to, const char *id, const char *bearer,
                           const char *old_ssid, const char *old_pass)
@@ -4364,21 +4445,37 @@ static void wifi_join_arm(const char *to, const char *id, const char *bearer,
 /* POST /api/wifi, on the HTTP task: check and park, nothing more. Anybody
  * who can reach the page may ask; see the note above wk_load for why that
  * is safe to allow. */
-static int api_wifi_join(const char *ssid, const char *pass, char *why, size_t cap)
+static int wifi_park(uint8_t op, const char *ssid, const char *pass,
+                     char *why, size_t cap)
 {
     const char *bad = xsetup_check("ssid", ssid);
     if (!bad && pass && pass[0]) bad = xsetup_check("pass", pass);
     if (bad) { snprintf(why, cap, "%s", bad); return 400; }
-    if (s_wweb_req.pending || s_wjoin.active) {
+    /* Two askers on two tasks: the slot is taken under the lock, filled
+     * outside it, and only idx_task empties it. */
+    bool busy;
+    taskENTER_CRITICAL(&s_wweb_mux);
+    busy = s_wweb_req.pending || s_wjoin.active;
+    if (!busy) s_wweb_req.pending = true;
+    taskEXIT_CRITICAL(&s_wweb_mux);
+    if (busy) {
         snprintf(why, cap, "a join is already running");
         return 409;
     }
     snprintf(s_wweb_req.ssid, sizeof s_wweb_req.ssid, "%s", ssid);
     snprintf(s_wweb_req.pass, sizeof s_wweb_req.pass, "%s", pass ? pass : "");
-    s_wweb_state = WWEB_JOINING;
-    s_wweb_why[0] = 0;
-    s_wweb_req.pending = true;
+    if (op != WREQ_FORGET) {
+        s_wweb_state = WWEB_JOINING;
+        s_wweb_why[0] = 0;
+    }
+    s_wweb_req.op = op;
+    s_wweb_req.ready = true;              /* last: idx_task reads the rest */
     return 0;
+}
+
+static int api_wifi_join(const char *ssid, const char *pass, char *why, size_t cap)
+{
+    return wifi_park(WREQ_JOIN, ssid, pass, why, cap);
 }
 
 /* GET /api/wifi, on the HTTP task: the network, the verdict of the last
@@ -4536,17 +4633,36 @@ static void wk_tick(void)
     uint32_t now = now_ms();
     wscan_tick(now);
 
-    if (s_wweb_req.pending && !s_wjoin.active) {
+    if (s_wweb_req.ready && !s_wjoin.active) {
+        uint8_t op = s_wweb_req.op;
+        if (op == WREQ_FORGET) {
+            wk_forget(s_wweb_req.ssid);
+            s_wweb_req.ready = false;
+            s_wweb_req.pending = false;
+            return;
+        }
         char old_ssid[33], old_pass[64];
         snprintf(old_ssid, sizeof old_ssid, "%s", s_ssid);
         snprintf(old_pass, sizeof old_pass, "%s", s_pass);
-        snprintf(s_ssid, sizeof s_ssid, "%s", s_wweb_req.ssid);
-        snprintf(s_pass, sizeof s_pass, "%s", s_wweb_req.pass);
+        bool ok = true;
+        if (op == WREQ_JOIN_KNOWN)
+            ok = wk_pass_of(s_wweb_req.ssid, s_wweb_req.pass, sizeof s_wweb_req.pass);
+        if (ok) {
+            snprintf(s_ssid, sizeof s_ssid, "%s", s_wweb_req.ssid);
+            snprintf(s_pass, sizeof s_pass, "%s", s_wweb_req.pass);
+        }
         memset(s_wweb_req.pass, 0, sizeof s_wweb_req.pass);
+        s_wweb_req.ready = false;
         s_wweb_req.pending = false;
-        xcfg_set("ssid", s_ssid);
-        xcfg_set("pass", s_pass);
-        ESP_LOGW(TAG, "wifi: the web page asked for \"%s\"", s_ssid);
+        if (!ok) {
+            snprintf(s_wweb_why, sizeof s_wweb_why, "not remembered");
+            s_wweb_state = WWEB_FAILED;
+            return;
+        }
+        /* Not written to the settings here: wk_tick does that once the
+         * network has given an address, and a join that never does leaves
+         * nothing behind (see "Remembered networks"). */
+        ESP_LOGW(TAG, "wifi: asked at the station for \"%s\"", s_ssid);
         wifi_join_arm("", "", "", old_ssid, old_pass);
         memset(old_pass, 0, sizeof old_pass);
         return;
@@ -4620,6 +4736,10 @@ static void wifi_up(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    /* The driver would otherwise copy every set_config into its own NVS,
+     * a network that never worked included. What is remembered is the
+     * settings and the list of networks that worked, nothing else. */
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
         WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -5079,6 +5199,384 @@ static void *render_scratch(void **slot, size_t bytes)
     return *slot;
 }
 
+/* ── The WiFi screen ─────────────────────────────────────────────────────
+ *
+ * Settings' first row opens it, on a board with a keyboard (a password has
+ * to be typed somewhere): the networks the station remembers, a search for
+ * the ones in range, a password, Connect and Forget. Everything that
+ * changes anything is parked for idx_task through wifi_park(), the hotspot
+ * page's own path, so the UI task never writes NVS or touches s_ssid, and
+ * a network is remembered only once it has worked, as from anywhere else.
+ *
+ * Forget is here and nowhere else: only the person holding the station can
+ * take a network off its list ("Remembered networks").
+ *
+ * The state is one block from the heap, PSRAM first, taken the first time
+ * the screen opens: a board that never opens it pays a pointer. The typed
+ * password is wiped on every way out (Back, Esc, Join, another panel, the
+ * screen going to sleep).
+ */
+enum { WV_OFF = 0, WV_LIST, WV_FOUND, WV_PASS, WV_SAVED };
+static uint8_t s_wv;              /* the WiFi view that is up; WV_OFF: none */
+typedef struct {
+    char    ssid[33];             /* the network being joined or managed */
+    char    pass[64];             /* typed here; wiped on every way out  */
+    uint8_t pass_n;
+    uint8_t open;                 /* an open network: nothing to type    */
+    uint8_t asked;                /* a join from here: show its verdict  */
+    uint8_t fresh;                /* the names below have been read      */
+    uint8_t gen;                  /* ... at this s_wk_gen                */
+    uint8_t kn;
+    uint8_t kinet[WK_MAX];
+    char    known[WK_MAX][33];
+    int     back_sel;             /* the Settings row to come back to    */
+    char    note[40];             /* the last refusal, said once         */
+} wui_t;
+static wui_t *s_wui;
+
+static bool wui_can(void)
+{
+    return s_board && s_board->raw_key && s_display_up;
+}
+
+static bool wui_typing(void)
+{
+    return s_panel == 6 && s_wv == WV_PASS && s_wui && !s_wui->open &&
+           !s_wui->asked;
+}
+
+static void wui_wipe(void)
+{
+    if (!s_wui) return;
+    memset(s_wui->pass, 0, sizeof s_wui->pass);
+    s_wui->pass_n = 0;
+}
+
+static void wui_to(uint8_t view, int sel)
+{
+    if (s_wv == WV_PASS || view == WV_PASS) wui_wipe();
+    if (s_wui && view != s_wv) s_wui->note[0] = 0;
+    s_wv = view;
+    s_sel[6] = sel;
+    s_set_focus = true;
+}
+
+static void wui_open(void)
+{
+    if (!s_wui) {
+        s_wui = heap_caps_calloc(1, sizeof *s_wui, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!s_wui) s_wui = heap_caps_calloc(1, sizeof *s_wui,
+                                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!s_wui) { ESP_LOGE(TAG, "wifi screen: no memory"); return; }
+    }
+    s_wui->back_sel = s_sel[6];
+    s_wui->fresh = 0;
+    s_wui->asked = 0;
+    wui_to(WV_LIST, 0);
+    ESP_LOGI(TAG, "wifi screen: open");
+}
+
+static void wui_close(void)
+{
+    if (!s_wv) return;
+    wui_wipe();
+    s_wv = WV_OFF;
+    if (s_wui) s_sel[6] = s_wui->back_sel;
+    ESP_LOGI(TAG, "wifi screen: closed");
+}
+
+/* The remembered names, read again only when the list was saved since. */
+static void wui_names(wui_t *w)
+{
+    uint8_t gen = s_wk_gen;
+    if (w->fresh && w->gen == gen) return;
+    wk_t *k = calloc(WK_MAX, sizeof(wk_t));
+    if (!k) return;
+    int n = wk_load(k);
+    wk_sort(k, n);
+    w->kn = 0;
+    for (int i = 0; i < n && i < WK_MAX; i++) {
+        snprintf(w->known[w->kn], sizeof w->known[0], "%s", k[i].ssid);
+        w->kinet[w->kn++] = k[i].inet;
+    }
+    memset(k, 0, sizeof(wk_t) * WK_MAX);
+    free(k);
+    w->fresh = 1;
+    w->gen = gen;
+}
+
+static bool wui_known(const wui_t *w, const char *ssid)
+{
+    for (int i = 0; i < w->kn; i++) if (!strcmp(w->known[i], ssid)) return true;
+    return false;
+}
+
+/* What became of the join asked for here: a cell and its detail. */
+static void wui_verdict(const wui_t *w, char *cell, size_t ccap,
+                        char *det, size_t dcap)
+{
+    if (w->note[0]) {
+        snprintf(cell, ccap, "Not now");
+        snprintf(det, dcap, "%s.", w->note);
+        return;
+    }
+    if (!w->asked) { snprintf(cell, ccap, "--"); det[0] = 0; return; }
+    switch (s_wweb_state) {
+    case WWEB_JOINED:
+        snprintf(cell, ccap, "Connected, saved");
+        snprintf(det, dcap, "Joined and remembered: it is tried again "
+                 "whenever it is in range.");
+        break;
+    case WWEB_FAILED:
+        snprintf(cell, ccap, "Failed");
+        snprintf(det, dcap, "Could not join: %s. Nothing was saved.",
+                 s_wweb_why[0] ? s_wweb_why : "no answer");
+        break;
+    default:
+        snprintf(cell, ccap, "Joining...");
+        snprintf(det, dcap, "Waiting for an address, up to 30 s. The station "
+                 "stays on the network it has until this one works.");
+        break;
+    }
+}
+
+/* Ask idx_task for a join (or a forget). False, with the reason kept for
+ * the screen, when the slot is taken or the name will not do. */
+static bool wui_ask(uint8_t op, const char *pass)
+{
+    char why[40];
+    int rc = wifi_park(op, s_wui->ssid, pass, why, sizeof why);
+    wui_wipe();
+    if (rc) {
+        snprintf(s_wui->note, sizeof s_wui->note, "%s", why);
+        return false;
+    }
+    s_wui->note[0] = 0;
+    if (op != WREQ_FORGET) s_wui->asked = 1;
+    ESP_LOGI(TAG, "wifi screen: %s \"%s\"",
+             op == WREQ_FORGET ? "forget" : "join", s_wui->ssid);
+    return true;
+}
+
+static void wui_back(void)
+{
+    if (s_wv == WV_LIST) wui_close();
+    else if (s_wv == WV_PASS) wui_to(WV_FOUND, 0);
+    else wui_to(WV_LIST, 0);
+}
+
+/* A key while the WiFi screen is up. True when it was taken. Only the
+ * password view takes typing; elsewhere only Esc, which steps back. */
+static bool wui_key(int ch)
+{
+    if (!s_wv || s_panel != 6 || !s_wui) return false;
+    if (ch == 0x1b) { wui_back(); return true; }
+    if (!wui_typing()) return false;
+    wui_t *w = s_wui;
+    if (ch == 0x0d || ch == '\n') {
+        if (w->pass_n >= 8) wui_ask(WREQ_JOIN, w->pass);
+        else snprintf(w->note, sizeof w->note, "a WPA password has 8 or more characters");
+        s_sel[6] = 2;
+        return true;
+    }
+    w->note[0] = 0;
+    if (ch == 0x08 || ch == 0x7f) {
+        if (w->pass_n) w->pass[--w->pass_n] = 0;
+        return true;
+    }
+    if (ch >= 0x20 && ch < 0x7f) {
+        if (w->pass_n < sizeof w->pass - 1) {
+            w->pass[w->pass_n++] = (char)ch;
+            w->pass[w->pass_n] = 0;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* OK (Enter, the second tap, the serial K) on a row of the WiFi screen. */
+static void wui_ok(int row)
+{
+    wui_t *w = s_wui;
+    if (!w) return;
+    char why[40];
+    switch (s_wv) {
+    case WV_LIST:
+        if (row == 0) {
+            xcfg_set_bool("wifi_on", !xcfg_get_bool("wifi_on", true));
+        } else if (row == 1) {
+            if (api_wifi_scan_start(why, sizeof why))
+                snprintf(w->note, sizeof w->note, "%s", why);
+            else
+                wui_to(WV_FOUND, 0);
+        } else if (row - 2 < w->kn) {
+            snprintf(w->ssid, sizeof w->ssid, "%s", w->known[row - 2]);
+            w->asked = 0;
+            wui_to(WV_SAVED, 1);
+        } else {
+            wui_close();
+        }
+        break;
+    case WV_FOUND: {
+        int n = s_scan_state == WSCAN_DONE ? s_scan_n : 0;
+        if (row == 0) {
+            if (api_wifi_scan_start(why, sizeof why))
+                snprintf(w->note, sizeof w->note, "%s", why);
+            else
+                w->note[0] = 0;
+        } else if (row - 1 < n) {
+            const wscan_t *sc = &s_scan[row - 1];
+            snprintf(w->ssid, sizeof w->ssid, "%s", sc->ssid);
+            w->open = sc->open;
+            w->asked = 0;
+            wui_to(WV_PASS, w->open ? 2 : 1);
+            if (w->open) wui_ask(WREQ_JOIN, "");
+            else if (wui_known(w, w->ssid)) wui_ask(WREQ_JOIN_KNOWN, "");
+        } else {
+            wui_to(WV_LIST, 1);
+        }
+        break;
+    }
+    case WV_PASS:
+        if (row == 2 && !w->asked && !w->open) wui_key(0x0d);
+        else if (row == 2 && w->asked && s_wweb_state == WWEB_FAILED && !w->open) {
+            w->asked = 0;              /* try again: type it anew */
+            s_sel[6] = 1;
+        } else if (row == 3) wui_back();
+        break;
+    case WV_SAVED:
+        if (row == 1) wui_ask(WREQ_JOIN_KNOWN, "");
+        else if (row == 2) { if (wui_ask(WREQ_FORGET, "")) wui_to(WV_LIST, 0); }
+        else if (row == 3) wui_back();
+        break;
+    default:
+        break;
+    }
+}
+
+#define WROW(c0, c1, ...) do { \
+    snprintf(tr[nr].cell[0], sizeof tr[nr].cell[0], "%.25s", c0); \
+    snprintf(tr[nr].cell[1], sizeof tr[nr].cell[1], "%.25s", c1); \
+    snprintf(tr[nr].detail, sizeof tr[nr].detail, __VA_ARGS__); \
+    nr++; } while (0)
+
+/* The rows of the view that is up. Returns how many. */
+static int wui_render(xui_row_t *tr)
+{
+    static const char *const hdr[2] = { "Network", "State" };
+    static const int cw[2] = { 180, 140 };
+    xui_table_setup(2, hdr, cw);
+    wui_t *w = s_wui;
+    int nr = 0;
+    char c1[26], det[160];
+    wui_names(w);
+    switch (s_wv) {
+    case WV_LIST: {
+        bool on = xcfg_get_bool("wifi_on", true);
+        WROW("WiFi / LAN", on ? "On" : "Off",
+             "Join the WiFi network and speak XPRS over the LAN. "
+             "%s toggles; applies after restart.", ok_key());
+        bool busy = s_scan_state == WSCAN_WANT || s_scan_state == WSCAN_RUNNING;
+        if (w->note[0])
+            WROW("Search for networks", "Not now", "%s.", w->note);
+        else
+            WROW("Search for networks", busy ? "Searching..." : "--",
+                 "Find the networks in range and join one. The hotspot "
+                 "pauses for the few seconds it takes.%s",
+                 w->kn ? "" : " No network is remembered yet.");
+        for (int i = 0; i < w->kn; i++) {
+            bool cur = !strcmp(w->known[i], s_ssid) && s_ip_str[0];
+            const char *st = cur ? (s_inet_known && s_inet_up ? "Connected, internet"
+                                                              : "Connected")
+                                 : w->kinet[i] ? "Saved, internet" : "Saved";
+            WROW(w->known[i], st,
+                 "%s. Remembered because it worked, and joined again "
+                 "whenever it is in range. %s for Connect or Forget.",
+                 w->known[i], ok_key());
+        }
+        WROW("Back", "--", "Back to Settings.");
+        xui_set_title("WiFi");
+        break;
+    }
+    case WV_FOUND: {
+        int st = s_scan_state;
+        if (w->note[0]) snprintf(c1, sizeof c1, "Not now");
+        else if (st == WSCAN_WANT || st == WSCAN_RUNNING) snprintf(c1, sizeof c1, "Searching...");
+        else if (st == WSCAN_FAILED) snprintf(c1, sizeof c1, "Failed");
+        else if (st == WSCAN_DONE) snprintf(c1, sizeof c1, "%d found", s_scan_n);
+        else snprintf(c1, sizeof c1, "--");
+        if (w->note[0]) snprintf(det, sizeof det, "%s.", w->note);
+        else if (st == WSCAN_FAILED) snprintf(det, sizeof det, "The search failed: %s.", s_scan_why);
+        else snprintf(det, sizeof det, "Search again. The strongest twelve are listed.");
+        WROW("Search again", c1, "%s", det);
+        int n = st == WSCAN_DONE ? s_scan_n : 0;
+        for (int i = 0; i < n && nr < XUI_TAB_ROWS - 1; i++) {
+            const wscan_t *sc = &s_scan[i];
+            bool kn = wui_known(w, sc->ssid);
+            /* Locked is the rule; only the exceptions are named, or the
+             * column wraps. */
+            snprintf(c1, sizeof c1, "%d dBm%s%s", sc->rssi,
+                     sc->open ? ", open" : "", kn ? ", saved" : "");
+            WROW(sc->ssid, c1, "%s: %s. %s %s.", sc->ssid,
+                 sc->open ? "open, no password" : "needs a password",
+                 ok_key(), kn ? "joins with the password it worked with"
+                         : sc->open ? "joins" : "asks for the password");
+        }
+        WROW("Back", "--", "Back to the remembered networks.");
+        xui_set_title("WiFi: found");
+        break;
+    }
+    case WV_PASS: {
+        WROW("Network", w->ssid, "The network to join: %s.", w->ssid);
+        if (w->open) {
+            WROW("Password", "none", "An open network: anybody may join it.");
+        } else if (w->asked) {
+            WROW("Password", "(sent)", "The password went to the join and "
+                 "was wiped from the screen.");
+        } else {
+            /* Masked, but the last character shows, so a typo is seen. */
+            char m[26];
+            int from = w->pass_n > 23 ? w->pass_n - 23 : 0, j = 0;
+            for (int i = from; i < w->pass_n; i++)
+                m[j++] = i == w->pass_n - 1 ? w->pass[i] : '*';
+            m[j++] = '_';
+            m[j] = 0;
+            WROW("Password", m, "Type it on the keyboard: Enter joins, Esc "
+                 "goes back. %d characters.", w->pass_n);
+        }
+        wui_verdict(w, c1, sizeof c1, det, sizeof det);
+        if (!w->asked && !w->note[0])
+            snprintf(det, sizeof det, "Join with this password. Only a "
+                     "network that works is saved.");
+        if (w->asked && s_wweb_state == WWEB_FAILED && !w->open)
+            snprintf(det + strlen(det), sizeof det - strlen(det),
+                     " %s to type it again.", ok_key());
+        WROW("Join", c1, "%s", det);
+        WROW("Back", "--", "Back to the networks in range.");
+        xui_set_title("WiFi: join");
+        break;
+    }
+    case WV_SAVED: {
+        WROW("Network", w->ssid, "Remembered: %s.", w->ssid);
+        wui_verdict(w, c1, sizeof c1, det, sizeof det);
+        if (!w->asked && !w->note[0])
+            snprintf(det, sizeof det, "Join it now, with the password it "
+                     "worked with.");
+        WROW("Connect", c1, "%s", det);
+        WROW("Forget", "no undo",
+             "Take it off this station's list. Only possible here, on the "
+             "station itself: not from the hotspot page, not from a phone.");
+        WROW("Back", "--", "Back to the remembered networks.");
+        xui_set_title("WiFi: saved");
+        break;
+    }
+    default:
+        break;
+    }
+    return nr;
+}
+#undef WROW
+
 static void ui_render(void)
 {
     char body[720];
@@ -5359,6 +5857,11 @@ static void ui_render(void)
         break;
     }
     case 6: {   /* Settings: OK (button A) toggles the selected row */
+        if (s_wv && s_wui) {         /* the WiFi screen, opened from row 0 */
+            list_n = wui_render(tr_all);
+            xui_table_rows(tr_all, list_n);
+            break;
+        }
         static const char *const hdr[2] = { "Setting", "State" };
         static const int cw[2] = { 170, 150 };
         xui_table_setup(2, hdr, cw);
@@ -5379,9 +5882,17 @@ static void ui_render(void)
             snprintf(tr[nr].detail, sizeof tr[nr].detail, __VA_ARGS__); \
             nr++; } while (0)
 
-        SROWF("WiFi / LAN", xcfg_get_bool("wifi_on", true) ? "On" : "Off",
-             "Join the WiFi network and speak XPRS over the LAN. "
-             "%s toggles; applies after restart.", ok_key());
+        char wv[26];
+        snprintf(wv, sizeof wv, "%.25s", !xcfg_get_bool("wifi_on", true) ? "Off"
+                                         : s_ip_str[0] ? s_ssid : "Not connected");
+        if (wui_can())
+            SROWF("WiFi / LAN", wv,
+                 "The WiFi networks: search, join, and the ones this "
+                 "station remembers. %s opens them.", ok_key());
+        else
+            SROWF("WiFi / LAN", xcfg_get_bool("wifi_on", true) ? "On" : "Off",
+                 "Join the WiFi network and speak XPRS over the LAN. "
+                 "%s toggles; applies after restart.", ok_key());
         SROWF("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
              "The 2.4 GHz radio link between nearby stations. "
              "%s toggles; applies after restart.", ok_key());
@@ -7098,6 +7609,23 @@ no_announce:
                 code = 500;
                 why = s_wjoin.reverting ? wifi_fail_word(s_wjoin.fail_reason)
                     : s_wjoin.fails ? wifi_fail_word(s_wjoin.reason) : "could not join";
+                if (!s_wjoin.reverting) {
+                    /* Failed with nothing up to go back to: drop the name
+                     * that did not work, back to the last one that did (the
+                     * settings hold only those), and the down-branch of
+                     * wk_tick walks the remembered ones from there. */
+                    snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", ""));
+                    snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", ""));
+                    s_sta_fails = 3;           /* this one is not worth three more */
+                    s_wk_next_ms = 0;
+                    if (s_ssid[0]) wifi_rejoin();
+                    else {
+                        wifi_config_t wc = {0};
+                        if (s_sta_retry) esp_timer_stop(s_sta_retry);
+                        esp_wifi_disconnect();
+                        esp_wifi_set_config(WIFI_IF_STA, &wc);
+                    }
+                }
             }
             if (code) {
                 s_wjoin.active = false;
@@ -7108,13 +7636,13 @@ no_announce:
                 if (s_wjoin.to[0]) {
                     cmdset_result(s_wjoin.to, s_wjoin.bearer, s_wjoin.id, "", code, st, why);
                 } else {
-                    /* Asked from the web page: nobody to air an answer to,
-                     * the page reads it from /api/wifi. */
+                    /* Asked at the station (the hotspot page or the screen):
+                     * nobody to air an answer to; both read it from here. */
                     snprintf(s_wweb_why, sizeof s_wweb_why, "%s", why ? why : "");
                     s_wweb_state = code == 200 ? WWEB_JOINED : WWEB_FAILED;
                 }
                 ESP_LOGW(TAG, "join for %s: %d %s",
-                         s_wjoin.to[0] ? s_wjoin.to : "the web page", code, why ? why : st);
+                         s_wjoin.to[0] ? s_wjoin.to : "the station's page or screen", code, why ? why : st);
             }
         }
 
@@ -7698,9 +8226,13 @@ named_done:
 static void settings_ok(int row)
 {
     ESP_LOGI(TAG, "ok: settings row %d", row);
+    if (s_wv) { wui_ok(row); return; }
     switch (row) {
     case 0:
-        xcfg_set_bool("wifi_on", !xcfg_get_bool("wifi_on", true));
+        /* A board that can type gets the WiFi screen; the others keep the
+         * switch, and the hotspot page for the networks. */
+        if (wui_can()) wui_open();
+        else xcfg_set_bool("wifi_on", !xcfg_get_bool("wifi_on", true));
         break;
     case 1:
         xcfg_set_bool("espnow_on", !xcfg_get_bool("espnow_on", true));
@@ -8491,7 +9023,14 @@ static void ui_task(void *arg)
         {
             static char cfgline[160];
             static int  cfgn = -1;           /* -1: not inside a cfg line */
-            if (cfgn < 0 && ch == 'c') { cfgn = 0; }
+            /* "tap X Y" rides the same gatherer: one touch at screen
+             * coordinates, through the same path a finger takes (LVGL's
+             * hit test, the event ring, touch_events()), so a script can
+             * press the screen and see what a person would. Serial only:
+             * on the HTTP API anybody on the LAN could drive the station.
+             * Not while a password is being typed, which takes every key. */
+            if (cfgn < 0 && !wui_typing() &&
+                (ch == 'c' || (ch == 't' && !chat_active()))) { cfgn = 0; }
             /* Inside a cfg line, drain everything that has arrived. One
              * character per 10 ms tick is slower than a pasted 76-char
              * "cfg set own1 npub..." and the USB-JTAG ring then drops the
@@ -8499,7 +9038,15 @@ static void ui_task(void *arg)
             while (cfgn >= 0 && ch > 0) {
                 if (ch == '\n' || ch == '\r') {
                     cfgline[cfgn] = 0;
-                    if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0 &&
+                    int tx, ty;
+                    if (cfgn >= 3 && strncmp(cfgline, "tap", 3) == 0) {
+                        if (sscanf(cfgline + 3, "%d %d", &tx, &ty) == 2) {
+                            xui_touch_inject(tx, ty);
+                            printf("tap %d %d\n", tx, ty);
+                        } else {
+                            printf("usage: tap X Y\n");
+                        }
+                    } else if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0 &&
                         !lora_console(cfgline) && !xdiag_console(cfgline))
                         xcfg_console(cfgline);
                     cfgn = -1;
@@ -8507,7 +9054,8 @@ static void ui_task(void *arg)
                 } else if (cfgn < (int)sizeof cfgline - 1) {
                     cfgline[cfgn++] = (char)ch;
                     /* Not a cfg line after all: hand the key back. */
-                    if (cfgn <= 3 && strncmp(cfgline, "cfg", cfgn) != 0) { cfgn = -1; break; }
+                    if (cfgn <= 3 && strncmp(cfgline, "cfg", cfgn) != 0 &&
+                        strncmp(cfgline, "tap", cfgn) != 0) { cfgn = -1; break; }
                     ch = getchar();            /* consumed; take the next now */
                 } else { cfgn = -1; ch = 0; }
             }
@@ -8519,6 +9067,14 @@ static void ui_task(void *arg)
          * I pressed the keys myself" is not a test. While a room is open,
          * lower case and space and enter go into the message; the commands
          * are all upper case (S, U, D, K, W) and stay reachable. */
+        /* The WiFi password, the same way: while it is being typed every
+         * printable key is the password's (capitals included), and only
+         * Ctrl-S (0x13) is still a screenshot. Esc steps back. */
+        if (ch > 0 && s_wv &&
+            (ch == 0x0d || ch == '\n' || ch == 0x08 || ch == 0x7f ||
+             ch == 0x1b || (ch >= 0x20 && ch < 0x7f && wui_typing()))) {
+            if (wui_key(ch)) { force = true; ch = 0; }
+        }
         if (ch > 0 && chat_active() &&
             (ch == 0x0d || ch == '\n' || ch == 0x08 || ch == 0x7f ||
              ch == 0x1b ||
@@ -8541,6 +9097,13 @@ static void ui_task(void *arg)
         /* Enter is what changes a setting on a keyboard board -- see the note
          * at the NEXT handler above. Taken before the console mapping, or the
          * 0x0d would be folded into something else. */
+        /* The WiFi screen first: the password takes every key, and Esc
+         * steps back a view rather than leaving Settings. */
+        if (kb > 0 && s_wv && wui_key(kb)) {
+            xui_activity();
+            force = true;
+            kb = 0;
+        }
         if (kb == 0x0d && s_panel == 6 && s_set_focus && !chat_active()) {
             settings_ok(s_sel[6]);
             force = true;
@@ -8557,6 +9120,7 @@ static void ui_task(void *arg)
             }
         }
 
+        if (ch == 0x13) ch = 'S';             /* Ctrl-S: works while typing */
         if (ch == 'S') xui_framedump();
         if (ch >= '1' && ch <= '0' + UI_PANEL_COUNT) {
             s_panel = ch - '1';
@@ -8592,6 +9156,9 @@ static void ui_task(void *arg)
         battery_tick();
         xpwr_policy_tick(now_ms());
         screen_tick();
+        /* The WiFi screen closes, and the typed password goes, the moment
+         * its panel is left or the screen sleeps. */
+        if (s_wv && (s_panel != 6 || s_screen_off)) { wui_close(); force = true; }
 
         /* The strip's top bar. On a LoRa board it carries the last packet's
          * signal, and says so plainly when nothing has been heard for five

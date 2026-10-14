@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "xprs_art.h"
+#include "xprs_psram.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
@@ -51,6 +52,9 @@ static lv_obj_t      *s_bar_zone[3];
 static xui_ev_t       s_ev[XUI_EV_RING];
 static int            s_ev_w, s_ev_r;
 static bool           s_touch_was_down;
+/* A tap from the serial console (xui_touch_inject): polls left to report
+ * it pressed, then one released. Same task as the reader, no lock. */
+static XPRS_PSRAM_BSS struct { int16_t x, y; uint8_t polls; } s_inject;
 
 /* The boot splash. Everything it owns is deleted together; the point array
  * is LVGL-pool memory because lv_line keeps the pointer rather than copying,
@@ -850,7 +854,12 @@ static void build_ui(void)
     lv_table_set_cell_value(s_flowtab, 0, 4, "When");
     lv_obj_add_event_cb(s_flowtab, flow_draw_cb, LV_EVENT_DRAW_PART_BEGIN,
                         NULL);
-    lv_obj_add_event_cb(s_flowtab, table_click_cb, LV_EVENT_CLICKED, NULL);
+    /* VALUE_CHANGED, not CLICKED: lv_table forgets the pressed cell on
+     * RELEASED, which LVGL sends before CLICKED, so a CLICKED handler never
+     * saw a row and no row tap ever reached the app. VALUE_CHANGED is sent
+     * on the release, while the cell is still known, and only when the
+     * press was not a scroll. */
+    lv_obj_add_event_cb(s_flowtab, table_click_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_add_flag(s_flowtab, LV_OBJ_FLAG_HIDDEN);
 
     /* The reading strip: visibly its own box -- inset from the edges, a
@@ -1878,7 +1887,15 @@ static void touch_read_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
     (void)drv;
     int x = 0, y = 0;
-    bool down = s_touch_fn && s_touch_fn(&x, &y);
+    bool down;
+    if (s_inject.polls) {
+        /* Pressed for all but the last poll, then up: a click, not a drag. */
+        down = --s_inject.polls > 0;
+        x = s_inject.x;
+        y = s_inject.y;
+    } else {
+        down = s_touch_fn && s_touch_fn(&x, &y);
+    }
     if (down) {
         if (x < 0) x = 0;
         if (x >= s_w) x = s_w - 1;
@@ -1959,6 +1976,14 @@ void xui_touch_enable(xui_touch_fn fn)
 
     /* Horizontal swipes anywhere are panel changes. */
     lv_obj_add_event_cb(lv_scr_act(), gesture_cb, LV_EVENT_GESTURE, NULL);
+}
+
+void xui_touch_inject(int x, int y)
+{
+    if (!s_indev) return;
+    s_inject.x = (int16_t)x;
+    s_inject.y = (int16_t)y;
+    s_inject.polls = 3;
 }
 
 bool xui_ev_pop(xui_ev_t *out)

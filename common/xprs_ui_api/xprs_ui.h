@@ -338,6 +338,15 @@ bool xui_splash_dismiss(void);
 typedef bool (*xui_touch_fn)(int *x, int *y);
 void xui_touch_enable(xui_touch_fn fn);
 
+/**
+ * One tap at screen coordinates, as if a finger had touched there: the
+ * pointer reads pressed at (@p x, @p y) for a few polls, then released, and
+ * LVGL's hit test turns it into the same events a real tap makes. For the
+ * serial console's "tap X Y", so a script can press the screen. UI task
+ * only. Does nothing on a board without a touch panel.
+ */
+void xui_touch_inject(int x, int y);
+
 typedef enum {
     XUI_EV_NONE = 0,
     XUI_EV_PRESS,        /* any finger-down anywhere: the wake signal      */
