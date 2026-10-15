@@ -793,6 +793,79 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
 }
 
 /*
+ * XPRS.md 25.3 and 12.11: a standing alert (scope:local, until:) and its
+ * withdrawal are kept with custody mail when the spool goes, so an alert
+ * posted months ago is still there for the next visitor. A warning for
+ * everyone, or a local one with no end, is spool like any other.
+ */
+typedef struct { int n; char wire[20][XPRSIDX_WIRE_MAX + 1]; } wires_t;
+static bool collect_wires(const xprsidx_rec_t *rec, void *ctx)
+{
+    wires_t *w = ctx;
+    if (w->n >= 20) return false;
+    memcpy(w->wire[w->n], rec->wire, rec->len);
+    w->wire[w->n][rec->len] = 0;
+    w->n++;
+    return true;
+}
+
+static void test_standing_alerts_are_carried(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+    char w[300];
+    const uint32_t day0 = 1787000000u;
+    const char *alert = "t:warning f:X1QZ3N kind:flood sev:watch scope:local "
+                        "ts:" TS_2026 " until:2099-01-01_00:00:00 m:car park";
+    const char *gone = "t:info f:X1QZ3N scope:local ts:" TS_2026
+                       " until:2099-01-01_00:00:00 r:abcdef remove:info";
+    const char *wide = "t:warning f:X1WIDE kind:fire sev:danger "
+                       "ts:" TS_2026 " until:2099-01-01_00:00:00 m:everyone";
+    const char *open = "t:info f:X1OPEN kind:fog scope:local ts:" TS_2026
+                       " m:no end";
+    CHECK(xprsindex_add(st, alert, (int)strlen(alert), 0, false, day0), "alert");
+    CHECK(xprsindex_add(st, gone, (int)strlen(gone), 0, false, day0), "withdrawal");
+    CHECK(xprsindex_add(st, wide, (int)strlen(wide), 0, false, day0), "wide");
+    CHECK(xprsindex_add(st, open, (int)strlen(open), 0, false, day0), "open");
+    for (int i = 0; i < 9000; i++) {
+        snprintf(w, sizeof w, "t:status f:X1SP%02d ts:" TS_2026 " m:filler %d",
+                 i % 90, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    }
+    /* Just under what it holds: one segment goes, and there is room for
+     * class 2 afterwards (12.11 carries custody only while there is). */
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    const uint32_t before = s.segments;
+    xprsindex_set_max_bytes(st, s.used_bytes - 1);
+    snprintf(w, sizeof w, "t:status f:X1LAST ts:" TS_2026 " m:the drop");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
+    xprsindex_stats(st, &s);
+    CHECK(s.segments < before, "nothing was evicted (%u segments)", (unsigned)s.segments);
+
+    static wires_t c;
+    c.n = 0;
+    xprsidx_query_t q = { .type = -1,
+                          .types = xprsidx_type_mask("warning,info"),
+                          .limit = 20 };
+    xprsindex_query(st, &q, collect_wires, &c);
+    bool got_alert = false, got_gone = false, got_wide = false, got_open = false;
+    for (int i = 0; i < c.n; i++) {
+        if (strstr(c.wire[i], "m:car park")) got_alert = true;
+        if (strstr(c.wire[i], "remove:info")) got_gone = true;
+        if (strstr(c.wire[i], "m:everyone")) got_wide = true;
+        if (strstr(c.wire[i], "m:no end")) got_open = true;
+    }
+    CHECK(got_alert, "the standing alert went with the spool (25.3)");
+    CHECK(got_gone, "its withdrawal went, which would bring the alert back");
+    CHECK(!got_wide, "a warning for everyone was carried like an alert");
+    CHECK(!got_open, "a local notice with no until: was carried like an alert");
+    xprsindex_close(st);
+}
+
+/*
  * `only:` is a CALLSIGN (36.6) and `kind:` is a TYPE (25.2). Reading only: as
  * a type made only:message appear to work while the spec's own only:X5A3F2
  * matched nothing at all.
@@ -1510,6 +1583,7 @@ int main(void)
     test_verifies_what_it_stores(dir);
     test_retention_priorities(dir);
     test_declared_mail_is_the_last_to_go(dir);
+    test_standing_alerts_are_carried(dir);
     test_mail_count(dir);
     test_epoch_is_anchored(dir);
     test_only_is_a_callsign(dir);

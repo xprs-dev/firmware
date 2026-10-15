@@ -34,6 +34,10 @@ A periodic `t:observation` beacon reports what this station directly hears
   count (36.9), and serve the XDIR1 directory.
 - Where a mesh custody plane exists (BLE5 boards): park store-and-forward
   mail for absent stations and release it on sight (`xprs_blemesh`).
+- Give each standing alert (25.3: a `t:warning` or `t:info` with
+  `scope:local` and `until:`, signed by an owner, or by anybody under
+  `alerts:open`) once to each callsign first heard directly on a local
+  bearer. See esp32.md, "Standing alerts".
 - Sign what the station says when it holds a key (`xprs_sig`);
   a keyless station transmits unsigned and says so (37).
 
@@ -208,6 +212,9 @@ On the app boards (T-Deck, M5Stack) the console is single-key; a line is
 gathered only when it starts with `cfg` or `tap`, so the key vocabulary is
 untouched. `tap X Y` presses a touch screen at those coordinates, through
 the same path a finger takes (nothing on a board without one).
+`cfg alerts` lists the standing alerts and how many have been given;
+`cfg set alerts open` (or `owner`) is the 11.9 `alerts:` key, applied at
+once.
 
 ### Pushing, from the desk
 

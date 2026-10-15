@@ -601,6 +601,71 @@ section 3); the page used to make it `X3`, the class of the station serving
 it. The firmware's key check (`xauth_call_matches_npub`) never read the
 class digit, so nothing else changed.
 
+## Standing alerts (XPRS.md 25.3)
+
+An alert is a warning or a notice that a station keeps giving to whoever
+arrives. On the wire it is nothing new: a `t:warning` or `t:info` with
+`scope:local` and `until:`, withdrawn by naming it with the same `until:`.
+The owner posts it from the Alerts wapp standing next to the station; the
+station hears it like any packet and archives it like any packet.
+
+**No store of its own.** The first design kept up to four alerts in an NVS
+blob. That duplicated the archive, which already keeps every warning and
+notice heard, with a tail index per type so "the newest warnings" is one
+short read. What the station keeps beside the archive is only what the
+archive cannot answer:
+
+- `s_alrt`: the ids standing now, at most four. Rebuilt on idx_task when a
+  warning or notice has just been archived, when the policy changes, and
+  every ten minutes (which is how an alert past its `until:` is dropped
+  without a timer).
+- `s_alrt_given`: which callsigns have had which, as a hash and four ids.
+  16 rows without PSRAM, 128 in PSRAM. RAM only: after a restart everybody
+  is given each alert once more, which 25.3 allows.
+
+**On a sighting.** `seen_note` checks, for a packet heard directly (no
+`via:`) on a local bearer, whether that callsign has had every id in
+`s_alrt`; that is a hash and a few compares. If not, it parks the callsign
+in one slot. idx_task then re-reads the archive (the newest 12 local
+warnings and notices), drops the withdrawn ones and the ones past `until:`
+(only when the clock is trusted), checks each signature (an owner's key, or
+under `alerts:open` the key learned from the author's `t:identity`), and
+re-airs what the caller has not had, with `via:` naming the station, 1.5 s
+apart, on the bearer it was heard on. LoRa and Reticulum sightings give
+nothing: they are not the room the alert is about.
+
+**Three things the bench showed** (X3HW9U, 2026-10-14):
+
+- The index numbers a record when it is accepted and its writer task puts
+  it on the volume seconds later. A rescan run straight after the add found
+  nothing, and the alert sat archived and verified with `standing=0`. The
+  rescan now waits 10 s after the last warning or notice archived.
+- A copy of the alert came back over LAN with `via:` naming this station.
+  The archive keeps it beside the original under the same section 5 id, so
+  one alert counted as two, and then the copy (newest) stood in for the
+  original, its re-air was refused as a loop and nobody was given anything.
+  The scan reads only rows without `via:`, which are what was said to the
+  station directly, and an id is picked once.
+- Under `alerts:open` a visitor is verified with the key from their
+  `t:identity`. A desktop that announces a licensed callsign (KO6JZI) and
+  posts under its key-derived one (X16JK8) had no key under that name; a
+  derived callsign is now matched against every key held, by arithmetic.
+
+**Kept past the spool.** Eviction used to carry mail only, so on internal
+flash (about 28k records) a six-month alert would have gone with the next
+segment. `xi_is_alert` makes a local warning or notice with `until:` class
+2, carried like custody mail, and its withdrawal too, since a withdrawal
+lost before its alert would bring the alert back. Expiry stays the existing
+`until && now && now > until`, so a station with no clock keeps both until
+they are withdrawn. Host test: `test_standing_alerts_are_carried`.
+
+**Policy.** `alerts:owner|open` is the fifth 11.9 key: in the `q:policy`
+answer, settable by the owner with `cmd:set alerts:open`, and by cable with
+`cfg set alerts open`. `cfg alerts` lists what stands.
+
+Static RAM: T-Deck +152 B internal, C3 +496 B (the 16-row ring and the
+config slot).
+
 ## Heap is the binding constraint -- check it first
 
 Every mysterious failure on this board so far has been heap. The symptoms do not

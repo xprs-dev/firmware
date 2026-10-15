@@ -168,6 +168,9 @@ static cfg_entry_t s_cfg[] = {
     { "use",       {0}, false },
     { "first",     {0}, false },
     { "serve",     {0}, false },
+    /* XPRS.md 11.9 and 25.3: whose standing alerts this station gives to
+     * newcomers. `owner` (empty is the same) or `open`. */
+    { "alerts",    {0}, false },
     { "polts",     {0}, false },
     /* The callsign each owner claimed with. The npub beside it is what a
      * signature is checked against; this is what 25.9's `owner:` reports,
@@ -432,9 +435,12 @@ int xcfg_ini_render(char *buf, size_t cap)
         "; serve: what this station announces it does; empty is the\n"
         ";        default (archive). There is no word above it: a peer\n"
         ";        judges scale from count: and uptime: (12.9.4).\n"
+        "; alerts: whose standing alerts (XPRS.md 25.3) are given to\n"
+        ";        newcomers: owner (the default) or open.\n"
         "use = %s\n"
         "first = %s\n"
         "serve = %s\n"
+        "alerts = %s\n"
         "\n"
         "[owners]\n"
         "; npubs allowed to command this station: update, reboot, and any\n"
@@ -492,6 +498,7 @@ int xcfg_ini_render(char *buf, size_t cap)
         xcfg_get("use", "all"),
         xcfg_get("first", ""),
         xcfg_get("serve", ""),
+        xcfg_get("alerts", "owner"),
         xcfg_get("own1", ""),
         xcfg_get("own2", ""),
         xcfg_get("own3", ""),
@@ -577,6 +584,7 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "policy",  "use",      "use" },
     { "policy",  "first",    "first" },
     { "policy",  "serve",    "serve" },
+    { "policy",  "alerts",   "alerts" },
     { "owners",  "one",      "own1" },
     { "owners",  "two",      "own2" },
     { "owners",  "three",    "own3" },

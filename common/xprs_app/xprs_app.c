@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -1806,6 +1807,125 @@ static void rel_resume_set(const char *call, uint32_t until_s, uint32_t wait_s)
 }
 
 /*
+ * XPRS.md 25.3: standing alerts. An alert is a t:warning or t:info with
+ * scope:local and until:, and it is archived like everything else heard;
+ * there is no store of its own. What lives beside the archive is only what
+ * the archive cannot answer: which alerts stand right now (s_alrt, rebuilt
+ * on idx_task whenever one is archived, the policy changes, or ten minutes
+ * pass) and which callsigns have already had which (s_alrt_given). The radio
+ * task compares the two and parks a sighting; the query, the signature
+ * checks and the paced re-air happen on idx_task, as held mail does.
+ *
+ * The given ring is RAM only, so after a restart everybody is given each
+ * alert once more. 25.3 says that is acceptable, and it keeps NVS out of a
+ * path that runs on every sighting.
+ */
+#define ALRT_MAX 4                      /* given at one sighting (25.3) */
+#if CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+#define ALRT_GIVEN_N 128
+#else
+#define ALRT_GIVEN_N 16
+#endif
+/* Written on idx_task, read on the radio tasks. A torn read costs one
+ * parked sighting that finds nothing to give, so no lock. Ids are the six
+ * hex digits of section 5 as a number, with bit 24 set so that 0 is free. */
+static struct {
+    volatile uint8_t n;
+    uint32_t id[ALRT_MAX];
+} s_alrt;
+static volatile bool s_alrt_dirty = true;
+/* Not before then: the index numbers a record when it is accepted and its
+ * writer task puts it on the volume seconds later, so a scan run straight
+ * after the add does not see the alert that caused it (measured: standing
+ * stayed 0 with the alert archived and verified). */
+static uint32_t s_alrt_due_s;
+static XPRS_PSRAM_BSS struct {
+    uint32_t call;                      /* alrt_hash() of the callsign */
+    uint32_t id[ALRT_MAX];              /* what it has had */
+} s_alrt_given[ALRT_GIVEN_N];
+static uint16_t s_alrt_given_w;
+static uint32_t s_alrt_gave;            /* re-airs since boot, for `alerts` */
+static struct {
+    char call[XPRS_CALL_LEN];
+    char bearer[8];
+    volatile bool pending;
+} s_alrt_give;
+
+static uint32_t alrt_hash(const char *call)
+{
+    uint32_t h = 2166136261u;           /* FNV-1a, case-folded */
+    for (; *call; call++) {
+        h ^= (uint8_t)toupper((unsigned char)*call);
+        h *= 16777619u;
+    }
+    return h ? h : 1;
+}
+
+static uint32_t alrt_idnum(const char *id)
+{
+    return (uint32_t)strtoul(id, NULL, 16) | (1u << 24);
+}
+
+static int alrt_given_find(uint32_t h)
+{
+    for (int i = 0; i < ALRT_GIVEN_N; i++)
+        if (s_alrt_given[i].call == h) return i;
+    return -1;
+}
+
+/* Has this callsign had every alert standing now? Radio task, every packet
+ * heard directly on a local bearer, so a hash and a few compares. */
+static bool alrt_owed(const char *call)
+{
+    const uint8_t n = s_alrt.n;
+    if (!n) return false;
+    const int g = alrt_given_find(alrt_hash(call));
+    if (g < 0) return true;
+    for (int i = 0; i < n && i < ALRT_MAX; i++) {
+        bool had = false;
+        for (int k = 0; k < ALRT_MAX; k++)
+            if (s_alrt_given[g].id[k] == s_alrt.id[i]) had = true;
+        if (!had) return true;
+    }
+    return false;
+}
+
+static xprs_reach_t bearer_reach(const char *bearer);
+
+/* The cable: `cfg alerts` says what stands and what has been given, and a
+ * `cfg set alerts ...` is checked here and made to take effect at once.
+ * Reads RAM only, so it is safe from the console's task. */
+static bool alrt_console(const char *line)
+{
+    if (!line || strncmp(line, "cfg ", 4) != 0) return false;
+    const char *p = line + 4;
+    while (*p == ' ') p++;
+    if (strncmp(p, "set alerts", 10) == 0 && (p[10] == ' ' || p[10] == 0)) {
+        const char *v = p + 10;
+        while (*v == ' ') v++;
+        if (strcmp(v, "owner") && strcmp(v, "open")) {
+            printf("alerts: owner|open\n");
+            return true;
+        }
+        xcfg_set("alerts", v);
+        s_alrt_dirty = true;
+        printf("alerts=%s\n", v);
+        return true;
+    }
+    if (strcmp(p, "alerts") != 0) return false;
+    const uint8_t n = s_alrt.n;
+    int known = 0;
+    for (int i = 0; i < ALRT_GIVEN_N; i++) if (s_alrt_given[i].call) known++;
+    printf("alerts policy=%s standing=%u gave=%lu callsigns=%d clock=%s\n",
+           strcmp(xcfg_get("alerts", ""), "open") == 0 ? "open" : "owner",
+           (unsigned)n, (unsigned long)s_alrt_gave, known,
+           xst_epoch_now() ? "yes" : "no");
+    for (int i = 0; i < n && i < ALRT_MAX; i++)
+        printf("  %06lx\n", (unsigned long)(s_alrt.id[i] & 0xffffffu));
+    return true;
+}
+
+/*
  * Gossip (36.9.4): who else heard whom. The store is xprs_gossip, on the same
  * volume as the archive.
  *
@@ -1899,11 +2019,11 @@ static bool pol_owned(void)
     return false;
 }
 
-/* The four keys of 25.9, in the fixed order a result and an observation
+/* The five keys of 11.9, in the fixed order a result and an observation
  * both carry them. Static buffer: one caller at a time, on idx_task. */
 static const char *pol_keys(void)
 {
-    static char out[192];               /* the four, bounded below, fit */
+    static char out[208];               /* the five, bounded below, fit */
     char owners[80] = "";
     int o = 0;
     static const char *const k[XAUTH_OWNERS_MAX] = {
@@ -1927,10 +2047,13 @@ static const char *pol_keys(void)
     }
     const char *first = xcfg_get("first", "");
     const char *serve = xcfg_get("serve", "");
-    snprintf(out, sizeof out, "owner:%.79s use:%.15s first:%.31s serve:%.31s",
+    const char *alerts = xcfg_get("alerts", "");
+    snprintf(out, sizeof out,
+             "owner:%.79s use:%.15s first:%.31s serve:%.31s alerts:%s",
              o ? owners : "none", xcfg_get("use", "all"),
              first[0] ? first : "none",
-             serve[0] ? serve : "archive");
+             serve[0] ? serve : "archive",
+             strcmp(alerts, "open") == 0 ? "open" : "owner");
     return out;
 }
 
@@ -1978,7 +2101,8 @@ static char s_ip_str[20];               /* defined with the WiFi, below */
 static int64_t s_tz_next_s;             /* defined with the time zone, below */
 
 /* The keys of 11.9 and 11.10 a cmd:set may carry in the clear. */
-static const char *const k_pol_keys[] = { "owner", "use", "first", "serve" };
+static const char *const k_pol_keys[] = { "owner", "use", "first", "serve",
+                                          "alerts" };
 /* The setup keys a cmd:set may carry IN THE CLEAR (11.4): everything but
  * a password and a private key. A key missing from this list is a command
  * the station reads, verifies, and then silently ignores -- which is how
@@ -2492,7 +2616,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
             }
         }
     }
-    bool policy = has_any(&p, k_pol_keys, 4);
+    bool policy = has_any(&p, k_pol_keys, 5);
     if (policy && nkv > 0) {
         memset(kv, 0, sizeof kv);
         ota_answer(from, bearer, id, 400, "policy and setup keys go separately");
@@ -2550,7 +2674,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
     }
 
     int code = 200;
-    char fields[160] = "", why[64] = "";
+    char fields[208] = "", why[64] = "";
     if (nkv > 0) {
         char extra[80] = "";
         code = setup_apply(kv, nkv, sealed, from, bearer, id,
@@ -2568,6 +2692,13 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
         ESP_LOGW(TAG, "set up by %s: %s", from, fields);
     } else {
         char v[64];
+        /* Every value is checked before any is written: a 400 must leave
+         * the policy as it was, not half of the command applied. */
+        if (xprs_get_str(&p, "alerts", v, sizeof v) &&
+            strcmp(v, "owner") && strcmp(v, "open")) {
+            ota_answer(from, bearer, id, 400, "alerts: owner|open");
+            return;
+        }
         if (xprs_get_str(&p, "use", v, sizeof v)) {
             if (strcmp(v, "all") && strcmp(v, "listed") && strcmp(v, "owners") &&
                 strcmp(v, "none")) {
@@ -2580,7 +2711,11 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
             xcfg_set("first", strcmp(v, "none") == 0 ? "" : v);
         if (xprs_get_str(&p, "serve", v, sizeof v))
             xcfg_set("serve", strcmp(v, "none") == 0 ? "none" : v);
-        /* 11.7: the result states what IS, all four of them. */
+        if (xprs_get_str(&p, "alerts", v, sizeof v)) {
+            xcfg_set("alerts", v);
+            s_alrt_dirty = true;            /* whose alerts stand changed */
+        }
+        /* 11.7: the result states what IS, all five of them. */
         snprintf(fields, sizeof fields, "%s", pol_keys());
         ESP_LOGW(TAG, "policy set by %s: %s", from, fields);
     }
@@ -2791,7 +2926,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         bool sealed = !has_cmd && xprs_get(&sp, "x", &vl);
         if (!sealed) {
             if (!has_cmd || strcmp(cmd, "set") != 0) break;
-            if (!has_any(&sp, k_pol_keys, 4) && !has_any(&sp, k_setup_clear,
+            if (!has_any(&sp, k_pol_keys, 5) && !has_any(&sp, k_setup_clear,
                                                         (int)(sizeof k_setup_clear /
                                                               sizeof k_setup_clear[0])))
                 break;                  /* a device cmd:set, not ours */
@@ -2889,6 +3024,21 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         snprintf(s_rel.call, sizeof s_rel.call, "%s", from);
         snprintf(s_rel.bearer, sizeof s_rel.bearer, "%s", bearer);
         s_rel.pending = true;                 /* published last */
+    } while (0);
+
+    /* ── 25.3: a newcomer is given the standing alerts, once ───────────
+     * Heard directly on a local bearer, which is the room the alerts are
+     * about; LoRa and the internet are not. One slot: a sighting that
+     * finds it taken is retried by the next packet from the same caller. */
+    do {
+        if (!s_alrt.n || s_alrt_give.pending) break;
+        if (bearer_reach(bearer) != XPRS_REACH_LOCAL) break;
+        char via[8];
+        if (xprs_get_str(&sp, "via", via, sizeof via)) break;
+        if (!alrt_owed(call)) break;
+        snprintf(s_alrt_give.call, sizeof s_alrt_give.call, "%s", call);
+        snprintf(s_alrt_give.bearer, sizeof s_alrt_give.bearer, "%s", bearer);
+        s_alrt_give.pending = true;           /* published last */
     } while (0);
 
     /* ── Gossip intake (36.9.4): who else heard whom ───────────────────
@@ -6892,6 +7042,184 @@ static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
     return true;
 }
 
+/* ── 25.3: which alerts stand, read from the archive ─────────────────── */
+
+/* Local warnings and notices only, newest first, into s_page. */
+static bool alrt_collect(const xprsidx_rec_t *rec, void *ctx)
+{
+    (void)ctx;
+    if (rec->flags & XI_F_OUTRANGE) return true;
+    if (xprs_scope_reach_wire(rec->wire, rec->len) != XPRS_REACH_LOCAL)
+        return true;
+    /* Only what was said here, to this station: a copy with via: is a
+     * relay, and the one that matters most is our own re-air coming back,
+     * which carries our callsign and would be refused as a loop. Measured:
+     * that copy was the newest row, stood in for the original, and nobody
+     * was given anything. */
+    if (memmem(rec->wire, rec->len, " via:", 5)) return true;
+    if (s_page.n >= HIST_PAGE) { s_page.more = true; return false; }
+    memcpy(s_page.wire[s_page.n], rec->wire, rec->len);
+    s_page.wire[s_page.n][rec->len] = 0;
+    s_page.len[s_page.n] = (int16_t)rec->len;
+    s_page.n++;
+    return true;
+}
+
+/* Signed by the key we hold for its f:? *by_owner says whose key that was.
+ * A visitor's key counts only when the owner opened the station to them. */
+static bool alrt_signed(const xprs_t *p, const char *from, bool open,
+                        bool *by_owner)
+{
+    uint8_t pub[32];
+    *by_owner = xauth_owner_key_of(from, pub);
+    if (*by_owner) return xprsid_verify(p, pub);
+    if (!open) return false;
+    const uint8_t *k = peer_key(from);
+    if (k) return xprsid_verify(p, k);
+    /* A callsign the key derives (X1..X5) is checked by arithmetic, so a
+     * key we learned under another name will do: a person whose t:identity
+     * airs a licensed callsign (6.4.2) still posts under the derived one.
+     * Measured: a desktop known here as KO6JZI posted as X16JK8 and its
+     * alert could not be checked. idx_task only, a bech32 per key held. */
+    for (int i = 0; i < s_peers_n; i++) {
+        char npub[80];
+        if (bech32_encode("npub", s_peers[i].pub, 32, npub, sizeof npub) != ESP_OK)
+            continue;
+        if (xauth_call_matches_npub(from, npub))
+            return xprsid_verify(p, s_peers[i].pub);
+    }
+    return false;
+}
+
+/*
+ * The alerts standing now: rebuilds s_alrt and leaves their rows in s_page,
+ * at the indexes written to pick[] (newest first, at most ALRT_MAX). Only
+ * the newest HIST_PAGE local warnings and notices are looked at, which is
+ * far more than a place ever has standing and bounds the work per sighting.
+ * idx_task only: s_page, the index and the curve work are all its own.
+ */
+static int alrt_scan(int pick[ALRT_MAX], uint32_t pick_id[ALRT_MAX])
+{
+    s_page.n = 0;
+    s_page.more = false;
+    s_page.reach = XPRS_REACH_LOCAL;
+    xprsidx_query_t q = {
+        .type = -1,
+        .types = xprsidx_type_mask("warning,info"),
+        .limit = 64,
+        .newest_first = true,
+    };
+    xprsindex_query(s_index, &q, alrt_collect, NULL);
+
+    const uint32_t now = xst_epoch_now();      /* 0: no clock we trust */
+    const bool open = strcmp(xcfg_get("alerts", ""), "open") == 0;
+    struct { uint32_t id; char from[XPRS_CALL_LEN]; bool by_owner; } gone[HIST_PAGE];
+    int ngone = 0;
+    xprs_t p;
+    char from[XPRS_CALL_LEN], v[24];
+
+    /* Withdrawals first (25.2): they name what is not to be given, and
+     * only the author or an owner may withdraw. */
+    for (int i = 0; i < s_page.n; i++) {
+        if (!xprs_parse(s_page.wire[i], s_page.len[i], &p)) continue;
+        if (!xprs_get_str(&p, "remove", v, sizeof v)) continue;
+        if (!xprs_get_str(&p, "r", v, sizeof v)) continue;
+        if (!xprs_get_str(&p, "f", from, sizeof from)) continue;
+        /* Any author may withdraw their own, open station or not. */
+        bool by_owner = false;
+        if (!alrt_signed(&p, from, true, &by_owner)) continue;
+        gone[ngone].id = alrt_idnum(v);
+        snprintf(gone[ngone].from, sizeof gone[ngone].from, "%s", from);
+        gone[ngone].by_owner = by_owner;
+        ngone++;
+    }
+
+    int n = 0;
+    for (int i = 0; i < s_page.n && n < ALRT_MAX; i++) {
+        if (!xprs_parse(s_page.wire[i], s_page.len[i], &p)) continue;
+        if (xprs_get_str(&p, "remove", v, sizeof v)) continue;
+        if (!xprs_get_str(&p, "until", v, sizeof v)) continue;   /* 25.3 */
+        const uint32_t until = xprsindex_ts_to_epoch(v, (int)strlen(v));
+        if (!until) continue;
+        if (now && now > until) continue;       /* ended, by a clock we trust */
+        if (!xprs_get_str(&p, "f", from, sizeof from)) continue;
+        char id[XPRS_ID_LEN];
+        if (!xprs_id_of(s_page.wire[i], s_page.len[i], id)) continue;
+        const uint32_t idn = alrt_idnum(id);
+        /* The same alert twice: a copy that came back with via: is kept by
+         * the archive beside the original and has the same id (section 5
+         * leaves via: out). Measured: one alert counted as two standing,
+         * which would have been given to a newcomer twice. */
+        bool dup = false;
+        for (int k = 0; k < n; k++) if (pick_id[k] == idn) dup = true;
+        if (dup) continue;
+        bool withdrawn = false;
+        for (int g = 0; g < ngone; g++)
+            if (gone[g].id == idn &&
+                (gone[g].by_owner || strcasecmp(gone[g].from, from) == 0))
+                withdrawn = true;
+        if (withdrawn) continue;
+        bool by_owner = false;
+        if (!alrt_signed(&p, from, open, &by_owner)) continue;
+        pick[n] = i;
+        pick_id[n] = idn;
+        n++;
+    }
+
+    /* Ids before the count: a radio task reading mid-way sees the old
+     * count over new ids, which costs one extra parked sighting at most. */
+    s_alrt.n = 0;
+    for (int i = 0; i < ALRT_MAX; i++) s_alrt.id[i] = i < n ? pick_id[i] : 0;
+    s_alrt.n = (uint8_t)n;
+    return n;
+}
+
+/* The parked sighting: give it what it has not had, on the bearer it was
+ * heard on, the author's own bytes with this station added to via: (25.3).
+ * Paced like held mail, a packet every 1.5 s. */
+static void alrt_give(const char *call, const char *bearer)
+{
+    int pick[ALRT_MAX];
+    uint32_t pick_id[ALRT_MAX];
+    const int n = alrt_scan(pick, pick_id);
+    const uint32_t h = alrt_hash(call);
+    int g = alrt_given_find(h);
+    int aired = 0;
+    for (int k = 0; k < n; k++) {
+        bool had = false;
+        if (g >= 0)
+            for (int j = 0; j < ALRT_MAX; j++)
+                if (s_alrt_given[g].id[j] == pick_id[k]) had = true;
+        if (had) continue;
+        const int i = pick[k];
+        xprs_t p;
+        char from[XPRS_CALL_LEN] = "";
+        if (xprs_parse(s_page.wire[i], s_page.len[i], &p))
+            xprs_get_str(&p, "f", from, sizeof from);
+        if (strcasecmp(from, call) == 0) continue;   /* the author has it */
+        char rel[XPRS_MAX_WIRE + 1];
+        int rn = xprs_append_via(s_page.wire[i], s_page.len[i], s_call,
+                                 rel, (int)sizeof rel);
+        if (rn <= 0) continue;          /* hop budget spent, or a loop */
+        vTaskDelay(pdMS_TO_TICKS(1500));
+        esp_task_wdt_reset();
+        idx_air(bearer, rel, rn);
+        aired++;
+    }
+    /* Whatever stands now is what it has had: aired just now, its own, or
+     * had before. Its row is taken over oldest-written first. */
+    if (g < 0) {
+        g = s_alrt_given_w;
+        s_alrt_given_w = (uint16_t)((s_alrt_given_w + 1) % ALRT_GIVEN_N);
+    }
+    for (int j = 0; j < ALRT_MAX; j++)
+        s_alrt_given[g].id[j] = j < n ? pick_id[j] : 0;
+    s_alrt_given[g].call = h;
+    s_alrt_gave += (uint32_t)aired;
+    if (aired)
+        ESP_LOGI(TAG, "alerts: gave %d to %s on %s (25.3)", aired, call, bearer);
+}
+
 /*
  * A parked ask this station cannot serve -- no index mounted, or the operator
  * switched the indexer off. Say so and free the slot.
@@ -7348,6 +7676,14 @@ static void idx_task(void *arg)
                                s_idxq[r].rssi, s_idxq[r].own,
                                s_idxq[r].own ? (uint32_t)time(NULL) : 0,
                                s_idxq[r].bearer);
+            /* A warning or notice may be a standing alert or the withdrawal
+             * of one (25.3): what stands is re-read once it is on the
+             * volume, which the index's writer does a few seconds later. */
+            if ((s_idxq[r].len > 10 && memcmp(s_idxq[r].wire, "t:warning ", 10) == 0) ||
+                (s_idxq[r].len > 7 && memcmp(s_idxq[r].wire, "t:info ", 7) == 0)) {
+                s_alrt_due_s = (uint32_t)(esp_timer_get_time() / 1000000) + 10;
+                s_alrt_dirty = true;
+            }
             s_idxq_r = (r + 1) % IDXQ_N;
             esp_task_wdt_reset();
         }
@@ -7844,6 +8180,39 @@ no_announce:
                          (s_page.n >= REL_PAGE && oldest) ? ", more to come" : "");
         } else if (s_rel.pending) {
             s_rel.pending = false;   /* index down: the slot must not latch */
+        }
+
+        /* 25.3: what stands, and who is owed it. Re-read when a warning or
+         * notice was archived or the policy changed, and every ten minutes,
+         * which is how an alert past its until: (or an owner set with a
+         * cable) is noticed without a timer of its own. */
+        {
+            static uint32_t alrt_at_s;
+            const uint32_t t_s = (uint32_t)(esp_timer_get_time() / 1000000);
+            const bool idx_up = s_index && xcfg_get_bool("index_on", true);
+            if (idx_up && s_alrt_give.pending) {
+                char gcall[XPRS_CALL_LEN], gbearer[8];
+                snprintf(gcall, sizeof gcall, "%s", (const char *)s_alrt_give.call);
+                snprintf(gbearer, sizeof gbearer, "%s", (const char *)s_alrt_give.bearer);
+                /* The give rescans first; an alert archived in the last few
+                 * seconds is not on the volume yet and keeps its rescan. */
+                if ((int32_t)(t_s - s_alrt_due_s) >= 0) s_alrt_dirty = false;
+                alrt_give(gcall, gbearer);
+                s_alrt_give.pending = false;
+                alrt_at_s = t_s;
+            } else if (idx_up && ((s_alrt_dirty && (int32_t)(t_s - s_alrt_due_s) >= 0) ||
+                                  t_s - alrt_at_s >= 600)) {
+                s_alrt_dirty = false;
+                int pick[ALRT_MAX];
+                uint32_t pick_id[ALRT_MAX];
+                const uint8_t was = s_alrt.n;
+                const int n = alrt_scan(pick, pick_id);
+                if (n != was)
+                    ESP_LOGI(TAG, "alerts: %d standing (25.3)", n);
+                alrt_at_s = t_s;
+            } else if (!idx_up) {
+                s_alrt_give.pending = false;   /* must not latch */
+            }
         }
 
         /*
@@ -9047,7 +9416,8 @@ static void ui_task(void *arg)
                             printf("usage: tap X Y\n");
                         }
                     } else if (cfgn >= 3 && strncmp(cfgline, "cfg", 3) == 0 &&
-                        !lora_console(cfgline) && !xdiag_console(cfgline))
+                        !lora_console(cfgline) && !xdiag_console(cfgline) &&
+                        !alrt_console(cfgline))
                         xcfg_console(cfgline);
                     cfgn = -1;
                     ch = 0;

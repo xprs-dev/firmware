@@ -1526,9 +1526,11 @@ static bool xi_declared(const xprsidx_t *st, const char *call)
  * with a d: survived on XI_F_MAIL alone and classes 2 and 3 were the same
  * thing. The host test passed because it only asserted that both survived.
  */
+static bool xi_is_alert(const xi_rec_t *r);
+
 static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
 {
-    if (!(r->flags & XI_F_MAIL)) return 1;
+    if (!(r->flags & XI_F_MAIL)) return xi_is_alert(r) ? 2 : 1;
     return xi_declared(st, r->to) ? 3 : 2;
 }
 
@@ -1572,6 +1574,23 @@ static uint32_t xi_rec_until(const xi_rec_t *r)
     int vlen = 0;
     const char *v = xprs_get(&p, "until", &vlen);
     return v ? xi_ts_to_epoch(v, vlen) : 0;
+}
+
+/* A standing alert (XPRS.md 25.3): a warning or a notice for this place
+ * only, with an end. Kept with custody mail (12.11), because it is a
+ * delivery still owed to whoever arrives next. Its withdrawal carries the
+ * same until: and is kept by the same rule, or eviction would bring a
+ * withdrawn alert back. Expiry is the caller's until: check, which is
+ * skipped when the clock is not trusted: an alert on a station with no
+ * clock is kept until withdrawn, as 25.3 says. */
+static bool xi_is_alert(const xi_rec_t *r)
+{
+    if (r->type != XI_T_WARNING && r->type != XI_T_INFO) return false;
+    xprs_t p;
+    if (!xprs_parse(r->wire, r->len, &p)) return false;
+    if (xprs_scope_reach(&p) != XPRS_REACH_LOCAL) return false;
+    int vlen = 0;
+    return xprs_get(&p, "until", &vlen) != NULL && vlen > 0;
 }
 
 /* Over budget? Delete the oldest segment, carrying mail forward (36.11).
@@ -1738,7 +1757,7 @@ static bool xi_evict_locked(xprsidx_t *st)
              * spool by a field almost nothing on the air sets, so what
              * actually happened was that the whole spool went and the
              * ranking never chose anything. */
-            if (!(r.flags & XI_F_MAIL)) continue;
+            if (cls == 1) continue;   /* mail and standing alerts only */
 
             r.index = st->next_index++;
             if (xi_write_rec(st, &r)) carried++;
@@ -2911,8 +2930,7 @@ size_t xprsindex_rescue_mail(xprsidx_t *st, uint8_t *buf, size_t cap,
         for (uint32_t i = st->oldest_first; i < st->written_end && !full; i++) {
             xi_rec_t r;
             XI_LOCK(st);
-            bool ok = xi_read_rec(st, i, &r) && (r.flags & XI_F_MAIL) &&
-                      xi_class_of(st, &r) == cls;
+            bool ok = xi_read_rec(st, i, &r) && xi_class_of(st, &r) == cls;
             XI_UNLOCK(st);
             if (!ok || r.len == 0 || r.len > XPRSIDX_WIRE_MAX) continue;
             uint32_t until = xi_rec_until(&r);
