@@ -8,6 +8,7 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <stdlib.h>
 
 #ifdef XST_HOST_TEST
 /* The ranking and the ladder are arithmetic over a small array, which is
@@ -933,32 +934,63 @@ typedef struct {
     uint32_t  sbday_id[XST_SBDAY_N];
 } stats_blob_t;
 
+/* The blob is a copy taken under the lock so that the file work happens
+ * outside it, so it only has to exist while a save or a load runs. It used to
+ * be two statics, one per direction: 5.6 KB held for the life of the station
+ * on a board whose static data, stacks and heap share one SRAM (the C3),
+ * for work done once at boot and once every ten minutes. Borrowed instead,
+ * from PSRAM where the board has it. */
+static stats_blob_t *blob_borrow(void)
+{
+#ifdef XST_HOST_TEST
+    return malloc(sizeof(stats_blob_t));
+#else
+    return heap_caps_malloc_prefer(sizeof(stats_blob_t), 2,
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                   MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
+}
+
 void xst_stats_load(const char *path)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return;
-    static XPRS_PSRAM_BSS stats_blob_t bl;  /* too big for a task stack */
-    bool ok = fread(&bl, sizeof bl, 1, f) == 1 && bl.magic == STATS_MAGIC;
+    stats_blob_t *bl = blob_borrow();
+    if (!bl) {
+        fclose(f);
+        ESP_LOGE(TAG, "stats: no memory to reload %s", path);
+        return;
+    }
+    bool ok = fread(bl, sizeof *bl, 1, f) == 1 && bl->magic == STATS_MAGIC;
     fclose(f);
-    if (!ok) return;
-    LOCK();
-    memcpy(s_sb10, bl.sb10, sizeof s_sb10);
-    memcpy(s_sb10_id, bl.sb10_id, sizeof s_sb10_id);
-    memcpy(s_sbday, bl.sbday, sizeof s_sbday);
-    memcpy(s_sbday_id, bl.sbday_id, sizeof s_sbday_id);
-    UNLOCK();
-    ESP_LOGI(TAG, "stats reloaded from %s", path);
+    if (ok) {
+        LOCK();
+        memcpy(s_sb10, bl->sb10, sizeof s_sb10);
+        memcpy(s_sb10_id, bl->sb10_id, sizeof s_sb10_id);
+        memcpy(s_sbday, bl->sbday, sizeof s_sbday);
+        memcpy(s_sbday_id, bl->sbday_id, sizeof s_sbday_id);
+        UNLOCK();
+        ESP_LOGI(TAG, "stats reloaded from %s", path);
+    }
+    free(bl);
 }
 
 void xst_stats_save(const char *path)
 {
-    static XPRS_PSRAM_BSS stats_blob_t bl;
-    bl.magic = STATS_MAGIC;
+    stats_blob_t *bl = blob_borrow();
+    if (!bl) {
+        /* Skipped, not lost: the rings are still in RAM and the next round
+         * ten minutes on writes them all. Said, because a save that never
+         * happens is otherwise invisible. */
+        ESP_LOGW(TAG, "stats: no memory to save, next round");
+        return;
+    }
+    bl->magic = STATS_MAGIC;
     LOCK();
-    memcpy(bl.sb10, s_sb10, sizeof bl.sb10);
-    memcpy(bl.sb10_id, s_sb10_id, sizeof bl.sb10_id);
-    memcpy(bl.sbday, s_sbday, sizeof bl.sbday);
-    memcpy(bl.sbday_id, s_sbday_id, sizeof bl.sbday_id);
+    memcpy(bl->sb10, s_sb10, sizeof bl->sb10);
+    memcpy(bl->sb10_id, s_sb10_id, sizeof bl->sb10_id);
+    memcpy(bl->sbday, s_sbday, sizeof bl->sbday);
+    memcpy(bl->sbday_id, s_sbday_id, sizeof bl->sbday_id);
     UNLOCK();
     FILE *f = fopen(path, "wb");
     if (!f) {
@@ -966,10 +998,12 @@ void xst_stats_save(const char *path)
          * statistics history could stop persisting without a single line of
          * evidence beyond vfs_fat's own complaint. */
         ESP_LOGE(TAG, "stats: cannot write %s", path);
+        free(bl);
         return;
     }
-    fwrite(&bl, sizeof bl, 1, f);
+    fwrite(bl, sizeof *bl, 1, f);
     fclose(f);
+    free(bl);
 }
 
 #ifdef XST_HOST_TEST

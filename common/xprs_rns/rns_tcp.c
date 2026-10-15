@@ -166,6 +166,14 @@ void rns_tcp_pause(bool paused)
     ESP_LOGW(TAG, "hub link %s", paused ? "paused" : "resuming");
 }
 
+/* The Reticulum hub task's stack, signature checks included. A board
+ * overrides it with -DXPRS_STACK_RNS=<bytes> in its build_flags, sized from
+ * `cfg tasks` (stack_unused under load) with a quarter left over; every
+ * other board keeps this default. */
+#ifndef XPRS_STACK_RNS
+#define XPRS_STACK_RNS 8192
+#endif
+
 static void rns_tcp_task(void *arg)
 {
     (void)arg;
@@ -255,7 +263,7 @@ esp_err_t rns_tcp_start(const char *host, uint16_t port)
      * burst of announces starved idx for ninety seconds and the watchdog
      * did exactly what it is for. Below it, an uplink flood can never be
      * mistaken for a wedged station. */
-    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", 8192, NULL, 2, NULL,
+    if (xTaskCreatePinnedToCore(rns_tcp_task, "rns_tcp", XPRS_STACK_RNS, NULL, 2, NULL,
                                 XPRS_WORK_CORE)
         != pdPASS) {
         s_running = false;

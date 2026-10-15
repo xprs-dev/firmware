@@ -25,6 +25,14 @@
 #include "xprs_core.h"
 #include <time.h>
 
+/* The API server's stack (the hotspot page rides it too). A board overrides
+ * it with -DXPRS_STACK_API=<bytes> in its build_flags, sized from `cfg
+ * tasks` (stack_unused under load) with a quarter left over; every other
+ * board keeps this default. */
+#ifndef XPRS_STACK_API
+#define XPRS_STACK_API 6144
+#endif
+
 static const char *TAG = "xprs_api";
 
 static const xprs_api_cfg_t *s_cfg;
@@ -805,7 +813,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
     hc.server_port = 80;
     hc.core_id = XPRS_WORK_CORE; /* handlers read flash; keep off the radio core */
-    hc.stack_size = 6144;
+    hc.stack_size = XPRS_STACK_API;
     /* A firmware push is well over a megabyte arriving while this same
      * task erases and writes flash, and an erase stops the cache for both
      * cores. The default five-second socket wait is sized for a JSON

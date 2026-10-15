@@ -118,6 +118,32 @@ static void test_decrypt_dart_ciphertext(void)
     }
 }
 
+/* What reference RNS 1.5.7 writes for the same identity (Identity.encrypt,
+ * salt = get_salt() = the identity hash): it must open with V_HASH, and must
+ * NOT open with the identity's xprs.wapp destination hash, which is what the
+ * bearer passed until 2026-10-15. Station-to-station traffic worked because
+ * both ends made that mistake; nothing a phone or a reference node sent ever
+ * opened on a station. */
+static void test_decrypt_reference_rns(void)
+{
+    static const char *tok =
+        "df273a84fc5cb376a1fb980e8a498a4c93c86ea6b244772f58f030851b971147"
+        "aab51d8bf5a4e59169a297898fe543c4c5d3e1074ae978229e4a127fb69c7163"
+        "dd23129b7d55f6c8c1486bf0d90a14d849c9148f807703996ff3800829dfcecf"
+        "a791abfcb7c88f56c37325fbbff976f939d10e19210d5074d2e8a00616f0ece2";
+    static const char *want = "t:request f:X1PYTH d:X3DONG q:policy";
+    uint8_t prv[64], salt[16], wapp[16], cipher[256], got[256];
+    unhex(V_PRV, prv, sizeof prv);
+    unhex(V_HASH, salt, sizeof salt);
+    unhex("6732d68a8b535e90aedfd41aa527e901", wapp, sizeof wapp);
+    size_t clen = unhex(tok, cipher, sizeof cipher);
+    int n = rns_decrypt_from(prv, salt, cipher, clen, got, sizeof got);
+    CHECK(n == (int)strlen(want) && memcmp(got, want, strlen(want)) == 0,
+          "reference RNS ciphertext did not open with the identity hash (%d)", n);
+    CHECK(rns_decrypt_from(prv, wapp, cipher, clen, got, sizeof got) < 0,
+          "opened with the destination hash as salt, which reference never uses");
+}
+
 /* ── and write what Dart would read ─────────────────────────────────────── */
 
 static void test_encrypt_reproduces_dart(void)
@@ -422,7 +448,8 @@ static void test_addressed_single_round_trip(void)
     size_t wlen = strlen(wire);
 
     uint8_t cipher[RNS_MTU];
-    int cn = rns_encrypt_to(b_pub, b_dest, (const uint8_t *)wire, wlen,
+    /* Salted with B's IDENTITY hash, as reference RNS does (get_salt()). */
+    int cn = rns_encrypt_to(b_pub, b.hash, (const uint8_t *)wire, wlen,
                             NULL, NULL, cipher, sizeof cipher);
     CHECK(cn > 0, "encrypt to the peer's destination failed (%d)", cn);
 
@@ -447,7 +474,7 @@ static void test_addressed_single_round_trip(void)
     CHECK(memcmp(got.dest, b_dest, RNS_HASH_LEN) == 0, "wrong destination");
 
     uint8_t plain[RNS_MTU];
-    int pn = rns_decrypt_from(b.prv, b_dest, got.data, got.data_len,
+    int pn = rns_decrypt_from(b.prv, b.hash, got.data, got.data_len,
                               plain, sizeof plain);
     CHECK(pn == (int)wlen, "decrypted %d bytes, sent %zu", pn, wlen);
     CHECK(memcmp(plain, wire, wlen) == 0, "the wire came back different");
@@ -455,9 +482,56 @@ static void test_addressed_single_round_trip(void)
 
     /* And the station it was NOT for cannot read it, which is the whole
      * reason the hubs in between cannot either. */
-    int bad = rns_decrypt_from(a.prv, b_dest, got.data, got.data_len,
+    int bad = rns_decrypt_from(a.prv, b.hash, got.data, got.data_len,
                                plain, sizeof plain);
     CHECK(bad < 0, "a foreign key decrypted an addressed packet");
+}
+
+/* A leaf addressing a peer two hops away names the next hop (reference
+ * Transport._outbound), and a path request goes to the PLAIN destination
+ * every reference node listens on. */
+static void test_through_a_hub(void)
+{
+    uint8_t dest[RNS_HASH_LEN], hop[RNS_HASH_LEN];
+    for (int i = 0; i < RNS_HASH_LEN; i++) { dest[i] = (uint8_t)(0x10 + i); hop[i] = (uint8_t)(0xA0 + i); }
+    const uint8_t body[] = "through";
+    rns_packet_t p;
+    memset(&p, 0, sizeof p);
+    p.header_type = RNS_HEADER_2;
+    p.transport_type = RNS_TRANSPORT_TRANSPORT;
+    p.dest_type = RNS_DEST_SINGLE;
+    p.packet_type = RNS_PACKET_DATA;
+    memcpy(p.dest, dest, sizeof dest);
+    p.data = body;
+    p.data_len = sizeof body - 1;
+    uint8_t wire[96];
+    CHECK(rns_packet_build(&p, wire, sizeof wire) == -1, "HEADER_2 built without a transport id");
+    memcpy(p.transport_id, hop, sizeof hop);
+    p.have_transport_id = true;
+    int n = rns_packet_build(&p, wire, sizeof wire);
+    CHECK(n == 3 + 2 * RNS_HASH_LEN + (int)(sizeof body - 1), "built %d bytes", n);
+    CHECK(wire[0] == 0x50, "flags for HEADER_2 / TRANSPORT DATA: %02x", wire[0]);
+    CHECK(memcmp(wire + 2, hop, sizeof hop) == 0, "transport id not first");
+    rns_packet_t q;
+    CHECK(rns_packet_parse(wire, (size_t)n, &q), "did not parse back");
+    CHECK(q.have_transport_id && memcmp(q.transport_id, hop, sizeof hop) == 0,
+          "transport id came back wrong");
+    CHECK(memcmp(q.dest, dest, sizeof dest) == 0, "destination came back wrong");
+    CHECK(q.data_len == sizeof body - 1 && memcmp(q.data, body, q.data_len) == 0,
+          "payload came back wrong");
+
+    /* RNS.Destination.hash_from_name_and_identity("rnstransport.path.request",
+     * None) in reference RNS 1.5.7. */
+    static const uint8_t prq[RNS_HASH_LEN] = {
+        0x6b,0x9f,0x66,0x01,0x4d,0x98,0x53,0xfa,0xab,0x22,0x0f,0xba,0x47,0xd0,0x27,0x61 };
+    uint8_t pr[96];
+    n = rns_path_request_build(dest, pr, sizeof pr);
+    CHECK(n == 3 + RNS_HASH_LEN + 2 * RNS_HASH_LEN, "path request is %d bytes", n);
+    CHECK(rns_packet_parse(pr, (size_t)n, &q), "path request did not parse");
+    CHECK(q.dest_type == RNS_DEST_PLAIN && q.packet_type == RNS_PACKET_DATA &&
+          q.header_type == RNS_HEADER_1, "path request header wrong");
+    CHECK(memcmp(q.dest, prq, sizeof prq) == 0, "path request destination is not reference's");
+    CHECK(memcmp(q.data, dest, RNS_HASH_LEN) == 0, "path request does not name the target");
 }
 
 int main(void)
@@ -465,6 +539,7 @@ int main(void)
     printf("rns host tests (vectors from reticulum-dart)\n");
     test_x25519_matches_dart();
     test_hkdf_matches_dart();
+    test_decrypt_reference_rns();
     test_decrypt_dart_ciphertext();
     test_encrypt_reproduces_dart();
     test_round_trip_random();
@@ -473,6 +548,7 @@ int main(void)
     test_addressed_single_round_trip();
     test_hdlc();
     test_packet_header();
+    test_through_a_hub();
     test_announce();
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

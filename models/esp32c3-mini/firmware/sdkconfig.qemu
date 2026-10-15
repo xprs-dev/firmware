@@ -1,0 +1,20 @@
+# Added to sdkconfig.defaults for the c3qemu environment only: the C3 build,
+# measured under Espressif's QEMU (esp32c3 machine). QEMU has no USB-JTAG,
+# so the console goes to UART0; the task facility feeds `cfg tasks`.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=n
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+# Frequency scaling: QEMU does not model it and its ISR hook re-enters
+# itself until the interrupt watchdog fires. It costs no memory to drop.
+CONFIG_PM_ENABLE=n
+# The emulated OpenCores Ethernet stands in for WiFi under QEMU.
+CONFIG_ETH_USE_OPENETH=y
+# QEMU artifact: under host load the emulated clock lags and the interrupt
+# watchdog fires inside the idle task waiting for an interrupt. The board
+# keeps its watchdog; only the emulator drops it.
+CONFIG_ESP_INT_WDT=n
+# QEMU does not keep what is written to the RTC store registers, where the
+# RTC time source keeps the boot time: settimeofday() was lost and NTP
+# never set the clock. The high-resolution timer alone keeps it in RAM.
+CONFIG_NEWLIB_TIME_SYSCALL_USE_HRT=y
+CONFIG_NEWLIB_TIME_SYSCALL_USE_RTC_HRT=n

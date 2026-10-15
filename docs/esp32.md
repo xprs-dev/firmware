@@ -117,6 +117,35 @@ mesh identity is the iGate callsign from NVS, fallback `TDONGLE`).
   garbage). The dongle checks the text after the optional `am:` token.
 - Everything else is **relayed blind** (content-dedup ring 32/600 s), extending
   BLE coverage one hop -- including `?ACK` frames and ENC1 payloads over BLE.
+- **A Reticulum announce needs a set clock.** The last five bytes of an
+  announce's random hash are its emission time, and a reference transport
+  replaces a path only with an announce emitted later than the one it holds.
+  An announce dated 1970 is dropped by every transport that ever heard this
+  station, so nothing addressed to it arrives: a QEMU station with no clock
+  was reached over a stale three-hop route that went nowhere, and the same
+  build was reached at once after its clock was set. `xprsrns` holds the
+  connect-time hello until the clock is set and refuses wires before then
+  (`rns.addressed.no_clock` in `/api/xprs/peers` counts them).
+- **A public hub rations announces per destination.** A reference transport
+  with an announce rate target counts every announce that comes sooner than
+  the target as a violation, and past its grace stops re-broadcasting that
+  destination for target plus penalty; the path is still learned. On
+  rns.wisco.network a client announcing every 10 s was passed six times and
+  then never again, and this station, announcing every wire, was heard by
+  nobody. So on a hub at a public address the station announces its hello
+  (its signed `t:identity`) on connect and then once an hour, and nothing
+  else; its wires go on the directed lane. A hub at a private address is an
+  XPRS node of its own and keeps every wire. `rns_ann_s` (`[rns]
+  announce_s`) overrides the gap; held wires count in `rns.paced`.
+- **`lx:` is where to write to a station.** Its beacons carry its xprs.wapp
+  destination as `lx:` (XPRS.md 3.1.1), which is how a phone learns it: a
+  path request for it is answered by the hub with the station's announce,
+  key included. The other way, a phone's `lx:` is its LXMF destination, the
+  same identity as its xprs.wapp one, so the station asks for that path and
+  derives the phone's xprs.wapp destination from the key in the answer
+  (`rns.addressed.lx_learned`). Measured 2026-10-15, a C3 under QEMU and the
+  desktop app on rns.wisco.network: the ask arrived, and the answer came
+  back through the hub (HEADER_2), with no announce crossing it either way.
 
 ## Ops / hardware traps
 
@@ -2293,6 +2322,83 @@ read it: `cfg set ble_on 0` changed nothing on any board. Found while trying
 to measure the C3 with BLE off. `xprs_app` reads it now. The config table's
 own comment warns about the opposite fault (a key read but not declared);
 this is the same bug from the other side.
+
+## The C3 under QEMU: measuring a board that is not on the desk
+
+The C3 has one SRAM for static data, IRAM code, every task stack and the
+heap, so "does Reticulum fit beside the hotspot" is a question about bytes,
+and it was asked with the board away. `tools/qemu_c3.sh` answers it under
+Espressif's QEMU (machine `esp32c3`, `qemu-riscv32` from `idf_tools.py`),
+with the `c3qemu` environment: the C3 build plus `sdkconfig.qemu`.
+
+**What the emulator has and does not.** CPU, SRAM, flash, timers and the
+OpenCores Ethernet, which stands in for WiFi (`qemu_eth_up` in xprs_app.c,
+behind `XPRS_QEMU`), so the API and the hotspot page are loaded from the
+host on `127.0.0.1:18080` and the Reticulum hub link reaches the real
+internet. No WiFi, BLE or ESP-NOW: those are skipped under `XPRS_QEMU`, and
+their memory comes from the board tables above. Static figures from this
+build are lower than the board's because the linker drops the radio code;
+compare heap, not `RAM:`.
+
+**What had to be told about QEMU**, all in the QEMU build only:
+
+- ADC2 self-calibration (a global constructor) polls for an event QEMU never
+  raises: `adc_hal_self_calibration` is wrapped (`src/qemu_stubs.c`).
+- Frequency scaling's ISR hook re-enters itself until the interrupt
+  watchdog fires: `CONFIG_PM_ENABLE=n`.
+- Under host load the emulated clock lags, and the interrupt watchdog fired
+  in the idle task waiting for an interrupt: `CONFIG_ESP_INT_WDT=n`.
+- The console is UART0 (QEMU has no USB-JTAG), and
+  `CONFIG_FREERTOS_USE_TRACE_FACILITY` feeds `cfg tasks`.
+- QEMU does not keep what is written to the RTC store registers, which is
+  where the default time source keeps the boot time. `settimeofday()` was
+  lost, NTP never set the clock (`/api/status` said `synced:false` for good)
+  and the station announced on Reticulum with a 1970 date: see "A
+  Reticulum announce needs a set clock" below. The QEMU build keeps time on
+  the high-resolution timer alone (`CONFIG_NEWLIB_TIME_SYSCALL_USE_HRT`).
+- Seen and not fixed, because it is the emulator's: about one run in four,
+  `getchar()` in the UI task aborts in newlib's lock with the CPU reporting
+  interrupt context. Before and after every change below, only on the UART
+  console path, never logged by a board.
+- The emulated clock runs at about half speed under load; give runs a wall
+  clock limit of minutes, not seconds, or the emulator is killed mid-test
+  and the failures look like the station's.
+
+**How it was measured.** `cfg tasks` (every 30 s in this build) prints each
+task's `stack_unused` (its lowest free point since it started) and the
+internal heap's free, minimum and largest block. The load: twenty rounds of
+six parallel GETs of the 25 KB hotspot page plus `/api/status` and
+`/api/xprs/history`, with the station on the desktop app's Reticulum hub
+(`rns_hub 10.0.2.2:4242`), which delivers XPRS announces: 1,440 frames,
+15 XPRS announces verified, five peers learned.
+
+| | heap settled | heap lowest | page loads |
+|---|---|---|---|
+| no Reticulum | 126.7 KB | 114.8 KB | 119 / 120 |
+| Reticulum | 107.1 KB | 92.6 KB | 117 / 120 |
+| Reticulum, after the changes below | **126.0 KB** | **110.0 to 114.6 KB** | 116-117 / 120 |
+
+So Reticulum cost 19 KB settled and 24 KB at the low point, and this got
+19 to 22 KB back without switching anything off, the hotspot included:
+
+- **Stacks sized to use** (`XPRS_STACK_*`, default unchanged on every other
+  board, the C3's in `platformio.ini` with about a quarter left over): index
+  writer 8 to 5 KB (3.1 used), headless UI 4 to 3 KB (1.7 used with console
+  work), internet probe 4 to 3 KB (2.3 used), API server 6 to 5 KB (3.5
+  used), Reticulum 8 to 6 KB (4.7 used, signature checks included). The
+  Reticulum checks stay on its task: the cheap filters before them already
+  throw away 99.7% of what a hub delivers, and moving the rest to idx_task
+  would cost a queue of 500-byte frames to save what the stack size saves.
+- **TCP buffers** at five 536-byte segments each way (`2680`; lwIP refuses
+  less than 2,440 and keeps its 5,760 default without a word).
+- **The statistics blob borrowed**, not two static copies (5.6 KB).
+- **Config values in blocks their own size** instead of 80 bytes per key
+  (about 5 KB; xprs_config.c says why a block is never freed).
+
+Built for the board, the C3 with Reticulum holds 112,824 bytes of static
+RAM, less than the 113,864 it held without it. What is still to measure on
+the board itself: the BLE receive task (8 KB), and WiFi's and the BLE
+controller's own memory beside the hub link.
 
 ## Validating on the device
 

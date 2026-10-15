@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_system.h"
 #include "esp_http_server.h"
@@ -21,21 +22,31 @@ static const char *TAG = "xprs_config";
 #define NVS_NS "xprscfg"
 
 /* The known keys, cached in RAM. Values are small; the nsec is the largest
- * at 63 characters. */
-typedef struct { const char *key; char val[80]; bool loaded; } cfg_entry_t;
+ * at 63 characters.
+ *
+ * Each value is held in a block its own size, not in 80 bytes per key: on
+ * the C3, whose static data, stacks and heap share one SRAM, eighty-odd keys
+ * at 80 bytes were 6 KB, nearly all of it empty. xcfg_get() hands out the
+ * pointer and callers keep it, so a block is never freed: a new value that
+ * fits is copied into the old block, and one that does not gets a new block
+ * while the old one stays where it is. That is bounded by how often a
+ * setting grows, which is rarely, and it is what keeps a held pointer valid.
+ * Internal RAM, not PSRAM: values are read while flash is being written. */
+#define CFG_VAL_MAX 80
+typedef struct { const char *key; char *val; uint8_t cap; bool loaded; } cfg_entry_t;
 
 static cfg_entry_t s_cfg[] = {
-    { "name",      {0}, false },
-    { "nsec",      {0}, false },
-    { "wifi_on",   {0}, false },
-    { "ssid",      {0}, false },
-    { "pass",      {0}, false },
-    { "espnow_on", {0}, false },
-    { "share_on",  {0}, false },
-    { "digi_on",   {0}, false },
-    { "bridge_on", {0}, false },
-    { "igate_on",  {0}, false },
-    { "index_on",  {0}, false },
+    { "name",      NULL, 0, false },
+    { "nsec",      NULL, 0, false },
+    { "wifi_on",   NULL, 0, false },
+    { "ssid",      NULL, 0, false },
+    { "pass",      NULL, 0, false },
+    { "espnow_on", NULL, 0, false },
+    { "share_on",  NULL, 0, false },
+    { "digi_on",   NULL, 0, false },
+    { "bridge_on", NULL, 0, false },
+    { "igate_on",  NULL, 0, false },
+    { "index_on",  NULL, 0, false },
     /* Always-on scale (XPRS.md 12.9.4, 36.9.4): keeps everything it is
      * handed, is asked by many stations, and sizes its spool to the volume
      * rather than to a pocket device's budget. Off by default -- these are
@@ -43,46 +54,50 @@ static cfg_entry_t s_cfg[] = {
      * reads the `count:` and `uptime:` already on every beacon.
      * `index_super` is the old name, still read so a configured board keeps
      * its budgets across the update. */
-    { "index_always_on", {0}, false },
-    { "index_super", {0}, false },
+    { "index_always_on", NULL, 0, false },
+    { "index_super", NULL, 0, false },
     /* Archivers this station pulls from by name, comma separated. Discovery
      * from a `serve:archive` beacon covers whoever is in earshot; this covers
      * the one on the far side of a hub, which a board will never hear a
      * beacon from (36.12.2). `supers` is the old name. */
-    { "archivers", {0}, false },
-    { "supers",    {0}, false },
-    { "ntp",       {0}, false },
-    { "ap_on",     {0}, false },
-    { "ap_ssid",   {0}, false },
-    { "tz",        {0}, false },
+    { "archivers", NULL, 0, false },
+    { "supers",    NULL, 0, false },
+    { "ntp",       NULL, 0, false },
+    { "ap_on",     NULL, 0, false },
+    { "ap_ssid",   NULL, 0, false },
+    { "tz",        NULL, 0, false },
     /* Empty `tz` means found out automatically (common/xprs_tz); `tz_auto`
      * = no declines the lookup, and `tz_seen` is the last answer, kept so a
      * reboot starts with it rather than with UTC. Internal: not in the ini. */
-    { "tz_auto",   {0}, false },
-    { "tz_seen",   {0}, false },
+    { "tz_auto",   NULL, 0, false },
+    { "tz_seen",   NULL, 0, false },
     /* Seconds between a sensor board's readings on the air (xapp_board_t
      * .report); empty is the board's default, 0 stops them. */
-    { "report_s",  {0}, false },
+    { "report_s",  NULL, 0, false },
     /* Over-the-air updates (XPRS.md 25.8) and who may ask for one (25.4).
      * `fwkey` is the x-only key whose signature makes an image installable
      * here; `own1..own4` are the callsign-deriving npubs allowed to command
      * this station. Both are re-writable with a cable on purpose: a lost
      * key must be a ladder, never a brick. */
-    { "fwkey",     {0}, false },
-    { "fwurl",     {0}, false },
-    { "fwchan",    {0}, false },
-    { "fwauto",    {0}, false },
+    { "fwkey",     NULL, 0, false },
+    { "fwurl",     NULL, 0, false },
+    { "fwchan",    NULL, 0, false },
+    { "fwauto",    NULL, 0, false },
     /* Scripts (common/xprs_script). A DIFFERENT publisher key from `fwkey`,
      * so "may publish panels for this station" can be delegated without also
      * delegating "may reflash it". Unset falls back to fwkey; with neither
      * set nothing verifies and no script runs. */
-    { "scripts_on", {0}, false },
-    { "scriptkey",  {0}, false },
+    { "scripts_on", NULL, 0, false },
+    { "scriptkey",  NULL, 0, false },
     /* The Reticulum uplink (xprs_bearer_rns): where this archiver dials to
      * be reachable over RNS, and how hard it may lean on that link. */
-    { "rns_hub",     {0}, false },
-    { "ble_on",      {0}, false },
-    { "rns_pace_ms", {0}, false },
+    { "rns_hub",     NULL, 0, false },
+    { "ble_on",      NULL, 0, false },
+    { "rns_pace_ms", NULL, 0, false },
+    /* Seconds between announces of this station's destination, which a
+     * public hub rations per destination (xprs_bearer_rns). Empty: an hour
+     * on a public hub, every wire on a hub at a private address. */
+    { "rns_ann_s",   NULL, 0, false },
     /* The LoRa radio's manners (docs/API.md, "the hour and the reserve").
      * lora_pace_ms was read by xprs_app for a year without being in this
      * table, so xcfg_get() answered NULL and the operator override never
@@ -92,24 +107,24 @@ static cfg_entry_t s_cfg[] = {
     /* Which LoRa network the radio shares a channel with: xprs,
      * meshtastic (the default) or meshcore. Read at start, and changed
      * live afterwards (`cfg lora <mode>`). */
-    { "lora_mode",    {0}, false },
-    { "lora_region",  {0}, false },
-    { "lora_freq_hz", {0}, false },
-    { "lora_pace_ms", {0}, false },
-    { "lora_duty_ms", {0}, false },
-    { "lora_resv_ms", {0}, false },
-    { "lora_profile", {0}, false },
+    { "lora_mode",    NULL, 0, false },
+    { "lora_region",  NULL, 0, false },
+    { "lora_freq_hz", NULL, 0, false },
+    { "lora_pace_ms", NULL, 0, false },
+    { "lora_duty_ms", NULL, 0, false },
+    { "lora_resv_ms", NULL, 0, false },
+    { "lora_profile", NULL, 0, false },
     /* The modulation, for a channel whose preset this firmware does not
      * carry: MeshCore's are regional and they change. Empty = the mode's
      * own, which is what almost every station wants. */
-    { "lora_sf",      {0}, false },
-    { "lora_bw_khz",  {0}, false },
+    { "lora_sf",      NULL, 0, false },
+    { "lora_bw_khz",  NULL, 0, false },
     /* The sync word, 0 = the mode's own. Neither Meshtastic nor MeshCore
      * exposes its own (0x2B and 0x12 are constants in their firmware), so
      * this is the only way to ask the one question that decides what a
      * shared channel is worth: does the chip reject a frame whose sync word
      * is not the one it was set to (docs/lora.md). */
-    { "lora_sync",    {0}, false },
+    { "lora_sync",    NULL, 0, false },
     /* The channel `both` mode puts the two foreign networks on. Separate
      * from the four keys above because those move EVERY mode, which is what
      * they are for: a boot mode's channel once followed the radio into the
@@ -128,62 +143,82 @@ static cfg_entry_t s_cfg[] = {
      * cannot run there (docs/lora.md section 11): a board that cannot have
      * the feature does not pay for its settings either. */
 #if !defined(ESP_PLATFORM) || defined(CONFIG_SPIRAM)
-    { "both_ch",      {0}, false },
+    { "both_ch",      NULL, 0, false },
 #endif
     /* 9.11.1: whether this station's LoRa counts as a local bearer (a
      * building's own mesh) and may carry scope:local; default no. */
-    { "lora_local",   {0}, false },
+    { "lora_local",   NULL, 0, false },
     /* Seconds the survey listens on each mode (14.8): `cfg survey`. */
-    { "lora_survey_s",{0}, false },
+    { "lora_survey_s",NULL, 0, false },
     /* Empty: each network waits by its own contention rule. */
-    { "lora_detect_s",{0}, false },
+    { "lora_detect_s",NULL, 0, false },
     /* Serve two networks by taking turns on the one radio: a list of
      * modes, and how long each turn lasts at least. Empty = one network,
      * which is what most stations want (docs/lora.md). */
-    { "lora_rotate",  {0}, false },
-    { "lora_rotate_s",{0}, false },
+    { "lora_rotate",  NULL, 0, false },
+    { "lora_rotate_s",NULL, 0, false },
     /* Meshtastic on the same radio (docs/lora.md): the repeater, the
      * bridge, how many XPRS broadcasts an hour it mirrors onto LongFast,
      * and how often this station's node re-announces itself. */
-    { "mt_repeat",    {0}, false },
-    { "mt_bridge",    {0}, false },
-    { "mt_bcast_hr",  {0}, false },
-    { "mt_ni_min",    {0}, false },
+    { "mt_repeat",    NULL, 0, false },
+    { "mt_bridge",    NULL, 0, false },
+    { "mt_bcast_hr",  NULL, 0, false },
+    { "mt_ni_min",    NULL, 0, false },
     /* The same four for MeshCore, read when `lora_mode` is `meshcore`.
      * Separate keys because the two bridges are separate: a station may
      * repeat on one network and only bridge on the other. */
-    { "mc_repeat",    {0}, false },
-    { "mc_bridge",    {0}, false },
-    { "mc_bcast_hr",  {0}, false },
-    { "mc_advert_min",{0}, false },
-    { "echo_on",       {0}, false },
-    { "echo_quiet_ms", {0}, false },
-    { "echo_gap_ms",   {0}, false },
-    { "digi_ble_on",   {0}, false },
+    { "mc_repeat",    NULL, 0, false },
+    { "mc_bridge",    NULL, 0, false },
+    { "mc_bcast_hr",  NULL, 0, false },
+    { "mc_advert_min",NULL, 0, false },
+    { "echo_on",       NULL, 0, false },
+    { "echo_quiet_ms", NULL, 0, false },
+    { "echo_gap_ms",   NULL, 0, false },
+    { "digi_ble_on",   NULL, 0, false },
     /* XPRS.md 25.9, the policy an owner sets over the air: who may
      * originate through this station (`use`), whose traffic leaves first
      * (`first`), what it announces it does (`serve`, empty = the default),
      * and the ts: of the last policy command accepted -- a later command
      * must be strictly newer or it is a replay (25.9). */
-    { "use",       {0}, false },
-    { "first",     {0}, false },
-    { "serve",     {0}, false },
+    { "use",       NULL, 0, false },
+    { "first",     NULL, 0, false },
+    { "serve",     NULL, 0, false },
     /* XPRS.md 11.9 and 25.3: whose standing alerts this station gives to
      * newcomers. `owner` (empty is the same) or `open`. */
-    { "alerts",    {0}, false },
-    { "polts",     {0}, false },
+    { "alerts",    NULL, 0, false },
+    { "polts",     NULL, 0, false },
     /* The callsign each owner claimed with. The npub beside it is what a
      * signature is checked against; this is what 25.9's `owner:` reports,
      * because a key does not say whether its holder is a person (X1) or a
      * station (X3) -- section 3 makes that the holder's own choice, so
      * deriving it back invents one. Empty for an entry set with a cable. */
-    { "own1c",     {0}, false },
-    { "own1",      {0}, false },
-    { "own2",      {0}, false },
-    { "own3",      {0}, false },
-    { "own4",      {0}, false },
+    { "own1c",     NULL, 0, false },
+    { "own1",      NULL, 0, false },
+    { "own2",      NULL, 0, false },
+    { "own3",      NULL, 0, false },
+    { "own4",      NULL, 0, false },
 };
 #define CFG_N (sizeof(s_cfg) / sizeof(s_cfg[0]))
+
+/* Put [v] into [e]'s block, or a new one if it does not fit (see above:
+ * the old block is kept, never freed). False when there is no memory. */
+static bool cfg_store(cfg_entry_t *e, const char *v)
+{
+    size_t n = strnlen(v, CFG_VAL_MAX - 1);
+    if (!e->val || n + 1 > e->cap) {
+        /* Rounded up, so a value that grows by a character or two reuses
+         * its block instead of taking another. */
+        size_t cap = (n + 1 + 15) & ~(size_t)15;
+        if (cap > CFG_VAL_MAX) cap = CFG_VAL_MAX;
+        char *b = heap_caps_malloc(cap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!b) return false;
+        e->val = b;
+        e->cap = (uint8_t)cap;
+    }
+    memcpy(e->val, v, n);
+    e->val[n] = 0;
+    return true;
+}
 
 static cfg_entry_t *find(const char *key)
 {
@@ -199,8 +234,10 @@ esp_err_t xcfg_init(void)
     if (ret == ESP_ERR_NVS_NOT_FOUND) return ESP_OK;   /* nothing saved yet */
     if (ret != ESP_OK) return ret;
     for (size_t i = 0; i < CFG_N; i++) {
-        size_t len = sizeof(s_cfg[i].val);
-        if (nvs_get_str(nvs, s_cfg[i].key, s_cfg[i].val, &len) == ESP_OK)
+        char v[CFG_VAL_MAX];
+        size_t len = sizeof v;
+        if (nvs_get_str(nvs, s_cfg[i].key, v, &len) == ESP_OK &&
+            cfg_store(&s_cfg[i], v))
             s_cfg[i].loaded = true;
     }
     nvs_close(nvs);
@@ -210,7 +247,7 @@ esp_err_t xcfg_init(void)
 const char *xcfg_get(const char *key, const char *def)
 {
     cfg_entry_t *e = find(key);
-    if (e && e->loaded && e->val[0]) return e->val;
+    if (e && e->loaded && e->val && e->val[0]) return e->val;
     return def;
 }
 
@@ -227,7 +264,7 @@ esp_err_t xcfg_set(const char *key, const char *value)
     cfg_entry_t *e = find(key);
     if (!e) return ESP_ERR_INVALID_ARG;
     if (!value) value = "";
-    snprintf(e->val, sizeof e->val, "%s", value);
+    if (!cfg_store(e, value)) return ESP_ERR_NO_MEM;
     e->loaded = true;
 
     nvs_handle_t nvs;
@@ -531,6 +568,7 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
      * where. */
     { "rns",     "hub",      "rns_hub" },
     { "rns",     "pace_ms",  "rns_pace_ms" },
+    { "rns",     "announce_s", "rns_ann_s" },
     /* The radio's region decides the channel, the hourly airtime budget and
      * the slice held back for sos -- see docs/API.md. */
     { "lora",    "mode",     "lora_mode" },

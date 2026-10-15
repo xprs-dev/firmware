@@ -45,6 +45,74 @@ static int                s_pace_ms = 1100;
 
 static uint32_t s_rx, s_tx, s_paced, s_other;
 
+/*
+ * An announce is dated, and the date decides whether anybody listens.
+ *
+ * The last five bytes of its random hash are the emission time in seconds
+ * (rns_announce_build), and a reference transport replaces the path it
+ * holds for a destination only with an announce emitted LATER than the one
+ * it learned that path from (Transport.inbound: `announce_emitted >
+ * path_timebase`). A station that announces before its clock is set dates
+ * the announce a few seconds after 1970, so every transport that ever heard
+ * this destination keeps its old path and drops the new announce without
+ * passing it on. Measured on 2026-10-15 with a QEMU station whose clock never
+ * set: its hub answered path requests with a stale route through another
+ * node, three hops instead of two, and nothing addressed to the station
+ * arrived, while the same build on a fresh local transport worked at once.
+ *
+ * So nothing is announced on a clock that is not set. The connect-time
+ * hello waits for it (s_hello_due), and an ordinary wire is refused, which
+ * every caller already treats as "not carried by Reticulum".
+ */
+static bool               s_hello_due;
+static uint32_t           s_no_clock;
+
+static bool clock_set(void) { return time(NULL) > 1700000000; }
+
+/*
+ * And a hub rations announces per destination.
+ *
+ * A reference transport with an announce rate target on an interface counts
+ * a violation for every announce that comes sooner than the target after the
+ * previous one, and past its grace stops re-broadcasting that destination
+ * for target plus penalty (Transport.inbound, announce_rate_table). The path
+ * is still learned; only the re-broadcast stops. This station announced
+ * every wire it aired, one every seven seconds, so on rns.wisco.network
+ * nothing it announced ever reached another client. Measured 2026-10-15
+ * with reference clients: one announcing every ten seconds was passed six
+ * times, in the first minute, and never again; a client listening for five
+ * minutes heard nothing at all from this station.
+ *
+ * So on a public hub the station announces its hello and nothing else, once
+ * per s_ann_gap_s (an hour, the usual target), and its wires go on the
+ * directed lane or not at all, as XPRS.md 12.12.1 says of a filtered
+ * transport. A hub at a private address is an XPRS node of the station's
+ * own, which polices nothing, and keeps every wire. `rns_ann_s` overrides.
+ */
+static int     s_ann_gap_s;
+static int64_t s_last_ann_us;           /* 0: nothing announced yet */
+static int64_t s_hello_due_us;
+
+static bool ann_slot_free(void)
+{
+    if (s_ann_gap_s <= 0 || s_last_ann_us == 0) return true;
+    return esp_timer_get_time() - s_last_ann_us >= (int64_t)s_ann_gap_s * 1000000;
+}
+
+static bool host_is_private(const char *h)
+{
+    if (!strncmp(h, "10.", 3) || !strncmp(h, "192.168.", 8) ||
+        !strncmp(h, "127.", 4) || !strncmp(h, "169.254.", 8) ||
+        !strcasecmp(h, "localhost"))
+        return true;
+    if (!strncmp(h, "172.", 4)) {
+        int b = atoi(h + 4);
+        if (b >= 16 && b <= 31) return true;
+    }
+    size_t n = strlen(h);
+    return n > 6 && !strcasecmp(h + n - 6, ".local");
+}
+
 /* ── Identity: minted once, kept in NVS ─────────────────────────────────── */
 
 static bool identity_load(void)
@@ -103,13 +171,28 @@ typedef struct {
     uint8_t  dest[RNS_HASH_LEN];
     uint8_t  xpub[RNS_KEY_HALF];
     uint32_t heard_s;
+    uint8_t  id_hash[RNS_HASH_LEN];   /* SHA-256(pub)[:16]: the HKDF salt */
+    /* The route, as the announce that taught us the peer told it: how far,
+     * and through which transport node. A peer behind a hub is addressed
+     * THROUGH the hub (HEADER_2, transport id = next hop), or the hub drops
+     * the packet; reference RNS does the same for any path over one hop. */
+    uint8_t  hops;
+    uint8_t  next_hop[RNS_HASH_LEN];
+    bool     have_next_hop;
 } xrns_peer_t;
 
 static xrns_peer_t s_peers[XRNS_PEERS];
 static uint32_t s_addressed_tx, s_addressed_rx, s_no_peer;
+/* Sent through a hub (HEADER_2), and path requests made. */
+static uint32_t s_via_hub, s_path_req;
+/* Addressed to us and would not open: a forgery, or a sender salting the
+ * key differently (reference RNS salts with the identity hash). */
+static uint32_t s_undecryptable;
+/* Older than this, a route is asked for again before it is used. */
+#define XRNS_PATH_STALE_S (30u * 60u)
 
 static void peer_learn(const char *call, const uint8_t dest[RNS_HASH_LEN],
-                       const uint8_t pub[RNS_PUB_LEN])
+                       const uint8_t pub[RNS_PUB_LEN], const rns_packet_t *via)
 {
     if (!call || !call[0]) return;
     uint32_t now = (uint32_t)time(NULL);
@@ -126,6 +209,102 @@ static void peer_learn(const char *call, const uint8_t dest[RNS_HASH_LEN],
     /* pub is x25519_pub || ed25519_pub; only the first half encrypts. */
     memcpy(s_peers[slot].xpub, pub, RNS_KEY_HALF);
     s_peers[slot].heard_s = now;
+    rns_identity_t idt;
+    rns_identity_from_public(pub, &idt);
+    memcpy(s_peers[slot].id_hash, idt.hash, RNS_HASH_LEN);
+    /* Reference RNS counts a hop on receipt; this parser does not, so the
+     * path is one longer than the field says. */
+    s_peers[slot].hops = (uint8_t)(via->hops + 1);
+    s_peers[slot].have_next_hop = via->have_transport_id;
+    if (via->have_transport_id)
+        memcpy(s_peers[slot].next_hop, via->transport_id, RNS_HASH_LEN);
+}
+
+/*
+ * Neighbours we can name but not yet address.
+ *
+ * A station answers a wire on the destination the asker announced, and on a
+ * public hub nobody's announces get through (s_ann_gap_s), so a phone
+ * asking from the next room got no answer: measured 2026-10-15, the desktop
+ * reached a station through rns.wisco.network and the answer counted
+ * no_peer. What the phone's beacon does carry is `lx:`, its LXMF
+ * destination. That is the same identity as its xprs.wapp destination, so a
+ * path request for it is answered with an announce holding the key, and
+ * xprs.wapp follows from the key. One ask per neighbour, again after ten
+ * minutes if nothing came.
+ */
+#define XRNS_ASKS 4
+#define XRNS_ASK_AGAIN_US (600LL * 1000000)
+typedef struct {
+    char     call[16];
+    uint8_t  dest[RNS_HASH_LEN];
+    int64_t  asked_us;                  /* 0: not asked yet */
+} xrns_ask_t;
+static xrns_ask_t s_asks[XRNS_ASKS];
+static uint32_t   s_lx_learned;
+
+static const xrns_peer_t *peer_find(const char *call);
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+void xprsrns_note_address(const char *call, const char *lx_hex)
+{
+    if (!s_ready || !call || !call[0] || !lx_hex) return;
+    if (strlen(lx_hex) != 2 * RNS_HASH_LEN || peer_find(call)) return;
+    uint8_t d[RNS_HASH_LEN];
+    for (int i = 0; i < RNS_HASH_LEN; i++) {
+        int h = hexval(lx_hex[2 * i]), l = hexval(lx_hex[2 * i + 1]);
+        if (h < 0 || l < 0) return;
+        d[i] = (uint8_t)(h << 4 | l);
+    }
+    int slot = -1;
+    for (int i = 0; i < XRNS_ASKS; i++) {
+        if (strcasecmp(s_asks[i].call, call) == 0) { slot = i; break; }
+        if (slot < 0 && !s_asks[i].call[0]) slot = i;
+    }
+    if (slot >= 0 && strcasecmp(s_asks[slot].call, call) == 0 &&
+        memcmp(s_asks[slot].dest, d, RNS_HASH_LEN) == 0)
+        return;                         /* already in hand */
+    if (slot < 0) {                     /* full: the oldest ask goes */
+        slot = 0;
+        for (int i = 1; i < XRNS_ASKS; i++)
+            if (s_asks[i].asked_us < s_asks[slot].asked_us) slot = i;
+    }
+    snprintf(s_asks[slot].call, sizeof s_asks[slot].call, "%s", call);
+    memcpy(s_asks[slot].dest, d, RNS_HASH_LEN);
+    s_asks[slot].asked_us = 0;
+}
+
+/* On the socket task: one due ask per frame, so a burst never blocks it. */
+static void asks_send(void)
+{
+    int64_t now = esp_timer_get_time();
+    for (int i = 0; i < XRNS_ASKS; i++) {
+        xrns_ask_t *a = &s_asks[i];
+        if (!a->call[0]) continue;
+        if (a->asked_us && now - a->asked_us < XRNS_ASK_AGAIN_US) continue;
+        if (xSemaphoreTake(s_tx_lock, 0) != pdTRUE) return;
+        static uint8_t prq[64];
+        int qn = rns_path_request_build(a->dest, prq, sizeof prq);
+        if (qn > 0 && rns_tcp_send(prq, (size_t)qn)) s_path_req++;
+        xSemaphoreGive(s_tx_lock);
+        a->asked_us = now;
+        return;
+    }
+}
+
+static int ask_for(const uint8_t dest[RNS_HASH_LEN])
+{
+    for (int i = 0; i < XRNS_ASKS; i++)
+        if (s_asks[i].call[0] && memcmp(s_asks[i].dest, dest, RNS_HASH_LEN) == 0)
+            return i;
+    return -1;
 }
 
 static const xrns_peer_t *peer_find(const char *call)
@@ -143,6 +322,40 @@ int xprsrns_peer_count(void)
     int n = 0;
     for (int i = 0; i < XRNS_PEERS; i++) if (s_peers[i].call[0]) n++;
     return n;
+}
+
+/* Air the hello: once per connection, and only on a set clock (see
+ * s_hello_due). Runs on the socket task. */
+static void hello_air(void)
+{
+    if (!ann_slot_free()) return;
+    /* A hello with no wire after the tag teaches nobody our callsign, and on
+     * a public hub it spends the hour's one announce. The station sets the
+     * identity wire a little after it connects; give it two minutes. */
+    if (s_hello_len == 0 &&
+        esp_timer_get_time() - s_hello_due_us < 120LL * 1000000)
+        return;
+    char hello[8 + sizeof s_hello];
+    int hn = snprintf(hello, sizeof hello, "%cxprs", 4);
+    if (s_hello_len > 0 && hn + s_hello_len < (int)sizeof hello) {
+        memcpy(hello + hn, s_hello, (size_t)s_hello_len);
+        hn += s_hello_len;
+    }
+    static uint8_t pkt[RNS_MTU + 64];
+    /* The build's buffers are shared statics: every builder holds the
+     * tx lock, this connect-time hello included. */
+    if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) return;
+    s_hello_due = false;
+    int n = rns_announce_build(&s_id, s_wapp_name,
+                               (const uint8_t *)hello, (size_t)hn,
+                               (uint64_t)time(NULL), pkt, sizeof pkt);
+    bool ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
+    if (ok) s_last_ann_us = esp_timer_get_time();
+    xSemaphoreGive(s_tx_lock);
+    if (n > 0) ESP_LOGI(TAG, "hello announce: %dB (%s), sent=%d", n,
+                        s_hello_len > 0 ? "with identity" : "TAG ONLY -- "
+                        "nobody will learn us from this", (int)ok);
+    else       ESP_LOGE(TAG, "hello announce did not build (%d)", n);
 }
 
 static void on_frame(const uint8_t *frame, size_t len, void *ctx)
@@ -168,27 +381,19 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
          * guaranteed to cross a shared transport. This is that lane, so it
          * carries the identity.
          */
-        char hello[8 + sizeof s_hello];
-        int hn = snprintf(hello, sizeof hello, "%cxprs", 4);
-        if (s_hello_len > 0 && hn + s_hello_len < (int)sizeof hello) {
-            memcpy(hello + hn, s_hello, (size_t)s_hello_len);
-            hn += s_hello_len;
-        }
-        static uint8_t pkt[RNS_MTU + 64];
-        /* The build's buffers are shared statics: every builder holds the
-         * tx lock, this connect-time hello included. */
-        if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) return;
-        int n = rns_announce_build(&s_id, s_wapp_name,
-                                   (const uint8_t *)hello, (size_t)hn,
-                                   (uint64_t)time(NULL), pkt, sizeof pkt);
-        bool ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
-        xSemaphoreGive(s_tx_lock);
-        if (n > 0) ESP_LOGI(TAG, "hello announce: %dB (%s), sent=%d", n,
-                            s_hello_len > 0 ? "with identity" : "TAG ONLY -- "
-                            "nobody will learn us from this", (int)ok);
-        else       ESP_LOGE(TAG, "hello announce did not build (%d)", n);
-        return;
+        s_hello_due = true;
+        s_hello_due_us = esp_timer_get_time();
     }
+    /* On a rationed hub the hello is also the hourly refresh: it is what
+     * keeps this destination's path alive at the hub and tells the clients
+     * that joined since who we are. */
+    if (!s_hello_due && s_ann_gap_s > 0 && s_last_ann_us && ann_slot_free()) {
+        s_hello_due = true;
+        s_hello_due_us = esp_timer_get_time();
+    }
+    if (s_hello_due && clock_set()) hello_air();
+    asks_send();
+    if (!frame) return;
 
     rns_packet_t p;
     if (!rns_packet_parse(frame, len, &p)) return;
@@ -207,9 +412,12 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
         p.dest_type == RNS_DEST_SINGLE &&
         memcmp(p.dest, s_wapp_dest, RNS_HASH_LEN) == 0) {
         static uint8_t plain[RNS_MTU];
-        int pn = rns_decrypt_from(s_id.prv, s_wapp_dest, p.data, p.data_len,
+        /* Salted with our IDENTITY hash, as reference RNS encrypts
+         * (Identity.get_salt()). This passed the destination hash until
+         * 2026-10-15, so only another station could write to us. */
+        int pn = rns_decrypt_from(s_id.prv, s_id.hash, p.data, p.data_len,
                                   plain, sizeof plain - 1);
-        if (pn <= 0) { s_other++; return; }   /* not for us, or forged */
+        if (pn <= 0) { s_other++; s_undecryptable++; return; }
         plain[pn] = 0;
         s_addressed_rx++;
         s_rx++;
@@ -237,6 +445,24 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
      * the station until the signature has been checked. */
     rns_announce_t a;
     if (!rns_announce_open(&p, &a)) { s_other++; return; }
+
+    /* The answer to one of our asks (above): any destination of the
+     * neighbour's identity, LXMF's as a rule. Rare, so worth the verify. */
+    int ask = ask_for(a.dest);
+    if (ask >= 0) {
+        if (!rns_announce_verify(&p, &a)) { s_other++; return; }
+        rns_identity_t idt;
+        rns_identity_from_public(a.pub, &idt);
+        uint8_t wd[RNS_HASH_LEN];
+        rns_destination_hash(s_wapp_name, idt.hash, wd);
+        peer_learn(s_asks[ask].call, wd, a.pub, &p);
+        s_lx_learned++;
+        ESP_LOGI(TAG, "%s is addressable: learned from its lx: (%d hops)",
+                 s_asks[ask].call, (int)p.hops + 1);
+        memset(&s_asks[ask], 0, sizeof s_asks[ask]);
+        return;
+    }
+
     if (memcmp(a.name_hash, s_wapp_name, RNS_NAME_HASH_LEN) != 0) {
         s_other++;                       /* someone else's app -- not ours */
         return;
@@ -265,7 +491,7 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     char from[16];
     if (xprs_parse((const char *)wire, wl, &xp) &&
         xprs_get_str(&xp, "f", from, sizeof from) && from[0]) {
-        peer_learn(from, a.dest, a.pub);
+        peer_learn(from, a.dest, a.pub, &p);
     }
 
     if (s_cb) s_cb((const char *)wire, wl);
@@ -299,6 +525,8 @@ bool xprsrns_send(const char *wire, int len)
 {
     if (!s_ready || !rns_tcp_is_up() || len <= 0) return false;
     if (len > RNS_MTU - 5 - 100) return false;   /* announce overhead */
+    if (!clock_set()) { s_no_clock++; return false; }   /* see s_hello_due */
+    if (s_ann_gap_s > 0) { s_paced++; return false; }    /* see s_ann_gap_s */
 
     if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) {
         s_paced++;
@@ -337,6 +565,16 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
     const xrns_peer_t *pr = peer_find(callsign);
     if (!pr) { s_no_peer++; return false; }
 
+    /* A route learned a while ago may be gone from the hub's table: ask for
+     * it again first. The answer is the peer's announce, relayed, which
+     * refreshes the entry above; this packet goes on the route we have. */
+    const uint32_t now_s = (uint32_t)time(NULL);
+    if (now_s - pr->heard_s > XRNS_PATH_STALE_S) {
+        static uint8_t prq[64];
+        int qn = rns_path_request_build(pr->dest, prq, sizeof prq);
+        if (qn > 0 && rns_tcp_send(prq, (size_t)qn)) s_path_req++;
+    }
+
     /* The ciphertext carries an ephemeral public key, an IV and a MAC on top
      * of the wire, and the packet carries a header on top of that. */
     if (len > RNS_MTU - RNS_ENC_OVERHEAD - 32) return false;
@@ -347,16 +585,26 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
     }
 
     static uint8_t cipher[RNS_MTU];
-    /* The salt is the DESTINATION's hash, not the identity's -- theirs, not
-     * ours, because this is being encrypted to them. */
-    int cn = rns_encrypt_to(pr->xpub, pr->dest, (const uint8_t *)wire,
+    /* The salt is the recipient's IDENTITY hash, as reference RNS does
+     * (Identity.get_salt()). It was their destination hash until
+     * 2026-10-15, which only another station could open. */
+    int cn = rns_encrypt_to(pr->xpub, pr->id_hash, (const uint8_t *)wire,
                             (size_t)len, NULL, NULL, cipher, sizeof cipher);
     bool ok = false;
     if (cn > 0) {
         rns_packet_t p;
         memset(&p, 0, sizeof p);
-        p.header_type    = RNS_HEADER_1;
-        p.transport_type = RNS_TRANSPORT_BROADCAST;  /* how it is FORWARDED */
+        if (pr->hops > 1 && pr->have_next_hop) {
+            /* Through the hub that told us the route. */
+            p.header_type       = RNS_HEADER_2;
+            p.transport_type    = RNS_TRANSPORT_TRANSPORT;
+            memcpy(p.transport_id, pr->next_hop, RNS_HASH_LEN);
+            p.have_transport_id = true;
+            s_via_hub++;
+        } else {
+            p.header_type    = RNS_HEADER_1;
+            p.transport_type = RNS_TRANSPORT_BROADCAST;  /* a direct neighbour */
+        }
         p.dest_type      = RNS_DEST_SINGLE;          /* who it is FOR */
         p.packet_type    = RNS_PACKET_DATA;
         memcpy(p.dest, pr->dest, RNS_HASH_LEN);
@@ -380,6 +628,14 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
 
 bool xprsrns_is_up(void) { return s_ready && rns_tcp_is_up(); }
 
+bool xprsrns_dest_hex(char out[33])
+{
+    if (!s_ready) return false;
+    for (int i = 0; i < RNS_HASH_LEN; i++)
+        snprintf(out + 2 * i, 3, "%02x", s_wapp_dest[i]);
+    return true;
+}
+
 void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx, uint32_t *no_peer,
                              int *peers)
 {
@@ -387,6 +643,17 @@ void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx, uint32_t *no_peer,
     if (rx) *rx = s_addressed_rx;
     if (no_peer) *no_peer = s_no_peer;
     if (peers) *peers = xprsrns_peer_count();
+}
+
+void xprsrns_route_stats(uint32_t *via_hub, uint32_t *path_req,
+                         uint32_t *undecryptable, uint32_t *no_clock,
+                         uint32_t *lx_learned)
+{
+    if (via_hub) *via_hub = s_via_hub;
+    if (path_req) *path_req = s_path_req;
+    if (undecryptable) *undecryptable = s_undecryptable;
+    if (no_clock) *no_clock = s_no_clock;
+    if (lx_learned) *lx_learned = s_lx_learned;
 }
 
 void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced, uint32_t *other)
@@ -406,6 +673,8 @@ static bool xprsrns_setup(xprsrns_wire_cb_t cb)
 {
     s_pace_ms = atoi(xcfg_get("rns_pace_ms", "1100"));
     if (s_pace_ms < 100) s_pace_ms = 100;
+    /* Every wire unless set; xprsrns_init() rations a public hub. */
+    s_ann_gap_s = atoi(xcfg_get("rns_ann_s", "0"));
 
     if (!identity_load()) {
         ESP_LOGE(TAG, "no identity -- bearer stays down");
@@ -467,6 +736,9 @@ void xprsrns_init(xprsrns_wire_cb_t cb)
     char *colon = strrchr(host, ':');
     if (colon && colon[1]) { *colon = 0; port = (uint16_t)atoi(colon + 1); }
 
+    if (!xcfg_get("rns_ann_s", "")[0] && !host_is_private(host))
+        s_ann_gap_s = 3600;
+
     rns_tcp_set_rx_cb(on_frame, NULL);
     rns_tcp_add_hub(host, port);
     if (rns_tcp_start(NULL, 0) != ESP_OK) {
@@ -474,7 +746,9 @@ void xprsrns_init(xprsrns_wire_cb_t cb)
         return;
     }
     s_ready = true;
-    ESP_LOGI(TAG, "up: uplink %s:%u, dest %02x%02x%02x%02x..",
+    ESP_LOGI(TAG, "up: uplink %s:%u, dest %02x%02x%02x%02x.., announces: %s %ds",
              host, (unsigned)port,
-             s_wapp_dest[0], s_wapp_dest[1], s_wapp_dest[2], s_wapp_dest[3]);
+             s_wapp_dest[0], s_wapp_dest[1], s_wapp_dest[2], s_wapp_dest[3],
+             s_ann_gap_s > 0 ? "hello only, every" : "every wire, gap",
+             s_ann_gap_s);
 }

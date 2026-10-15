@@ -1891,6 +1891,24 @@ static bool alrt_owed(const char *call)
 }
 
 static xprs_reach_t bearer_reach(const char *bearer);
+static void tasks_report(void);
+
+/* The internet probe's stack. A board overrides it with
+ * -DXPRS_STACK_INET=<bytes> in its build_flags, sized from `cfg tasks`
+ * (stack_unused under load) with a quarter left over; every other board
+ * keeps this default. */
+#ifndef XPRS_STACK_INET
+#define XPRS_STACK_INET 4096
+#endif
+
+/* A headless board's UI task: the serial console, buttons, battery. A board
+ * overrides it with -DXPRS_STACK_UI_HEADLESS=<bytes> in its build_flags,
+ * sized from `cfg tasks` (stack_unused under load) with a quarter left
+ * over; every other board keeps this default. */
+#ifndef XPRS_STACK_UI_HEADLESS
+#define XPRS_STACK_UI_HEADLESS 4096
+#endif
+
 
 /* The cable: `cfg alerts` says what stands and what has been given, and a
  * `cfg set alerts ...` is checked here and made to take effect at once.
@@ -1912,6 +1930,7 @@ static bool alrt_console(const char *line)
         printf("alerts=%s\n", v);
         return true;
     }
+    if (strcmp(p, "tasks") == 0) { tasks_report(); return true; }
     if (strcmp(p, "alerts") != 0) return false;
     const uint8_t n = s_alrt.n;
     int known = 0;
@@ -3041,6 +3060,19 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         s_alrt_give.pending = true;           /* published last */
     } while (0);
 
+    /* Where to write to a neighbour over Reticulum (3.1.1).
+     * Its beacon's `lx:`, handed to the bearer, which asks the hub for the
+     * path on its own task. Nothing here waits on the network. */
+    do {
+        char type[16], from[XPRS_CALL_LEN], lx[40];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "observation") != 0) break;
+        if (!xprs_get_str(&sp, "lx", lx, sizeof lx)) break;
+        if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
+        if (strcasecmp(from, s_call) == 0) break;
+        xprsrns_note_address(from, lx);
+    } while (0);
+
     /* ── Gossip intake (36.9.4): who else heard whom ───────────────────
      * hears: is directly-heard-only by 10.6.3, so each listed callsign
      * pairs with the OBSERVER as its gateway.
@@ -3944,9 +3976,16 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     int an = snprintf(acct, sizeof acct, " uptime:%s lifetime:%s", up, life);
     if (s_mail_held > 0 && an > 0 && an < (int)sizeof acct)
         an += snprintf(acct + an, sizeof acct - (size_t)an, " mail:%d", s_mail_held);
+    /* Where to write to this station over Reticulum (3.1.1: the device's own
+     * name on the wire). A public hub passes almost none of a station's
+     * announces (xprs_bearer_rns), so a phone learns the destination here,
+     * asks the hub for the path, and the path answer carries the key. */
+    char lx[40] = "";
+    char lxh[33];
+    if (xprsrns_dest_hex(lxh)) snprintf(lx, sizeof lx, " lx:%s", lxh);
     int fixed = (int)(sizeof "t:observation f:" - 1) + (int)strlen(s_call)
               + (int)(sizeof " link:" - 1) + (int)strlen(bearer)
-              + (int)(sizeof " peers:" - 1) + 3 + an;
+              + (int)(sizeof " peers:" - 1) + 3 + an + (int)strlen(lx);
     int budget = room - fixed - sign_room;
 
     char hears[208];
@@ -3955,8 +3994,8 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     int hn = xst_hears_render(bearer, 600, budget, hears, sizeof hears,
                               &total, q, sizeof q);
 
-    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s",
-                     s_call, bearer, total, acct);
+    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s%s",
+                     s_call, bearer, total, acct, lx);
     if (hn > 0 && n > 0 && n < cap)
         n += snprintf(out + n, (size_t)(cap - n), " hears:%s", hears);
     if (hn > 0 && q[0] && n > 0 && n < cap)
@@ -4175,6 +4214,31 @@ static void air_identity(void)
 
 /* ── Status, every 15 s, the same shape the dongle prints ───────────────── */
 
+/* Every task's unused stack (its lowest free point since it started) and
+ * the internal heap, in one block: `cfg tasks` on the cable, and every 30 s
+ * on a build made with XPRS_TASK_REPORT (the QEMU one). Stacks are set by
+ * hand, and on a board whose stacks, static data and heap all come out of
+ * one SRAM (the C3) a stack nobody measured is heap nobody can use. Needs
+ * configUSE_TRACE_FACILITY; without it, the heap line alone. */
+static void tasks_report(void)
+{
+    printf("heap internal free=%u min=%u largest=%u\n",
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+#if configUSE_TRACE_FACILITY
+    UBaseType_t n = uxTaskGetNumberOfTasks();
+    TaskStatus_t *ts = malloc(sizeof(TaskStatus_t) * (n + 2));
+    if (!ts) return;
+    n = uxTaskGetSystemState(ts, n + 2, NULL);
+    for (UBaseType_t i = 0; i < n; i++)
+        printf("task %-16s prio=%2u stack_unused=%5u\n", ts[i].pcTaskName,
+               (unsigned)ts[i].uxCurrentPriority,
+               (unsigned)ts[i].usStackHighWaterMark);
+    free(ts);
+#endif
+}
+
 static void status_task(void *arg)
 {
     (void)arg;
@@ -4207,6 +4271,9 @@ static void status_task(void *arg)
         if (n % 60 == 0) air_ble_beacon();
         /* The signed hears: observations, same cadence, same task. */
         if (n % 120 == 60) air_signed_observations();
+#ifdef XPRS_TASK_REPORT
+        if (n % 60 == 30) tasks_report();
+#endif
 
         /* Rollback self-test (25.8). A new image is on probation until it
          * has held together for two minutes: the API listening, a bearer
@@ -4878,10 +4945,52 @@ static void wk_tick(void)
     }
 }
 
+#ifdef XPRS_QEMU
+#include "esp_eth.h"
+static void qemu_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data)
+{
+    (void)arg; (void)base; (void)id;
+    ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
+    snprintf(s_ip_str, sizeof s_ip_str, IPSTR, IP2STR(&e->ip_info.ip));
+    ESP_LOGI(TAG, "QEMU ethernet up, ip %s", s_ip_str);
+}
+
+static void qemu_eth_up(void)
+{
+    esp_netif_config_t ncfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *nif = esp_netif_new(&ncfg);
+    eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
+    phy_cfg.autonego_timeout_ms = 100;
+    esp_eth_mac_t *mac = esp_eth_mac_new_openeth(&mac_cfg);
+    esp_eth_phy_t *phy = esp_eth_phy_new_dp83848(&phy_cfg);
+    esp_eth_config_t ecfg = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t h = NULL;
+    if (esp_eth_driver_install(&ecfg, &h) != ESP_OK) {
+        ESP_LOGE(TAG, "QEMU ethernet: driver install failed");
+        return;
+    }
+    esp_netif_attach(nif, esp_eth_new_netif_glue(h));
+    esp_event_handler_instance_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
+                                        qemu_got_ip, NULL, NULL);
+    esp_eth_start(h);
+}
+#endif
+
 static void wifi_up(void)
 {
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+#ifdef XPRS_QEMU
+    /* Espressif's QEMU has no radio. The station gets the emulated
+     * OpenCores Ethernet instead, so the API, the hotspot page and the
+     * Reticulum hub link can be loaded from the host (-nic user). What a
+     * measurement here leaves out is WiFi's own memory, which the board
+     * tables already give. */
+    ESP_LOGW(TAG, "QEMU build: no WiFi driver, OpenCores Ethernet instead");
+    qemu_eth_up();
+    return;
+#endif
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -9087,6 +9196,8 @@ static int api_peers_json(char *buf, size_t cap)
     uint32_t atx = 0, arx = 0, anp = 0;
     int apeers = 0;
     xprsrns_addressed_stats(&atx, &arx, &anp, &apeers);
+    uint32_t avia = 0, apreq = 0, aundec = 0, anoclk = 0, alx = 0;
+    xprsrns_route_stats(&avia, &apreq, &aundec, &anoclk, &alx);
     uint32_t hrx = 0, htx = 0, hconn = 0, hdrop = 0;
     rns_tcp_stats(&hrx, &htx, &hconn, &hdrop);
     /* What the BEARER made of those frames, which is a different question
@@ -9116,7 +9227,7 @@ static int api_peers_json(char *buf, size_t cap)
              * with nothing on it, when what it has is a bearer initialised
              * over a connection that never came up. */
             ",\"rns\":{\"up\":%s,\"hub\":%s,\"peers\":%d,\"addressed\":"
-            "{\"tx\":%u,\"rx\":%u,\"no_peer\":%u},"
+            "{\"tx\":%u,\"rx\":%u,\"no_peer\":%u,\"via_hub\":%u,\"path_req\":%u,\"undecryptable\":%u,\"no_clock\":%u,\"lx_learned\":%u},"
             /* The socket's own traffic. `hub:true` with hub_rx:0 is a
              * connection that was accepted and then said nothing, which is a
              * different fault from a connection that never opened. */
@@ -9126,6 +9237,8 @@ static int api_peers_json(char *buf, size_t cap)
             xprsrns_is_up() ? "true" : "false",
             rns_tcp_is_up() ? "true" : "false", apeers,
             (unsigned)atx, (unsigned)arx, (unsigned)anp,
+            (unsigned)avia, (unsigned)apreq, (unsigned)aundec, (unsigned)anoclk,
+            (unsigned)alx,
             (unsigned)hrx, (unsigned)htx, (unsigned)hconn,
             (unsigned)brx, (unsigned)btx, (unsigned)bpaced, (unsigned)bother,
             peerlist);
@@ -9828,7 +9941,12 @@ void xapp_run(const xapp_board_t *board)
      * so `cfg set ble_on 0` changed nothing on any board. Read here. */
     if (board->ble && !xcfg_get_bool("ble_on", true))
         ESP_LOGW(TAG, "BLE5 off by configuration (ble_on = no)");
+#ifdef XPRS_QEMU
+    if (board->ble) ESP_LOGW(TAG, "QEMU build: no BLE controller");
+    if (0) {
+#else
     if (board->ble && xcfg_get_bool("ble_on", true)) {
+#endif
         heap_mark("before ble");
         if (xprsble_start(s_call) == ESP_OK) {
             xprsble_set_rx_cb(on_ble);
@@ -9933,6 +10051,11 @@ void xapp_run(const xapp_board_t *board)
         ESP_LOGE(TAG, "LAN bearer failed — nothing will pump ESP-NOW either");
     }
 
+#ifdef XPRS_QEMU
+    if (1) {
+        ESP_LOGW(TAG, "QEMU build: no ESP-NOW (it rides the WiFi driver)");
+    } else
+#endif
     if (!xcfg_get_bool("espnow_on", true)) {
         ESP_LOGI(TAG, "ESP-NOW disabled by config");
     } else if (xprsnow_start(s_call) == ESP_OK) {
@@ -10097,7 +10220,7 @@ void xapp_run(const xapp_board_t *board)
     /* 4 KB, not 3: the time-zone lookup (tz_tick) resolves a name and
      * reads an HTTP answer on this task, and at 3 KB it left 320 bytes
      * (measured on the e-paper board, 2026-09-11). */
-    if (xTaskCreate(inet_probe_task, "inet", 4096, NULL, 1, NULL) != pdPASS)
+    if (xTaskCreate(inet_probe_task, "inet", XPRS_STACK_INET, NULL, 1, NULL) != pdPASS)
         ESP_LOGE(TAG, "inet task did not start: no internet probe, no time zone");
 
 
@@ -10161,7 +10284,7 @@ void xapp_run(const xapp_board_t *board)
          * serial console (the `cfg` lines, the only way in with a cable),
          * the board's buttons and the battery. So it runs, without the
          * render, and on a smaller stack: what needed 8 KB was LVGL. */
-        if (xTaskCreatePinnedToCore(ui_task, "ui", 4096, NULL, 4, NULL,
+        if (xTaskCreatePinnedToCore(ui_task, "ui", XPRS_STACK_UI_HEADLESS, NULL, 4, NULL,
                                     XPRS_WORK_CORE) != pdPASS)
             ESP_LOGE(TAG, "console task failed to start: no serial console");
     }

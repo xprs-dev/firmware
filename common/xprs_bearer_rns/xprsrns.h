@@ -113,8 +113,28 @@ int xprsrns_peer_count(void);
 void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx, uint32_t *no_peer,
                              int *peers);
 
+/** Directed packets sent through a hub (HEADER_2), path requests made,
+ *  packets addressed to us that would not decrypt, and wires not announced
+ *  because the clock was not set yet, and neighbours made addressable from
+ *  their beacon's `lx:`. */
+void xprsrns_route_stats(uint32_t *via_hub, uint32_t *path_req,
+                         uint32_t *undecryptable, uint32_t *no_clock,
+                         uint32_t *lx_learned);
+
 /** Up = socket connected. */
 bool xprsrns_is_up(void);
+
+/** A neighbour's beacon said where to write to it (`lx:`, XPRS.md 3.1.1):
+ *  a Reticulum destination of its identity, LXMF's on a phone. Cheap and
+ *  without I/O, for the receive path: the socket task asks the hub for that
+ *  path, and the answer carries the key, from which the neighbour's own
+ *  xprs.wapp destination follows. Ignored once [call] is addressable. */
+void xprsrns_note_address(const char *call, const char *lx_hex);
+
+/** This station's xprs.wapp destination as 32 hex characters, for `lx:`
+ *  on its beacons (XPRS.md 3.1.1: where to write to this device). False
+ *  until the bearer is set up. */
+bool xprsrns_dest_hex(char out[33]);
 
 /** Counters for a status line: wires in, wires out, announces refused by
  *  pacing, frames that were not for us. */
@@ -139,7 +159,13 @@ static inline int xprsrns_peer_count(void) { return 0; }
 static inline void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx,
                                            uint32_t *np, int *peers)
 { if (tx) *tx = 0; if (rx) *rx = 0; if (np) *np = 0; if (peers) *peers = 0; }
+static inline void xprsrns_route_stats(uint32_t *v, uint32_t *q, uint32_t *u,
+                                       uint32_t *c, uint32_t *l)
+{ if (v) *v = 0; if (q) *q = 0; if (u) *u = 0; if (c) *c = 0; if (l) *l = 0; }
 static inline bool xprsrns_is_up(void) { return false; }
+static inline bool xprsrns_dest_hex(char out[33]) { (void)out; return false; }
+static inline void xprsrns_note_address(const char *c, const char *l)
+{ (void)c; (void)l; }
 static inline void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
                                  uint32_t *other)
 { if (rx) *rx = 0; if (tx) *tx = 0; if (paced) *paced = 0; if (other) *other = 0; }

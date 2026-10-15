@@ -370,18 +370,53 @@ void rns_hdlc_rx_feed(rns_hdlc_rx_t *rx, const uint8_t *in, size_t len,
 int rns_packet_build(const rns_packet_t *p, uint8_t *out, size_t out_cap)
 {
     if (!p || !out) return -1;
-    size_t need = 1 + 1 + RNS_HASH_LEN + 1 + p->data_len;
+    const bool h2 = p->header_type == RNS_HEADER_2;
+    if (h2 && !p->have_transport_id) return -1;
+    size_t need = 1 + 1 + (h2 ? RNS_HASH_LEN : 0) + RNS_HASH_LEN + 1 + p->data_len;
     if (out_cap < need) return -1;
     out[0] = (uint8_t)((p->header_type << 6) | (p->context_flag << 5) |
                        (p->transport_type << 4) | (p->dest_type << 2) |
                        p->packet_type);
     out[1] = p->hops;
-    memcpy(out + 2, p->dest, RNS_HASH_LEN);
-    out[2 + RNS_HASH_LEN] = p->context;
-    if (p->data_len && p->data) {
-        memcpy(out + 3 + RNS_HASH_LEN, p->data, p->data_len);
+    size_t off = 2;
+    if (h2) {
+        memcpy(out + off, p->transport_id, RNS_HASH_LEN);
+        off += RNS_HASH_LEN;
     }
+    memcpy(out + off, p->dest, RNS_HASH_LEN);
+    off += RNS_HASH_LEN;
+    out[off++] = p->context;
+    if (p->data_len && p->data) memcpy(out + off, p->data, p->data_len);
     return (int)need;
+}
+
+int rns_path_request_build(const uint8_t target[RNS_HASH_LEN],
+                           uint8_t *out, size_t out_cap)
+{
+    /* rnstransport.path.request is a PLAIN destination: its hash is the
+     * name hash's own digest, with no identity in it. */
+    static const char *const asp[] = { "path", "request" };
+    uint8_t nh[RNS_NAME_HASH_LEN], full[32];
+    rns_name_hash("rnstransport", asp, 2, nh);
+    rns_sha256(nh, sizeof nh, full);
+
+    /* A leaf's request is the target and a random tag; a transport node
+     * would put its own identity hash between them. The tag is what lets the
+     * network drop a duplicate of the same request. */
+    uint8_t data[2 * RNS_HASH_LEN];
+    memcpy(data, target, RNS_HASH_LEN);
+    rns_random(data + RNS_HASH_LEN, RNS_HASH_LEN);
+
+    rns_packet_t p;
+    memset(&p, 0, sizeof p);
+    p.header_type    = RNS_HEADER_1;
+    p.transport_type = RNS_TRANSPORT_BROADCAST;
+    p.dest_type      = RNS_DEST_PLAIN;
+    p.packet_type    = RNS_PACKET_DATA;
+    memcpy(p.dest, full, RNS_HASH_LEN);
+    p.data     = data;
+    p.data_len = sizeof data;
+    return rns_packet_build(&p, out, out_cap);
 }
 
 bool rns_packet_parse(const uint8_t *in, size_t len, rns_packet_t *out)

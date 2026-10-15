@@ -78,6 +78,15 @@ CONFIG_MBEDTLS_ECP_DP_BP384R1_ENABLED=n
 CONFIG_MBEDTLS_ECP_DP_BP512R1_ENABLED=n
 CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
 
+# Reticulum: the station on the global network (announces, what it hears,
+# mail from the internet to BLE5). One hub link, idle until config.ini
+# names an rns_hub. Paid for, not traded for a feature: measured under QEMU
+# (docs/esp32.md, "The C3 under QEMU"), it cost 19 KB settled and 24 KB at
+# the low point, and the stack sizes in platformio.ini, the TCP buffers
+# above, the borrowed stats blob and the right-sized config values gave
+# 19 to 22 KB back, with the hotspot and everything else still running.
+CONFIG_XPRS_BEARER_RNS=y
+
 # No self-fetching updater (its TLS stack is what the trim above removed);
 # the push door, POST /api/update, is the way in.
 CONFIG_XPRS_OTA_PULL=n
@@ -125,3 +134,10 @@ CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 # Preferring WiFi in the coexistence scheduler instead did not fix the page
 # (headers, then nothing), so it is not set.
 CONFIG_LWIP_TCP_MSS=536
+# And the buffers sized to it: five segments each way (lwIP refuses less
+# than 2,440 B and silently keeps its default). The default 5,760 B
+# let every connection queue eleven of them, so three phones loading the
+# 25 KB hotspot page held about 17 KB of the one SRAM between them. Five is
+# still a full window on a LAN, and less in flight is what this link wants.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2680
+CONFIG_LWIP_TCP_WND_DEFAULT=2680

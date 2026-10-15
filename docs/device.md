@@ -212,6 +212,8 @@ On the app boards (T-Deck, M5Stack) the console is single-key; a line is
 gathered only when it starts with `cfg` or `tap`, so the key vocabulary is
 untouched. `tap X Y` presses a touch screen at those coordinates, through
 the same path a finger takes (nothing on a board without one).
+`cfg tasks` prints every task's unused stack (its lowest free point) and
+the internal heap's free, lowest and largest block: what sizes a stack.
 `cfg alerts` lists the standing alerts and how many have been given;
 `cfg set alerts open` (or `owner`) is the 11.9 `alerts:` key, applied at
 once.

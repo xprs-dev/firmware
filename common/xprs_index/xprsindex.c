@@ -721,6 +721,14 @@ static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,
                        const char *call, uint32_t ts);
 static void xi_sync_card(xprsidx_t *st);
 #ifndef XPRSIDX_HOST_TEST
+/* The index writer's stack. A board overrides it with
+ * -DXPRS_STACK_IDXWR=<bytes> in its build_flags, sized from `cfg tasks`
+ * (stack_unused under load) with a quarter left over; every other board
+ * keeps this default. */
+#ifndef XPRS_STACK_IDXWR
+#define XPRS_STACK_IDXWR 8192
+#endif
+
 static void xi_writer_task(void *arg);
 #endif
 #ifdef XPRSIDX_HOST_TEST
@@ -1277,7 +1285,7 @@ xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
      * verifies a signature before each write, and mbedtls_ecp_muladd on
      * secp256k1 wants several kilobytes of its own; a stack overflow here
      * presents as a reboot loop, so this is sized generously on purpose. */
-    if (xTaskCreatePinnedToCore(xi_writer_task, "xprsidx_wr", 8192, st, 2,
+    if (xTaskCreatePinnedToCore(xi_writer_task, "xprsidx_wr", XPRS_STACK_IDXWR, st, 2,
                                 &st->writer, XPRS_WORK_CORE) != pdPASS) {
         XI_LOGW("writer task failed to start — nothing will reach the card");
         st->ready = false;

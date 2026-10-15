@@ -291,13 +291,33 @@ bool rns_announce_open(const rns_packet_t *p, rns_announce_t *out);
 bool rns_announce_verify(const rns_packet_t *p, const rns_announce_t *a);
 
 /**
- * @brief Build a HEADER_1 packet: flags(1) hops(1) dest(16) context(1) data.
+ * @brief Build a packet: flags(1) hops(1) [transport_id(16)] dest(16)
+ *        context(1) data.
  *
- * Only HEADER_1 is built: a leaf addresses a destination, it does not relay for
- * anybody, and HEADER_2 is what a transport node emits.
+ * HEADER_2 (with [have_transport_id]) is not only what a relay emits. A leaf
+ * sending to a destination more than one hop away names the next hop as the
+ * transport id, exactly as reference RNS does (Transport._outbound: a path
+ * with hops > 1 is rewritten to HEADER_2 / TRANSPORT with the path's next
+ * hop). A hub forwards a data packet only when it is addressed THROUGH it;
+ * this codec used to build HEADER_1 alone, so every addressed packet a
+ * station sent toward a peer behind a hub was dropped there (found
+ * 2026-10-15 with reference clients on public hubs).
  * @return length, or -1.
  */
 int rns_packet_build(const rns_packet_t *p, uint8_t *out, size_t out_cap);
+
+/**
+ * @brief A leaf's path request for [target]: a PLAIN broadcast to
+ *        rnstransport.path.request carrying target(16) and a random tag(16).
+ *
+ * A node that knows the path answers by replaying the target's announce,
+ * relayed (HEADER_2, transport id = the next hop to use). That is how a peer
+ * whose announce never reached us becomes addressable: hubs do not pass on
+ * every client's announce, and they do answer path requests.
+ * @return length, or -1.
+ */
+int rns_path_request_build(const uint8_t target[RNS_HASH_LEN],
+                           uint8_t *out, size_t out_cap);
 
 /**
  * @brief Parse either header form. [out]->data points into [in].
