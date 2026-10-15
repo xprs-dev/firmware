@@ -1,3 +1,3 @@
 #!/bin/sh
-# The crypto the page ships must reproduce the XPRS.md 9.1.2 worked example.
-cd "$(dirname "$0")/.." && node xprs_crypto.js
+# The signing the page ships is tested where the page lives.
+exec sh "$(dirname "$0")/../../../../webchat/tool/test_crypto.sh"

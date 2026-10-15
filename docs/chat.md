@@ -4,11 +4,13 @@ The board runs an open access point and serves one page on it. A visitor
 joins the AP, the captive portal opens the page, and they can talk to the
 mesh without installing anything and without an account.
 
-The page lives in `common/xprs_hotspot/`: `chat_page.html` plus
-`xprs_crypto.js`, merged and gzipped into `chat_page.c` by
-`tool/embed_page.py`. Edit the sources, run the tool, rebuild. It is served
-straight out of flash with `Content-Encoding: gzip` (50,370 bytes of page,
-21,809 in flash).
+The page is shared with the Android app and lives in its own repo, `webchat`
+(checked out next to this one): `page/chat_page.html`, `page/xprs_crypto.js`.
+`common/xprs_hotspot/tool/embed_page.py` asks webchat's `tool/build.py` for the
+gzipped page as `chat_page.c`; edit there, run the tool, rebuild. It is served
+straight out of flash with `Content-Encoding: gzip` (about 61 KB of page, 25 KB
+in flash). The page asks `/api/services` and adapts; the boards answer with no
+`page` key, so they show every tab, as before.
 
 `common/xprs_http/` is an older, larger implementation of the same idea --
 WebSocket, nostr-tools, its own captive URIs. Nothing calls
