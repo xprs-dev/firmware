@@ -160,6 +160,11 @@
 "id": "399227"
 },
 {
+"wire": "t:message f:X1QZ3N d:LISBOA ts:2026-08-08_14:26:40 sig:QPxg^#t7^xDBU$s1pg.d.u^UZ$B0qYj%c.(I[)FY?%WouV6?)^xS[jf,ftorZ=$fRs>JwXM_GfY&bYO@ m:net starts in ten minutes",
+"bytes": 163,
+"id": "399227"
+},
+{
 "wire": "t:message f:X1QZ3N d:X1RD89 ts:2026-08-08_14:26:40 x:pQ4m9xT2vB8kR sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 131,
 "id": "2ed212"
@@ -348,6 +353,36 @@
 "wire": "t:message f:X1QZ3N d:LISBOA ts:2026-08-08_14:26:40 file:Uc3nRw8kFa5xPd1qGz7mYb0tJe6vHs2iLoA9XfCqK4E.pdf size:480kB name:mast-plan.pdf m:the plan for the mast",
 "bytes": 157,
 "id": "e4e94c"
+},
+{
+"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:12:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meet at six",
+"bytes": 129,
+"id": "3f8923"
+},
+{
+"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:20:41 edit:3f8923 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meet at seven",
+"bytes": 143,
+"id": "954dc7"
+},
+{
+"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:31:07 edit:3f8923 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meet at seven, bring the keys",
+"bytes": 159,
+"id": "03a582"
+},
+{
+"wire": "t:warning f:X1QZ3N pos:38.7071,-9.1355 rad:300m kind:flood sev:watch scope:local ts:2026-08-08_14:26:40 until:2026-08-15_14:26:40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:the lower car park floods at high tide",
+"bytes": 235,
+"id": "b852eb"
+},
+{
+"wire": "t:warning f:X1QZ3N pos:38.7071,-9.1355 rad:400m kind:flood sev:danger scope:local ts:2026-08-08_16:05:00 until:2026-08-15_14:26:40 edit:b852eb sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:the lower car park floods at high tide",
+"bytes": 248,
+"id": "53a8d9"
+},
+{
+"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:40:00 r:3f8923 remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 139,
+"id": "05119f"
 },
 {
 "wire": "t:message f:X1QZ3N d:X1RD89 ts:2026-08-08_14:26:40 q:ack,read m:did you get the keys?",
@@ -640,6 +675,16 @@
 "id": "7f83f8"
 },
 {
+"wire": "t:moderate f:X32DVA d:X5A3F2 ts:2026-10-15_10:02:11 edit:49e3cd sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:[number removed by a moderator]",
+"bytes": 162,
+"id": "12faed"
+},
+{
+"wire": "t:moderate f:X32DVA d:X5A3F2 ts:2026-10-15_10:05:30 r:49e3cd remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 140,
+"id": "fb3d03"
+},
+{
 "wire": "t:command f:X1QZ3N d:X3RLY7 ts:2026-08-08_14:26:40 cmd:door-open arg:north sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 139,
 "id": "747ae8"
@@ -880,9 +925,9 @@
 "id": "6cbbb6"
 },
 {
-"wire": "t:result f:X3RLY7 d:X1QZ3N ts:2026-08-08_14:30:01 r:6cbbb6 code:200 owner:X1QZ3N use:listed first:X1ABCD,X1EFGH serve:relay,archive sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 196,
-"id": "69664e"
+"wire": "t:result f:X3RLY7 d:X1QZ3N ts:2026-08-08_14:30:01 r:6cbbb6 code:200 owner:X1QZ3N use:listed first:X1ABCD,X1EFGH serve:relay,archive alerts:owner sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 209,
+"id": "d0b4bd"
 },
 {
 "wire": "t:request f:X1MB7K d:X3RLY7 ts:2026-08-08_14:31:00 q:policy",
@@ -1473,6 +1518,16 @@
 "wire": "t:warning f:X3RLY7 ts:2026-08-08_14:26:40 r:9fd8ea remove:warning",
 "bytes": 65,
 "id": "eb992e"
+},
+{
+"wire": "t:info f:X1QZ3N kind:works scope:local ts:2026-08-08_14:26:40 until:2026-09-08_14:26:40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:the east gate is closed, use the west one",
+"bytes": 196,
+"id": "8a387b"
+},
+{
+"wire": "t:info f:X1QZ3N scope:local ts:2026-08-09_09:00:00 until:2026-09-08_14:26:40 r:8a387b remove:info sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 162,
+"id": "f4ce69"
 },
 {
 "wire": "t:event f:X3RLY7 pos:38.7223,-9.1393 title:tuesday-net kind:net since:2026-08-11_20:00:00 until:2026-08-11_21:00:00 ts:2026-08-08_14:26:40 m:weekly net, all welcome",

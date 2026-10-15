@@ -14,7 +14,9 @@
  * 64 bytes and would not leave room for a message. Same key as the npub and the
  * callsign, so nothing about identity changes.
  *
- * Not interoperable with BIP-340 verifiers, by construction. The reference is
+ * Not interoperable with BIP-340 verifiers, by construction (a signer that can
+ * only produce BIP-340, such as a NOSTR extension, uses the second form of
+ * XPRS.md 6.1.3, which xprssig_bip340_verify checks). The reference is
  * `reticulum-dart/lib/src/util/xprs_crypto.dart`, and the host harness verifies
  * signatures that implementation produced.
  *
@@ -39,6 +41,8 @@ extern "C" {
 #define XPRSSIG_LEN      48     /* 16-byte challenge || 32-byte scalar */
 #define XPRSSIG_B85_LEN  60     /* what `sig:` carries */
 #define XPRSSIG_KEY_LEN  32     /* private scalar, and the x-only public key */
+#define XPRSSIG_BIP340_LEN      64   /* the second form, XPRS.md 6.1.3 */
+#define XPRSSIG_BIP340_B85_LEN  80   /* what `sig:` carries in that form */
 
 /**
  * @brief The x-only public key for a private scalar, BIP-340 even-y convention.
@@ -73,6 +77,16 @@ xprssig_result_t xprssig_last_result(void);
 
 bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
                     const uint8_t pub_x[XPRSSIG_KEY_LEN]);
+
+/**
+ * @brief Verify a standard BIP-340 signature (XPRS.md 6.1.3) over a 32-byte
+ *        message, which for a packet is the id of the NOSTR event rebuilt from
+ *        it (xprsid_verify does that). For a packet whose key a NOSTR signer
+ *        holds: the short form above is the default and this is the other.
+ */
+bool xprssig_bip340_verify(const uint8_t msg[32],
+                           const uint8_t sig[XPRSSIG_BIP340_LEN],
+                           const uint8_t pub_x[XPRSSIG_KEY_LEN]);
 
 /**
  * @brief The APRS-safe base85 of §4.3 — 4 bytes to 5 characters.

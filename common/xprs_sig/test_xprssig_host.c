@@ -242,6 +242,30 @@ static void test_a_pre_rename_signature_no_longer_verifies(void)
           "a fallback to a second challenge string has come back");
 }
 
+/* ── BIP-340, the second signature form (XPRS.md 6.1.3) ─────────────────── */
+/* BIP-340's own test vectors, 0 and 1: the verifier is the standard one. */
+static void test_bip340_vectors(void)
+{
+    uint8_t m[32], pub[32], sig[64];
+    unhex("0000000000000000000000000000000000000000000000000000000000000000", m, 32);
+    unhex("F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9", pub, 32);
+    unhex("E907831F80848D1069A5371B402410364BDF1C5F8307B0084C55F1CE2DCA8215"
+          "25F66A4A85EA8B71E482A74F382D2CE5EBEEE8FDB2172F477DF4900D310536C0", sig, 64);
+    CHECK(xprssig_bip340_verify(m, sig, pub), "BIP-340 vector 0 does not verify");
+    uint8_t bad[64];
+    memcpy(bad, sig, 64);
+    bad[40] ^= 1;
+    CHECK(!xprssig_bip340_verify(m, bad, pub), "a flipped bit verified");
+
+    unhex("243F6A8885A308D313198A2E03707344A4093822299F31D0082EFA98EC4E6C89", m, 32);
+    unhex("DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659", pub, 32);
+    unhex("6896BD60EEAE296DB48A229FF71DFE071BDE413E6D43F917DC8DCF8C78DE3341"
+          "8906D11AC976ABCCB20B091292BFF4EA897EFCB639EA871CFA95F6DE339E4B0A", sig, 64);
+    CHECK(xprssig_bip340_verify(m, sig, pub), "BIP-340 vector 1 does not verify");
+    unhex("0000000000000000000000000000000000000000000000000000000000000000", m, 32);
+    CHECK(!xprssig_bip340_verify(m, sig, pub), "the wrong message verified");
+}
+
 int main(void)
 {
     printf("xprssig host tests (signature from reticulum-dart)\n");
@@ -253,6 +277,7 @@ int main(void)
     test_base85();
     test_the_specifications_worked_example();
     test_a_pre_rename_signature_no_longer_verifies();
+    test_bip340_vectors();
     printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -508,6 +508,39 @@ bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
     return diff == 0;
 }
 
+bool xprssig_bip340_verify(const uint8_t msg[32],
+                           const uint8_t sig[XPRSSIG_BIP340_LEN],
+                           const uint8_t pub_x[XPRSSIG_KEY_LEN])
+{
+    if (!msg || !sig || !pub_x) return false;
+    s_last = XPRSSIG_BAD;
+    const uint8_t *r = sig, *s = sig + 32;
+    if (!xs_sc_valid(s)) return false;
+
+    /* e = tagged_hash("BIP0340/challenge", r || P || m) mod n. The reduction is
+     * (0 + e*1) mod n, which the scalar primitive already does. */
+    uint8_t e32[32], zero[32] = {0}, one[32] = {0}, e[32];
+    one[31] = 1;
+    xs_tagged("BIP0340/challenge", r, 32, pub_x, 32, msg, 32, e32);
+    if (!xs_sc_muladd(zero, e32, one, e)) return false;
+
+    /* R = s*G - e*P, as s*G + (n-e)*P. e == 0 would make n-e == n: the
+     * primitive treats that as the scalar n, which times P is the point at
+     * infinity, so R = s*G and the check below still decides honestly. */
+    uint8_t neg_e[32];
+    if (!xs_sc_negate(e, neg_e)) return false;
+
+    uint8_t rx[32];
+    bool odd = false;
+    if (!xs_mul_g_add_p(s, neg_e, pub_x, rx, &odd)) return false;
+    if (odd) return false;                      /* R must have an even y */
+
+    uint8_t diff = 0;                           /* and the x the signature names */
+    for (int i = 0; i < 32; i++) diff |= (uint8_t)(rx[i] ^ r[i]);
+    if (diff == 0) s_last = XPRSSIG_OK;
+    return diff == 0;
+}
+
 bool xprssig_generate(uint8_t priv[XPRSSIG_KEY_LEN])
 {
     if (!priv) return false;
