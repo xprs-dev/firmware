@@ -131,6 +131,24 @@ bool xprsrns_is_up(void);
  *  xprs.wapp destination follows. Ignored once [call] is addressable. */
 void xprsrns_note_address(const char *call, const char *lx_hex);
 
+/** A callsign this station needs to address and cannot yet (an archiver it
+ *  was told to use, a station it must answer). Its xprs.wapp destination is
+ *  then learned from the name its LXMF announce carries, since XPRS.md
+ *  12.12.2 has a resolver read every name the transport offers. No I/O. */
+void xprsrns_want(const char *call);
+
+/** Hand a copy of one of this station's own publications (no `d:`) to each
+ *  archiver named in `archivers` that can be addressed, as one directed
+ *  packet each (XPRS.md 12.12.2: the push across the internet is an
+ *  addressed copy per chosen archiver). Signs nothing; encrypts per
+ *  archiver, so call it from a task sized for that. */
+void xprsrns_deposit(const char *wire, int len);
+
+/** Copies deposited, archivers that could not be addressed when one was due,
+ *  and callsigns resolved from LXMF announce names. */
+void xprsrns_archive_stats(uint32_t *deposited, uint32_t *no_dest,
+                           uint32_t *named);
+
 /** This station's xprs.wapp destination as 32 hex characters, for `lx:`
  *  on its beacons (XPRS.md 3.1.1: where to write to this device). False
  *  until the bearer is set up. */
@@ -166,6 +184,10 @@ static inline bool xprsrns_is_up(void) { return false; }
 static inline bool xprsrns_dest_hex(char out[33]) { (void)out; return false; }
 static inline void xprsrns_note_address(const char *c, const char *l)
 { (void)c; (void)l; }
+static inline void xprsrns_want(const char *c) { (void)c; }
+static inline void xprsrns_deposit(const char *w, int n) { (void)w; (void)n; }
+static inline void xprsrns_archive_stats(uint32_t *d, uint32_t *n, uint32_t *m)
+{ if (d) *d = 0; if (n) *n = 0; if (m) *m = 0; }
 static inline void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
                                  uint32_t *other)
 { if (rx) *rx = 0; if (tx) *tx = 0; if (paced) *paced = 0; if (other) *other = 0; }

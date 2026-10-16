@@ -299,6 +299,53 @@ static void asks_send(void)
     }
 }
 
+/*
+ * Callsigns wanted by name (xprsrns_want). An XPRS app announces its LXMF
+ * delivery destination with its callsign as the display name (XPRS.md
+ * 12.12.2 asks every station to), and that identity's xprs.wapp destination
+ * follows from the key. Only names on this list are worth a verify; every
+ * other LXMF announce in the hub's flood costs a ten-byte compare.
+ */
+#define XRNS_WANTS 4
+static char     s_want[XRNS_WANTS][16];
+static uint8_t  s_want_next;
+static uint8_t  s_lxmf_name[RNS_NAME_HASH_LEN];
+static uint32_t s_named, s_deposited, s_deposit_nodest;
+
+void xprsrns_want(const char *call)
+{
+    if (!s_ready || !call || !call[0] || peer_find(call)) return;
+    for (int i = 0; i < XRNS_WANTS; i++)
+        if (strcasecmp(s_want[i], call) == 0) return;
+    snprintf(s_want[s_want_next], sizeof s_want[0], "%s", call);
+    s_want_next = (uint8_t)((s_want_next + 1) % XRNS_WANTS);
+}
+
+/* The display name of an LXMF announce: msgpack [name, stamp cost] from
+ * current LXMF, the bare UTF-8 name from older clients and this project's
+ * app. */
+static bool lxmf_name(const uint8_t *ad, size_t n, char *out, size_t cap)
+{
+    size_t at = 0, len = n;
+    if (n >= 2 && ad[0] == 0x92) {
+        uint8_t t = ad[1];
+        if ((t == 0xc4 || t == 0xd9) && n >= 3) { len = ad[2]; at = 3; }
+        else if ((t & 0xe0) == 0xa0)            { len = t & 0x1f; at = 2; }
+        else return false;
+    }
+    if (len == 0 || at + len > n || len >= cap) return false;
+    memcpy(out, ad + at, len);
+    out[len] = 0;
+    return true;
+}
+
+static int want_find(const char *name)
+{
+    for (int i = 0; i < XRNS_WANTS; i++)
+        if (s_want[i][0] && strcasecmp(s_want[i], name) == 0) return i;
+    return -1;
+}
+
 static int ask_for(const uint8_t dest[RNS_HASH_LEN])
 {
     for (int i = 0; i < XRNS_ASKS; i++)
@@ -460,6 +507,25 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
         ESP_LOGI(TAG, "%s is addressable: learned from its lx: (%d hops)",
                  s_asks[ask].call, (int)p.hops + 1);
         memset(&s_asks[ask], 0, sizeof s_asks[ask]);
+        return;
+    }
+
+    if (memcmp(a.name_hash, s_lxmf_name, RNS_NAME_HASH_LEN) == 0) {
+        char nm[24];
+        int w = lxmf_name(a.app_data, a.app_len, nm, sizeof nm) ? want_find(nm) : -1;
+        if (w >= 0 && rns_announce_verify(&p, &a)) {
+            rns_identity_t idt;
+            rns_identity_from_public(a.pub, &idt);
+            uint8_t wd[RNS_HASH_LEN];
+            rns_destination_hash(s_wapp_name, idt.hash, wd);
+            peer_learn(s_want[w], wd, a.pub, &p);
+            s_named++;
+            ESP_LOGI(TAG, "%s is addressable: named by its LXMF announce",
+                     s_want[w]);
+            s_want[w][0] = 0;
+            return;
+        }
+        s_other++;
         return;
     }
 
@@ -628,6 +694,40 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
 
 bool xprsrns_is_up(void) { return s_ready && rns_tcp_is_up(); }
 
+void xprsrns_deposit(const char *wire, int len)
+{
+    if (!s_ready || !rns_tcp_is_up() || !wire || len <= 0) return;
+    const char *list = xcfg_get("archivers", "");
+    if (!list[0]) list = xcfg_get("supers", "");      /* the old key */
+    char one[16];
+    int w = 0;
+    for (const char *c = list; ; c++) {
+        if (*c && *c != ',' && *c != ' ' && w < (int)sizeof one - 1) {
+            one[w++] = *c;
+            continue;
+        }
+        one[w] = 0;
+        if (w) {
+            if (peer_find(one) && xprsrns_send_to(one, wire, len)) {
+                s_deposited++;
+            } else {
+                s_deposit_nodest++;
+                xprsrns_want(one);
+            }
+        }
+        w = 0;
+        if (!*c) break;
+    }
+}
+
+void xprsrns_archive_stats(uint32_t *deposited, uint32_t *no_dest,
+                           uint32_t *named)
+{
+    if (deposited) *deposited = s_deposited;
+    if (no_dest) *no_dest = s_deposit_nodest;
+    if (named) *named = s_named;
+}
+
 bool xprsrns_dest_hex(char out[33])
 {
     if (!s_ready) return false;
@@ -682,6 +782,8 @@ static bool xprsrns_setup(xprsrns_wire_cb_t cb)
     }
     const char *aspects[] = { "wapp" };
     rns_name_hash("xprs", aspects, 1, s_wapp_name);
+    const char *lx_aspects[] = { "delivery" };
+    rns_name_hash("lxmf", lx_aspects, 1, s_lxmf_name);
     rns_destination_hash(s_wapp_name, s_id.hash, s_wapp_dest);
 
     s_cb = cb;

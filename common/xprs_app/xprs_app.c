@@ -3070,6 +3070,10 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         if (!xprs_get_str(&sp, "lx", lx, sizeof lx)) break;
         if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
         if (strcasecmp(from, s_call) == 0) break;
+        /* Off the internet (an archiver's replay, 12.12.1) only a signed
+         * claim names where to write: anybody can type an lx:. A beacon
+         * heard on the radio is the sender in person, signed or not. */
+        if (bearer_reach(bearer) != XPRS_REACH_LOCAL && !verified(&sp)) break;
         xprsrns_note_address(from, lx);
     } while (0);
 
@@ -4076,13 +4080,25 @@ static void air_signed_observations(void)
      * the internet. Without the fan-out, "X3R8XX hears X1A67X on ble" was
      * a fact only other BLE listeners could ever learn. */
     static const char *k_bearers[] = { "ble", "lan", "espnow" };
+    bool deposited = false;
     for (int i = 0; i < 3; i++) {
         char wire[XPRS_MAX_WIRE + 1];
         int n = observation_beacon(k_bearers[i], wire, (int)sizeof wire,
                                    SIG_ROOM);
         if (n <= 0 || n > XPRS_MAX_WIRE) continue;
-        if (!strstr(wire, " hears:")) continue;
+        bool heard = strstr(wire, " hears:") != NULL;
+        /* One signed observation a turn goes to this station's archivers
+         * even with nobody heard (12.12.2: what it publishes is pushed, an
+         * addressed copy each). It carries lx:, so it is how a station on
+         * the far side of the internet finds where to write to us: it asks
+         * an archiver about our callsign (12.12.1's miss path). */
+        if (!heard && (deposited || !xprsrns_is_up())) continue;
         n = sign_wire(wire, n, (int)sizeof wire);
+        if (!deposited && xprsrns_is_up()) {
+            xprsrns_deposit(wire, n);
+            deposited = true;
+        }
+        if (!heard) continue;
         xprslan_send(wire, n);
         xprsnow_send(wire, n);
         if (xprsrns_is_up()) xprsrns_send(wire, n);
@@ -4204,7 +4220,13 @@ static void air_identity(void)
      * and every reply it got was unverifiable. */
     if (xprsble_is_active()) xprsble_send(wire, n);
     xprslan_send(wire, n);
-    if (xprsrns_is_up()) xprsrns_send(wire, n);
+    if (xprsrns_is_up()) {
+        xprsrns_send(wire, n);
+        /* The key every signature of ours verifies against, with our
+         * archivers, so what they hand out on our behalf can be checked
+         * (12.12.1: the keys ride the same page). */
+        xprsrns_deposit(wire, n);
+    }
     /* And keep it as the hello the bearer airs the moment it (re)connects to
      * a hub: 36.12.2's identity-announcement lane is the one thing guaranteed
      * to cross a shared transport, and a peer that joins after us would
@@ -6676,6 +6698,94 @@ static xapp_key_t touch_events(xapp_key_t key, bool *force)
 
 /* ── idx_task: the indexer's writer, announcer and replayer (core 1) ────── */
 
+/*
+ * 12.12.1's miss path. A station asked us over Reticulum and we cannot
+ * address it: its announces do not cross the hub and we never heard its
+ * beacon. Its archivers hold its signed observation, lx: included, so we
+ * ask one: `cmd:history kind:identity,observation only:<it>`. The replay
+ * comes back through the ordinary receive path, its lx: is handed to the
+ * bearer, the bearer asks the hub for the path, and the asker's next repeat
+ * (the courier repeats at 30, 60, 100 and 160 s) is answered. One callsign
+ * at a time, each at most once in ten minutes; idx_task only.
+ */
+static struct {
+    char     call[16];
+    bool     pending;
+    char     last[16];
+    uint32_t last_s;
+    uint32_t asked;
+} s_miss;
+
+static void miss_note(const char *call)
+{
+    uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    xprsrns_want(call);
+    if (s_miss.pending) return;
+    if (strcasecmp(s_miss.last, call) == 0 && now_s - s_miss.last_s < 600)
+        return;
+    snprintf(s_miss.call, sizeof s_miss.call, "%s", call);
+    s_miss.pending = true;
+}
+
+/* An archiver we can address now: one the operator named first, then any
+ * whose serve:archive put it in the catch-up table. */
+static bool miss_archiver(char *out, size_t cap)
+{
+    const char *list = xcfg_get("archivers", "");
+    if (!list[0]) list = xcfg_get("supers", "");
+    char one[XPRS_CALL_LEN];
+    int w = 0;
+    for (const char *c = list; ; c++) {
+        if (*c && *c != ',' && *c != ' ' && w < (int)sizeof one - 1) {
+            one[w++] = *c;
+            continue;
+        }
+        one[w] = 0;
+        if (w && xprsrns_can_address(one)) {
+            snprintf(out, cap, "%s", one);
+            return true;
+        }
+        w = 0;
+        if (!*c) break;
+    }
+    for (int i = 0; i < CU_PEERS; i++) {
+        if (s_cu_peers[i].used && xprsrns_can_address(s_cu_peers[i].call)) {
+            snprintf(out, cap, "%s", s_cu_peers[i].call);
+            return true;
+        }
+    }
+    return false;
+}
+
+static void miss_pump(void)
+{
+    if (!s_miss.pending) return;
+    s_miss.pending = false;
+    snprintf(s_miss.last, sizeof s_miss.last, "%s", s_miss.call);
+    s_miss.last_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    char arch[XPRS_CALL_LEN];
+    if (!xst_epoch_now() || !miss_archiver(arch, sizeof arch)) {
+        ESP_LOGW(TAG, "miss: cannot address %s and no archiver to ask",
+                 s_miss.call);
+        return;
+    }
+    char ts[24];
+    time_t t = time(NULL);
+    struct tm tmv;
+    gmtime_r(&t, &tmv);
+    strftime(ts, sizeof ts, "%Y-%m-%d_%H:%M:%S", &tmv);
+    char ask[XPRSIDX_WIRE_MAX + 1];
+    int an = snprintf(ask, sizeof ask,
+                      "t:command f:%s d:%s ts:%s cmd:history "
+                      "kind:identity,observation only:%s",
+                      s_call, arch, ts, s_miss.call);
+    if (an <= 0 || an >= (int)sizeof ask) return;
+    an = sign_wire(ask, an, sizeof ask);
+    if (xprsrns_send_to(arch, ask, an)) s_miss.asked++;
+    ESP_LOGI(TAG, "miss: asked %s where %s can be written to", arch,
+             s_miss.call);
+}
+
 /* Sends one wire on the bearer an ask arrived on; announcements go on both. */
 static void idx_air(const char *bearer, const char *wire, int len)
 {
@@ -6698,6 +6808,7 @@ static void idx_air(const char *bearer, const char *wire, int len)
         xprs_t rp;
         char to[16] = "";
         if (xprs_parse(wire, len, &rp)) xprs_get_str(&rp, "d", to, sizeof to);
+        if (to[0] && !xprsrns_can_address(to)) miss_note(to);
         if (!to[0] || !xprsrns_send_to(to, wire, len)) xprsrns_send(wire, len);
     }
     else {
@@ -8461,6 +8572,9 @@ no_announce:
                 }
                 one[w] = 0;
                 if (w) {
+                    /* Over Reticulum it is addressable once its LXMF
+                     * announce names it (12.12.2), or its beacon's lx:. */
+                    if (!xprsrns_can_address(one)) xprsrns_want(one);
                     cu_peer_t *r = cu_find(one, true);
                     if (r) {
                         r->deep = true;
@@ -8499,6 +8613,8 @@ named_done:
                 break;                       /* one ask in flight at a time */
             }
         }
+
+        miss_pump();
 
         /* The parked 36.10 catch-up ask, signed on THIS task's stack. */
         if (s_cu.pending) {
@@ -9198,6 +9314,8 @@ static int api_peers_json(char *buf, size_t cap)
     xprsrns_addressed_stats(&atx, &arx, &anp, &apeers);
     uint32_t avia = 0, apreq = 0, aundec = 0, anoclk = 0, alx = 0;
     xprsrns_route_stats(&avia, &apreq, &aundec, &anoclk, &alx);
+    uint32_t adep = 0, anodest = 0, anamed = 0;
+    xprsrns_archive_stats(&adep, &anodest, &anamed);
     uint32_t hrx = 0, htx = 0, hconn = 0, hdrop = 0;
     rns_tcp_stats(&hrx, &htx, &hconn, &hdrop);
     /* What the BEARER made of those frames, which is a different question
@@ -9227,7 +9345,8 @@ static int api_peers_json(char *buf, size_t cap)
              * with nothing on it, when what it has is a bearer initialised
              * over a connection that never came up. */
             ",\"rns\":{\"up\":%s,\"hub\":%s,\"peers\":%d,\"addressed\":"
-            "{\"tx\":%u,\"rx\":%u,\"no_peer\":%u,\"via_hub\":%u,\"path_req\":%u,\"undecryptable\":%u,\"no_clock\":%u,\"lx_learned\":%u},"
+            "{\"tx\":%u,\"rx\":%u,\"no_peer\":%u,\"via_hub\":%u,\"path_req\":%u,\"undecryptable\":%u,\"no_clock\":%u,\"lx_learned\":%u,\"named\":%u,"
+            "\"miss_asked\":%u},\"deposit\":{\"sent\":%u,\"no_dest\":%u},"
             /* The socket's own traffic. `hub:true` with hub_rx:0 is a
              * connection that was accepted and then said nothing, which is a
              * different fault from a connection that never opened. */
@@ -9238,7 +9357,8 @@ static int api_peers_json(char *buf, size_t cap)
             rns_tcp_is_up() ? "true" : "false", apeers,
             (unsigned)atx, (unsigned)arx, (unsigned)anp,
             (unsigned)avia, (unsigned)apreq, (unsigned)aundec, (unsigned)anoclk,
-            (unsigned)alx,
+            (unsigned)alx, (unsigned)anamed, (unsigned)s_miss.asked,
+            (unsigned)adep, (unsigned)anodest,
             (unsigned)hrx, (unsigned)htx, (unsigned)hconn,
             (unsigned)brx, (unsigned)btx, (unsigned)bpaced, (unsigned)bother,
             peerlist);
