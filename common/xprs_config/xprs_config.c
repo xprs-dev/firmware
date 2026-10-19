@@ -64,6 +64,9 @@ static cfg_entry_t s_cfg[] = {
     { "supers",    NULL, 0, false },
     { "ntp",       NULL, 0, false },
     { "ap_on",     NULL, 0, false },
+    /* The screen: a board that has one may still run dark when its RAM is
+     * wanted for a radio (the Heltec carrying XPRS-WiFi). */
+    { "screen_on", NULL, 0, false },
     { "ap_ssid",   NULL, 0, false },
     { "tz",        NULL, 0, false },
     /* Empty `tz` means found out automatically (common/xprs_tz); `tz_auto`

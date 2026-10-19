@@ -116,6 +116,29 @@ remains the ESP-NOW-era full station until ESP-NOW is retired from it.
   toolchain (raw .ld ASSERTs never fire); the `SOC_RESERVE_MEMORY_REGION`
   entries are the working guard.
 
+## Resuming on another machine
+
+All xwifi work is parked, saved as follows:
+
+- Firmware: branch `xwifi-wip` of `xprs-dev/firmware` (main carries only
+  this plan). The branch holds the bearer (`common/xprs_bearer_wifi8`), the
+  app and station edits, the Heltec sdkconfig, and the C3 relay env.
+- Library: `xprs-dev/xwifi` (private), branch `main`. The validated S3 and
+  C3 ports are committed there; `xw-range` is a side branch.
+- Checkout layout: the two repos must be siblings, because
+  `common/xwifi` is a symlink to `../../xwifi`:
+
+      ~/code/xprs/firmware   (branch xwifi-wip)
+      ~/code/xprs/xwifi
+
+- Builds: `~/.pio-venv/bin/pio run -e heltec_v3` (or `-e c3xwifi` in
+  models/esp32c3-mini/firmware). Delete generated `sdkconfig.<env>` files
+  first when defaults changed.
+- Bench state (this stays on the original machine): Heltec V3 X333SM on
+  ttyUSB0 and C3 relay X5FZVE on ttyACM0 are flashed with the lean xwifi
+  builds and talking; Heltec NVS has wifi_on, espnow_on, index_on, ap_on
+  all set to no.
+
 ## Open items
 
 - User decision: Heltec profile A or B.

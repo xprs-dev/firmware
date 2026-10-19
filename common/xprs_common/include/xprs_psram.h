@@ -41,4 +41,25 @@
 #define XPRS_PSRAM_BSS
 #endif
 
+/**
+ * xprs_big_calloc -- the allocation twin of XPRS_PSRAM_BSS, for buffers that
+ * cannot be statics at all. On the xwifi boards the RF sample banks cap how
+ * far .bss may grow, so the biggest buffers moved from annotated statics to
+ * boot-time allocations; this keeps their placement rule: PSRAM when the
+ * board has it (what the annotation did), internal heap when it does not.
+ * Same restrictions as the annotation above -- task-context, CPU-only state.
+ */
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+static inline void *xprs_big_calloc(size_t n, size_t size)
+{
+    void *p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = heap_caps_calloc(n, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    return p;
+}
+#else
+#include <stdlib.h>
+static inline void *xprs_big_calloc(size_t n, size_t size) { return calloc(n, size); }
+#endif
+
 #endif /* XPRS_PSRAM_H */

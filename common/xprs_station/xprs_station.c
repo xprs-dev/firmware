@@ -3,6 +3,7 @@
  * the single-board original never needed. */
 #include "xprs_station.h"
 
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,7 @@ uint32_t xst_test_now_ms;
 #define ESP_LOGW(...)        ((void)0)
 #define ESP_LOGE(...)        ((void)0)
 #define XPRS_PSRAM_BSS
+#define xprs_big_calloc(n, size) calloc((n), (size))
 #define LOCK()               ((void)0)
 #define UNLOCK()             ((void)0)
 static const char *TAG __attribute__((unused)) = "xst";
@@ -48,7 +50,9 @@ static bool s_tz_known;     /* false: nobody has said, and s_tz_off is 0 */
 static XPRS_PSRAM_BSS xst_dev_t s_seen[XST_SEEN_MAX];
 
 /* ── The chat ring ──────────────────────────────────────────────────── */
-static XPRS_PSRAM_BSS xst_chat_t s_chat[XST_CHAT_MAX];
+/* Was an XPRS_PSRAM_BSS static; xprs_big_calloc'd in xst_init (same PSRAM
+ * preference) so .bss stays clear of the RF sample banks on xwifi boards. */
+static xst_chat_t *s_chat;
 static int s_chat_n;              /* total ever; ring pos = n % MAX */
 static bool s_chat_dirty;         /* something to write to storage */
 static uint32_t s_chat_seq;       /* arrival counter, survives eviction */
@@ -102,8 +106,20 @@ static sbucket_t *statday(uint32_t ep)
     return &s_sbday[i];
 }
 
+/* The ring is allocated on first touch, not in xst_init: chat.bin loads at
+ * storage mount, which on some boards runs before xst_init. */
+static void chat_ensure(void)
+{
+    if (!s_chat) {
+        s_chat = xprs_big_calloc(XST_CHAT_MAX, sizeof *s_chat);
+        assert(s_chat);   /* a board that cannot afford the ring at boot
+                             could not afford it as a static either */
+    }
+}
+
 void xst_init(const char *own_call, int tz_off_sec)
 {
+    chat_ensure();
     xst_set_call(own_call ? own_call : "");
     s_tz_off = tz_off_sec;
 }
@@ -202,6 +218,7 @@ static bool chat_newer(const xst_chat_t *a, const xst_chat_t *b)
 
 void xst_chat_note(const xprs_t *p)
 {
+    chat_ensure();
     char from[XPRS_CALL_LEN], text[120];
     char type[16];
     xprs_type(p, type, sizeof type);
@@ -682,6 +699,7 @@ bool xst_heard(const char *call, int in_range_sec)
 
 int xst_chat(xst_chat_t *out, int max)
 {
+    chat_ensure();
     int n = 0;
     LOCK();
     /* Newest first, by when it was said (chat_newer), not by slot: a full
@@ -720,6 +738,7 @@ bool xst_chat_dirty(void)
 
 void xst_chat_save(const char *path)
 {
+    chat_ensure();
     if (!path || !*path) return;
 
     /* Streamed, one row at a time. A 40-row array is nearly 7 KB whichever
@@ -761,6 +780,7 @@ void xst_chat_save(const char *path)
 
 void xst_chat_load(const char *path)
 {
+    chat_ensure();
     if (!path || !*path) return;
     FILE *f = fopen(path, "rb");
     if (!f) return;
@@ -799,6 +819,7 @@ void xst_chat_load(const char *path)
 
 int xst_chat_find(const char *id, xst_chat_t *out)
 {
+    chat_ensure();
     if (!id || !id[0]) return 0;
     int found = 0;
     LOCK();
@@ -1011,7 +1032,8 @@ void xst_stats_save(const char *path)
  * a dozen stations in one process and needs that zero back between them. */
 void xst_test_reset(void)
 {
+    chat_ensure();
     memset(s_seen, 0, sizeof s_seen);
-    memset(s_chat, 0, sizeof s_chat);
+    memset(s_chat, 0, XST_CHAT_MAX * sizeof *s_chat);
 }
 #endif

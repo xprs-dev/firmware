@@ -1,5 +1,8 @@
 # NimBLE with BLE 5 extended advertising, observer (scan) role only.
-CONFIG_BT_ENABLED=y
+# OFF since the xwifi diet (see that block below): the controller's RAM pays
+# for the XPRS-WiFi bearer on this board. The lines that follow are kept for
+# the way back.
+CONFIG_BT_ENABLED=n
 # CONFIG_BT_NIMBLE_ENABLED=y   (host retired: tinynimble)
 # CONFIG_BT_NIMBLE_EXT_ADV=y   (host retired: tinynimble)
 # CONFIG_BT_NIMBLE_ROLE_OBSERVER=y   (host retired: tinynimble)
@@ -40,6 +43,52 @@ CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 # Montserrat 14 but NOT 10; tdongle_ui uses the 10px font, so enable it here.
 CONFIG_LV_FONT_MONTSERRAT_10=y
 
+# The long-range XPRS-WiFi bearer (xwifi), replacing ESP-NOW. The S3 port's
+# stated requirements (xw_port_esp32s3.h): PHY cert-test functions, FreeRTOS
+# and heap code in flash, and 240 MHz exactly.
+CONFIG_XPRS_WIFI8=y
+CONFIG_ESP_PHY_ENABLE_CERT_TEST=y
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# ── The xwifi RAM diet ──────────────────────────────────────────────────────
+# The S3's RF sample banks sit at 0x3fcb0000; static data and IRAM code share
+# the SRAM below them, so every byte of either counts against the same ~80 KB
+# ceiling (measured: the full station overran it by 122 KB and the boot-time
+# memory_layout check aborted). Three recoveries, in order of size:
+#
+# WiFi driver code out of IRAM (~31 KB of ceiling back). The C3 build runs
+# this way already; the cost is WiFi throughput this shelf radio never needs.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+# And the driver's buffer pools at the floor: XPRS-WiFi samples the PHY
+# directly and never sees an 802.11 frame, yet esp_wifi_init still claims
+# the static RX pool (~1.6 KB each). Sized for the radio xwifi actually
+# runs; if this board goes back to carrying its LAN on WiFi, these numbers
+# want to come back up (they were 6/16/16).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=2
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+# The block-ack window must stay within twice the static pool (driver check).
+CONFIG_ESP_WIFI_RX_BA_WIN=4
+# No AMPDU either: aggregation buffers for 802.11 frames this radio never
+# passes (XPRS-WiFi samples the PHY directly, mode NULL).
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+# LVGL's pool via tinylv_mem (heap, PSRAM-first with internal fallback; this
+# board has no PSRAM so it is plain heap) instead of a 12 KB static array.
+# LV_MEM_SIZE_KILOBYTES stops applying under LV_MEM_CUSTOM (Kconfig dep).
+# drift-ok: CONFIG_LV_MEM_SIZE_KILOBYTES inert under LV_MEM_CUSTOM=y (tinylv_mem owns the pool)
+CONFIG_LV_MEM_CUSTOM=y
+# And Bluetooth off: the controller's .bss and IRAM pay for the rest of the
+# fit, and its ~35-45 KB of runtime heap pays for the xwifi task and buffers.
+# xprs_bearer_ble compiles to stubs when BT is off, so the station runs; a
+# phone can no longer hear this board over BLE5 — the price of xwifi here
+# until the station slims elsewhere. The switch itself is the CONFIG_BT_ENABLED
+# line at the top of this file; to go back, xwifi must shed the same amount
+# somewhere else before it fits again.
+
 # WiFi + BLE coexistence (the iGate needs WiFi STA while BLE5 keeps running).
 # Software coexistence lets the single radio time-share WiFi and BLE.
 CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y
@@ -75,9 +124,11 @@ CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
 
 # WiFi receive/transmit buffers. Static ones are ~1.6 KB each and permanent;
 # dynamic ones are a ceiling on what the driver may take while busy.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
-CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+# Superseded by the xwifi diet above (the later line wins in a defaults
+# file, so these stay only as the record of the LAN-era numbers):
+# CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+# CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+# CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 
 # Sixteen listening sockets and sixteen raw PCBs are far more than this station
 # opens: one hub connection, one HTTP server, one UDP bearer, one APRS-IS link.

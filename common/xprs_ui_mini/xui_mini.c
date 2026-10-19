@@ -86,20 +86,27 @@ static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 /* ── Bring-up ────────────────────────────────────────────────────────────── */
 
+/* Set by a successful init. A board can run with its screen off (the app's
+ * screen_on switch), and every entry point below must then be a no-op: the
+ * objects they write into were never created. */
+static bool s_inited;
+
 esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
 {
     s_flush = flush;
     s_flush_on = true;
     s_activity_ms = now_ms();
-    return xum_init(width, height, flush ? flush_gate : NULL, ctx);
+    esp_err_t e = xum_init(width, height, flush ? flush_gate : NULL, ctx);
+    s_inited = e == ESP_OK;
+    return e;
 }
 
-void xui_update(void) { xum_update(); }
+void xui_update(void) { if (s_inited) xum_update(); }
 
-void xui_framedump(void) { xum_framedump(); }
+void xui_framedump(void) { if (s_inited) xum_framedump(); }
 esp_err_t xui_capture(xui_slice_fn cb, void *ctx, int *w, int *h)
 {
-    return xum_capture(cb, ctx, w, h);
+    return s_inited ? xum_capture(cb, ctx, w, h) : ESP_ERR_INVALID_STATE;
 }
 
 void xui_flush_enable(bool on)
@@ -108,18 +115,19 @@ void xui_flush_enable(bool on)
      * framebuffer nobody was reading, so make LVGL repaint the lot rather
      * than trust its damage list, which was honoured while the gate was
      * shut. */
-    if (on && !s_flush_on) lv_obj_invalidate(lv_scr_act());
+    if (s_inited && on && !s_flush_on) lv_obj_invalidate(lv_scr_act());
     s_flush_on = on;
 }
 
 /* ── What the app has to say ────────────────────────────────────────────── */
 
-void xui_set_device_count(int count) { xum_set_count(count); }
-void xui_set_note(const char *text) { xum_set_note(text); }
-void xui_set_battery(int pct, bool charging) { xum_set_battery(pct, charging); }
+void xui_set_device_count(int count) { if (s_inited) xum_set_count(count); }
+void xui_set_note(const char *text) { if (s_inited) xum_set_note(text); }
+void xui_set_battery(int pct, bool charging) { if (s_inited) xum_set_battery(pct, charging); }
 
 void xui_home_counts(int devices, uint32_t packets)
 {
+    if (!s_inited) return;
     (void)packets;              /* the top bar has room for one figure */
     xum_set_count(devices);
 }
@@ -130,6 +138,7 @@ void xui_home_counts(int devices, uint32_t packets)
  * invented. */
 void xui_radar_blips(const xui_blip_t *blips, int n)
 {
+    if (!s_inited) return;
     if (n > XUM_DEV_ROWS) n = XUM_DEV_ROWS;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
@@ -145,6 +154,7 @@ void xui_radar_blips(const xui_blip_t *blips, int n)
 /* Traffic: from / link / distance, which is a DEVICES row exactly. */
 void xui_flow_rows(const xui_flow_t *rows, int n)
 {
+    if (!s_inited) return;
     if (n > XUM_DEV_ROWS) n = XUM_DEV_ROWS;
     if (n < 0) n = 0;
     for (int i = 0; i < n; i++) {
@@ -193,6 +203,7 @@ static const char *chat_kind_split(const char *cell, uint8_t *kind)
  */
 void xui_table_rows(const xui_row_t *rows, int n)
 {
+    if (!s_inited) return;
     int nd = n > XUM_DEV_ROWS ? XUM_DEV_ROWS : (n < 0 ? 0 : n);
     for (int i = 0; i < nd; i++) {
         snprintf(s_dev[i].call, sizeof s_dev[i].call, "%.11s", rows[i].cell[0]);
@@ -229,6 +240,7 @@ void xui_table_rows(const xui_row_t *rows, int n)
  * that can be typed on gets this for free. */
 void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header)
 {
+    if (!s_inited) return;
     (void)header;
     if (n > XUM_CHAT_ROWS) n = XUM_CHAT_ROWS;
     if (n < 0) n = 0;
@@ -246,6 +258,7 @@ void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header)
 
 void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n)
 {
+    if (!s_inited) return;
     (void)title;                /* the strip has no room for three headings */
     if (idx < 0 || idx > 2) return;
     if (n > XUM_STATS_POINTS) n = XUM_STATS_POINTS;
@@ -261,6 +274,7 @@ void xui_stats_set(int idx, const char *title, const uint16_t *vals, int n)
  * one is now up. */
 void xui_set_panel(int idx)
 {
+    if (!s_inited) return;
     switch (idx) {
     case XUI_PANEL_CHAT:
         xum_chat(s_chat, s_chat_n);

@@ -41,6 +41,24 @@
 #include "xprs.h"
 #include "xprsnow.h"
 #include "xprslan.h"
+#if CONFIG_XPRS_WIFI8
+#include "xprswifi8.h"
+/* xwifi is the replacement, not an addition: where it is compiled in,
+ * ESP-NOW is off unless the owner turns it back on. A board with no xwifi
+ * port (CONFIG_XPRS_WIFI8 unset) keeps ESP-NOW as its only WiFi-class
+ * bearer, so it stays on there. */
+#define XPRS_ESPNOW_DEFAULT_ON false
+#else
+#define XPRS_ESPNOW_DEFAULT_ON true
+#endif
+/* And the screen's: a board with a panel but no PSRAM cannot pay ~20 KB of
+ * heap for it while the XPRS-WiFi radio runs; the owner can still turn it
+ * on (cfg set screen_on yes) and give something else up. */
+#if CONFIG_XPRS_WIFI8 && !CONFIG_SPIRAM
+#define XPRS_SCREEN_DEFAULT_ON false
+#else
+#define XPRS_SCREEN_DEFAULT_ON true
+#endif
 #include "xprsble.h"
 #include "xprslora.h"
 #include "lr_worth.h"
@@ -317,7 +335,11 @@ static int sign_wire(char *wire, int len, int cap)
  * rotates to prev.txt at 64 KB, so a freeze or a crash leaves at most two
  * files and the truth of the last minutes on the flash. */
 #define LOGRING_N 6144
-static char s_logring[LOGRING_N];
+/* Allocated at boot (xprs_big_calloc): on the xwifi boards .bss must stay
+ * clear of the RF sample banks, so the big buffers moved to the heap, which
+ * may use the DRAM above them. NULL until then -- the hook skips the ring
+ * and counts the loss, exactly as it does when the ring is full. */
+static char *s_logring;
 static volatile int s_logring_w, s_logring_r;
 /* Bytes the ring had to refuse. Boot is the noisy part and the storage it
  * drains to is not mounted yet, so this is where a hole appears -- and a
@@ -325,6 +347,7 @@ static volatile int s_logring_w, s_logring_r;
 static volatile uint32_t s_logring_lost;
 static portMUX_TYPE s_logring_mux = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t s_log_orig;
+static StackType_t *s_console_stack;   /* claimed at boot for the headless UI task */
 
 static int log_hook(const char *fmt, va_list ap)
 {
@@ -356,6 +379,12 @@ static int log_hook(const char *fmt, va_list ap)
     /* The UART likes its colours; a log file does not. Strip the ANSI
      * escapes and carriage returns on the way into the ring. */
     portENTER_CRITICAL(&s_logring_mux);
+    if (!s_logring) {                          /* before boot allocated it */
+        s_logring_lost += (uint32_t)n;
+        portEXIT_CRITICAL(&s_logring_mux);
+        xdiag_log_line(line, n);
+        return out;
+    }
     bool in_esc = false;
     for (int i = 0; i < n; i++) {
         char c = line[i];
@@ -399,6 +428,7 @@ static long  s_logfile_len;
  * seconds on the flash -- which is the promise this log makes. */
 static void log_drain(bool sync)
 {
+    if (!s_logring) return;        /* no indexer, no ring to drain */
     char chunk[512];
     for (;;) {
         int n = 0;
@@ -470,13 +500,15 @@ static void log_drain(bool sync)
 #else
 #define IDXQ_N 12
 #endif
-static XPRS_PSRAM_BSS struct {
+/* Was an XPRS_PSRAM_BSS static; now xprs_big_calloc'd at boot (same PSRAM
+ * preference) so .bss stays clear of the RF sample banks on xwifi boards. */
+static struct idxq_rec {
     char    wire[XPRSIDX_WIRE_MAX + 1];
     int16_t len;
     int8_t  rssi;
     uint8_t bearer;   /* xprsidx_bearer_t */
     bool    own;      /* we sent it: archived as outgoing, dated now */
-} s_idxq[IDXQ_N];
+} *s_idxq;
 static volatile int s_idxq_w, s_idxq_r;   /* single writer set, single reader */
 static uint32_t s_idxq_dropped;
 
@@ -3421,11 +3453,12 @@ static volatile bool s_inet_known;        /* at least one probe finished */
 #define ECHO_QUIET_MS   12000u   /* a bearer this silent has room     */
 #define ECHO_GAP_MS     20000u   /* and this long between our echoes  */
 
-static XPRS_PSRAM_BSS struct {
+/* Was an XPRS_PSRAM_BSS static; xprs_big_calloc'd at boot like s_idxq. */
+static struct echo_rec {
     char     wire[XPRS_MAX_WIRE + 1];
     int      len;
     char     id[XPRS_ID_LEN];
-} s_echo[ECHO_N];
+} *s_echo;
 static int s_echo_n;             /* how many slots are filled   */
 static int s_echo_w;             /* next slot to overwrite      */
 static int s_echo_cursor;        /* where the carousel is       */
@@ -3678,6 +3711,11 @@ static void bridge_out(const char *wire, int len, from_t from)
     /* Onto the other bearers. */
     if (from != FROM_LAN  && igate)  xprslan_offer(wire, len);
     if (from != FROM_NOW  && bridge) xprsnow_offer(wire, len);
+#if CONFIG_XPRS_WIFI8
+    /* XPRS-WiFi shares FROM_NOW with ESP-NOW (one WiFi radio): a packet heard on
+     * either is not re-offered onto the WiFi radio, only onto the others. */
+    if (from != FROM_NOW  && bridge) xprswifi8_offer(wire, len);
+#endif
     if (from != FROM_LORA && bridge && lora_ok)
         xprslora_offer(wire, len);
     if (from != FROM_BLE  && bridge) xprsble_offer(wire, len);
@@ -3693,6 +3731,10 @@ static void bridge_out(const char *wire, int len, from_t from)
      * reach but inside ours. */
     if (from == FROM_NOW  && xcfg_get_bool("digi_on", true))
         xprsnow_digipeat(wire, len);
+#if CONFIG_XPRS_WIFI8
+    if (from == FROM_NOW  && xcfg_get_bool("digi_on", true))
+        xprswifi8_digipeat(wire, len);
+#endif
     if (from == FROM_LORA && xcfg_get_bool("digi_on", true) && lora_ok)
         xprslora_digipeat(wire, len);
     if (from == FROM_BLE  && xcfg_get_bool("digi_ble_on", true))
@@ -3732,6 +3774,17 @@ static void heard_espnow(const char *id, const char *wire, int len)
         xprschan_on_packet(&p, wire, len);
     }
 }
+
+#if CONFIG_XPRS_WIFI8
+/* XPRS-WiFi has no sender MAC; it reports SNR where ESP-NOW reports RSSI. The
+ * receive handling is otherwise identical, so this hands the ESP-NOW path a
+ * zero MAC and the SNR as the signal and reuses it. */
+static void on_wifi8(const char *wire, int len, int snr_db)
+{
+    static const uint8_t no_mac[6] = {0};
+    on_espnow(wire, len, no_mac, snr_db);
+}
+#endif
 
 static void on_lan(const char *wire, int len, uint32_t ip)
 {
@@ -3874,7 +3927,10 @@ static void mesh_out(const char *wire, int len)
     bool bridge = xcfg_get_bool("bridge_on", true);
     bool local = !xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_GLOBAL);
     if (xcfg_get_bool("igate_on", true)) xprslan_send(wire, len);
-    if (bridge && xcfg_get_bool("espnow_on", true)) xprsnow_send(wire, len);
+    if (bridge && xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON)) xprsnow_send(wire, len);
+#if CONFIG_XPRS_WIFI8
+    if (bridge && xcfg_get_bool("wifi8_on", true)) xprswifi8_send(wire, len);
+#endif
     if (bridge && xprsble_is_active()) xprsble_send(wire, len);
     if (bridge && !local && xprsrns_is_up()) xprsrns_send(wire, len);
 }
@@ -4020,6 +4076,13 @@ static int lan_beacon(char *out, int cap)
 {
     return observation_beacon("lan", out, cap, 0);
 }
+
+#if CONFIG_XPRS_WIFI8
+static int wifi8_beacon(char *out, int cap)
+{
+    return observation_beacon("wifi8", out, cap, 0);
+}
+#endif
 
 /*
  * The BLE5 beacon, aired from the status tick rather than by the bearer.
@@ -4326,7 +4389,7 @@ static void status_task(void *arg)
          * start. Then say so only when the picture changes. */
         xh_set(XH_HTTP, xprs_api_httpd() != NULL);
         xh_set(XH_LAN, xprslan_is_active() || !xcfg_get_bool("wifi_on", true));
-        xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
+        xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON));
         xh_set(XH_ADDR, !xcfg_get_bool("wifi_on", true) || s_ip_str[0] != 0);
         xh_set(XH_INDEX, s_index != NULL || s_idx_none ||
                !xcfg_get_bool("index_on", true));
@@ -6174,7 +6237,7 @@ static void ui_render(void)
             SROWF("WiFi / LAN", xcfg_get_bool("wifi_on", true) ? "On" : "Off",
                  "Join the WiFi network and speak XPRS over the LAN. "
                  "%s toggles; applies after restart.", ok_key());
-        SROWF("ESP-NOW", xcfg_get_bool("espnow_on", true) ? "On" : "Off",
+        SROWF("ESP-NOW", xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON) ? "On" : "Off",
              "The 2.4 GHz radio link between nearby stations. "
              "%s toggles; applies after restart.", ok_key());
         SROWF("Digipeater", xcfg_get_bool("digi_on", true) ? "On" : "Off",
@@ -7236,14 +7299,15 @@ have:
         }
 }
 
-/* The replay page: wires verbatim -- the author's bytes, the author's sig. */
-static struct {
+/* The replay page: wires verbatim -- the author's bytes, the author's sig.
+ * xprs_big_calloc'd at boot like s_idxq, for the same .bss ceiling. */
+static struct hist_page {
     int n;
     bool more;
     xprs_reach_t reach;           /* the class of the bearer it goes out on */
     char wire[HIST_PAGE][XPRSIDX_WIRE_MAX + 1];
     int16_t len[HIST_PAGE];
-} s_page;
+} *s_page;
 
 static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
 {
@@ -7252,19 +7316,19 @@ static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
      * scope, or one whose scope does not admit the bearer the answer goes
      * out on. A Local-room message asked for over Reticulum stays here. */
     if (rec->flags & XI_F_OUTRANGE) return true;
-    if (!xprs_reach_admits(xprs_scope_reach_wire(rec->wire, rec->len), s_page.reach))
+    if (!xprs_reach_admits(xprs_scope_reach_wire(rec->wire, rec->len), s_page->reach))
         return true;
-    if (s_page.n >= HIST_PAGE) { s_page.more = true; return false; }
-    memcpy(s_page.wire[s_page.n], rec->wire, rec->len);
-    s_page.wire[s_page.n][rec->len] = 0;
-    s_page.len[s_page.n] = (int16_t)rec->len;
-    s_page.n++;
+    if (s_page->n >= HIST_PAGE) { s_page->more = true; return false; }
+    memcpy(s_page->wire[s_page->n], rec->wire, rec->len);
+    s_page->wire[s_page->n][rec->len] = 0;
+    s_page->len[s_page->n] = (int16_t)rec->len;
+    s_page->n++;
     return true;
 }
 
 /* ── 25.3: which alerts stand, read from the archive ─────────────────── */
 
-/* Local warnings and notices only, newest first, into s_page. */
+/* Local warnings and notices only, newest first, into s_page-> */
 static bool alrt_collect(const xprsidx_rec_t *rec, void *ctx)
 {
     (void)ctx;
@@ -7277,11 +7341,11 @@ static bool alrt_collect(const xprsidx_rec_t *rec, void *ctx)
      * that copy was the newest row, stood in for the original, and nobody
      * was given anything. */
     if (memmem(rec->wire, rec->len, " via:", 5)) return true;
-    if (s_page.n >= HIST_PAGE) { s_page.more = true; return false; }
-    memcpy(s_page.wire[s_page.n], rec->wire, rec->len);
-    s_page.wire[s_page.n][rec->len] = 0;
-    s_page.len[s_page.n] = (int16_t)rec->len;
-    s_page.n++;
+    if (s_page->n >= HIST_PAGE) { s_page->more = true; return false; }
+    memcpy(s_page->wire[s_page->n], rec->wire, rec->len);
+    s_page->wire[s_page->n][rec->len] = 0;
+    s_page->len[s_page->n] = (int16_t)rec->len;
+    s_page->n++;
     return true;
 }
 
@@ -7320,9 +7384,10 @@ static bool alrt_signed(const xprs_t *p, const char *from, bool open,
  */
 static int alrt_scan(int pick[ALRT_MAX], uint32_t pick_id[ALRT_MAX])
 {
-    s_page.n = 0;
-    s_page.more = false;
-    s_page.reach = XPRS_REACH_LOCAL;
+    if (!s_page) return 0;         /* no indexer, no replay page */
+    s_page->n = 0;
+    s_page->more = false;
+    s_page->reach = XPRS_REACH_LOCAL;
     xprsidx_query_t q = {
         .type = -1,
         .types = xprsidx_type_mask("warning,info"),
@@ -7340,8 +7405,8 @@ static int alrt_scan(int pick[ALRT_MAX], uint32_t pick_id[ALRT_MAX])
 
     /* Withdrawals first (25.2): they name what is not to be given, and
      * only the author or an owner may withdraw. */
-    for (int i = 0; i < s_page.n; i++) {
-        if (!xprs_parse(s_page.wire[i], s_page.len[i], &p)) continue;
+    for (int i = 0; i < s_page->n; i++) {
+        if (!xprs_parse(s_page->wire[i], s_page->len[i], &p)) continue;
         if (!xprs_get_str(&p, "remove", v, sizeof v)) continue;
         if (!xprs_get_str(&p, "r", v, sizeof v)) continue;
         if (!xprs_get_str(&p, "f", from, sizeof from)) continue;
@@ -7355,8 +7420,8 @@ static int alrt_scan(int pick[ALRT_MAX], uint32_t pick_id[ALRT_MAX])
     }
 
     int n = 0;
-    for (int i = 0; i < s_page.n && n < ALRT_MAX; i++) {
-        if (!xprs_parse(s_page.wire[i], s_page.len[i], &p)) continue;
+    for (int i = 0; i < s_page->n && n < ALRT_MAX; i++) {
+        if (!xprs_parse(s_page->wire[i], s_page->len[i], &p)) continue;
         if (xprs_get_str(&p, "remove", v, sizeof v)) continue;
         if (!xprs_get_str(&p, "until", v, sizeof v)) continue;   /* 25.3 */
         const uint32_t until = xprsindex_ts_to_epoch(v, (int)strlen(v));
@@ -7364,7 +7429,7 @@ static int alrt_scan(int pick[ALRT_MAX], uint32_t pick_id[ALRT_MAX])
         if (now && now > until) continue;       /* ended, by a clock we trust */
         if (!xprs_get_str(&p, "f", from, sizeof from)) continue;
         char id[XPRS_ID_LEN];
-        if (!xprs_id_of(s_page.wire[i], s_page.len[i], id)) continue;
+        if (!xprs_id_of(s_page->wire[i], s_page->len[i], id)) continue;
         const uint32_t idn = alrt_idnum(id);
         /* The same alert twice: a copy that came back with via: is kept by
          * the archive beside the original and has the same id (section 5
@@ -7414,11 +7479,11 @@ static void alrt_give(const char *call, const char *bearer)
         const int i = pick[k];
         xprs_t p;
         char from[XPRS_CALL_LEN] = "";
-        if (xprs_parse(s_page.wire[i], s_page.len[i], &p))
+        if (xprs_parse(s_page->wire[i], s_page->len[i], &p))
             xprs_get_str(&p, "f", from, sizeof from);
         if (strcasecmp(from, call) == 0) continue;   /* the author has it */
         char rel[XPRS_MAX_WIRE + 1];
-        int rn = xprs_append_via(s_page.wire[i], s_page.len[i], s_call,
+        int rn = xprs_append_via(s_page->wire[i], s_page->len[i], s_call,
                                  rel, (int)sizeof rel);
         if (rn <= 0) continue;          /* hop budget spent, or a loop */
         vTaskDelay(pdMS_TO_TICKS(1500));
@@ -7544,12 +7609,12 @@ static void idx_answer_history(const char *ask_wire, int ask_len,
         .limit = HIST_PAGE + 1,
         .newest_first = true,
     };
-    s_page.n = 0;
-    s_page.more = false;
-    s_page.reach = bearer_reach(bearer);
+    s_page->n = 0;
+    s_page->more = false;
+    s_page->reach = bearer_reach(bearer);
     xprsindex_query(s_index, &q, hist_collect, NULL);
 
-    if (s_page.n == 0) {
+    if (s_page->n == 0) {
         ESP_LOGI(TAG, "history for %s - nothing in that window (404)", from);
         char tries[40] = "";
         if (only[0]) {
@@ -7562,15 +7627,15 @@ static void idx_answer_history(const char *ask_wire, int ask_len,
     }
     hist_record(from, now_s);
     idx_result(bearer, from, cmdid, 202);
-    ESP_LOGI(TAG, "history for %s - %d packet%s%s", from, s_page.n,
-             s_page.n == 1 ? "" : "s", s_page.more ? ", more held" : "");
-    for (int i = 0; i < s_page.n; i++) {
+    ESP_LOGI(TAG, "history for %s - %d packet%s%s", from, s_page->n,
+             s_page->n == 1 ? "" : "s", s_page->more ? ", more held" : "");
+    for (int i = 0; i < s_page->n; i++) {
         vTaskDelay(pdMS_TO_TICKS(1500));
         esp_task_wdt_reset();
-        idx_air(bearer, s_page.wire[i], s_page.len[i]);
+        idx_air(bearer, s_page->wire[i], s_page->len[i]);
     }
     vTaskDelay(pdMS_TO_TICKS(1500));
-    idx_result(bearer, from, cmdid, s_page.more ? 206 : 200);
+    idx_result(bearer, from, cmdid, s_page->more ? 206 : 200);
 }
 
 
@@ -7815,7 +7880,26 @@ static void idx_task(void *arg)
         .allocation_unit_size = 4096,
     };
     esp_err_t err;
-    if (s_board->storage_mount) {
+    if (!xcfg_get_bool("index_on", true)) {
+        /* index_on=no used to mean "hold nothing" while the volume still
+         * mounted for the log and the statistics. On the RAM-tight XPRS-WiFi
+         * boards the mount itself (sector caches, wear levelling) is heap the
+         * radio needs, so off now means OFF: nothing mounts, nothing persists
+         * to /idx until the owner turns it back on. */
+        s_idx_none = true;
+        err = ESP_OK;   /* deliberate, not a mount failure */
+        ESP_LOGW(TAG, "indexer off by config: /idx not mounted, log and "
+                      "statistics are not persisted");
+    } else if (!(s_logring = xprs_big_calloc(1, LOGRING_N)) ||
+               !(s_idxq    = xprs_big_calloc(IDXQ_N, sizeof *s_idxq)) ||
+               !(s_page    = xprs_big_calloc(1, sizeof *s_page))) {
+        /* The indexer's working memory, only wanted when it mounts. A board
+         * that cannot afford it runs on without an archive, like index_on=no,
+         * rather than aborting a station whose radios are fine. */
+        s_idx_none = true;
+        err = ESP_OK;
+        ESP_LOGE(TAG, "indexer buffers did not fit: running without /idx");
+    } else if (s_board->storage_mount) {
         s_idx_base = 0;
         err = s_board->storage_mount(&s_idx_base);
         s_idx_none = err == ESP_OK && s_idx_base == 0;
@@ -7954,7 +8038,7 @@ static void idx_task(void *arg)
                 n = sign_wire(w, n, sizeof w);
                 if (all) {
                     xprslan_send(w, n);
-                    if (xcfg_get_bool("espnow_on", true)) xprsnow_send(w, n);
+                    if (xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON)) xprsnow_send(w, n);
                     ESP_LOGW(TAG, "unowned: asking to be claimed (11.9)");
                 }
                 if (xprsble_is_active()) xprsble_send(w, n);
@@ -8321,18 +8405,18 @@ no_announce:
                 .newest_first = true,
             };
             if (q.until_ts) q.until_ts--;      /* strictly older */
-            s_page.n = 0;
-            s_page.more = false;
-            s_page.reach = bearer_reach(rbearer);
+            s_page->n = 0;
+            s_page->more = false;
+            s_page->reach = bearer_reach(rbearer);
             xprsindex_query(s_index, &q, hist_collect, NULL);
             int aired = 0;
             uint32_t oldest = 0;               /* of what actually went out */
-            for (int i = 0; i < s_page.n; i++) {
+            for (int i = 0; i < s_page->n; i++) {
                 /* only: matched from OR to; mail is what carries d:THEM.
                  * Their own sayings are not deliveries. */
                 xprs_t mp;
                 char mto[16] = "";
-                if (!xprs_parse(s_page.wire[i], s_page.len[i], &mp)) continue;
+                if (!xprs_parse(s_page->wire[i], s_page->len[i], &mp)) continue;
                 if (!xprs_get_str(&mp, "d", mto, sizeof mto)) continue;
                 if (strncasecmp(mto, rcall, strlen(rcall)) != 0) continue;
                 /* 13.3: "the recipient's s:ack releases carriers still
@@ -8340,7 +8424,7 @@ no_announce:
                  * clock, and the same packet goes out every REL_THROTTLE_SEC
                  * for as long as the board holds it. */
                 char relid[XPRS_ID_LEN];
-                if (xprs_id_of(s_page.wire[i], s_page.len[i], relid) &&
+                if (xprs_id_of(s_page->wire[i], s_page->len[i], relid) &&
                     acked_has(relid)) continue;
                 vTaskDelay(pdMS_TO_TICKS(1500));
                 esp_task_wdt_reset();
@@ -8356,7 +8440,7 @@ no_announce:
                  * callsign no longer fits, the row stays held rather than
                  * going out mislabelled as direct. */
                 char rel[XPRS_MAX_WIRE + 1];
-                int rn = xprs_append_via(s_page.wire[i], s_page.len[i],
+                int rn = xprs_append_via(s_page->wire[i], s_page->len[i],
                                          s_call, rel, (int)sizeof rel);
                 if (rn <= 0) {
                     /* Refused: either we are already in this copy's via:
@@ -8390,14 +8474,14 @@ no_announce:
              * of the round -- forget the mark so the next sighting starts at
              * the newest again, which is also how mail that arrived while
              * this drained gets its turn. */
-            if (s_page.n >= REL_PAGE && oldest)
+            if (s_page->n >= REL_PAGE && oldest)
                 rel_resume_set(rcall, oldest, REL_MORE_SEC);
             else
                 rel_resume_set(rcall, 0, REL_THROTTLE_SEC);
             if (aired)
                 ESP_LOGI(TAG, "released %d held for %s on %s%s (36.8.1)",
                          aired, rcall, rbearer,
-                         (s_page.n >= REL_PAGE && oldest) ? ", more to come" : "");
+                         (s_page->n >= REL_PAGE && oldest) ? ", more to come" : "");
         } else if (s_rel.pending) {
             s_rel.pending = false;   /* index down: the slot must not latch */
         }
@@ -8829,7 +8913,7 @@ static void settings_ok(int row)
         else xcfg_set_bool("wifi_on", !xcfg_get_bool("wifi_on", true));
         break;
     case 1:
-        xcfg_set_bool("espnow_on", !xcfg_get_bool("espnow_on", true));
+        xcfg_set_bool("espnow_on", !xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON));
         break;
     case 2:
         xcfg_set_bool("digi_on", !xcfg_get_bool("digi_on", true));
@@ -8996,7 +9080,7 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
     bool local = !xprs_reach_admits(scope, XPRS_REACH_GLOBAL);
     bool lora_ok = xprs_reach_admits(scope, lora_reach());
     bool lan = WANT("lan")    && near && xprslan_send(wire, len);
-    bool now = WANT("espnow") && near && xcfg_get_bool("espnow_on", true) &&
+    bool now = WANT("espnow") && near && xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON) &&
                xprsnow_send(wire, len);
     bool lra = WANT("lora")   && lora_ok && xprslora_is_active() &&
                xprslora_send(wire, len);
@@ -9809,11 +9893,16 @@ static void ui_task(void *arg)
         /* A screenshot asked for over HTTP: repaint here, where LVGL
          * lives, and let the waiting HTTP task have the slices. */
         if (s_cap.want && !s_cap.done) {
-            s_cap.err = xui_capture(cap_slice, NULL, NULL, NULL);
+            s_cap.err = s_display_up ? xui_capture(cap_slice, NULL, NULL, NULL)
+                                     : ESP_ERR_INVALID_STATE;
             s_cap.done = true;
         }
 
-        xui_update();
+        /* Only with a display: on a board whose screen is off (screen_on=no,
+         * or its init failed) xui_init never ran, and the mini UI's update
+         * writes into LVGL objects that were never created. The console half
+         * of this loop is what a dark board keeps. */
+        if (s_display_up) xui_update();
         esp_task_wdt_reset();
 
         /*
@@ -9877,6 +9966,25 @@ void xapp_run(const xapp_board_t *board)
     xb_set_priority_hook(pol_priority_hook);
     snprintf(s_ssid, sizeof s_ssid, "%s", xcfg_get("ssid", board->wifi_ssid));
     snprintf(s_pass, sizeof s_pass, "%s", xcfg_get("pass", board->wifi_pass));
+
+    /* The echo buffer, the one big ex-static every build needs (the idle
+     * channel echo is a bearer behaviour): allocated instead of .bss so the
+     * static data stays clear of the RF sample banks on the xwifi boards.
+     * The log ring, the index queue and the replay page are the indexer's,
+     * and idx_task allocates them only when the indexer actually mounts. */
+    s_echo = xprs_big_calloc(ECHO_N, sizeof *s_echo);
+    if (!s_echo) {
+        ESP_LOGE(TAG, "echo buffer allocation failed at boot");
+        abort();
+    }
+    /* The headless console's stack, claimed while the heap is whole: task
+     * stacks must be contiguous internal RAM, and by the time the UI task
+     * may safely start (after xst_init and the board's buses), the radios
+     * have left no 4 KB block on the xwifi boards. */
+    if (!s_board->display_init ||
+        !xcfg_get_bool("screen_on", XPRS_SCREEN_DEFAULT_ON))
+        s_console_stack = heap_caps_malloc(XPRS_STACK_UI_HEADLESS,
+                                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     /* The rotating log first, so everything after this lands in it, and
      * the reset reason first of all -- it is the one fact a freeze leaves
@@ -10035,9 +10143,9 @@ void xapp_run(const xapp_board_t *board)
      * owner condemned every new image at 120 s and rolled back, for a
      * setting. The expectation follows the config; the heartbeat below
      * re-reads it the same way. */
-    xh_expect(XH_HTTP,  true);
+    xh_expect(XH_HTTP,  xcfg_get_bool("wifi_on", true));
     xh_expect(XH_LAN,   xcfg_get_bool("wifi_on", true));
-    xh_expect(XH_NOW,   xcfg_get_bool("espnow_on", true));
+    xh_expect(XH_NOW,   xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON));
     xh_expect(XH_ADDR,  true);
     xh_expect(XH_INDEX, true);
 
@@ -10101,8 +10209,14 @@ void xapp_run(const xapp_board_t *board)
     int lcd_w = 0, lcd_h = 0;
     void *lcd = NULL;
     /* A board with no screen at all says so with display_init = NULL,
-     * which is a board shape, not a fault (the ESP32-C3). */
-    if (board->display_init) {
+     * which is a board shape, not a fault (the ESP32-C3). screen_on is the
+     * owner's switch for a board that HAS one: the panel, LVGL's pool and
+     * the draw buffers are ~20 KB of internal heap, which a RAM-tight radio
+     * (the Heltec running XPRS-WiFi) may need more than it needs a face.
+     * On that class -- XPRS-WiFi compiled in, no PSRAM to spill to -- the
+     * screen is off unless the owner turns it on and pays the 20 KB
+     * (XPRS_SCREEN_DEFAULT_ON, defined beside the ESP-NOW default). */
+    if (board->display_init && xcfg_get_bool("screen_on", XPRS_SCREEN_DEFAULT_ON)) {
         s_display_up = board->display_init(&lcd_w, &lcd_h, &lcd) == ESP_OK &&
                        xui_init(lcd_w, lcd_h, lcd_flush_adapter, lcd) == ESP_OK;
         if (!s_display_up)
@@ -10113,7 +10227,25 @@ void xapp_run(const xapp_board_t *board)
 
     splash_step("network");
     heap_mark("before wifi");
-    wifi_up();
+    /* The 802.11 driver costs ~45 KB of internal heap and is only wanted when
+     * something rides it: the LAN (wifi_on) or ESP-NOW (espnow_on). On an
+     * XPRS-WiFi board with both off, the bearer brings the radio up itself
+     * (promiscuous, no interface) and that heap pays for the sample windows.
+     * lwip and the event loop still come up: the LAN bearer's task is the
+     * pump every ticked bearer shares, and it needs a socket to exist even
+     * while there is no interface to carry it (sendto then fails, which the
+     * log already knows as errno 118 on a station off the LAN). */
+    const bool net_up = xcfg_get_bool("wifi_on", true) ||
+                        xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON);
+    if (net_up) {
+        wifi_up();
+    } else {
+        /* No lwip either: the stack's pools are ~19 KB of internal heap and
+         * nothing can use a socket without an interface anyway. The XPRS-WiFi
+         * bearer makes its own event loop, and its task takes over the shared
+         * bearer pump the LAN task would have been (see station_task). */
+        ESP_LOGI(TAG, "802.11 driver not started: WiFi and ESP-NOW both off");
+    }
     heap_mark("after wifi");
 
     /* The HTTP server starts HERE, and the position is a memory decision,
@@ -10140,8 +10272,14 @@ void xapp_run(const xapp_board_t *board)
      * the index handle that idx_task fills in later is picked up live; a
      * request that beats it gets an honest 404 rather than a stale answer. */
     s_api_cfg.callsign = s_call;
-    if (xprs_api_start(&s_api_cfg) == ESP_OK)
-        xcfg_share_attach(xprs_api_httpd());
+    /* No 802.11, no web surface: with WiFi off the server has no network to
+     * answer on, and its task and buffers are heap the XPRS-WiFi radio needs. */
+    if (xcfg_get_bool("wifi_on", true)) {
+        if (xprs_api_start(&s_api_cfg) == ESP_OK)
+            xcfg_share_attach(xprs_api_httpd());
+    } else {
+        ESP_LOGI(TAG, "HTTP API not started: WiFi off");
+    }
     heap_mark("after api");
     splash_step("services");
 
@@ -10149,9 +10287,11 @@ void xapp_run(const xapp_board_t *board)
      * the index still works, ordered by its own monotonic index. AFTER
      * wifi_up(): SNTP posts to the lwip thread, which exists only once the
      * network stack does. */
-    esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    esp_sntp_setservername(0, xcfg_get("ntp", "pool.ntp.org"));
-    esp_sntp_init();
+    if (net_up) {
+        esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
+        esp_sntp_setservername(0, xcfg_get("ntp", "pool.ntp.org"));
+        esp_sntp_init();
+    }
 
     /* The time zone: pinned in the config, or the last one found, or not
      * known yet (UTC). tz_tick() keeps it right from here on. */
@@ -10164,7 +10304,11 @@ void xapp_run(const xapp_board_t *board)
      * would leave nothing driving either — which xprsnow_start() says out loud
      * rather than letting it be discovered in the field. */
     splash_step("mesh");
-    if (xprslan_start(s_call) == ESP_OK) {
+    if (!net_up) {
+        /* No lwip, so no LAN bearer and no socket to bind. The XPRS-WiFi
+         * task is the pump instead (xb_tick_all in its station_task). */
+        ESP_LOGI(TAG, "LAN bearer not started: no network stack");
+    } else if (xprslan_start(s_call) == ESP_OK) {
         xprslan_set_rx_cb(on_lan);
         xprslan_set_beacon(lan_beacon, 60, 10);
     } else {
@@ -10176,7 +10320,7 @@ void xapp_run(const xapp_board_t *board)
         ESP_LOGW(TAG, "QEMU build: no ESP-NOW (it rides the WiFi driver)");
     } else
 #endif
-    if (!xcfg_get_bool("espnow_on", true)) {
+    if (!xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON)) {
         ESP_LOGI(TAG, "ESP-NOW disabled by config");
     } else if (xprsnow_start(s_call) == ESP_OK) {
         xprsnow_set_rx_cb(on_espnow);
@@ -10188,6 +10332,34 @@ void xapp_run(const xapp_board_t *board)
     splash_step("identity");
         air_identity();
     }
+
+#if CONFIG_XPRS_WIFI8
+    /* The long-range XPRS-WiFi bearer, on the same radio, time-sliced with the
+     * hotspot and the uplink (see xprswifi8.h). Brought up after the LAN bearer
+     * for the same reason ESP-NOW is: that task pumps the shared re-air queue,
+     * though this bearer also drives its own tick. It replaces ESP-NOW rather
+     * than running beside it -- XPRS_ESPNOW_DEFAULT_ON is false on a board
+     * compiled with CONFIG_XPRS_WIFI8, so the owner gets one of the two
+     * running by default, not both; either can still be turned back on. */
+    if (xcfg_get_bool("wifi8_on", true)) {
+        xprswifi8_cfg_t wc = XPRSWIFI8_CFG_DEFAULT;
+        /* With 802.11 off there is nothing to time-slice against — give
+         * XPRS-WiFi the radio full time (the bearer brings the PHY up itself). */
+        if (!xcfg_get_bool("wifi_on", true)) wc.slot_ms = 0;
+        /* One look per window: the second look costs a 32 KB window buffer
+         * from the internal heap (xw_*_look_buffer), which the boards that
+         * carry this bearer do not have spare. The ~2.5 dB it buys is a
+         * per-board tune for later, not a default this RAM class can pay. */
+        wc.looks = 1;
+        if (xprswifi8_start(s_call, &wc) == ESP_OK) {
+            xprswifi8_set_rx_cb(on_wifi8);
+            xprswifi8_set_heard_cb(heard_espnow);   /* §23.7 reairing is bearer-agnostic */
+            xprswifi8_set_beacon(wifi8_beacon, 60, 7);
+        } else {
+            ESP_LOGW(TAG, "XPRS-WiFi bearer did not start");
+        }
+    }
+#endif
 
     /* The LoRa radio, on the boards that have one. After the LAN bearer,
      * whose task is what pumps this one's queue too. */
@@ -10403,9 +10575,16 @@ void xapp_run(const xapp_board_t *board)
         /* Headless, the UI task still has work that is not drawing: the
          * serial console (the `cfg` lines, the only way in with a cable),
          * the board's buttons and the battery. So it runs, without the
-         * render, and on a smaller stack: what needed 8 KB was LVGL. */
-        if (xTaskCreatePinnedToCore(ui_task, "ui", XPRS_STACK_UI_HEADLESS, NULL, 4, NULL,
-                                    XPRS_WORK_CORE) != pdPASS)
+         * render, and on a smaller stack: what needed 8 KB was LVGL. The
+         * stack was claimed at boot (s_console_stack) while the heap was
+         * whole -- on the xwifi boards the radios leave no contiguous 4 KB
+         * by this line, and a cable console that cannot start is a board
+         * that cannot be configured at all. */
+        static StaticTask_t ui_tcb;
+        if (!s_console_stack ||
+            !xTaskCreateStaticPinnedToCore(ui_task, "ui", XPRS_STACK_UI_HEADLESS,
+                                           NULL, 4, s_console_stack, &ui_tcb,
+                                           XPRS_WORK_CORE))
             ESP_LOGE(TAG, "console task failed to start: no serial console");
     }
 
@@ -10461,7 +10640,7 @@ void xapp_run(const xapp_board_t *board)
 
     xh_set(XH_HTTP, xprs_api_httpd() != NULL);
     xh_set(XH_LAN, xprslan_is_active());
-    xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", true));
+    xh_set(XH_NOW, xprsnow_is_active() || !xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON));
     xh_set(XH_INDEX, s_index != NULL || s_idx_none ||
                !xcfg_get_bool("index_on", true));
     xh_heap_floor(heap_floor());
