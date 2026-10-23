@@ -193,7 +193,11 @@ bool xst_clock_set(xst_clock_src_t src, uint32_t epoch, const char *who)
                  k_clk_name[cur]);
         return false;
     }
-    if (src == cur && src != XST_CLK_NTP && clock_read() && epoch < clock_read()) {
+    /* Nothing but NTP turns a valid clock back -- not a better source
+     * either. The chip keeps its clock across a reset, so a station can
+     * hold a good, unattributed time ("kept", below) that an owner's
+     * command must not wind back to its own ts:. */
+    if (src != XST_CLK_NTP && clock_read() && epoch < clock_read()) {
         ESP_LOGW(TAG, "clock: %s's %lu from %s refused, it is %lu and never "
                       "goes back", k_clk_name[src], (unsigned long)epoch,
                  who ? who : "?", (unsigned long)clock_read());
@@ -223,7 +227,14 @@ xst_clock_src_t xst_clock_src(void)
     return s;
 }
 
-const char *xst_clock_src_name(void) { return k_clk_name[xst_clock_src()]; }
+/* "kept": a valid clock nobody set this boot -- the chip carried it across
+ * a reset. As good as it was, and never turned back but by NTP. */
+const char *xst_clock_src_name(void)
+{
+    xst_clock_src_t s = xst_clock_src();
+    if (s == XST_CLK_NONE && clock_read()) return "kept";
+    return k_clk_name[s];
+}
 
 void xst_set_call(const char *own_call)
 {

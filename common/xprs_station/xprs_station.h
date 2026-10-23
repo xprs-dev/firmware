@@ -101,15 +101,16 @@ typedef enum {
 } xst_clock_src_t;
 
 /* Take [epoch] from [src] when the ladder allows. Refused: a source below
- * the one that set the clock; the same source turning it back (11.10: each
- * accepted word is later than the last); anything before 2023-11 or after
- * 2040, whoever says it. A higher source replaces freely. [who] is for the
+ * the one that set the clock; anything but NTP turning a valid clock back
+ * (11.10: each accepted word is later than the last, and the chip keeps a
+ * clock across a reset that nobody this boot can vouch for -- "kept");
+ * anything before 2023-11 or after 2040, whoever says it. [who] is for the
  * log. True when the clock was set. Any task. */
 bool xst_clock_set(xst_clock_src_t src, uint32_t epoch, const char *who);
 /* The network set the clock itself (SNTP writes it): record the source. */
 void xst_clock_from_ntp(void);
 xst_clock_src_t xst_clock_src(void);
-const char *xst_clock_src_name(void);   /* "none", "hint", "owner", "ntp" */
+const char *xst_clock_src_name(void);   /* "none", "kept", "hint", "owner", "ntp" */
 
 /* Ingest one heard wire (any task; cheap). Parses internally and feeds
  * devices + chat + rx/device stats. Returns false when the wire does not

@@ -60,9 +60,10 @@ reuse potential.
 
 - **`xst_clock_set(src, epoch, who)` / `xst_clock_src()`** — `common/xprs_station`.
   THE place a wall clock is set from anything but NTP. The ladder (none < hint
-  < owner < ntp): a lower source never overrides, an equal one only moves the
-  clock forward, out-of-range epochs are refused whoever says them, every
-  change is logged with its source. `xst_clock_from_ntp()` records SNTP's own
+  < owner < ntp): a lower source never overrides, nothing but NTP turns a
+  valid clock back (the chip keeps one across a reset: "kept"), out-of-range
+  epochs are refused whoever says them, every change is logged with its
+  source. `xst_clock_from_ntp()` records SNTP's own
   write. Host-tested (`test_xprs_station_host.sh`). Any new "set the time"
   path (GPS, a future command key) goes through this, never `settimeofday`.
 - **`ts_epoch()` / `civil()` / `date_prefix()`** — `common/xprs_meshtastic/mt_mesh.c`.

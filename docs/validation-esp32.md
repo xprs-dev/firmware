@@ -178,3 +178,20 @@ once:
 Host suites: `test_mt_host.sh` (cases 21-22: regional only, never OK-to-MQTT,
 a sender's share of four) and `test_mc_host.sh` all pass. One labelled bench
 message went onto LongFast.
+
+## Both boards on the new firmware (2026-10-24)
+
+The C3 (X3SQS6, `c3mini`) and the T-Deck (X3SEP2) were flashed over USB
+(`pio run -t upload --upload-port …` for the C3; `tools/flash-chunked.sh … 0x20000`
+for the T-Deck -- both boards' `platformio.ini` name stale USB ids). The C3's
+boot showed a case the ladder had not named: the chip keeps its clock across a
+reset, so `/api/status` said `synced:true` with `source:none` for the first
+minute. That clock is as good as it was and nothing this boot can vouch for,
+so it is now reported as **`kept`**, and the rule became "nothing but NTP turns
+a valid clock back" -- an owner's command no longer winds a kept clock back to
+its own `ts:`.
+
+| board | boot |
+|---|---|
+| T-Deck | `clock: ntp set` at 9 s -> `anchors epoch 486` -> `epoch 486 anchored on lan`; `settling:1` (a heard message inside the 20 s gate) |
+| C3 | `source:kept` at 7 s -> `now from ntp` at 68 s -> `epoch 691 anchored on lan`; the T-Deck archived `t:observation f:X3SQS6 … ts:2026-10-23_23:54:29 epoch:691.71` |

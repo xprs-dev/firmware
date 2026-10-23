@@ -84,12 +84,13 @@ static void test_clock(void)
     CHECK(xst_test_clock == t0 && xst_clock_src() == XST_CLK_HINT, "the hint set it");
     CHECK(!xst_clock_set(XST_CLK_HINT, t0 - 600u, "others"), "a hint never turns it back");
     CHECK(xst_clock_set(XST_CLK_HINT, t0 + 600u, "others"), "a later hint moves it on");
-    CHECK(xst_clock_set(XST_CLK_OWNER, t0 - 3600u, "X1A"),
-          "the owner's word beats a hint, even backwards");
-    CHECK(xst_clock_src() == XST_CLK_OWNER && xst_test_clock == t0 - 3600u, "owner now");
+    CHECK(!xst_clock_set(XST_CLK_OWNER, t0 - 3600u, "X1A"),
+          "not even the owner turns a valid clock back");
+    CHECK(xst_clock_set(XST_CLK_OWNER, t0 + 1200u, "X1A"), "the owner moves it on, and owns it");
+    CHECK(xst_clock_src() == XST_CLK_OWNER && xst_test_clock == t0 + 1200u, "owner now");
     CHECK(!xst_clock_set(XST_CLK_HINT, t0 + 7200u, "others"), "a hint never moves the owner's");
     CHECK(!xst_clock_set(XST_CLK_OWNER, t0 - 7200u, "X1A"), "the owner cannot turn it back");
-    CHECK(xst_clock_set(XST_CLK_OWNER, t0, "X1A"), "the owner moves it forward");
+    CHECK(xst_clock_set(XST_CLK_OWNER, t0 + 2400u, "X1A"), "the owner moves it forward");
     xst_clock_from_ntp();
     CHECK(xst_clock_src() == XST_CLK_NTP && strcmp(xst_clock_src_name(), "ntp") == 0, "ntp");
     CHECK(!xst_clock_set(XST_CLK_OWNER, t0 + 99999u, "X1A"), "nobody moves an NTP clock");
