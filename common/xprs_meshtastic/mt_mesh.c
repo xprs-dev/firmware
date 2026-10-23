@@ -252,6 +252,25 @@ static bool bcast_take(mt_mesh_t *m, uint32_t now)
     return true;
 }
 
+/* One sender's share of the hour (MT_SENDER_PER_HOUR): has this one spent
+ * it? [note] records a broadcast that is going out. */
+static bool sender_spent(const mt_vnode_t *v, uint32_t now)
+{
+    int recent = 0;
+    for (int i = 0; i < MT_SENDER_PER_HOUR; i++)
+        if (v->sent_ms[i] && since(now, v->sent_ms[i]) < 3600000) recent++;
+    return recent >= MT_SENDER_PER_HOUR;
+}
+static void sender_note(mt_vnode_t *v, uint32_t now)
+{
+    int slot = 0;
+    for (int i = 0; i < MT_SENDER_PER_HOUR; i++) {
+        if (!v->sent_ms[i]) { slot = i; break; }
+        if (since(v->sent_ms[slot], v->sent_ms[i]) > 0) slot = i;   /* oldest */
+    }
+    v->sent_ms[slot] = now ? now : 1;
+}
+
 /* ── The transmit queue ───────────────────────────────────────────────── */
 
 static bool q_push(mt_mesh_t *m, const uint8_t *frame, int len, int prio,
@@ -503,9 +522,15 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     mt_call_of_node(h->from, from, sizeof from);
     char ts[40];
     int tn = stamp(m, ts, sizeof ts);
-    /* No consent to the internet without the flag the Meshtastic user set:
-     * scope:local keeps it on the short-range bearers (XPRS.md 9.11.1). */
-    bool local = !(d->has_bitfield && (d->bitfield & MT_BITFIELD_OK_TO_MQTT));
+    /* The public channel is a regional bearer (XPRS.md 9.11.5): what is
+     * said on it lands in the Regional room whatever its sender chose about
+     * the internet -- regional never reaches the internet, so Meshtastic's
+     * "OK to MQTT" consent is honoured either way, and the valley's talk
+     * does not become the conversation that travels. A direct message is for
+     * one callsign wherever it is: it travels when the sender allowed the
+     * internet, and stays on the air when not. */
+    bool consent = d->has_bitfield && (d->bitfield & MT_BITFIELD_OK_TO_MQTT);
+    const char *scope = (dst && consent) ? "" : " scope:regional";
     const char *rx = idmap_xid(m, d->reply_id);
     char env[160];
     int en;
@@ -515,7 +540,7 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
         en = snprintf(env, sizeof env,
                       "t:reaction f:%s%s%s%s%.*s%s r:%s zmid:%08x%08x via:%s add:like",
                       from, dst ? " d:" : "", dst ? dst : "", tn ? " " : "",
-                      tn, ts, local ? " scope:local" : "", rx,
+                      tn, ts, scope, rx,
                       (unsigned)h->from, (unsigned)h->id, m->call);
         if (en > 0 && en <= XPRS_MAX_WIRE) {
             deliver(m, env, en, false);
@@ -540,7 +565,7 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     if (rx) snprintf(rpart, sizeof rpart, " r:%s", rx);
     en = snprintf(env, sizeof env, "t:message f:%s%s%s%s%.*s%s%s zmid:%08x%08x",
                   from, dst ? " d:" : "", dst ? dst : "", tn ? " " : "", tn, ts,
-                  local ? " scope:local" : "", rpart,
+                  scope, rpart,
                   (unsigned)h->from, (unsigned)h->id);
     if (en <= 0 || en >= (int)sizeof env) return;
     char via[24];
@@ -586,6 +611,7 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
 static void identity_in(mt_mesh_t *m, const mt_hdr_t *h, mt_node_t *nd,
                         const mt_user_t *u, bool ok_to_mqtt)
 {
+    (void)ok_to_mqtt;      /* a name is the channel's: regional either way */
     uint32_t now = m->ops.now_ms();
     bool changed = strcmp(nd->long_name, u->long_name) != 0;
     snprintf(nd->long_name, sizeof nd->long_name, "%s", u->long_name);
@@ -603,7 +629,7 @@ static void identity_in(mt_mesh_t *m, const mt_hdr_t *h, mt_node_t *nd,
     int wl = snprintf(m->wire, sizeof m->wire,
                       "t:identity f:%s%s%.*s%s nick:%s zmid:%08x%08x via:%s",
                       from, tn ? " " : "", tn, ts,
-                      ok_to_mqtt ? "" : " scope:local", nick,
+                      " scope:regional", nick,
                       (unsigned)h->from, (unsigned)h->id, m->call);
     if (wl > 0 && wl <= XPRS_MAX_WIRE) {
         deliver(m, m->wire, wl, false);
@@ -1036,19 +1062,32 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
         }
         return;
     }
-    /* XPRS.md 9.11: this network is a radio band, a regional bearer, so a
-     * local packet does not go on it and neither does one whose scope word
-     * this station does not know. Regional and global do. */
-    if (!xprs_reach_admits(xprs_scope_reach(p), XPRS_REACH_REGIONAL)) return;
+    /* XPRS.md 9.11.3/9.11.5: this network's public channel is a regional
+     * bearer that it shares with everybody in the valley, so it gets the
+     * Regional room and nothing wider. A global packet is the conversation
+     * that travels the internet, and does not belong on one valley's air;
+     * a local one does not go on a radio band; a scope word this station
+     * does not know is a reason not to relay. A direct message is for one
+     * node this bridge hears, wherever its author stood: it crosses unless
+     * it was local. */
+    xprs_reach_t reach = xprs_scope_reach(p);
+    if (to == MT_BROADCAST) {
+        if (reach != XPRS_REACH_REGIONAL) {
+            m->st.not_regional++;
+            return;
+        }
+    } else if (!xprs_reach_admits(reach, XPRS_REACH_REGIONAL)) {
+        return;
+    }
 
     mt_data_t d = { 0 };
     d.portnum = MT_PORT_TEXT;
-    const char *sc;
-    int scn;
-    bool global = !get(p, "scope", &sc, &scn) ||
-                  (scn == 6 && memcmp(sc, "global", 6) == 0);
+    /* A broadcast is never marked fit for MQTT: regional never reaches the
+     * internet (9.11.1), and Meshtastic's uplinking nodes honour the bit. A
+     * direct message that was global may go wherever its recipient is. */
     d.has_bitfield = true;
-    d.bitfield = global ? MT_BITFIELD_OK_TO_MQTT : 0;
+    d.bitfield = (to != MT_BROADCAST && reach == XPRS_REACH_GLOBAL)
+                 ? MT_BITFIELD_OK_TO_MQTT : 0;
     const char *rv;
     int rn;
     if (get(p, "r", &rv, &rn)) d.reply_id = idmap_mesh(m, rv, rn);
@@ -1088,9 +1127,16 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
         }
     }
 
-    if (to == MT_BROADCAST && !bcast_take(m, now)) {
-        m->st.bcast_capped++;
-        return;
+    if (to == MT_BROADCAST) {
+        if (sender_spent(sv, now)) {
+            m->st.sender_capped++;
+            return;
+        }
+        if (!bcast_take(m, now)) {
+            m->st.bcast_capped++;
+            return;
+        }
+        sender_note(sv, now);
     }
 
     int tl = xprs_signed_text(p, m->text, sizeof m->text);

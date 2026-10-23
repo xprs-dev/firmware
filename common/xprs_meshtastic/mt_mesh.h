@@ -155,6 +155,9 @@ typedef struct {
 /* Text bytes in one frame: 239 after the header, less the Data's own
  * fields (at most 17). */
 #define MT_TEXT_MAX       220
+/* One XPRS sender's share of the channel: this many broadcasts an hour, so
+ * that one busy person cannot spend the bridge's whole hourly budget. */
+#define MT_SENDER_PER_HOUR 4
 
 typedef struct {
     bool     used;
@@ -189,6 +192,7 @@ typedef struct {
     uint32_t num;
     uint32_t seen_ms;            /* last XPRS packet from it */
     uint32_t announced_ms;       /* last NodeInfo we aired for it; 0 = never */
+    uint32_t sent_ms[MT_SENDER_PER_HOUR]; /* its last broadcasts here, for its share */
     bool     announce_due;       /* the tick announces it (curve work) */
     bool     keep;               /* announced on Meshtastic: saved, evicted last */
     char     call[MT_CALL_LEN];  /* bare */
@@ -232,6 +236,9 @@ typedef struct {
      * clock, refused as too soon after boot, refused as old news; and texts
      * aired with the time they were written in front. */
     uint32_t no_clock, settling, stale, dated;
+    /* Broadcasts refused as not the Regional room's (9.11.3), and as one
+     * sender's share of the hour spent. */
+    uint32_t not_regional, sender_capped;
 } mt_mesh_stats_t;
 
 typedef struct {

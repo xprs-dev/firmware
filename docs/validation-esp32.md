@@ -155,3 +155,26 @@ Two bench messages went onto LongFast, labelled "xprs bench, ignore".
 The `mt` counters live in `/api/status` (the `lora` block), not `/api/diag`.
 Making the T-Deck a time source for the Meshtastic mesh was looked at and
 left: Meshtastic nodes take network time only from a Position claiming a GPS.
+
+## Meshtastic gets the Regional room, and nothing wider
+
+LongFast is one valley's air, shared. Until 2026-10-24 the bridge mirrored
+global traffic onto it too (the conversation that travels over Reticulum),
+and Meshtastic's channel talk landed in the Global room whenever its sender
+had ticked "OK to MQTT". Now only `scope:regional` crosses out, never marked
+OK-to-MQTT, each sender with a share of the hour; and everything said on the
+channel arrives `scope:regional` (XPRS.md 9.11.3/9.11.5, docs/lora.md "What
+crosses"). Bench, T-Deck freshly flashed, three messages aired by the C3 at
+once:
+
+| wire from the C3 | T-Deck |
+|---|---|
+| `scope:regional m:xprs bench regional, ignore` | serial `mt: text 4539f8 -> ffffffff …`, `text_out` 0 → 1: **crossed** |
+| no scope (global) `m:xprs bench global, must not cross` | no `mt: text`; `not_regional` counted |
+| `scope:PT m:xprs bench country, must not cross` | no `mt: text`; `not_regional` counted |
+| `not_regional` over the 50 s | 0 → **18**: our two plus sixteen replays of global traffic that used to be mirrored |
+| inbound | a Meshtastic NodeInfo arrived as `t:identity f:MTAEAE5890 … scope:regional nick:7BTM_01-GW-8 … via:X3SEP2` |
+
+Host suites: `test_mt_host.sh` (cases 21-22: regional only, never OK-to-MQTT,
+a sender's share of four) and `test_mc_host.sh` all pass. One labelled bench
+message went onto LongFast.

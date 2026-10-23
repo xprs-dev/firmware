@@ -603,6 +603,32 @@ firmware answers a NodeInfo REQUEST from one node only once in 12 hours.
   old from new. Meshtastic's duplicate filter hides a repeat from its users
   (the ids are derived), but not from the channel.
 
+### What crosses: the Regional room, and a share each
+
+The public channel is one valley's air, shared with everybody on it, so it
+gets the **Regional room and nothing wider** (XPRS.md 9.11.3, 2026-10-24).
+Before this the bridge mirrored global traffic too -- the conversation that
+travels the internet over Reticulum, re-aired on LongFast in one town -- and
+Meshtastic's own channel talk arrived in the Global room whenever its sender
+had ticked "OK to MQTT". Now:
+
+- **Out:** a broadcast crosses only with `scope:regional`; the default
+  (global), a country code and `local` stay off the channel, counted as
+  `not_regional`. The frame is never marked OK-to-MQTT. A direct message to
+  a node this bridge hears crosses whatever its scope but `local`, as before.
+- **In:** everything said on the channel arrives `scope:regional` and lands in
+  the Regional room, whatever the sender's MQTT choice (regional never
+  reaches the internet, so the consent holds either way). A DM to an XPRS
+  callsign travels when its sender allowed the internet, else regional.
+- **A share each:** `MT_SENDER_PER_HOUR` (4) broadcasts an hour per XPRS
+  sender, inside the bridge's `mt_bcast_hr` (12), so one busy person cannot
+  spend the hour; refused ones count as `sender_capped`. Listening before
+  talking is the radio's CAD (`lr_channel_busy`), as for every frame.
+- Nodes are announced on Meshtastic only when their words cross (and then at
+  most every `mt_ni_min`), so a quieter channel also means fewer NodeInfos.
+
+The MeshCore bridge follows the same two rules.
+
 ### Time
 
 A Meshtastic frame carries no time: the on-air header is addresses, id, hops

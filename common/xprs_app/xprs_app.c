@@ -9403,7 +9403,8 @@ static int api_lora_json(char *buf, size_t cap)
             "\"text_in\":%lu,\"text_out\":%lu,\"dm_acked\":%lu,"
             "\"dm_rekeyed\":%lu,\"dm_not_here\":%lu,\"receipts\":%lu,"
             "\"key_asks\":%lu,\"pki_fail\":%lu,\"dropped\":%lu,"
-            "\"no_clock\":%lu,\"settling\":%lu,\"stale\":%lu,\"dated\":%lu}",
+            "\"no_clock\":%lu,\"settling\":%lu,\"stale\":%lu,\"dated\":%lu,"
+            "\"not_regional\":%lu,\"sender_capped\":%lu,\"nodeinfo_out\":%lu}",
             (unsigned long)mt.rx_frames, (unsigned long)mt.rx_decoded,
             (unsigned long)mt.relayed, (unsigned long)mt.text_in,
             (unsigned long)mt.text_out, (unsigned long)mt.dm_acked,
@@ -9411,7 +9412,9 @@ static int api_lora_json(char *buf, size_t cap)
             (unsigned long)mt.receipts, (unsigned long)mt.key_asks,
             (unsigned long)mt.pki_fail, (unsigned long)mt.dropped,
             (unsigned long)mt.no_clock, (unsigned long)mt.settling,
-            (unsigned long)mt.stale, (unsigned long)mt.dated);
+            (unsigned long)mt.stale, (unsigned long)mt.dated,
+            (unsigned long)mt.not_regional, (unsigned long)mt.sender_capped,
+            (unsigned long)mt.nodeinfo_out);
     /* Who is out there, by the name that network gave them: the counters
      * say how much crossed, this says with whom. Six is a status page, not
      * a node list. */

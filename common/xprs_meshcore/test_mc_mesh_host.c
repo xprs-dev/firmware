@@ -323,7 +323,7 @@ void test_mesh(void)
     CHECK(count_dl("t:identity") == 0);   /* a bridge's own node is not news */
     CHECK(g_b[1].st.adverts_in >= 1);
 
-    /* 2. N advertises. Both bridges name it, unsigned and scope:local, and
+    /* 2. N advertises. Both bridges name it, unsigned and scope:regional, and
      *    both learn the key that a direct message to it is sealed to. */
     g_ndl = 0;
     n_advert("Node N");
@@ -337,7 +337,7 @@ void test_mesh(void)
     if (a >= 0) {
         CHECK(strstr(g_dl[a].wire, g_ncall) != NULL);
         CHECK(strstr(g_dl[a].wire, "nick:Node") != NULL);
-        CHECK(strstr(g_dl[a].wire, "scope:local") != NULL);
+        CHECK(strstr(g_dl[a].wire, "scope:regional") != NULL);
         CHECK(strstr(g_dl[a].wire, "via:X3AAAA") != NULL);
         CHECK(strstr(g_dl[a].wire, "zmid:") != NULL);
         CHECK(!g_dl[a].sign);             /* never signed as ours (3.2) */
@@ -370,7 +370,7 @@ void test_mesh(void)
     if (a >= 0) {
         CHECK(strncmp(g_dl[a].wire, "t:message f:", 12) == 0);
         CHECK(strstr(g_dl[a].wire, g_ncall) != NULL);
-        CHECK(strstr(g_dl[a].wire, "scope:local") != NULL);
+        CHECK(strstr(g_dl[a].wire, "scope:regional") != NULL);
         CHECK(strstr(g_dl[a].wire, " d:") == NULL);   /* to the room */
     }
 
@@ -405,7 +405,7 @@ void test_mesh(void)
     g_nheard = 0;
     g_ndl = 0;
     int aired0 = g_aired[0] + g_aired[1];
-    xprs_in("t:message f:X1QZ3N ts:2026-09-20_09:00:00 m:good morning from XPRS",
+    xprs_in("t:message f:X1QZ3N ts:2026-09-20_09:00:00 scope:regional m:good morning from XPRS",
             MC_XPRS_HEARD);
     tick_all(4000);
     int gi = find_heard(MC_PT_GRP_TXT, "good morning from XPRS");
@@ -547,7 +547,7 @@ void test_mesh(void)
     if (a >= 0) {
         CHECK(strstr(g_dl[a].wire, "d:X1QZ3N") != NULL);
         CHECK(strstr(g_dl[a].wire, g_ncall) != NULL);
-        CHECK(strstr(g_dl[a].wire, "scope:local") != NULL);
+        CHECK(strstr(g_dl[a].wire, "scope:regional") != NULL);
         CHECK(!g_dl[a].sign);
     }
     int ai = find_heard(MC_PT_ACK, NULL);
@@ -558,7 +558,7 @@ void test_mesh(void)
     /* 13. A busy radio is not a lost message: it waits and goes. */
     g_nheard = 0;
     g_radio_busy = true;
-    xprs_in("t:message f:X1QZ3N ts:2026-09-20_09:00:00 m:while the channel was busy",
+    xprs_in("t:message f:X1QZ3N ts:2026-09-20_09:00:00 scope:regional m:while the channel was busy",
             MC_XPRS_HEARD);
     tick_all(3000);
     CHECK(find_heard(MC_PT_GRP_TXT, "while the channel was busy") < 0);
@@ -573,7 +573,7 @@ void test_mesh(void)
      *      broadcast and costs one slot. */
     {
         uint32_t out0 = g_b[0].st.text_out, cap0 = g_b[0].st.bcast_capped;
-        const char *once = "t:message f:X1QZ3N ts:2026-09-20_09:00:00 m:said once";
+        const char *once = "t:message f:X1QZ3N ts:2026-09-20_09:00:00 scope:regional m:said once";
         for (int i = 0; i < 5; i++) {
             mc_mesh_on_xprs(&g_b[0], once, (int)strlen(once), MC_XPRS_HEARD);
             tick_all(200);
@@ -586,7 +586,7 @@ void test_mesh(void)
     uint32_t capped0 = g_b[0].st.bcast_capped;
     for (int i = 0; i < 6; i++) {
         snprintf(wire, sizeof wire,
-                 "t:message f:X1QZ3N ts:2026-09-20_09:00:00 m:chatter %d", i);
+                 "t:message f:X1QZ3N ts:2026-09-20_09:00:00 scope:regional m:chatter %d", i);
         xprs_in(wire, MC_XPRS_HEARD);
         tick_all(1500);
     }

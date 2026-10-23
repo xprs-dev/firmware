@@ -73,6 +73,10 @@ reuse potential.
   app; worth one shared home when a third user appears. The MeshCore bridge
   (`mc_mesh.c`) wants the same gate and prefix — candidate to lift both into
   a `mesh_common`.
+- **A share of the hour per sender** — `sender_spent()` / `sender_note()`
+  in `mt_mesh.c`: four timestamps per sender, "spent" when all four are inside
+  the last hour. Sixteen bytes, no bucket array; the shape for any per-party
+  cap inside a shared budget (the MeshCore bridge wants it next).
 - **The mirror gate** — `mt_mesh_on_xprs`: heard traffic crosses to another
   network only under a clock and after `MT_MIRROR_SETTLE_MS`, old news
   (`MT_*_FRESH_S`) is counted and said, not silently dropped. Pattern for any

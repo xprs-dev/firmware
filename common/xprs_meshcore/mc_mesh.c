@@ -510,7 +510,7 @@ static void text_in(mc_mesh_t *m, const uint8_t from_pub[32], uint32_t hash,
 
     char env[160];
     int en = snprintf(env, sizeof env,
-                      "t:message f:%s%s%s%s%.*s scope:local zmid:%s",
+                      "t:message f:%s%s%s%s%.*s scope:regional zmid:%s",
                       from, dst ? " d:" : "", dst ? dst : "", tn ? " " : "",
                       tn, ts, zid);
     if (en <= 0 || en >= (int)sizeof env) return;
@@ -573,7 +573,7 @@ static void identity_in(mc_mesh_t *m, mc_node_t *nd, uint32_t hash)
     int tn = stamp(m, ts, sizeof ts);
     hex8(hash, zid);
     int wl = snprintf(m->wire, sizeof m->wire,
-                      "t:identity f:%s%s%.*s scope:local nick:%s zmid:%s via:%s",
+                      "t:identity f:%s%s%.*s scope:regional nick:%s zmid:%s via:%s",
                       from, tn ? " " : "", tn, ts, nick, zid, m->call);
     if (wl > 0 && wl <= XPRS_MAX_WIRE) {
         deliver(m, m->wire, wl, false);
@@ -1018,10 +1018,15 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
         }
         return;
     }
-    /* XPRS.md 9.11: this network is a radio band, a regional bearer, so a
-     * local packet does not go on it and neither does one whose scope word
-     * this station does not know. Regional and global do. */
-    if (!xprs_reach_admits(xprs_scope_reach(p), XPRS_REACH_REGIONAL)) return;
+    /* XPRS.md 9.11.3/9.11.5: the public channel is one valley's air, shared,
+     * so a broadcast crosses only from the Regional room -- not the global
+     * conversation that travels the internet, not a local one, not a scope
+     * word this station does not know. A direct message is for one node
+     * this bridge hears, wherever its author stood: it crosses unless local. */
+    xprs_reach_t reach = xprs_scope_reach(p);
+    if (direct ? !xprs_reach_admits(reach, XPRS_REACH_REGIONAL)
+               : reach != XPRS_REACH_REGIONAL)
+        return;
 
     const char *mv;
     int mn;
