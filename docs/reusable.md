@@ -56,6 +56,28 @@ reuse potential.
   (sig/via removed), `xprs_looks_like`, `xprs_append_via`. One grammar, every
   client (firmware, hotspot page, phone app).
 
+## Time (XPRS.md 4.8, 11.10, 15.7)
+
+- **`xst_clock_set(src, epoch, who)` / `xst_clock_src()`** — `common/xprs_station`.
+  THE place a wall clock is set from anything but NTP. The ladder (none < hint
+  < owner < ntp): a lower source never overrides, an equal one only moves the
+  clock forward, out-of-range epochs are refused whoever says them, every
+  change is logged with its source. `xst_clock_from_ntp()` records SNTP's own
+  write. Host-tested (`test_xprs_station_host.sh`). Any new "set the time"
+  path (GPS, a future command key) goes through this, never `settimeofday`.
+- **`ts_epoch()` / `civil()` / `date_prefix()`** — `common/xprs_meshtastic/mt_mesh.c`.
+  `ts:YYYY-MM-DD_HH:MM:SS` ↔ seconds since 1970 (Hinnant's civil algorithm,
+  no libc `mktime`/`gmtime` and their locale/TZ surprises), and the "[14:26] "
+  / "[10-23 14:26] " / "[14:26Z] " prefix for a text whose carrier cannot say
+  when it was written. `xauth_ts_epoch` (xprs_auth) is the same parse for the
+  app; worth one shared home when a third user appears. The MeshCore bridge
+  (`mc_mesh.c`) wants the same gate and prefix — candidate to lift both into
+  a `mesh_common`.
+- **The mirror gate** — `mt_mesh_on_xprs`: heard traffic crosses to another
+  network only under a clock and after `MT_MIRROR_SETTLE_MS`, old news
+  (`MT_*_FRESH_S`) is counted and said, not silently dropped. Pattern for any
+  bridge that re-airs what it heard.
+
 ## Flashing / bench (tools/)
 
 - **`tools/flash-chunked.sh <port> <bin> <offset>`** — writes 256 KB at a time

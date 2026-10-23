@@ -87,6 +87,30 @@ void xst_set_call(const char *own_call);
 void xst_set_tz(int off_sec, bool known);
 int  xst_tz(bool *known);
 
+/* ── The clock (XPRS.md 4.8, 11.10, 15.7) ──────────────────────────────
+ * Where the wall clock came from, ranked. A wrong clock is not cosmetic: it
+ * mis-dates every packet and signature the station airs, breaks the 300 s
+ * command window of 11.4, and turns the bridges' old-news gates inside out.
+ * So a source never moves a clock a better one set, an equal one only moves
+ * it forward, and a stranger's packet sets nothing. */
+typedef enum {
+    XST_CLK_NONE  = 0,   /* no clock: packets say epoch:<boots>.<uptime> */
+    XST_CLK_HINT  = 1,   /* several verified neighbours agreed (opt-in) */
+    XST_CLK_OWNER = 2,   /* the ts: of a command that verified as the owner's */
+    XST_CLK_NTP   = 3,   /* the network's, which the station believes as it is */
+} xst_clock_src_t;
+
+/* Take [epoch] from [src] when the ladder allows. Refused: a source below
+ * the one that set the clock; the same source turning it back (11.10: each
+ * accepted word is later than the last); anything before 2023-11 or after
+ * 2040, whoever says it. A higher source replaces freely. [who] is for the
+ * log. True when the clock was set. Any task. */
+bool xst_clock_set(xst_clock_src_t src, uint32_t epoch, const char *who);
+/* The network set the clock itself (SNTP writes it): record the source. */
+void xst_clock_from_ntp(void);
+xst_clock_src_t xst_clock_src(void);
+const char *xst_clock_src_name(void);   /* "none", "hint", "owner", "ntp" */
+
 /* Ingest one heard wire (any task; cheap). Parses internally and feeds
  * devices + chat + rx/device stats. Returns false when the wire does not
  * parse, carries no f:, or is our own echo. */

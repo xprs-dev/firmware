@@ -29,6 +29,7 @@ uint32_t xst_test_now_ms;
 static const char *TAG __attribute__((unused)) = "xst";
 #else
 #include <stdlib.h>
+#include <sys/time.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -153,6 +154,76 @@ int xst_tz(bool *known)
     UNLOCK();
     return off;
 }
+
+/* ── The clock ──────────────────────────────────────────────────────── */
+
+#define XST_CLK_MIN 1700000000u   /* 2023-11-14: nothing earlier is a clock */
+#define XST_CLK_MAX 2208988800u   /* 2040-01-01: nothing later is believed */
+static xst_clock_src_t s_clk_src;
+static const char *const k_clk_name[] = { "none", "hint", "owner", "ntp" };
+
+#ifdef XST_HOST_TEST
+uint32_t xst_test_clock;                   /* what settimeofday would have set */
+static void     clock_write(uint32_t e) { xst_test_clock = e; }
+static uint32_t clock_read(void)        { return xst_test_clock; }
+#else
+static void clock_write(uint32_t e)
+{
+    struct timeval tv = { .tv_sec = (time_t)e, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+}
+static uint32_t clock_read(void) { return xst_epoch_now(); }
+#endif
+
+bool xst_clock_set(xst_clock_src_t src, uint32_t epoch, const char *who)
+{
+    (void)who;
+    if (src <= XST_CLK_NONE || src > XST_CLK_NTP ||
+        epoch < XST_CLK_MIN || epoch >= XST_CLK_MAX) {
+        ESP_LOGW(TAG, "clock: %lu from %s refused, out of range",
+                 (unsigned long)epoch, who ? who : "?");
+        return false;
+    }
+    LOCK();
+    xst_clock_src_t cur = s_clk_src;
+    UNLOCK();
+    if (src < cur) {
+        ESP_LOGW(TAG, "clock: %s's %lu from %s refused, %s set it",
+                 k_clk_name[src], (unsigned long)epoch, who ? who : "?",
+                 k_clk_name[cur]);
+        return false;
+    }
+    if (src == cur && src != XST_CLK_NTP && clock_read() && epoch < clock_read()) {
+        ESP_LOGW(TAG, "clock: %s's %lu from %s refused, it is %lu and never "
+                      "goes back", k_clk_name[src], (unsigned long)epoch,
+                 who ? who : "?", (unsigned long)clock_read());
+        return false;
+    }
+    clock_write(epoch);
+    LOCK();
+    s_clk_src = src;
+    UNLOCK();
+    ESP_LOGW(TAG, "clock: %s set %lu UTC (%s)", k_clk_name[src],
+             (unsigned long)epoch, who ? who : "?");
+    return true;
+}
+
+void xst_clock_from_ntp(void)
+{
+    LOCK();
+    s_clk_src = XST_CLK_NTP;
+    UNLOCK();
+}
+
+xst_clock_src_t xst_clock_src(void)
+{
+    LOCK();
+    xst_clock_src_t s = s_clk_src;
+    UNLOCK();
+    return s;
+}
+
+const char *xst_clock_src_name(void) { return k_clk_name[xst_clock_src()]; }
 
 void xst_set_call(const char *own_call)
 {

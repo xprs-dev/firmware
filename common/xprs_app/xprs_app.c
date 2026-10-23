@@ -612,13 +612,16 @@ static uint8_t bearer_code(const char *name)
 /* What the index calls to decide whether a stored packet is really from who
  * it says. Runs on idx_task, never on a radio task. Three answers: 1 checks
  * out, -1 fails against a key we hold, 0 cannot tell. */
+static void clock_hint(const char *from, const xprs_t *p);   /* with the clock, below */
 static int index_verifier(const char *wire, int len, const char *from)
 {
     const uint8_t *key = peer_key(from);
     if (!key) return 0;
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return 0;
-    return xprsid_verify(&p, key) ? 1 : -1;
+    if (!xprsid_verify(&p, key)) return -1;
+    clock_hint(from, &p);
+    return 1;
 }
 
 /* ── What we hear ───────────────────────────────────────────────────────── */
@@ -685,6 +688,7 @@ static void settings_ok(int row);
 
 static void mesh_deliver(const char *wire, int len, bool sign);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
+static int32_t mesh_tz(bool *known);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
 static bool lora_both_from_cfg(void);
 static esp_err_t lora_rotate_apply(const char *list);
@@ -701,6 +705,7 @@ static void lora_start_bridge(void)
         .deliver = mesh_deliver,
         .stamp = mesh_stamp,
         .nick_of = NULL,
+        .tz_offset = mesh_tz,
     };
     const char *v;
     xprslora_mode_t mode = xprslora_mode();
@@ -2161,6 +2166,8 @@ static bool pol_ts_ok(const char *ts)
 /* Defined with the WiFi and the time zone, below. */
 static void time_field(char *out, int cap);
 static uint32_t now_ms(void);
+static uint32_t boot_epoch(void);
+static bool     s_anchor_due;           /* 15.7: say ts: and epoch: once */
 static char s_ip_str[20];               /* defined with the WiFi, below */
 static int64_t s_tz_next_s;             /* defined with the time zone, below */
 
@@ -2283,16 +2290,16 @@ static void wifi_rejoin(void);          /* with the rest of the WiFi, below */
  * against the owner's key, so its `ts:` is the best guess this box has of
  * the time, and a better one than none: signatures get dated, results carry
  * a real `ts:`, and the owner's zdiag passes the 300 s gate of 11.4. NTP
- * replaces it the moment the station reaches a network.
+ * replaces it the moment the station reaches a network, and the ladder in
+ * xprs_station says the rest: an owner's later word moves the clock on,
+ * never back, and nothing the owner says moves a clock NTP set.
  */
 static void clock_from_owner(const char *ts)
 {
-    if (xst_epoch_now()) return;
+    if (xst_clock_src() > XST_CLK_OWNER) return;
     uint32_t e = xauth_ts_epoch(ts);
-    if (e < 1700000000u) return;
-    struct timeval tv = { .tv_sec = (time_t)e, .tv_usec = 0 };
-    settimeofday(&tv, NULL);
-    ESP_LOGW(TAG, "no clock: took the owner's, %s UTC (NTP will correct it)", ts);
+    if (!e) return;
+    xst_clock_set(XST_CLK_OWNER, e, "the owner's command");
 }
 
 /* Who to tell, and by which command, once the restart a new key or a new
@@ -4119,9 +4126,22 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     char lx[40] = "";
     char lxh[33];
     if (xprsrns_dest_hex(lxh)) snprintf(lx, sizeof lx, " lx:%s", lxh);
+    /* 15.7: a station that has just obtained the time says, once, both
+     * forms -- ts: and this boot's epoch: -- so every receiver in range can
+     * date what it aired before it had a clock, and what it will air if it
+     * loses one. The beacon is the packet every station sends anyway. */
+    char anc[64] = "";
+    int acn = 0;
+    if (s_anchor_due && xst_epoch_now()) {
+        char tsf[40];
+        time_field(tsf, sizeof tsf);
+        acn = snprintf(anc, sizeof anc, " %s epoch:%u.%u", tsf,
+                       (unsigned)boot_epoch(),
+                       (unsigned)(esp_timer_get_time() / 1000000ULL));
+    }
     int fixed = (int)(sizeof "t:observation f:" - 1) + (int)strlen(s_call)
               + (int)(sizeof " link:" - 1) + (int)strlen(bearer)
-              + (int)(sizeof " peers:" - 1) + 3 + an + (int)strlen(lx);
+              + (int)(sizeof " peers:" - 1) + 3 + an + (int)strlen(lx) + acn;
     int budget = room - fixed - sign_room;
 
     char hears[208];
@@ -4130,8 +4150,13 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     int hn = xst_hears_render(bearer, 600, budget, hears, sizeof hears,
                               &total, q, sizeof q);
 
-    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s%s",
-                     s_call, bearer, total, acct, lx);
+    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s%s%s",
+                     s_call, bearer, total, acct, lx, anc);
+    if (acn > 0 && n > 0 && n < cap) {
+        s_anchor_due = false;
+        ESP_LOGI(TAG, "clock: epoch %u anchored on %s (%s)", (unsigned)boot_epoch(),
+                 bearer, xst_clock_src_name());
+    }
     if (hn > 0 && n > 0 && n < cap)
         n += snprintf(out + n, (size_t)(cap - n), " hears:%s", hears);
     if (hn > 0 && q[0] && n > 0 && n < cap)
@@ -4295,6 +4320,95 @@ static void time_field(char *out, int cap)
 }
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+static int32_t mesh_tz(bool *known) { return xst_tz(known); }
+
+/* ── The clock: where it comes from, and who may not set it ──────────────
+ * The ladder itself is xprs_station's (xst_clock_set). Here: NTP's arrival,
+ * the 15.7 anchor when a clock appears, and the neighbours' hint. */
+
+/* SNTP wrote the time itself (lwip's thread): record the source. */
+static void on_sntp_sync(struct timeval *tv)
+{
+    xst_clock_from_ntp();
+    ESP_LOGW(TAG, "clock: ntp set %lu UTC", tv ? (unsigned long)tv->tv_sec : 0UL);
+}
+
+/* Once a minute, with the time zone: a clock that appeared since last time
+ * is announced, and the next beacon carries the anchor (15.7). */
+static void clock_tick(void)
+{
+    static xst_clock_src_t seen;
+    xst_clock_src_t src = xst_clock_src();
+    if (src == seen) return;
+    seen = src;
+    if (src != XST_CLK_NONE && xst_epoch_now()) {
+        s_anchor_due = true;
+        ESP_LOGI(TAG, "clock: now from %s -- the next beacon anchors epoch %u",
+                 xst_clock_src_name(), (unsigned)boot_epoch());
+    }
+}
+
+/*
+ * A neighbours' hint, OFF unless the owner sets `clock_hint` (11.10): a
+ * station with no clock at all, no network and no owner in range takes the
+ * time several verified identities agree on. Several, because one key is
+ * free to mint and a single stranger must not date this station; verified,
+ * because an unsigned ts: is anybody's; agree, because the median of three
+ * within ten minutes is not one liar's number. It fills a void only -- the
+ * ladder refuses it once anything better has spoken -- and never moves a
+ * clock back. Called on idx_task for every packet that verified.
+ */
+#define HINT_N         6
+#define HINT_NEED      3
+#define HINT_WINDOW_MS 60000u
+#define HINT_AGREE_S   600u
+static struct { char call[12]; uint32_t epoch, ms; } s_hint[HINT_N];
+static portMUX_TYPE s_hint_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static void clock_hint(const char *from, const xprs_t *p)
+{
+    if (!from || !from[0] || xst_clock_src() != XST_CLK_NONE) return;
+    if (!xcfg_get_bool("clock_hint", false)) return;
+    int tn;
+    const char *tv = xprs_get(p, "ts", &tn);
+    if (!tv || tn != 19) return;
+    char ts[20];
+    memcpy(ts, tv, 19);
+    ts[19] = 0;
+    uint32_t e = xauth_ts_epoch(ts);
+    if (!e) return;
+    uint32_t now = now_ms();
+    uint32_t v[HINT_N];
+    int n = 0;
+    portENTER_CRITICAL(&s_hint_mux);
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < HINT_N; i++) {
+        if (s_hint[i].call[0] && strcmp(s_hint[i].call, from) == 0) { slot = i; break; }
+        if (!s_hint[i].call[0]) { if (slot < 0) slot = i; }
+        else if (now - s_hint[i].ms > now - s_hint[oldest].ms) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    snprintf(s_hint[slot].call, sizeof s_hint[slot].call, "%s", from);
+    s_hint[slot].epoch = e;
+    s_hint[slot].ms = now;
+    for (int i = 0; i < HINT_N; i++)
+        if (s_hint[i].call[0] && now - s_hint[i].ms <= HINT_WINDOW_MS) v[n++] = s_hint[i].epoch;
+    portEXIT_CRITICAL(&s_hint_mux);
+    if (n < HINT_NEED) return;
+    for (int i = 1; i < n; i++) {                 /* small: insertion sort */
+        uint32_t x = v[i];
+        int j = i;
+        while (j > 0 && v[j - 1] > x) { v[j] = v[j - 1]; j--; }
+        v[j] = x;
+    }
+    uint32_t med = v[n / 2];
+    int agree = 0;
+    for (int i = 0; i < n; i++)
+        if (v[i] + HINT_AGREE_S >= med && v[i] <= med + HINT_AGREE_S) agree++;
+    if (agree < HINT_NEED) return;
+    xst_clock_set(XST_CLK_HINT, med, "neighbours that agreed");
+}
 /* The boots ordinal of 10.7, for whatever asks the ops table for it. Zero
  * until boot_epoch_init() has read NVS, which happens before anything airs. */
 static uint32_t boot_epoch(void) { return s_boot_epoch; }
@@ -5393,6 +5507,7 @@ static void inet_probe_task(void *arg)
         s_inet_up = up;
         s_inet_known = true;
         tz_tick(up);
+        clock_tick();
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
@@ -9287,13 +9402,16 @@ static int api_lora_json(char *buf, size_t cap)
             ",\"mt\":{\"rx\":%lu,\"decoded\":%lu,\"relayed\":%lu,"
             "\"text_in\":%lu,\"text_out\":%lu,\"dm_acked\":%lu,"
             "\"dm_rekeyed\":%lu,\"dm_not_here\":%lu,\"receipts\":%lu,"
-            "\"key_asks\":%lu,\"pki_fail\":%lu,\"dropped\":%lu}",
+            "\"key_asks\":%lu,\"pki_fail\":%lu,\"dropped\":%lu,"
+            "\"no_clock\":%lu,\"settling\":%lu,\"stale\":%lu,\"dated\":%lu}",
             (unsigned long)mt.rx_frames, (unsigned long)mt.rx_decoded,
             (unsigned long)mt.relayed, (unsigned long)mt.text_in,
             (unsigned long)mt.text_out, (unsigned long)mt.dm_acked,
             (unsigned long)mt.dm_rekeyed, (unsigned long)mt.dm_not_here,
             (unsigned long)mt.receipts, (unsigned long)mt.key_asks,
-            (unsigned long)mt.pki_fail, (unsigned long)mt.dropped);
+            (unsigned long)mt.pki_fail, (unsigned long)mt.dropped,
+            (unsigned long)mt.no_clock, (unsigned long)mt.settling,
+            (unsigned long)mt.stale, (unsigned long)mt.dated);
     /* Who is out there, by the name that network gave them: the counters
      * say how much crossed, this says with whom. Six is a status page, not
      * a node list. */
@@ -10424,6 +10542,7 @@ void xapp_run(const xapp_board_t *board)
     if (net_up) {
         esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
         esp_sntp_setservername(0, xcfg_get("ntp", "pool.ntp.org"));
+        esp_sntp_set_time_sync_notification_cb(on_sntp_sync);
         esp_sntp_init();
     }
 

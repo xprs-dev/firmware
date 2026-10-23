@@ -71,6 +71,31 @@ static int render(const char *bearer, int budget, char *calls, int *total,
 
 /* ── The bucket ─────────────────────────────────────────────────────────── */
 
+/* The clock ladder (XPRS.md 11.10): who may set the time, and never back. */
+static void test_clock(void)
+{
+    extern uint32_t xst_test_clock;
+    const uint32_t t0 = 1789819440u;                /* 2026-09-19_12:04:00 */
+    CHECK(xst_clock_src() == XST_CLK_NONE, "no clock at start");
+    CHECK(!xst_clock_set(XST_CLK_OWNER, 1000u, "X1A"), "1970 is refused");
+    CHECK(!xst_clock_set(XST_CLK_OWNER, 2300000000u, "X1A"), "2042 is refused");
+    CHECK(xst_test_clock == 0, "nothing was set");
+    CHECK(xst_clock_set(XST_CLK_HINT, t0, "neighbours"), "a hint fills a void");
+    CHECK(xst_test_clock == t0 && xst_clock_src() == XST_CLK_HINT, "the hint set it");
+    CHECK(!xst_clock_set(XST_CLK_HINT, t0 - 600u, "others"), "a hint never turns it back");
+    CHECK(xst_clock_set(XST_CLK_HINT, t0 + 600u, "others"), "a later hint moves it on");
+    CHECK(xst_clock_set(XST_CLK_OWNER, t0 - 3600u, "X1A"),
+          "the owner's word beats a hint, even backwards");
+    CHECK(xst_clock_src() == XST_CLK_OWNER && xst_test_clock == t0 - 3600u, "owner now");
+    CHECK(!xst_clock_set(XST_CLK_HINT, t0 + 7200u, "others"), "a hint never moves the owner's");
+    CHECK(!xst_clock_set(XST_CLK_OWNER, t0 - 7200u, "X1A"), "the owner cannot turn it back");
+    CHECK(xst_clock_set(XST_CLK_OWNER, t0, "X1A"), "the owner moves it forward");
+    xst_clock_from_ntp();
+    CHECK(xst_clock_src() == XST_CLK_NTP && strcmp(xst_clock_src_name(), "ntp") == 0, "ntp");
+    CHECK(!xst_clock_set(XST_CLK_OWNER, t0 + 99999u, "X1A"), "nobody moves an NTP clock");
+    CHECK(!xst_clock_set(XST_CLK_HINT, t0 + 99999u, "others"), "nor a hint");
+}
+
 static void test_bucket(void)
 {
     /* Nine is loud, zero is barely there, and the ends are clamped rather
@@ -484,6 +509,7 @@ int main(void)
 {
     printf("xprs_station host tests (XPRS.md 10.6.3, 10.6.4)\n");
     test_bucket();
+    test_clock();
     test_tier1();
     test_ranking();
     test_tier2();

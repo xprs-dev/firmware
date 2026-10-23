@@ -130,3 +130,28 @@ The tool is `reticulum-dart/tool/xprs_setup_bench.dart` (`identity` then
 `--ssid .. --pass .. wifi`); the laptop's own UDP broadcast does not reach the
 C3 (the AP isolates clients), so the signed/sealed wires are aired through the
 T-Deck's `/api/xprs/send`, which is the real path a nearby device would take.
+
+## Time: the clock ladder, the 15.7 anchor, and what crosses to Meshtastic
+
+Meshtastic users read the T-Deck's messages with the wrong time. A Meshtastic
+frame carries no timestamp (header: addresses, id, hops, channel; `Data`:
+portnum, bytes, ids), so a reader sees the moment the frame reached *their*
+radio -- and the bridge used to mirror the bearers' replays of old XPRS
+traffic whenever it had no clock (boot, no WiFi), with its old-news gate
+dropping silently when it did. Fixed 2026-10-24 (docs/lora.md "Time";
+XPRS.md 11.10's new paragraph; `xst_clock_set` in xprs_station):
+
+| check | result |
+|---|---|
+| host tests | `test_mt_host.sh` all checks (cases 18-20: no clock, settling, dated/stale); `test_xprs_station_host.sh` 105 checks (the ladder: range, never back, owner over hint, nothing over NTP) |
+| boot (serial, reset by esptool) | `clock: ntp set 1792795934 UTC` at 14 s -> `clock: now from ntp -- the next beacon anchors epoch 484` -> `clock: epoch 484 anchored on lan (ntp)` |
+| 15.7 anchor on the wire (C3 archive) | `t:observation f:X3SEP2 link:lan peers:1 uptime:0m lifetime:8h lx:… ts:2026-10-23_22:52:20 epoch:484.14 hears:X3SQS6` -- both forms, once |
+| `/api/status` | `"time":{"synced":true,…,"source":"ntp"}` |
+| a 10-min-old message heard from the C3 | serial `mt: text f505cc -> ffffffff …`, `/api/status` mt `dated:1` -> it crossed with `[23:34] ` in front (local, tz +01:00) |
+| a 2-h-old one | no `mt: text`; `stale` counted (24 within ten minutes of boot: the carousel that used to be mirrored) |
+| no clock / settling | `no_clock:0 settling:0` here: on this WiFi SNTP wins inside the 20 s settle. The refusal path is the host test's case 18/19, and says so in the log once in fifty |
+
+Two bench messages went onto LongFast, labelled "xprs bench, ignore".
+The `mt` counters live in `/api/status` (the `lora` block), not `/api/diag`.
+Making the T-Deck a time source for the Meshtastic mesh was looked at and
+left: Meshtastic nodes take network time only from a Position claiming a GPS.

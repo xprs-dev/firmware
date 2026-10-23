@@ -478,6 +478,9 @@ typedef struct {
     int  (*stamp)(char *out, int cap, bool to_minute);
     /* A verified nick for an XPRS callsign. */
     bool (*nick_of)(const char *call, char *out, int cap);
+    /* The station's offset from UTC in seconds, [known] false when nobody
+     * has said: a text mirrored late then says its time in UTC. */
+    int32_t (*tz_offset)(bool *known);
 } xprslora_mt_hooks_t;
 
 /**

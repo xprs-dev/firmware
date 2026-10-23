@@ -4,6 +4,7 @@
  */
 
 #include "xprs_api.h"
+#include "xprs_station.h"
 #include "xapi_send.h"
 #include "xprs_auth.h"
 #include "xprs_ota.h"
@@ -94,14 +95,14 @@ static esp_err_t h_status(httpd_req_t *req)
     int n = snprintf(buf, cap,
         "{\"ok\":true,\"app\":\"%s\",\"board\":\"%s\",\"callsign\":\"%s\","
         "\"uptime_s\":%lu,\"heap_free\":%u,"
-        "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\"}",
+        "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\",\"source\":\"%s\"}",
         s_cfg->app, s_cfg->board, s_cfg->callsign,
         (unsigned long)(esp_timer_get_time() / 1000000),
         /* Internal: see the note in the diag handler. */
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         time_synced() ? "true" : "false",
         time_synced() ? (unsigned long)time(NULL) : 0,
-        s_cfg->tz ? s_cfg->tz : "+00:00");
+        s_cfg->tz ? s_cfg->tz : "+00:00", xst_clock_src_name());
     /* snprintf returns what it WOULD have written, so n can run past cap and
      * cap-n then underflows into a huge size_t. Guarded at every step, as
      * the diag handler already guards: the fields below grow with each

@@ -2251,6 +2251,14 @@ static bool mt_nick(void *ctx, const char *call, char *out, int cap)
     return s_hooks.nick_of && s_hooks.nick_of(call, out, cap);
 }
 
+static int32_t mt_tz(void *ctx, bool *known)
+{
+    (void)ctx;
+    if (s_hooks.tz_offset) return s_hooks.tz_offset(known);
+    if (known) *known = false;
+    return 0;
+}
+
 static void mt_log(void *ctx, const char *line)
 {
     (void)ctx;
@@ -2330,7 +2338,7 @@ esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
     s_hooks = *hooks;
     mt_mesh_ops_t ops = {
         .air = lr_air_mt, .now_ms = lr_now_ms, .random = lr_random,
-        .deliver = mt_deliver, .stamp = mt_stamp, .nick_of = mt_nick,
+        .deliver = mt_deliver, .stamp = mt_stamp, .nick_of = mt_nick, .tz_offset = mt_tz,
         .log = mt_log, .keys_load = mt_keys_load, .keys_save = mt_keys_save,
         .vnodes_load = mt_vnodes_load, .vnodes_save = mt_vnodes_save,
         .utc_now = mt_utc,

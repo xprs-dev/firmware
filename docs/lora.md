@@ -603,6 +603,38 @@ firmware answers a NodeInfo REQUEST from one node only once in 12 hours.
   old from new. Meshtastic's duplicate filter hides a repeat from its users
   (the ids are derived), but not from the channel.
 
+### Time
+
+A Meshtastic frame carries no time: the on-air header is addresses, id, hops
+and channel, and the text `Data` is portnum, bytes and a few ids. Its reader
+sees `rx_time`, the moment the frame reached *their* radio, stamped by *their*
+clock. So the `ts:` of an XPRS message is lost at the bridge, and three things
+follow (2026-10-24, after Meshtastic users read the T-Deck's messages with the
+wrong time):
+
+- **Nothing heard is mirrored without a clock, nor in the first 20 s after
+  boot.** The bearers keep old packets moving (echo carousels, archive
+  replays, BLE digipeats) and a bridge with no clock cannot tell them from
+  news; before this, a station that rebooted or ran off WiFi aired hours-old
+  XPRS traffic onto LongFast, where it was read as said just now. The
+  station's own user's words still go: a person is waiting, and what they
+  just typed is new. Counted as `no_clock` and `settling` in `/api/diag`'s
+  `mt` block, said in the log once in fifty.
+- **Old news is counted and said**, not dropped in silence (`stale`): 30 min
+  for a broadcast, 6 h for a DM, as before.
+- **A text that travelled says its time first.** Older than two minutes when
+  aired -- carried, relayed from far -- it crosses as `[14:26] see you at the
+  quay`, in the station's local time when it knows its zone, `[14:26Z]` when
+  it does not, and with the day when that is not the reader's today
+  (`[10-23 14:26]`). Counted as `dated`. Two minutes, so live chat stays
+  clean and the 220-byte text budget is untouched in the common case.
+
+The station's own clock is NTP's, and until then its owner's (XPRS.md 11.10;
+`xst_clock_set` in xprs_station holds the ladder). Making the T-Deck a time
+source *for* the Meshtastic mesh was looked at and left: Meshtastic nodes take
+network time only from a Position whose `location_source` claims a GPS, and
+a station without one would have to lie to be believed.
+
 ### The repeater
 
 A frame not heard before (dedup on from and id, ten minutes), with hops left,

@@ -86,8 +86,18 @@ static void t_vnodes_save(void *ctx, const void *buf, int len)
     g_vstore_len[who] = len;
 }
 
-static uint32_t g_utc;          /* 0: no clock, the default here */
+/* The clock the tests run under: 2026-09-19_12:04:00, the stamp above. The
+ * case that has no clock sets 0 and puts it back. */
+static uint32_t g_utc = 1789819440u;
 static uint32_t t_utc(void *ctx) { (void)ctx; return g_utc; }
+static bool g_tz_known;
+static int32_t g_tz_off;
+static int32_t t_tz(void *ctx, bool *known)
+{
+    (void)ctx;
+    if (known) *known = g_tz_known;
+    return g_tz_known ? g_tz_off : 0;
+}
 
 static bool t_nick(void *ctx, const char *call, char *out, int cap)
 {
@@ -260,6 +270,7 @@ void test_mesh(void)
                               .deliver = t_deliver, .stamp = t_stamp,
                               .nick_of = t_nick, .keys_load = t_keys_load,
                               .keys_save = t_keys_save, .utc_now = t_utc,
+                              .tz_offset = t_tz,
                               .vnodes_load = t_vnodes_load,
                               .vnodes_save = t_vnodes_save,
                               .ctx = (void *)(intptr_t)i };
@@ -524,6 +535,7 @@ void test_mesh(void)
         g_utc = 1789819440u + 3600u;
         memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);   /* cap: case 10 */
         g_nheard = 0;
+        uint32_t stale0 = g_b[0].st.stale;
         const char *old1 = "t:message f:X1QZ3N ts:2026-09-19_12:04:00 m:an hour ago";
         const char *new1 = "t:message f:X1QZ3N ts:2026-09-19_13:03:00 m:a minute ago";
         mt_mesh_on_xprs(&g_b[0], old1, (int)strlen(old1), MT_XPRS_HEARD);
@@ -531,7 +543,88 @@ void test_mesh(void)
         tick_all(6000);
         CHECK(find_heard_text("an hour ago") < 0);
         CHECK(find_heard_text("a minute ago") >= 0);
+        CHECK(g_b[0].st.stale == stale0 + 1);
+        g_utc = 1789819440u;
+    }
+
+    /* 18. No clock, nothing heard crosses: the bearers replay old packets
+     *     and the bridge could not tell them from news. The station's own
+     *     user's words still go: they are new by definition. */
+    {
         g_utc = 0;
+        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);
+        g_nheard = 0;
+        uint32_t nc = g_b[0].st.no_clock;
+        const char *h1 = "t:message f:X1QZ3N ts:2026-09-19_13:05:00 m:heard without a clock";
+        const char *o1 = "t:message f:X1QZ3N ts:2026-09-19_13:05:30 m:typed without a clock";
+        mt_mesh_on_xprs(&g_b[0], h1, (int)strlen(h1), MT_XPRS_HEARD);
+        mt_mesh_on_xprs(&g_b[0], o1, (int)strlen(o1), MT_XPRS_OWN);
+        tick_all(6000);
+        CHECK(find_heard_text("heard without a clock") < 0);
+        CHECK(find_heard_text("typed without a clock") >= 0);
+        CHECK(g_b[0].st.no_clock == nc + 1);
+        g_utc = 1789819440u;
+    }
+
+    /* 19. Just after boot nothing heard crosses either, for the same
+     *     reason; twenty seconds later it does. */
+    {
+        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);
+        g_nheard = 0;
+        g_b[0].boot_ms = g_now;                  /* as if it had just started */
+        g_utc = 1789819440u + 3660u;             /* 13:05:00 */
+        uint32_t st = g_b[0].st.settling;
+        const char *s1 = "t:message f:X1QZ3N ts:2026-09-19_13:05:00 m:too soon";
+        mt_mesh_on_xprs(&g_b[0], s1, (int)strlen(s1), MT_XPRS_HEARD);
+        CHECK(g_b[0].st.settling == st + 1);
+        tick_all(21000);
+        const char *s2 = "t:message f:X1QZ3N ts:2026-09-19_13:05:10 m:settled";
+        mt_mesh_on_xprs(&g_b[0], s2, (int)strlen(s2), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("too soon") < 0);
+        CHECK(find_heard_text("settled") >= 0);
+        g_utc = 1789819440u;
+    }
+
+    /* 20. A text that travelled says when it was written, because the
+     *     Meshtastic frame cannot: ten minutes old crosses with its time in
+     *     front -- UTC when the station knows no zone, local when it does,
+     *     and with the day when that is not the reader's today. */
+    {
+        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);
+        g_nheard = 0;
+        g_utc = 1789819440u + 3600u;             /* 13:04:00 UTC */
+        g_tz_known = false;
+        uint32_t dated0 = g_b[0].st.dated;
+        const char *t1 = "t:message f:X1QZ3N ts:2026-09-19_12:54:00 m:ten minutes ago";
+        mt_mesh_on_xprs(&g_b[0], t1, (int)strlen(t1), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("[12:54Z] ten minutes ago") >= 0);
+        g_tz_known = true;
+        g_tz_off = 3600;                         /* +01:00 */
+        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);
+        const char *t2 = "t:message f:X1QZ3N ts:2026-09-19_12:55:00 m:nine minutes ago";
+        mt_mesh_on_xprs(&g_b[0], t2, (int)strlen(t2), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("[13:55] nine minutes ago") >= 0);
+        /* 23:10 UTC is ten past midnight in the station's zone: a text
+         * from 22:55 UTC was written yesterday, local time. */
+        g_utc = 1789819440u + 39960u;            /* 23:10:00 UTC */
+        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);
+        const char *t3 = "t:message f:X1QZ3N ts:2026-09-19_22:55:00 m:before midnight";
+        mt_mesh_on_xprs(&g_b[0], t3, (int)strlen(t3), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("[09-19 23:55] before midnight") >= 0);
+        CHECK(g_b[0].st.dated == dated0 + 3);
+        /* A minute old carries nothing. */
+        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);
+        const char *t4 = "t:message f:X1QZ3N ts:2026-09-19_23:09:00 m:just now";
+        mt_mesh_on_xprs(&g_b[0], t4, (int)strlen(t4), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("just now") >= 0);
+        CHECK(g_b[0].st.dated == dated0 + 3);
+        g_utc = 1789819440u;
+        g_tz_known = false;
     }
 
     /* 14. A DM to a node whose key nobody has heard: asked for, and held. */

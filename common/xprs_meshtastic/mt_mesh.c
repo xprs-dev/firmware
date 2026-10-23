@@ -906,6 +906,41 @@ static uint32_t ts_epoch(const char *v, int n)
     return (uint32_t)(days * 86400L + f[3] * 3600L + f[4] * 60L + f[5]);
 }
 
+/* Seconds since 1970 to month, day, hour and minute: ts_epoch backwards
+ * (the same civil-from-days algorithm). */
+static void civil(uint32_t e, int *mo, int *d, int *hh, int *mm)
+{
+    uint32_t rem = e % 86400u;
+    *hh = (int)(rem / 3600u);
+    *mm = (int)(rem % 3600u / 60u);
+    long z = (long)(e / 86400u) + 719468;
+    long era = z / 146097;
+    long doe = z - era * 146097;
+    long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    long mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *mo = (int)(mp < 10 ? mp + 3 : mp - 9);
+}
+
+/* "[14:26] " for a text written at [t], in the station's local time when it
+ * knows its zone and "[14:26Z] " in UTC when it does not, with the day in
+ * front when it is not the reader's today: "[10-23 14:26] ". Returns the
+ * length written. */
+static int date_prefix(mt_mesh_t *m, uint32_t t, uint32_t utc, char *out, int cap)
+{
+    bool known = false;
+    int32_t off = m->ops.tz_offset ? m->ops.tz_offset(m->ops.ctx, &known) : 0;
+    if (!known) off = 0;
+    uint32_t lt = t + (uint32_t)off, ln = utc + (uint32_t)off;
+    int mo, d, hh, mm;
+    civil(lt, &mo, &d, &hh, &mm);
+    if (lt / 86400u != ln / 86400u)
+        return snprintf(out, (size_t)cap, "[%02d-%02d %02d:%02d%s] ", mo, d, hh, mm,
+                        known ? "" : "Z");
+    return snprintf(out, (size_t)cap, "[%02d:%02d%s] ", hh, mm, known ? "" : "Z");
+}
+
 void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
 {
     if (!m || !wire || len <= 0 || len > XPRS_MAX_WIRE) return;
@@ -928,6 +963,26 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
     bool msg = strcmp(type, "message") == 0;
     bool react = strcmp(type, "reaction") == 0;
     if (!msg && !react) return;
+
+    /* Heard traffic crosses only under a clock, and not in the first moments
+     * after boot. The bearers keep old packets moving (echo carousels, the
+     * archive's replays, BLE digipeats), and a bridge with no clock cannot
+     * tell them from news; what it aired would then reach every Meshtastic
+     * reader dated as the moment it arrived. The station's own user's words
+     * go regardless: a person is waiting, and what they just typed is new. */
+    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
+    if (origin != MT_XPRS_OWN) {
+        if (!utc) {
+            if (m->st.no_clock++ % 50 == 0)
+                mlog(m, "mt: no clock -- heard traffic is not mirrored (%lu so far)",
+                     (unsigned long)m->st.no_clock);
+            return;
+        }
+        if (since(now, m->boot_ms) < (int32_t)MT_MIRROR_SETTLE_MS) {
+            m->st.settling++;
+            return;
+        }
+    }
 
     const char *dv;
     int dn = 0;
@@ -954,11 +1009,16 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
     /* Or old news, which after a restart this bridge cannot tell from new. */
     const char *tv;
     int tn2;
-    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
-    if (utc && get(p, "ts", &tv, &tn2)) {
-        uint32_t t = ts_epoch(tv, tn2);
+    uint32_t written = 0;             /* the sender's ts:, when it has one */
+    if (get(p, "ts", &tv, &tn2)) written = ts_epoch(tv, tn2);
+    if (utc && written && utc > written) {
         uint32_t fresh = to == MT_BROADCAST ? MT_BCAST_FRESH_S : MT_DM_FRESH_S;
-        if (t && utc > t && utc - t > fresh) return;
+        if (utc - written > fresh) {
+            if (m->st.stale++ % 50 == 0)
+                mlog(m, "mt: %s is %lu s old -- not mirrored (%lu so far)", xid,
+                     (unsigned long)(utc - written), (unsigned long)m->st.stale);
+            return;
+        }
     }
 
     if (xprs_get(p, "x", &vn)) {
@@ -1007,11 +1067,25 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
         const char *mv;
         int mn;
         if (!get(p, "m", &mv, &mn)) return;
-        /* Room for the text in one frame: 239 bytes after the header, less
-         * the Data's own fields (at most 17 here). */
-        if (mn > 220) mn = 220;
-        d.payload = (const uint8_t *)mv;
-        d.payload_len = mn;
+        /* A Meshtastic frame has no field for when a text was written, so
+         * its reader sees the moment it reached their radio. A text that
+         * travelled -- carried, relayed from far -- says its own time
+         * first, so that "see you at the quay" is not read two hours late
+         * as news. */
+        int pl = 0;
+        if (utc && written && utc > written && utc - written > MT_DATE_AGE_S) {
+            pl = date_prefix(m, written, utc, m->payload, sizeof m->payload);
+            m->st.dated++;
+        }
+        if (mn > MT_TEXT_MAX - pl) mn = MT_TEXT_MAX - pl;
+        if (pl > 0) {
+            memcpy(m->payload + pl, mv, (size_t)mn);
+            d.payload = (const uint8_t *)m->payload;
+            d.payload_len = pl + mn;
+        } else {
+            d.payload = (const uint8_t *)mv;
+            d.payload_len = mn;
+        }
     }
 
     if (to == MT_BROADCAST && !bcast_take(m, now)) {

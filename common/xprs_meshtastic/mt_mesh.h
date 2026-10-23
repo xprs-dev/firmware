@@ -70,6 +70,9 @@ typedef struct {
     int      (*stamp)(void *ctx, char *out, int cap, bool to_minute);
     /* UTC now in seconds, or 0 when the station has no clock (optional). */
     uint32_t (*utc_now)(void *ctx);
+    /* The station's offset from UTC in seconds, [known] false when nobody
+     * has said (optional): a text mirrored late then says its time in UTC. */
+    int32_t  (*tz_offset)(void *ctx, bool *known);
     /* A verified nick for an XPRS callsign, when the station holds one. */
     bool     (*nick_of)(void *ctx, const char *call, char *out, int cap);
     /* One log line (optional). */
@@ -141,6 +144,17 @@ typedef struct {
  * hides a repeat from its user but not from the channel's airtime. */
 #define MT_BCAST_FRESH_S  1800u
 #define MT_DM_FRESH_S     (6u * 3600u)
+/* Heard traffic is not mirrored in the first moments after boot (the wait
+ * the NodeInfo already has), and never without a clock: the carousel of
+ * old packets the bearers replay would land on LongFast as news, dated by
+ * the reader's radio as the moment they arrived. */
+#define MT_MIRROR_SETTLE_MS 20000u
+/* A text older than this when it is aired carries the time it was written
+ * in front, because a Meshtastic frame has no field for it. */
+#define MT_DATE_AGE_S     120u
+/* Text bytes in one frame: 239 after the header, less the Data's own
+ * fields (at most 17). */
+#define MT_TEXT_MAX       220
 
 typedef struct {
     bool     used;
@@ -214,6 +228,10 @@ typedef struct {
     uint32_t dm_not_here;      /* DMs to a node this bridge never heard, left */
     uint32_t nodeinfo_out, bcast_capped, dropped;
     uint32_t pki_in, pki_fail, key_asks;
+    /* Mirroring XPRS onto the mesh: heard traffic refused for want of a
+     * clock, refused as too soon after boot, refused as old news; and texts
+     * aired with the time they were written in front. */
+    uint32_t no_clock, settling, stale, dated;
 } mt_mesh_stats_t;
 
 typedef struct {
@@ -254,6 +272,7 @@ typedef struct {
     uint8_t         frame[MT_FRAME_MAX];
     char            wire[XPRS_MAX_WIRE + 64];
     char            text[XPRS_MAX_WIRE + 1];
+    char            payload[MT_TEXT_MAX + 16];   /* a text with its time in front */
     char            logline[120];
 } mt_mesh_t;
 
