@@ -8,4 +8,4 @@
 idf_component_register(
     SRCS "xprslan.c"
     INCLUDE_DIRS "."
-    REQUIRES xprs_codec xprs_bearer lwip log esp_timer esp_hw_support)
+    REQUIRES xprs_codec xprs_bearer xprs_common lwip log esp_timer esp_hw_support)

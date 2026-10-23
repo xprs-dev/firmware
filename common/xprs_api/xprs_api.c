@@ -621,8 +621,12 @@ static void screen_slice(int x1, int y1, int x2, int y2,
      * out of order, which is the framebuffer this door exists to avoid. */
     if (x1 != 0 || x2 != sc->w - 1) { sc->failed = true; return; }
 
-    static uint8_t row[320 * 3];
-    if ((size_t)sc->w * 3 > sizeof row) { sc->failed = true; return; }
+    /* Lazy off the .bss (RF-bank ceiling on the xwifi boards); a headless
+     * board never captures a framebuffer row and pays only the pointer. */
+    enum { ROW_N = 320 * 3 };
+    static uint8_t *row;
+    if (!row) { row = malloc(ROW_N); if (!row) { sc->failed = true; return; } }
+    if ((size_t)sc->w * 3 > ROW_N) { sc->failed = true; return; }
 
     for (int y = y1; y <= y2; y++) {
         uint8_t *o = row;

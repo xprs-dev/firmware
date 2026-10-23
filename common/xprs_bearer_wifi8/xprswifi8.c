@@ -13,6 +13,7 @@
 #include "xprswifi8.h"
 #include "xprsbearer.h"
 #include "xprs.h"
+#include "xprs_psram.h"   /* xprs_big_calloc: the bearer state off the .bss */
 
 #include <string.h>
 #include <stdio.h>
@@ -62,7 +63,9 @@ typedef struct {
     int  snr_db;
 } rx_item_t;
 
-static xb_t              s_bearer;
+/* Was a 3.4 KB static; xprs_big_calloc'd in start so the .bss stays under
+ * the RF-bank ceiling (xb_* entries are NULL-safe before start). */
+static xb_t             *s_bearer;
 static xprswifi8_cfg_t   s_cfg;
 
 /*
@@ -182,7 +185,7 @@ static void drain_rx(void *ctx)
         /* XPRS-WiFi has no sender address; peer 0 means "the medium cannot say",
          * which is exactly xb_on_wire's contract for a radio with no MAC. The
          * SNR stands in for RSSI: both are "how well we heard it" for §13.2.1. */
-        xb_on_wire(&s_bearer, it.wire, it.len, 0, it.snr_db);
+        xb_on_wire(s_bearer, it.wire, it.len, 0, it.snr_db);
     }
 }
 
@@ -250,7 +253,7 @@ static void station_task(void *arg)
                 xQueueSendToFront(s_txq, &it, 0);
                 run_slot(300 + (esp_random() % 900));
                 drain_rx(NULL);
-                xb_tick(&s_bearer, p_now_ms());
+                xb_tick(s_bearer, p_now_ms());
                 xb_tick_all(p_now_ms());
                 continue;
             }
@@ -262,7 +265,7 @@ static void station_task(void *arg)
             do {
                 run_slot(s_cfg.slot_ms ? s_cfg.slot_ms : 7840 /* one block span */);
                 drain_rx(NULL);
-                xb_tick(&s_bearer, p_now_ms());
+                xb_tick(s_bearer, p_now_ms());
                 xb_tick_all(p_now_ms());
                 if (s_cfg.gap_ms) vTaskDelay(pdMS_TO_TICKS(s_cfg.gap_ms));
             } while (s_run && s_sta->tx.active);
@@ -271,7 +274,7 @@ static void station_task(void *arg)
         /* idle: one receive slot, then wait out the period (or a send wake) */
         run_slot(s_cfg.slot_ms ? s_cfg.slot_ms : s_cfg.period_ms);
         drain_rx(NULL);
-        xb_tick(&s_bearer, p_now_ms());
+        xb_tick(s_bearer, p_now_ms());
         /* And the shared registry: normally the LAN bearer's task is the pump
          * every ticked bearer rides (LoRa, BLE, ESP-NOW). On a board running
          * XPRS-WiFi with 802.11 off there is no LAN task, so this task is the
@@ -331,27 +334,27 @@ static const xb_ops_t k_ops = {
 
 /* ── The public bearer, mapped onto xprs_bearer like xprsnow ─────────────── */
 
-void xprswifi8_offer(const char *wire, int len)    { xb_offer(&s_bearer, wire, len); }
-void xprswifi8_digipeat(const char *wire, int len) { xb_digipeat(&s_bearer, wire, len); }
-void xprswifi8_echo(const char *wire, int len)     { xb_echo(&s_bearer, wire, len); }
-uint32_t xprswifi8_idle_ms(uint32_t now_ms)        { return xb_idle_ms(&s_bearer, now_ms); }
-bool xprswifi8_send(const char *wire, int len)     { return xb_send(&s_bearer, wire, len); }
-bool xprswifi8_is_active(void)                     { return xb_is_active(&s_bearer); }
-int  xprswifi8_peer_count(uint32_t max_age_sec)    { return xb_peer_count(&s_bearer, max_age_sec); }
+void xprswifi8_offer(const char *wire, int len)    { xb_offer(s_bearer, wire, len); }
+void xprswifi8_digipeat(const char *wire, int len) { xb_digipeat(s_bearer, wire, len); }
+void xprswifi8_echo(const char *wire, int len)     { xb_echo(s_bearer, wire, len); }
+uint32_t xprswifi8_idle_ms(uint32_t now_ms)        { return xb_idle_ms(s_bearer, now_ms); }
+bool xprswifi8_send(const char *wire, int len)     { return xb_send(s_bearer, wire, len); }
+bool xprswifi8_is_active(void)                     { return xb_is_active(s_bearer); }
+int  xprswifi8_peer_count(uint32_t max_age_sec)    { return xb_peer_count(s_bearer, max_age_sec); }
 uint8_t xprswifi8_channel(void)                    { return s_cfg.channel; }
 void xprswifi8_set_trace(bool on)                  { s_trace = on; }
-void xprswifi8_set_heard_cb(xprswifi8_heard_cb_t cb) { xb_set_heard_cb(&s_bearer, cb); }
+void xprswifi8_set_heard_cb(xprswifi8_heard_cb_t cb) { xb_set_heard_cb(s_bearer, cb); }
 
 void xprswifi8_set_rx_cb(xprswifi8_rx_cb_t cb)
 {
     s_rx_cb = cb;
-    xb_set_rx_cb(&s_bearer, cb ? rx_shim : NULL);
+    xb_set_rx_cb(s_bearer, cb ? rx_shim : NULL);
 }
 
 void xprswifi8_set_beacon(xprswifi8_beacon_cb_t cb, uint32_t interval_sec,
                           uint32_t first_delay_sec)
 {
-    xb_set_beacon(&s_bearer, cb, interval_sec, first_delay_sec);
+    xb_set_beacon(s_bearer, cb, interval_sec, first_delay_sec);
 }
 
 bool xprswifi8_settle(uint32_t timeout_ms)
@@ -370,7 +373,7 @@ bool xprswifi8_settle(uint32_t timeout_ms)
 
 void xprswifi8_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled, uint32_t *dropped)
 {
-    xb_stats(&s_bearer, rx, tx, cancelled);
+    xb_stats(s_bearer, rx, tx, cancelled);
     if (dropped) *dropped = s_dropped;
 }
 
@@ -389,6 +392,9 @@ esp_err_t xprswifi8_start(const char *callsign, const xprswifi8_cfg_t *cfg)
     ESP_LOGE(TAG, "no xwifi port for this chip");
     return ESP_ERR_NOT_SUPPORTED;
 #else
+    if (!s_bearer) s_bearer = xprs_big_calloc(1, sizeof *s_bearer);
+    if (!s_bearer) return ESP_ERR_NO_MEM;
+
     s_cfg = cfg ? *cfg : (xprswifi8_cfg_t)XPRSWIFI8_CFG_DEFAULT;
     if (s_cfg.channel < 1 || s_cfg.channel > XW_CHANNELS) s_cfg.channel = 2;
 #if CONFIG_IDF_TARGET_ESP32S3
@@ -432,12 +438,19 @@ esp_err_t xprswifi8_start(const char *callsign, const xprswifi8_cfg_t *cfg)
     if (slice) RADIO_SUSPEND();
     const uint8_t looks = PORT_INIT(&s_port, s_cfg.dac_amplitude, s_cfg.looks);
     xw_station_init(s_sta, &s_port, &xc);
+    /* The demod's working arrays (xw_scratch_t, ~6.4 KB): given by the
+     * application like extra_window, so they stop being .bss under the bank
+     * ceiling. PSRAM where the board has it, internal heap where it does
+     * not; a later placement may move them into the port's reserved bank. */
+    if (!s_sta->demod.scratch)
+        s_sta->demod.scratch = xprs_big_calloc(1, sizeof(xw_scratch_t));
+    if (!s_sta->demod.scratch) { if (slice) RADIO_RESUME(); return ESP_ERR_NO_MEM; }
     wire_looks(looks);   /* after init: the port headers require this order */
     if (slice) RADIO_RESUME();
 
     s_started = true;
     s_run = true;
-    xb_init(&s_bearer, &k_ops, callsign);
+    xb_init(s_bearer, &k_ops, callsign);
     /* This bearer drives its OWN tick (xb_tick in station_task), because its
      * task is already awake on the slot cadence — it does not register with the
      * shared bearer driver the way ESP-NOW and the LAN share one. On the S3 the
@@ -468,6 +481,6 @@ void xprswifi8_stop(void)
     if (!s_started) return;
     s_run = false;
     if (s_task) { xTaskNotifyGive(s_task); vTaskDelay(pdMS_TO_TICKS(50)); s_task = NULL; }
-    xb_stop(&s_bearer);
+    xb_stop(s_bearer);
     s_started = false;
 }

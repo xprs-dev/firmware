@@ -50,7 +50,12 @@ static const char *TAG = "xota_http";
 static const char *s_call;
 
 static char s_auth[300];
-static char s_body[1024];
+#define OTA_BODY_N 1024
+/* The push receive buffer. Lazy and kept: a board that never takes an OTA
+ * never allocates it, and on the xwifi boards that is 1 KB kept off the .bss
+ * the RF sample bank caps. Only the update handler touches it, one request
+ * at a time (httpd has one worker), so a single shared buffer is enough. */
+static char *s_body;
 
 static esp_err_t reply(httpd_req_t *req, const char *status, const char *msg)
 {
@@ -112,9 +117,12 @@ static esp_err_t h_update(httpd_req_t *req)
         return reply(req, "409 Conflict", why);
     }
 
+    if (!s_body) s_body = malloc(OTA_BODY_N);
+    if (!s_body) { xota_push_abort(); return reply(req, "503 Service Unavailable", "no memory for the push buffer"); }
+
     int left = req->content_len;
     while (left > 0) {
-        int want = left > (int)sizeof s_body ? (int)sizeof s_body : left;
+        int want = left > OTA_BODY_N ? OTA_BODY_N : left;
         int got = httpd_req_recv(req, s_body, want);
         esp_err_t wr = got > 0 ? xota_push_write(s_body, (size_t)got) : ESP_OK;
         if (got <= 0 || wr != ESP_OK) {

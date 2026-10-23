@@ -184,12 +184,22 @@ bool xtz_parse_ipapi(const char *body, xtz_t *out)
 
 static const char *TAG = "xtz";
 
-/* The whole answer, headers and all. Static: never on a small task's stack
- * and never a malloc that fails the day the heap is short. One caller. */
-static char s_rx[1024];
+/* The whole answer, headers and all. Never on a small task's stack. It used
+ * to be a plain static for that reason; on the xwifi boards the .bss grows
+ * toward the fixed RF-bank address, so it is a lazy heap buffer now, claimed
+ * on the first lookup and kept. The malloc the old comment feared is handled:
+ * a failed lookup just returns NULL and is retried, unlike a buffer on a path
+ * that must not fail (the OTA push keeps that rule). One caller. */
+#define TZ_RX_N 1024
+/* The one HTTP response buffer. Lazy and kept: a station that never does a
+ * timezone lookup never allocates it, and on the xwifi boards it is 1 KB off
+ * the .bss the RF sample bank caps. http_get returns a pointer into it, so it
+ * must outlive the call — a kept module buffer, not a stack one. */
+static char *s_rx;
 
 static const char *http_get(const char *host, const char *path)
 {
+    if (!s_rx) { s_rx = malloc(TZ_RX_N); if (!s_rx) return NULL; }
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
     struct addrinfo *res = NULL;
     if (getaddrinfo(host, "80", &hints, &res) != 0 || !res) {
@@ -214,8 +224,8 @@ static const char *http_get(const char *host, const char *path)
                      "Connection: close\r\n\r\n", path, host);
     int got = 0;
     if (send(fd, req, (size_t)n, 0) == n) {
-        while (got < (int)sizeof s_rx - 1) {
-            int r = recv(fd, s_rx + got, sizeof s_rx - 1 - (size_t)got, 0);
+        while (got < TZ_RX_N - 1) {
+            int r = recv(fd, s_rx + got, (size_t)(TZ_RX_N - 1 - got), 0);
             if (r <= 0) break;
             got += r;
         }

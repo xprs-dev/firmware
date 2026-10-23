@@ -47,7 +47,7 @@ static int  s_tz_off;
 static bool s_tz_known;     /* false: nobody has said, and s_tz_off is 0 */
 
 /* ── Who we have heard, by name ─────────────────────────────────────── */
-static XPRS_PSRAM_BSS xst_dev_t s_seen[XST_SEEN_MAX];
+static xst_dev_t *s_seen;        /* [XST_SEEN_MAX], big_calloc'd off the .bss (RF-bank ceiling) */
 
 /* ── The chat ring ──────────────────────────────────────────────────── */
 /* Was an XPRS_PSRAM_BSS static; xprs_big_calloc'd in xst_init (same PSRAM
@@ -63,10 +63,10 @@ typedef struct {
     uint32_t rx, tx;
     uint16_t dev, pad;
 } sbucket_t;
-static XPRS_PSRAM_BSS sbucket_t s_sb10[XST_SB10_N];
-static uint32_t  s_sb10_id[XST_SB10_N];
-static XPRS_PSRAM_BSS sbucket_t s_sbday[XST_SBDAY_N];
-static uint32_t  s_sbday_id[XST_SBDAY_N];
+static sbucket_t *s_sb10;        /* [XST_SB10_N] */
+static uint32_t  *s_sb10_id;     /* [XST_SB10_N] */
+static sbucket_t *s_sbday;       /* [XST_SBDAY_N] */
+static uint32_t  *s_sbday_id;    /* [XST_SBDAY_N] */
 
 /* Distinct devices in the LIVE 10-minute bucket only. */
 static uint32_t s_cur_devh[STAT_DEVS];
@@ -114,6 +114,19 @@ static void chat_ensure(void)
         s_chat = xprs_big_calloc(XST_CHAT_MAX, sizeof *s_chat);
         assert(s_chat);   /* a board that cannot afford the ring at boot
                              could not afford it as a static either */
+    }
+    if (!s_seen) {
+        /* The device table and the signal-bucket rings: were XPRS_PSRAM_BSS
+         * statics, which is inert without PSRAM, so on the C3 they sat in the
+         * .bss the RF sample bank caps. big_calloc keeps the PSRAM-first
+         * placement where there is PSRAM and moves them off the bank where
+         * there is not. */
+        s_seen     = xprs_big_calloc(XST_SEEN_MAX, sizeof *s_seen);
+        s_sb10     = xprs_big_calloc(XST_SB10_N,  sizeof *s_sb10);
+        s_sb10_id  = xprs_big_calloc(XST_SB10_N,  sizeof *s_sb10_id);
+        s_sbday    = xprs_big_calloc(XST_SBDAY_N, sizeof *s_sbday);
+        s_sbday_id = xprs_big_calloc(XST_SBDAY_N, sizeof *s_sbday_id);
+        assert(s_seen && s_sb10 && s_sb10_id && s_sbday && s_sbday_id);
     }
 }
 
@@ -986,10 +999,10 @@ void xst_stats_load(const char *path)
     fclose(f);
     if (ok) {
         LOCK();
-        memcpy(s_sb10, bl->sb10, sizeof s_sb10);
-        memcpy(s_sb10_id, bl->sb10_id, sizeof s_sb10_id);
-        memcpy(s_sbday, bl->sbday, sizeof s_sbday);
-        memcpy(s_sbday_id, bl->sbday_id, sizeof s_sbday_id);
+        memcpy(s_sb10, bl->sb10, sizeof bl->sb10);
+        memcpy(s_sb10_id, bl->sb10_id, sizeof bl->sb10_id);
+        memcpy(s_sbday, bl->sbday, sizeof bl->sbday);
+        memcpy(s_sbday_id, bl->sbday_id, sizeof bl->sbday_id);
         UNLOCK();
         ESP_LOGI(TAG, "stats reloaded from %s", path);
     }
@@ -1033,7 +1046,7 @@ void xst_stats_save(const char *path)
 void xst_test_reset(void)
 {
     chat_ensure();
-    memset(s_seen, 0, sizeof s_seen);
+    memset(s_seen, 0, XST_SEEN_MAX * sizeof *s_seen);
     memset(s_chat, 0, XST_CHAT_MAX * sizeof *s_chat);
 }
 #endif

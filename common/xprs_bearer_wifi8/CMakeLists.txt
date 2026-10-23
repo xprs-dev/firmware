@@ -24,4 +24,4 @@ endif()
 idf_component_register(
     SRCS ${wifi8_srcs}
     INCLUDE_DIRS "."
-    REQUIRES xwifi xprs_codec xprs_bearer esp_wifi esp_timer esp_hw_support log)
+    REQUIRES xwifi xprs_codec xprs_bearer xprs_common esp_wifi esp_timer esp_hw_support log)

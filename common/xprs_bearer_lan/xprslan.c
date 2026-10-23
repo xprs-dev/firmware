@@ -21,12 +21,15 @@
 
 #include "xprs.h"
 #include "xprsbearer.h"
+#include "xprs_psram.h"   /* xprs_big_calloc: the bearer state off the .bss */
 
 /* The bearer itself, ABOVE the split: the device half counts datagrams on
  * it and the wrappers at the bottom of this file are compiled on the host
  * too, so while this lived in the device-only half the host harness did
  * not build at all (test_xprslan_host.sh, broken until 2026-09-20). */
-static xb_t s_lan;
+/* Was a 3.4 KB static; xprs_big_calloc'd in start so the .bss stays under
+ * the RF-bank ceiling on the xwifi boards (xb_* entries are NULL-safe). */
+static xb_t *s_lan;
 
 #ifdef XPRSLAN_HOST_TEST
 
@@ -145,7 +148,7 @@ bool xprslan_unicast(uint32_t ip, const char *wire, int len)
     };
     xl_lock(NULL);
     int n = sendto(s_fd, wire, (size_t)len, 0, (struct sockaddr *)&to, sizeof to);
-    if (n == len) s_lan.tx_count++;     /* counted like any other datagram */
+    if (n == len) s_lan->tx_count++;     /* counted like any other datagram */
     xl_unlock(NULL);
     return n == len;
 }
@@ -199,33 +202,33 @@ static const xb_ops_t k_lan_ops = {
     .name = "lan",
 };
 
-void xprslan_offer(const char *wire, int len) { xb_offer(&s_lan, wire, len); }
-void xprslan_echo(const char *wire, int len)  { xb_echo(&s_lan, wire, len); }
-uint32_t xprslan_idle_ms(uint32_t now_ms) { return xb_idle_ms(&s_lan, now_ms); }
-bool xprslan_send(const char *wire, int len)  { return xb_send(&s_lan, wire, len); }
-bool xprslan_is_active(void)                  { return xb_is_active(&s_lan); }
+void xprslan_offer(const char *wire, int len) { xb_offer(s_lan, wire, len); }
+void xprslan_echo(const char *wire, int len)  { xb_echo(s_lan, wire, len); }
+uint32_t xprslan_idle_ms(uint32_t now_ms) { return xb_idle_ms(s_lan, now_ms); }
+bool xprslan_send(const char *wire, int len)  { return xb_send(s_lan, wire, len); }
+bool xprslan_is_active(void)                  { return xb_is_active(s_lan); }
 
 void xprslan_set_rx_cb(xprslan_rx_cb_t cb)
 {
     s_rx_cb = cb;
-    xb_set_rx_cb(&s_lan, cb ? xl_rx_shim : NULL);
+    xb_set_rx_cb(s_lan, cb ? xl_rx_shim : NULL);
 }
-void xprslan_set_heard_cb(xprslan_heard_cb_t cb) { xb_set_heard_cb(&s_lan, cb); }
+void xprslan_set_heard_cb(xprslan_heard_cb_t cb) { xb_set_heard_cb(s_lan, cb); }
 
 void xprslan_set_beacon(xprslan_beacon_cb_t cb, uint32_t interval_sec,
                         uint32_t first_delay_sec)
 {
-    xb_set_beacon(&s_lan, cb, interval_sec, first_delay_sec);
+    xb_set_beacon(s_lan, cb, interval_sec, first_delay_sec);
 }
 
 int xprslan_peer_count(uint32_t max_age_sec)
 {
-    return xb_peer_count(&s_lan, max_age_sec);
+    return xb_peer_count(s_lan, max_age_sec);
 }
 
 void xprslan_stats(uint32_t *out_rx, uint32_t *out_tx, uint32_t *out_cancelled)
 {
-    xb_stats(&s_lan, out_rx, out_tx, out_cancelled);
+    xb_stats(s_lan, out_rx, out_tx, out_cancelled);
 }
 
 /* ── The socket and its task ────────────────────────────────────────────── */
@@ -249,7 +252,7 @@ static void xprslan_task(void *arg)
              * if a stack ever did, the identifier rings would drop it — so
              * there is no source-address check to get wrong. */
             buf[n] = 0;
-            xb_on_wire(&s_lan, buf, n, (uint64_t)src.sin_addr.s_addr, 0);
+            xb_on_wire(s_lan, buf, n, (uint64_t)src.sin_addr.s_addr, 0);
         }
         /* The same task airs what is due, for EVERY bearer that asked to be
          * driven from here. 100 ms of granularity is well inside the 200–1200 ms
@@ -261,7 +264,10 @@ static void xprslan_task(void *arg)
 
 esp_err_t xprslan_start(const char *callsign)
 {
-    if (xb_is_active(&s_lan)) return ESP_OK;
+    if (xb_is_active(s_lan)) return ESP_OK;
+
+    if (!s_lan) s_lan = xprs_big_calloc(1, sizeof *s_lan);
+    if (!s_lan) return ESP_ERR_NO_MEM;
 
     int fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
     if (fd < 0) {
@@ -286,8 +292,8 @@ esp_err_t xprslan_start(const char *callsign)
     s_fd = fd;
     if (!s_tx_mtx) s_tx_mtx = xSemaphoreCreateMutex();
     if (!s_tx_mtx) { close(fd); s_fd = -1; return ESP_ERR_NO_MEM; }
-    xb_init(&s_lan, &k_lan_ops, callsign);
-    xb_register_ticked(&s_lan);
+    xb_init(s_lan, &k_lan_ops, callsign);
+    xb_register_ticked(s_lan);
     /* 5 KB. Every datagram costs two SHA-256 derivations (the identifier here,
      * and again when the index decides on it), a BLE re-air and a log line, all
      * on this stack — 4 KB overflowed under a burst and took the board down. */
@@ -301,7 +307,7 @@ esp_err_t xprslan_start(const char *callsign)
         XL_LOGW("task create failed");
         close(fd);
         s_fd = -1;
-        xb_stop(&s_lan);
+        xb_stop(s_lan);
         return ESP_FAIL;
     }
     /* This task is now the one that pumps every registered bearer. */
@@ -312,7 +318,7 @@ esp_err_t xprslan_start(const char *callsign)
 
 void xprslan_stop(void)
 {
-    xb_stop(&s_lan);
+    xb_stop(s_lan);
     if (s_fd >= 0) { close(s_fd); s_fd = -1; }
 }
 
@@ -320,33 +326,41 @@ void xprslan_stop(void)
 
 esp_err_t xprslan_start(const char *callsign)
 {
-    xb_init(&s_lan, &k_lan_ops, callsign);
-    xb_register_ticked(&s_lan);
+    if (!s_lan) s_lan = xprs_big_calloc(1, sizeof *s_lan);
+    if (!s_lan) return -1;   /* the host harness has no ESP_ERR_NO_MEM */
+    xb_init(s_lan, &k_lan_ops, callsign);
+    xb_register_ticked(s_lan);
     xb_set_driver(true);
     return 0;
 }
-void xprslan_stop(void) { xb_stop(&s_lan); }
+void xprslan_stop(void) { xb_stop(s_lan); }
 
 /* Handles the host test reaches for. */
 void xl_test_datagram(const char *wire, int len, uint32_t ip)
 {
-    xb_on_wire(&s_lan, wire, len, (uint64_t)ip, 0);
+    xb_on_wire(s_lan, wire, len, (uint64_t)ip, 0);
 }
 int xl_test_pump(uint32_t now)
 {
     uint32_t before = 0;
-    xb_stats(&s_lan, NULL, &before, NULL);
-    xb_tick(&s_lan, now);          /* the device runs pump and beacon together */
+    xb_stats(s_lan, NULL, &before, NULL);
+    xb_tick(s_lan, now);          /* the device runs pump and beacon together */
     uint32_t after = 0;
-    xb_stats(&s_lan, NULL, &after, NULL);
+    xb_stats(s_lan, NULL, &after, NULL);
     return (int)(after - before);
 }
 void xl_test_reset(void)
 {
-    char call[16];
-    snprintf(call, sizeof call, "%s", s_lan.call);
-    xb_init(&s_lan, &k_lan_ops, call);
-    xb_set_rx_cb(&s_lan, s_rx_cb ? xl_rx_shim : NULL);
+    char call[16] = "";
+    if (!s_lan) {
+        /* The harness resets before the first start; give it a bearer. */
+        s_lan = xprs_big_calloc(1, sizeof *s_lan);
+        if (!s_lan) return;
+    } else {
+        snprintf(call, sizeof call, "%s", s_lan->call);
+    }
+    xb_init(s_lan, &k_lan_ops, call);
+    xb_set_rx_cb(s_lan, s_rx_cb ? xl_rx_shim : NULL);
     xl_test_air_count = 0;
     xl_test_aired_len = 0;
     xl_test_aired[0] = 0;
@@ -354,16 +368,16 @@ void xl_test_reset(void)
 int xl_test_queue_len(void)
 {
     int n = 0;
-    for (int i = 0; i < XB_QUEUE_MAX; i++) if (s_lan.queue[i].used) n++;
+    for (int i = 0; i < XB_QUEUE_MAX; i++) if (s_lan->queue[i].used) n++;
     return n;
 }
-uint32_t xl_test_queue_due(int i) { return s_lan.queue[i].due_ms; }
+uint32_t xl_test_queue_due(int i) { return s_lan->queue[i].due_ms; }
 /* The LAN is unmetered in the field (section 31.1: "the internet | nothing,
  * which is the trap"). The pacing it does not use is still the shared
  * engine's, so this bearer is where it gets tested. */
-void xl_test_set_pace(uint32_t ms) { xb_set_pace(&s_lan, ms); }
+void xl_test_set_pace(uint32_t ms) { xb_set_pace(s_lan, ms); }
 /* 13.1's digipeater, the same engine call every bearer's *_digipeat() makes. */
-void xl_test_digipeat(const char *w, int n) { xb_digipeat(&s_lan, w, n); }
-uint32_t xl_test_owed_ms(void)     { return xb_owed_ms(&s_lan); }
+void xl_test_digipeat(const char *w, int n) { xb_digipeat(s_lan, w, n); }
+uint32_t xl_test_owed_ms(void)     { return xb_owed_ms(s_lan); }
 
 #endif

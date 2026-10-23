@@ -63,6 +63,45 @@ data at about 55 KB, while the full station's statics are about 100 KB
 however placed. The relay is what fits, and it already carries any XPRS
 wire, messages included.
 
+### The C3 ledger, measured (2026-10-23, board AC:27:6E:74:0C:FC, X3SQS6)
+
+The goal moved: the C3 is to run the FULL station — Reticulum on a public
+hub, the hotspot with the chat page, BLE5 and the xwifi mesh — at the same
+time ("simultaneous or nothing"). So the paragraph above was re-measured
+instead of trusted, on a bench C3 running `c3mini` at this commit with every
+subsystem live (hub link to rns.wisco.network:4242 included; 180/180 pings,
+page in 0.44 s while all of it ran).
+
+**Statics are no longer ~100 KB, and the picture is tighter but different:**
+
+| | bytes |
+|---|---|
+| `c3mini` statics (.data+.bss) | 92,600 |
+| `c3full` (= c3mini + CONFIG_XPRS_WIFI8, links clean) statics | 113,304 |
+| `c3full` heap_start | 0x3FCAE498 — **58,520 into the bank** |
+| …of which xwifi itself | 16.9 K .bss + 19.0 K IRAM text + 3.5 K bearer |
+| total heap, no bank reserved | 239,776 |
+| heap left once the bank is reserved | ~127 K (0x3FCC0000 regions) |
+| steady free today, everything on | 32.7 K (min 20.8 K, largest 13.3 K) |
+
+**Runtime cost per subsystem, measured by switching each off on the board
+(`cfg set espnow_on/index_on/ble_on no`, reboot, 100 s settle, `/api/diag`):**
+
+| subsystem | steady heap it holds |
+|---|---|
+| ESP-NOW | 2,456 (it rides the WiFi driver; the driver is the cost) |
+| **index/archive (FAT + WL on the 832 K partition)** | **49,952** |
+| BLE (tinynimble + controller) | 38,496 |
+
+So the bank's ~113 K price is answered almost entirely by two decisions:
+what the C3's archive is (the FAT index machinery holds 50 K of RAM for a
+384 K archive), and how much of xwifi's own 58.5 K of below-bank pressure
+moves into the bank it reserves (the port already runs staging and the
+second-look window in the capture-free lower half; its hot code could run
+from the same half's instruction-bus alias, 0x403Axxxx — unproven).
+The config floors are already spent: WiFi 6/12/16, TCP 536/2680,
+BT_CTRL_BLE_MAX_ACT=2.
+
 ## Per-board plan
 
 ### T-Deck and other PSRAM boards: full station plus xwifi
@@ -77,6 +116,50 @@ demand collapses and the banks fit. Work items:
    suspend/resume against a live AP association is the main risk.
 3. Validate the full list on the bench: BLE5 advertising, STA join to local
    WiFi, hotspot with webchat, and xwifi exchange with the C3 relay.
+
+#### First hardware attempt, 2026-10-23 (env `tdeck_xwifi`, X3R8XX)
+
+Three walls, in the order they fell, and the one still standing. The env is
+`models/tdeck/firmware/` + `sdkconfig.xwifi`; stock `tdeck` boots fine on the
+same board throughout (X3SEP2), so each wall is the xwifi config, not the
+branch.
+
+1. **Static data overran the S3 RF bank.** `memory_layout` aborts at boot when
+   statics+IRAM reach 0x3FCB0000. First build: 31.8 KB over. Cleared without
+   the flash-code trick by **three reusable placement changes now in the
+   shared tree**: the four bearer `xb_t` structs (ESP-NOW, LAN, BLE, wifi8,
+   3.4 KB each) moved from `.bss` to `xprs_big_calloc` at start like the LoRa
+   bearer already did; the xwifi demodulator's working arrays (~6.4 KB, were
+   function statics) moved into a new `xw_scratch_t` the application provides,
+   exactly as the station already provides `extra_window` (PSRAM-first on a
+   board that has it); and WiFi driver code out of IRAM. Host suites green:
+   `test_xprslan_host.sh` (76/76) and all four xwifi `ctest`s.
+
+2. **The system event loop could not start.** `esp_event_loop_create_default()`
+   aborted in `wifi_up()` with "create task for loop failed" — its task stack
+   is contiguous INTERNAL RAM, and with the 192 KB sample banks reserved and
+   BLE + the LVGL DMA draw buffer already taken, there was none left by the
+   time wifi_up ran. Fixed in `xprs_app.c`: the loop and `esp_netif_init()` are
+   now claimed at the top of `xapp_run()` while the heap is whole, and wifi_up
+   tolerates the already-created state. "Boot order is the allocator"
+   (docs/esp32.md), applied to the one task that needed it. Helps every xwifi
+   board.
+
+3. **Still standing: xwifi's RAM trick vs the BLE controller's deadlines.**
+   The S3 port's README lists FreeRTOS- and heap-functions-in-flash as a
+   requirement; they buy ~24 KB of below-bank space. But the BLE controller
+   runs its link layer to microsecond deadlines (`r_lld_core_init`,
+   `btdm_controller_task`), and a flash-cache miss on a FreeRTOS/heap primitive
+   it calls stalls it past the interrupt watchdog — a boot loop,
+   "Interrupt wdt timeout on CPU0". On the Heltec xwifi profile BT is OFF, so
+   the trick is free; on the T-Deck BT is ON (it is goal 3), so the trick is
+   fatal. Without it BLE is happy but statics are 24 KB over the bank again.
+   So full station + BLE + xwifi on the S3 needs ~24 KB of below-bank relief
+   that is NOT the flash-code trick: more `.bss` to PSRAM (the app's big
+   statics already carry `XPRS_PSRAM_BSS`; the next candidates are IRAM .text
+   that need not be resident, and any remaining internal-only scratch), or the
+   BLE controller kept entirely off the flash-cache path. This is the next
+   session's work and it is the same shape the C3 faces, one board easier.
 
 ### Heltec V3: profile decision pending (user to pick)
 
@@ -96,6 +179,120 @@ demand collapses and the banks fit. Work items:
 
 All three keep the same bearer code; they differ only in sdkconfig and
 runtime flags.
+
+### C3-mini: the static-RAM verdict, quantified (2026-10-23)
+
+`c3full` (full station + `CONFIG_XPRS_WIFI8`, BT and RNS on) links and its
+static data (`.data`+`.bss`) ends **38,560 B past the C3 RF bank** at
+0x3FCA0000 — down from 58,520 B before the Stage-2 movers (the four bearer
+`xb_t` structs and the demod `xw_scratch_t`, ~20 K, now in the shared tree).
+On the unicore C3 the IRAM and DRAM share one SRAM pool with IRAM below
+`.data`, so moving code out of IRAM lowers the `.bss` end — but the C3 build
+**already** runs `ESP_WIFI_IRAM_OPT=n`, `ESP_WIFI_RX_IRAM_OPT=n`,
+`FREERTOS_PLACE_FUNCTIONS_INTO_FLASH` and `HEAP_PLACE_FUNCTION_INTO_FLASH`,
+so that lever is spent. No PSRAM, so `XPRS_PSRAM_BSS` is inert.
+
+Where the remaining 38,560 B is, measured (`idf_size.py --archives`):
+
+| static `.bss`/`.data` | bytes | can it leave internal SRAM? |
+|---|---|---|
+| `libxprs_app` | 16,229 | yes — `xprs_big_calloc` to heap above the bank, as the bearers and the echo/log/idx buffers already do |
+| `libxprs_station` | 3,776 | yes, same way |
+| `libxprs_diag` + `config` + `nostr` | ~2,356 | partly |
+| **`libxprs_index` (the archive store)** | **0** | **n/a — the store holds NO static `.bss`; its ring, queue and page are `big_calloc`'d, and FatFs's 4 KB-per-file sector caches are runtime HEAP, not static** |
+| IDF drivers: the BLE **controller** DRAM ~15 K, net80211/lwip/FreeRTOS (already floored) | ~16,000 | no |
+
+So two separate facts, not to be conflated:
+
+- **The static overrun gates the fit, and the archive backend does not touch
+  it.** Relocating all of our own `.bss` (~22 K) to heap still leaves ~16 K
+  over the bank, and that ~16 K is essentially the BLE **controller**'s static
+  DRAM. On this no-PSRAM silicon it has nowhere to go. The measured reading of
+  "all four simultaneously" is therefore: **Reticulum + hotspot + xwifi fit the
+  bank once our `.bss` is moved to heap; BLE is the ~15 K that does not.**
+- **A raw-partition store is a HEAP win (~16 K: the FatFs sector caches and the
+  wear-levelling layer), not a static-RAM win.** Worth having for the
+  steady-heap budget once the static overrun is solved, and it is the right
+  shape for a small device (footprint.md §6), but it is NOT the lever that
+  closes the C3 and `libxprs_index` having 0 static `.bss` is the proof.
+
+#### Relocating app `.bss` to heap — the trajectory (2026-10-23)
+
+The gating overrun is `.data/.bss`, so the lever is moving it off the static
+image and onto the heap above the bank — `xprs_big_calloc` for file-scope
+arrays, `render_scratch()` for a UI render static. Index-accessed arrays
+convert with no use-site change (a pointer indexes like the array did); the
+only hazards are `sizeof array` and `&array`, neither of which these had.
+Done in `libxprs_app`: `s_flow`, `s_peers`, `s_askq`, `s_acked`, `s_meshq`,
+`s_hist_alwayson` (claimed in `xapp_run` before `acked_load`, fatal-on-fail
+like `s_echo`), and `mm` (the chat-panel render buffer, now `render_scratch`,
+so a headless board that never renders pays 4 bytes not 1,692). `libxprs_app`
+DRAM 16,229 → ~8,000.
+
+Measured bank overrun (`c3full_nobt` = full station + xwifi, BLE off, the
+1+2+4 target), each step the same technique:
+
+| state | `.bss` end past 0x3FCA0000 |
+|---|---|
+| before any Stage-2 work | 38,560 B |
+| + bearer movers + demod scratch (c3full, BLE on) | 32,096 B |
+| + BLE off (the ~15 K controller the chip cannot place) | 23,552 B |
+| + the six app arrays | 12,128 B |
+| + `mm` via render_scratch | **10,432 B** |
+
+So 1+2+4 (Reticulum + hotspot + xwifi, no BLE) is **~10 K from fitting the
+bank**, down from 38.5 K, entirely by relocation — no feature dropped but
+BLE, which is the piece measured not to fit. The last ~10 K is in other
+libraries by the same method: `libxprs_station` 3,776 (`s_sb10` and the
+gossip/device tables), `xwifi`'s own `surv.0` 2,112 (the channel-survey
+static, belongs in `xw_station_t`), `xprs_ota` `s_body` 1,024 (the push
+buffer, used only during an update), and the tail of `libxprs_app`.
+
+The shipping `c3mini` (BLE on, no xwifi) benefits too: static RAM 93,344 →
+74,264, and it was reflashed to the bench board and verified running — 20/20
+pings, internet up, clock synced, the relocated receive/relay arrays
+exercised live with no fault.
+
+#### The static fit was reached — and booting proved the heap cannot (2026-10-23, the definitive verdict)
+
+Continuing the relocation (xprs_station rings, xprs_ota `s_body`, xprs_tz
+`s_rx`, xprs_api `row`, xprs_app `kv`, the C3 xwifi port's `li`/`lq`, and the
+Reticulum peer table `s_peers`) took `c3full_nobt` to **784 B UNDER the bank**
+— the static overrun, 38,560 B at the start, is fully closed.
+
+**Then it was flashed and it boot-loops**, and the crash is the other half of
+the ledger, exactly as footprint.md warns ("a build fitting proves nothing
+near the floor"). With the 128 KB bank reserved, `heap_init` leaves **784 B
+below the bank + 56 KB + 10 KB above it = ~67 KB usable heap**. By the time
+`app_main` reaches WiFi — even with **BLE off and the indexer off** — only
+**17.6 KB is free, largest block 9.2 KB**, and the WiFi driver needs a
+contiguous ~40 KB it cannot get. `ESP_ERR_NO_MEM`, panic.
+
+Why relocation cannot fix this on a no-PSRAM chip: **it is zero-sum.** Moving
+a buffer from `.bss` to `xprs_big_calloc` on a board with no PSRAM moves it
+from below the bank (where it overran) to the post-bank heap (where WiFi
+needs the room) — the same internal-SRAM bytes, relocated, not removed. The
+128 KB bank takes its bite of the 400 KB SRAM regardless; what remains
+(~67 KB heap, in two non-contiguous islands of 56 and 10 KB) cannot hold the
+full station's runtime (WiFi ~40 KB contiguous + hotspot + RNS + the xwifi
+station state + the relocated ex-`.bss` buffers), with or without the index's
+~16 KB and with or without BLE.
+
+**So the measured answer for the ESP32-C3 full station + xwifi is: it does not
+fit, and no placement trick closes it — the bank plus the full-station runtime
+heap exceed the chip's SRAM.** This confirms and now quantifies the original
+conclusion at the top of this file ("The C3 is worse… the relay is what
+fits"): the `c3xwifi` relay fits precisely because it has no WiFi-station,
+hotspot, Reticulum or index heap. A board that is to run the full station AND
+xwifi needs PSRAM to absorb that runtime — which is the T-Deck, where these
+same relocations (big_calloc is PSRAM-first there) help rather than merely
+move the problem.
+
+**What stands regardless, and is kept:** the relocation work is a real,
+fleet-wide static-RAM reduction (shipping `c3mini` 93,344 → 74,264, verified
+on hardware; every xwifi board lighter in `.bss`), and the bearer/demod/
+event-loop changes are correct on their own. The C3 itself stays the relay
+for xwifi and the full station for everything else, as two envs.
 
 ### C3-mini: relay
 

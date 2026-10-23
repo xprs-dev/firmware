@@ -237,7 +237,7 @@ static bool is_self(const char *call)
  * that starts with
  * being able to remember who is asking. 42 bytes an entry. */
 #define PEERKEYS_MAX 32
-static struct { char call[XPRS_CALL_LEN]; uint8_t pub[32]; } s_peers[PEERKEYS_MAX];
+static struct peerkey_s { char call[XPRS_CALL_LEN]; uint8_t pub[32]; } *s_peers;  /* [PEERKEYS_MAX] */
 static int s_peers_n;
 
 static const uint8_t *peer_key(const char *call)
@@ -541,11 +541,13 @@ static xprs_api_cfg_t s_api_cfg;    /* filled below; idx_task publishes into it 
 static bool idx_is_always_on(void);    /* defined with the budgets below */
 
 #define ASKQ_MAX 4
-static struct {
+struct askq_s {
     char wire[XPRSIDX_WIRE_MAX + 1];
     int  len;
     char bearer[7];
-} s_askq[ASKQ_MAX], s_ask_over;
+};
+static struct askq_s *s_askq;  /* [ASKQ_MAX], big_calloc'd off the .bss */
+static struct askq_s s_ask_over;
 static volatile uint8_t s_askq_w, s_askq_r, s_askq_n;
 static volatile bool s_ask_over_pending;
 static volatile bool s_wipe_req;   /* Settings asked for the archive to go */
@@ -638,7 +640,7 @@ typedef struct {
     uint32_t ms;
     char     text[160];        /* m: payload, or the raw wire for the rest */
 } flow_t;
-static flow_t s_flow[FLOW_MAX];
+static flow_t *s_flow;  /* [FLOW_MAX], big_calloc'd: off the .bss under the RF bank */
 static int s_flow_n;
 
 
@@ -1686,10 +1688,11 @@ static struct {
  * index keeps the packet, as an index should; this ring is what stops it
  * being re-aired at somebody who already has it. */
 #define ACKED_MAX 48
-static struct {
+struct acked_s {
     char id[XPRS_ID_LEN];
     uint32_t t_ms;
-} s_acked[ACKED_MAX];
+};
+static struct acked_s *s_acked;  /* [ACKED_MAX], big_calloc'd off the .bss */
 static uint8_t s_acked_pos;
 
 /*
@@ -2631,7 +2634,10 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
 
     /* What is being set: in the clear, or sealed (11.4). The fields live
      * in one static owned by this task rather than 592 bytes of its stack. */
-    static xsetup_kv_t kv[XSETUP_KV_MAX];      /* idx_task only */
+    /* idx_task only. Lazy off the .bss: on the xwifi boards a static here
+     * grows toward the RF bank; a board set up once pays it once, kept. */
+    static xsetup_kv_t *kv;
+    if (!kv) { kv = calloc(XSETUP_KV_MAX, sizeof *kv); if (!kv) return; }
     int nkv = 0;
     bool sealed = false;
     char xval[XPRSSEAL_X_MAX + 1] = "";
@@ -2653,7 +2659,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
         nkv = xsetup_lines(xval, kv, XSETUP_KV_MAX);
         memset(xval, 0, sizeof xval);
         if (nkv < 0) {
-            memset(kv, 0, sizeof kv);
+            memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
             ota_answer(from, bearer, id, 400, "sealed body is not cmd:set lines");
             return;
         }
@@ -2669,7 +2675,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
     }
     bool policy = has_any(&p, k_pol_keys, 5);
     if (policy && nkv > 0) {
-        memset(kv, 0, sizeof kv);
+        memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
         ota_answer(from, bearer, id, 400, "policy and setup keys go separately");
         return;
     }
@@ -2687,7 +2693,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
         }
         pol_take_owner(from, pub);
     } else if (!xauth_is_owner(from)) {
-        memset(kv, 0, sizeof kv);
+        memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
         ota_answer(from, bearer, id, 403, "not the owner");
         return;
     } else if (has_owner) {
@@ -2730,7 +2736,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
         char extra[80] = "";
         code = setup_apply(kv, nkv, sealed, from, bearer, id,
                            extra, sizeof extra, why, sizeof why);
-        memset(kv, 0, sizeof kv);
+        memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
         if (code >= 400) {
             ota_answer(from, bearer, id, code, why);
             return;
@@ -3904,12 +3910,13 @@ static void on_lora(const char *wire, int len, int rssi)
  * needs a secp256k1 signature), and idx_task, on core 1, does the rest
  * (docs/esp32.md, the receive path parks). */
 #define MESHQ_N 3
-static struct {
+struct meshq_s {
     volatile bool full;
     bool sign;
     int len;
     char wire[XPRS_MAX_WIRE + 1];
-} s_meshq[MESHQ_N];
+};
+static struct meshq_s *s_meshq;  /* [MESHQ_N], big_calloc'd off the .bss */
 
 /* A translation is this gateway's own composition: XPRS.md 9.11.5 has its
  * `via:` name the gateway. The relay path (bridge_out, xb_offer) refuses a
@@ -5064,8 +5071,14 @@ static void qemu_eth_up(void)
 
 static void wifi_up(void)
 {
+    /* Both are claimed at the top of xapp_run() now, while the internal heap
+     * is whole (the event loop's task stack cannot come from PSRAM, and on an
+     * xwifi board it is out of internal RAM by this point). Harmless if that
+     * did not run: esp_netif_init is idempotent and the loop tolerates the
+     * already-created state. */
     ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_err_t lp = esp_event_loop_create_default();
+    if (lp != ESP_OK && lp != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(lp);
 #ifdef XPRS_QEMU
     /* Espressif's QEMU has no radio. The station gets the emulated
      * OpenCores Ethernet instead, so the API, the hotspot page and the
@@ -5359,6 +5372,7 @@ static bool s_people_unread;
  * screen for want of it. The UI is a single task, so one copy is all there
  * has ever been a need for. */
 static void *s_chat_scratch;   /* xst_chat_t[XST_CHAT_MAX], render_scratch() */
+static void *s_msg_scratch;    /* xui_msg_t[XUI_CHAT_MSGS], render_scratch() */
 static bool s_room_unread[RM_FIXED + CHAT_PEERS_MAX];
 static char s_compose[121];               /* what has been typed          */
 static int  s_compose_n;
@@ -6457,9 +6471,11 @@ static void ui_render(void)
 
         /* The conversation. xst_chat gives newest first; a thread reads
          * the other way, so it is walked backwards into the array. */
-        static xui_msg_t mm[XUI_CHAT_MSGS];
+        xui_msg_t *mm = render_scratch(&s_msg_scratch,
+                                       sizeof(xui_msg_t) * XUI_CHAT_MSGS);
         xst_chat_t *rows = render_scratch(&s_chat_scratch,
                                           sizeof(xst_chat_t) * XST_CHAT_MAX);
+        if (!mm) return;                    /* said once, in render_scratch() */
         int cn = rows ? xst_chat(rows, XST_CHAT_MAX) : 0;
         uint32_t nowep = xst_epoch_now();
         char me[XPRS_CALL_LEN];
@@ -7208,8 +7224,8 @@ static struct { char id[8]; uint32_t when; } s_hist_answered[8];
  */
 #define HIST_ALWAYSON_MULT   1000
 #define HIST_ALWAYSON_ASKERS   32
-static struct { char call[16]; uint32_t win; uint32_t n; }
-    s_hist_alwayson[HIST_ALWAYSON_ASKERS];
+struct hist_aon_s { char call[16]; uint32_t win; uint32_t n; };
+static struct hist_aon_s *s_hist_alwayson;  /* [HIST_ALWAYSON_ASKERS] */
 static struct { uint32_t win; uint32_t n; } s_hist_alwayson_global;
 
 static bool hist_budget_always_on(const char *from, uint32_t now_s)
@@ -9953,6 +9969,19 @@ void xapp_run(const xapp_board_t *board)
     }
     ESP_ERROR_CHECK(err);
 
+    /* The system event loop runs on a task, and a task stack is contiguous
+     * INTERNAL RAM -- which is exactly what the xwifi boards run out of: the
+     * RF sample banks carve 128-192 KB out of the one SRAM, and by the time
+     * wifi_up() ran (after BLE and the LVGL DMA draw buffer had taken theirs)
+     * esp_event_loop_create_default() failed to create its task and aborted
+     * (T-Deck + xwifi, 2026-10-23). These two are process-global one-time
+     * inits, so claiming them here, while the heap is whole, is the same
+     * "boot order is the allocator" rule docs/esp32.md already states for
+     * httpd and the big stacks. wifi_up() tolerates the done state. */
+    ESP_ERROR_CHECK(esp_netif_init());
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) ESP_ERROR_CHECK(err);
+
     xcfg_init();
     /* Before anything reads a percentage, and before the policy can act on
      * one: the learned runtime lives in NVS and this is where NVS is up. */
@@ -9960,6 +9989,26 @@ void xapp_run(const xapp_board_t *board)
     /* Before anything airs: a packet sent with the ordinal still zero is a
      * packet no receiver can order against the last boot (10.7). */
     boot_epoch_init();
+
+    /* App state off the .bss and onto the heap above the RF bank. These were
+     * file-scope arrays; on the xwifi boards every byte of .bss grows toward
+     * the sample bank's fixed address, so the biggest ones are claimed here,
+     * while the heap is whole, exactly as s_echo below and the bearers' own
+     * state are. Array indexing is unchanged at the use sites (a pointer
+     * indexes like the array did); a failure here is fatal at boot, like the
+     * echo buffer, so no use site needs a NULL guard. */
+    s_flow           = xprs_big_calloc(FLOW_MAX, sizeof *s_flow);
+    s_peers          = xprs_big_calloc(PEERKEYS_MAX, sizeof *s_peers);
+    s_askq           = xprs_big_calloc(ASKQ_MAX, sizeof *s_askq);
+    s_acked          = xprs_big_calloc(ACKED_MAX, sizeof *s_acked);
+    s_meshq          = xprs_big_calloc(MESHQ_N, sizeof *s_meshq);
+    s_hist_alwayson  = xprs_big_calloc(HIST_ALWAYSON_ASKERS, sizeof *s_hist_alwayson);
+    if (!s_flow || !s_peers || !s_askq || !s_acked || !s_meshq ||
+        !s_hist_alwayson) {
+        ESP_LOGE(TAG, "app state allocation failed at boot");
+        abort();
+    }
+
     acked_load();   /* what was acknowledged before the reboot */
     /* 25.9: the owner's `first:` outranks the queue's own reading of a
      * packet, and the bearer cannot read configuration. */

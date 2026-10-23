@@ -17,6 +17,7 @@
 #include "xprsrns.h"
 #include "xprs.h"      /* xprs_parse/xprs_get_str: the f: a peer answers to */
 #include "xprs_config.h"
+#include "xprs_psram.h"   /* xprs_big_calloc: the peer table off the .bss */
 
 static const char *TAG = "xprsrns";
 
@@ -181,7 +182,9 @@ typedef struct {
     bool     have_next_hop;
 } xrns_peer_t;
 
-static xrns_peer_t s_peers[XRNS_PEERS];
+/* [XRNS_PEERS], big_calloc'd in init: off the .bss the RF sample bank caps
+ * on the xwifi boards. Only reached once the bearer is up. */
+static xrns_peer_t *s_peers;
 static uint32_t s_addressed_tx, s_addressed_rx, s_no_peer;
 /* Sent through a hub (HEADER_2), and path requests made. */
 static uint32_t s_via_hub, s_path_req;
@@ -806,6 +809,8 @@ void xprsrns_attach(xprsrns_wire_cb_t cb)
      */
     if (s_ready) return;
     if (!xprsrns_setup(cb)) return;
+    if (!s_peers) s_peers = xprs_big_calloc(XRNS_PEERS, sizeof *s_peers);
+    if (!s_peers) { ESP_LOGE(TAG, "peer table: no memory"); return; }
     s_ready = true;
     ESP_LOGI(TAG, "attached to a running uplink, dest %02x%02x%02x%02x..",
              s_wapp_dest[0], s_wapp_dest[1], s_wapp_dest[2], s_wapp_dest[3]);
@@ -830,6 +835,8 @@ void xprsrns_init(xprsrns_wire_cb_t cb)
         return;
     }
     if (!xprsrns_setup(cb)) return;
+    if (!s_peers) s_peers = xprs_big_calloc(XRNS_PEERS, sizeof *s_peers);
+    if (!s_peers) { ESP_LOGE(TAG, "peer table: no memory"); return; }
 
     /* "host" or "host:port". */
     char host[96];

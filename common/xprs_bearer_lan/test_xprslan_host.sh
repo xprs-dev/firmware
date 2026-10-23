@@ -8,11 +8,12 @@ cd "$(dirname "$0")"
 XPRS=../xprs_codec
 BEARER=../xprs_bearer                  # the queue, the rings, the cancel
 SHA=../xprs_index/test_sha256_host.c   # the codec's sha256 on the host
+COMMON=../xprs_common/include          # xprs_psram.h (host arm: plain calloc)
 
 # XB_HOST_TEST silences the shared core's ESP logging; XPRSLAN_HOST_TEST swaps
 # this bearer's socket for the fake radio in xprslan.c.
 gcc -Wall -Wextra -Werror -O1 -DXPRSLAN_HOST_TEST -DXB_HOST_TEST \
-    -I. -I"$XPRS" -I"$BEARER" \
+    -I. -I"$XPRS" -I"$BEARER" -I"$COMMON" \
     -o /tmp/test_xprslan \
     xprslan.c "$BEARER"/xprsbearer.c "$XPRS"/xprs.c test_xprslan_host.c "$SHA"
 

@@ -84,6 +84,7 @@ int xprsble_silent_for(void) { return -1; }
 #include "freertos/semphr.h"
 
 #include "xprsbearer.h"
+#include "xprs_psram.h"   /* xprs_big_calloc: the bearer state off the .bss */
 
 #if CONFIG_XPRSBLE_BACKEND_TINYNIMBLE
 /* Same radio, ~21 KB less flash and ~22 KB less heap, because the NimBLE host
@@ -176,7 +177,9 @@ static uint32_t      s_ad_dropped;
  * xb_on_wire is called alongside it purely to keep the rings and the cancel
  * honest -- with neither callback registered it does nothing else.
  */
-static xb_t s_xb;
+/* Was a 3.4 KB static; xprs_big_calloc'd in ble_relay_start so the .bss
+ * stays under the RF-bank ceiling on the xwifi boards (xb_* NULL-safe). */
+static xb_t *s_xb;
 static SemaphoreHandle_t s_tx_mutex;
 
 static bool bl_air(void *ctx, const char *wire, int len)
@@ -215,8 +218,10 @@ static const xb_ops_t k_ble_ops = {
 static void ble_relay_start(void)
 {
     if (!s_tx_mutex) s_tx_mutex = xSemaphoreCreateMutex();
-    xb_init(&s_xb, &k_ble_ops, s_call);
-    xb_register_ticked(&s_xb);
+    if (!s_xb) s_xb = xprs_big_calloc(1, sizeof *s_xb);
+    if (!s_xb) { ESP_LOGE(TAG, "bearer state: no memory"); return; }
+    xb_init(s_xb, &k_ble_ops, s_call);
+    xb_register_ticked(s_xb);
 }
 
 static void handle_ad(const uint8_t *p, int n, int rssi);
@@ -306,7 +311,7 @@ static void handle_ad(const uint8_t *p, int n, int rssi)
                  * the engine's rx_cb would drop and the station's hears:
                  * freshness is built from every hearing, not every new one. */
                 if (m[3] == XPRSBLE_SUB_XPRS)
-                    xb_on_wire(&s_xb, (const char *)&m[4], mlen - 4, 0, rssi);
+                    xb_on_wire(s_xb, (const char *)&m[4], mlen - 4, 0, rssi);
                 if (s_rx_cb) s_rx_cb(m[3], &m[4], mlen - 4, rssi);
             }
         }
@@ -604,22 +609,22 @@ esp_err_t xprsble_start(const char *callsign)
 
 void xprsble_digipeat(const char *wire, int len)
 {
-    xb_digipeat(&s_xb, wire, len);
+    xb_digipeat(s_xb, wire, len);
 }
 
 void xprsble_offer(const char *wire, int len)
 {
-    xb_offer(&s_xb, wire, len);
+    xb_offer(s_xb, wire, len);
 }
 
 void xprsble_echo(const char *wire, int len)
 {
-    xb_echo(&s_xb, wire, len);
+    xb_echo(s_xb, wire, len);
 }
 
 uint32_t xprsble_idle_ms(uint32_t now_ms)
 {
-    return xb_idle_ms(&s_xb, now_ms);
+    return xb_idle_ms(s_xb, now_ms);
 }
 
 bool xprsble_is_active(void) { return s_ble_up; }
