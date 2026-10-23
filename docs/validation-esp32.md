@@ -95,3 +95,38 @@ is the T-Deck, another ESP32 station. Via Chrome DevTools against `http://<C3>/`
 
 So the station only validates and airs a wire; the page holds the key and signs,
 and the round-trip to a second ESP32 works both ways.
+
+## WiFi set by a local non-owner (XPRS.md 11.9.1)
+
+Anyone within local range (BLE / ESP-NOW / LAN) may hand the station a WiFi
+network, owner or not, so a station whose router changed is put back on the air
+without a cable and without the admin present -- with guards so a stranger
+cannot abuse it. Implemented in `cmdset_apply`/`setup_apply` and `wk_tick`
+(`common/xprs_app/xprs_app.c`):
+
+- **WiFi only, sealed, signed.** A non-owner's `cmd:set` is accepted only if
+  every key is `ssid`/`pass`/`wifi`, the body is sealed in `x:` (no password on
+  the air), and the signature verifies against a key the station holds. The
+  station learns a stranger's key from its `t:identity` (a sealed command plus
+  `k:` plus `sig:` overruns 250 bytes, so `k:`-in-command is not the path). Any
+  non-WiFi key from a non-owner is refused.
+- **Held, never switched, while a link is up.** A non-owner offer does not move
+  the station off a working network. It is held in RAM (`s_wcand`) and tried
+  only when the current network is down and every remembered (known-good) one
+  has failed; it reaches the persisted list only by then giving an address
+  (`wk_note`). Lost on reboot -- nothing a stranger said is kept until it has
+  worked. The owner's own set still switches immediately (`trusted`).
+
+Bench-verified on the C3 (X3SQS6, on Vodafone), a non-owner identity (X1GSV2)
+airing over the T-Deck onto the C3's local bearers:
+
+| case | result |
+|---|---|
+| non-owner airs `t:identity`, then a sealed WiFi offer | `set up by X1GSV2: wifi:held ssid:StrangerNet`, `t:result ... code:202 wifi:held` -- accepted, **held** |
+| C3's current link throughout | stayed on 192.168.1.230, internet up -- **not switched** |
+| non-owner sets a non-WiFi key (`nick:`) | `t:result ... code:403` -- refused, nothing changed |
+
+The tool is `reticulum-dart/tool/xprs_setup_bench.dart` (`identity` then
+`--ssid .. --pass .. wifi`); the laptop's own UDP broadcast does not reach the
+C3 (the AP isolates clients), so the signed/sealed wires are aired through the
+T-Deck's `/api/xprs/send`, which is the real path a nearby device would take.

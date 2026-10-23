@@ -1597,6 +1597,16 @@ static volatile uint8_t s_wk_gen;      /* bumped on every save of the list */
  * stays on the network it has until the new one is joined, and nothing is
  * stored until it has been. Only idx_task touches it. */
 static XPRS_PSRAM_BSS char s_wset_ssid[33];
+/* A network OFFERED by somebody local who is NOT the owner (11.9.1): over
+ * BLE/ESP-NOW/LAN anyone in range may hand the station a way back onto the
+ * internet, but a stranger must not be able to pull it off a network that
+ * works. So their offer is held here, RAM only, and NOT applied while the
+ * station has a working link: wk_tick tries it only after the current
+ * network is down and every remembered (known-good) one has failed, and it
+ * reaches the persisted list only by then giving an address, like any other
+ * (wk_note). Lost on reboot by design -- nothing a stranger said is kept
+ * until it has actually worked. */
+static XPRS_PSRAM_BSS struct { char ssid[33]; char pass[64]; bool valid; } s_wcand;
 static volatile bool s_wk_gotip;       /* set by the event handler */
 static bool s_wk_inet_noted;
 static uint32_t s_wk_noinet_since;     /* ms; 0 while the internet answers */
@@ -2354,7 +2364,7 @@ static int setup_call(const char *call, const char *from, const char *bearer,
  * before the answer leaves by it would lose the answer, and a new key takes
  * a restart, which has to wait until the old key has signed its goodbye.
  */
-static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
+static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed, bool trusted,
                        const char *from, const char *bearer, const char *id,
                        char *extra, int extra_cap, char *why, int why_cap)
 {
@@ -2491,6 +2501,30 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed,
         const char *to_ssid = ssid ? ssid : s_wset_ssid[0] ? s_wset_ssid : s_ssid;
         const char *to_pass = pass ? pass : (ssid || s_wset_ssid[0]) ? "" : s_pass;
         if (!to_ssid[0]) { snprintf(why, why_cap, "no network: send ssid: first"); return 400; }
+        /* Offered by somebody who is not the owner (11.9.1): held, not taken,
+         * while a link is up -- a stranger does not get to move the station
+         * off a network that works. Applied at once only when there is no
+         * working link (the reconnect this is for); otherwise wk_tick tries
+         * it after the current network drops and the remembered ones fail. */
+        if (!trusted) {
+            snprintf(s_wcand.ssid, sizeof s_wcand.ssid, "%.32s", to_ssid);
+            snprintf(s_wcand.pass, sizeof s_wcand.pass, "%.63s", to_pass);
+            s_wcand.valid = true;
+            s_wset_ssid[0] = 0;
+            if (s_ip_str[0]) {
+                snprintf(extra, extra_cap, "wifi:held ssid:%s", s_wcand.ssid);
+                return 202;     /* kept the working link; held as a fallback */
+            }
+            char os[33], op[64];
+            snprintf(os, sizeof os, "%s", s_ssid);
+            snprintf(op, sizeof op, "%s", s_pass);
+            snprintf(s_pass, sizeof s_pass, "%s", s_wcand.pass);
+            snprintf(s_ssid, sizeof s_ssid, "%s", s_wcand.ssid);
+            wifi_join_arm(from, id, bearer, os, op);
+            memset(op, 0, sizeof op);
+            snprintf(extra, extra_cap, "wifi:joining ssid:%s", s_ssid);
+            return 202;
+        }
         char old_ssid[33], old_pass[64];
         snprintf(old_ssid, sizeof old_ssid, "%s", s_ssid);
         snprintf(old_pass, sizeof old_pass, "%s", s_pass);
@@ -2642,8 +2676,13 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
     bool sealed = false;
     char xval[XPRSSEAL_X_MAX + 1] = "";
     if (xprs_get_str(&p, "x", xval, sizeof xval)) {
-        if (!owned || !xauth_is_owner(from)) {
-            ota_answer(from, bearer, id, 403, owned ? "not the owner" : "claim first");
+        /* Sealed to THIS station's key, so only it can open it; the sender is
+         * already verified. The owner may set anything sealed; a non-owner on
+         * a local bearer may set WiFi (11.9.1), enforced after the body is
+         * read. A sealed command from off a local bearer is nobody's business
+         * here. */
+        if (!local) {
+            ota_answer(from, bearer, id, 403, "sealed setup is for a local bearer");
             return;
         }
         /* Opened in place: the plaintext is shorter than the base64 it came
@@ -2680,22 +2719,51 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
         return;
     }
 
+    /* 11.9.1: anyone within local range may hand the station a WiFi network,
+     * owner or not, so a station whose router changed can be put back on the
+     * air without a cable and without the owner present. Only WiFi, only
+     * sealed (the password is not for the air), and held conservatively
+     * (setup_apply, s_wcand): a stranger cannot move the station off a network
+     * that works, nor set anything else. */
+    bool wifi_only = nkv > 0 && !has_owner && !policy;
+    for (int i = 0; wifi_only && i < nkv; i++) {
+        const char *k = kv[i].key;
+        if (strcmp(k, "ssid") && strcmp(k, "pass") && strcmp(k, "wifi"))
+            wifi_only = false;
+    }
+    bool is_owner = owned && xauth_is_owner(from);
+    bool trusted = true;    /* the owner's and the claim path's word is final */
+
     if (!owned) {
         /* Unowned: the first verified claim that names its own sender, heard
-         * directly on a local bearer (11.9). */
-        if (!has_owner || strncasecmp(owner, from, strlen(from)) != 0 || nkv > 0) {
+         * directly on a local bearer (11.9) -- or a local WiFi offer, so an
+         * unclaimed board found off its network can still be reached. */
+        bool is_claim = has_owner && strncasecmp(owner, from, strlen(from)) == 0 &&
+                        nkv == 0;
+        if (is_claim) {
+            if (!local) {
+                ESP_LOGW(TAG, "claim from %s on %s ignored: not a local bearer", from, bearer);
+                return;
+            }
+            pol_take_owner(from, pub);
+        } else if (local && wifi_only && sealed) {
+            trusted = false;
+        } else {
+            memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
             ota_answer(from, bearer, id, 403, "unowned: claim with owner:you");
             return;
         }
-        if (!local) {
-            ESP_LOGW(TAG, "claim from %s on %s ignored: not a local bearer", from, bearer);
+    } else if (!is_owner) {
+        if (local && wifi_only && sealed) {
+            trusted = false;        /* a local stranger, WiFi only (11.9.1) */
+        } else {
+            memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
+            ota_answer(from, bearer, id, 403,
+                       (nkv > 0 && !wifi_only) ? "a non-owner may set only WiFi"
+                       : (wifi_only && !sealed) ? "a WiFi offer must be sealed in x:"
+                       : "not the owner");
             return;
         }
-        pol_take_owner(from, pub);
-    } else if (!xauth_is_owner(from)) {
-        memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
-        ota_answer(from, bearer, id, 403, "not the owner");
-        return;
     } else if (has_owner) {
         /* A transfer names somebody, whose key this station must hold. */
         char first_call[16] = "";
@@ -2714,13 +2782,14 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
         }
     }
 
-    /* The owner's word is the best clock a clockless station will get. */
-    clock_from_owner(ts);
+    /* The owner's word is the best clock a clockless station will get. A
+     * stranger's is not: it never moves the clock. */
+    if (trusted) clock_from_owner(ts);
 
     /* Remember what this owner calls themselves, if they are slot 1's key.
      * A key does not say whether its holder is a person or a station (3),
      * so the callsign has to be learned rather than derived. */
-    {
+    if (trusted) {
         const char *np1 = xcfg_get("own1", "");
         char d1[NOSTR_CALLSIGN_LEN] = "";
         if (np1[0] && nostr_keys_derive_callsign(np1, d1) == ESP_OK &&
@@ -2734,7 +2803,7 @@ static void cmdset_apply(const char *wire, int len, const char *bearer)
     char fields[208] = "", why[64] = "";
     if (nkv > 0) {
         char extra[80] = "";
-        code = setup_apply(kv, nkv, sealed, from, bearer, id,
+        code = setup_apply(kv, nkv, sealed, trusted, from, bearer, id,
                            extra, sizeof extra, why, sizeof why);
         memset(kv, 0, XSETUP_KV_MAX * sizeof *kv);
         if (code >= 400) {
@@ -4984,6 +5053,10 @@ static void wk_tick(void)
         s_wk_rot = 0;
         s_wk_next_ms = 0;
         wk_note(s_ssid, s_pass, false);
+        /* A stranger's offer that has now given an address is no longer just
+         * an offer: wk_note has put it on the remembered list, so the held
+         * candidate has done its job and is dropped. */
+        if (s_wcand.valid && !strcmp(s_ssid, s_wcand.ssid)) s_wcand.valid = false;
         /* The network that works is the one to start on after a restart. */
         if (strcmp(xcfg_get("ssid", ""), s_ssid) || strcmp(xcfg_get("pass", ""), s_pass)) {
             xcfg_set("ssid", s_ssid);
@@ -5027,6 +5100,18 @@ static void wk_tick(void)
     if (!s_ip_str[0] && (!s_ssid[0] || s_sta_fails >= 3) &&
         (int32_t)(now - s_wk_next_ms) >= 0) {
         if (!wk_rotate(false, s_ssid[0] ? "cannot be reached" : "is not set")) {
+            /* The remembered (known-good) networks are exhausted. Only now is
+             * a stranger's held offer worth trying: the known ones come
+             * first, so a local offer is a last resort, never a way to pull
+             * the station off a network that works. It reaches the list only
+             * by then giving an address (the got_ip branch above). */
+            if (s_wcand.valid && strcmp(s_ssid, s_wcand.ssid)) {
+                ESP_LOGW(TAG, "wifi: remembered networks failed; trying offered \"%s\"",
+                         s_wcand.ssid);
+                snprintf(s_ssid, sizeof s_ssid, "%s", s_wcand.ssid);
+                snprintf(s_pass, sizeof s_pass, "%s", s_wcand.pass);
+                wifi_rejoin();
+            }
             s_wk_next_ms = now + 300000;
             return;
         }
