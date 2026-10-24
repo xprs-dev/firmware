@@ -72,12 +72,14 @@ reuse potential.
   / "[10-23 14:26] " / "[14:26Z] " prefix for a text whose carrier cannot say
   when it was written. `xauth_ts_epoch` (xprs_auth) is the same parse for the
   app; worth one shared home when a third user appears. The MeshCore bridge
-  (`mc_mesh.c`) wants the same gate and prefix — candidate to lift both into
-  a `mesh_common`.
+  (`mc_mesh.c`) has the same gate (no prefix: its frames carry the sender's
+  `ts:`) — candidate to lift into a `mesh_common`.
 - **A share of the hour per sender** — `sender_spent()` / `sender_note()`
   in `mt_mesh.c`: four timestamps per sender, "spent" when all four are inside
   the last hour. Sixteen bytes, no bucket array; the shape for any per-party
-  cap inside a shared budget (the MeshCore bridge wants it next).
+  cap inside a shared budget. Duplicated verbatim in `mc_mesh.c` -- the two
+  bridges' gate/share/stale logic is the first thing to lift into a shared
+  `mesh_common` when a third network arrives.
 - **The mirror gate** — `mt_mesh_on_xprs`: heard traffic crosses to another
   network only under a clock and after `MT_MIRROR_SETTLE_MS`, old news
   (`MT_*_FRESH_S`) is counted and said, not silently dropped. Pattern for any

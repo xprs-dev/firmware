@@ -268,6 +268,23 @@ static void bcast_roll(mc_mesh_t *m, uint32_t now)
     }
 }
 
+static bool sender_spent(const mc_vnode_t *v, uint32_t now)
+{
+    int recent = 0;
+    for (int i = 0; i < MC_SENDER_PER_HOUR; i++)
+        if (v->sent_ms[i] && since(now, v->sent_ms[i]) < 3600000) recent++;
+    return recent >= MC_SENDER_PER_HOUR;
+}
+static void sender_note(mc_vnode_t *v, uint32_t now)
+{
+    int slot = 0;
+    for (int i = 0; i < MC_SENDER_PER_HOUR; i++) {
+        if (!v->sent_ms[i]) { slot = i; break; }
+        if (since(v->sent_ms[slot], v->sent_ms[i]) > 0) slot = i;   /* oldest */
+    }
+    v->sent_ms[slot] = now ? now : 1;
+}
+
 static bool bcast_take(mc_mesh_t *m, uint32_t now)
 {
     bcast_roll(m, now);
@@ -976,6 +993,24 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
      * somebody's chat. */
     if (strcmp(type, "message") != 0) return;
 
+    /* Heard traffic crosses only under a clock, and not in the first moments
+     * after boot (the Meshtastic bridge's rule, mt_mesh_on_xprs): the bearers
+     * keep old packets moving, and a bridge with no clock cannot judge the
+     * freshness window below. The station's own user's words go regardless. */
+    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
+    if (origin != MC_XPRS_OWN) {
+        if (!utc) {
+            if (m->st.no_clock++ % 50 == 0)
+                mlog(m, "mc: no clock -- heard traffic is not mirrored (%lu so far)",
+                     (unsigned long)m->st.no_clock);
+            return;
+        }
+        if (since(now, m->boot_ms) < (int32_t)MC_MIRROR_SETTLE_MS) {
+            m->st.settling++;
+            return;
+        }
+    }
+
     const char *dv;
     int dn = 0;
     bool direct = false;
@@ -1024,9 +1059,12 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
      * word this station does not know. A direct message is for one node
      * this bridge hears, wherever its author stood: it crosses unless local. */
     xprs_reach_t reach = xprs_scope_reach(p);
-    if (direct ? !xprs_reach_admits(reach, XPRS_REACH_REGIONAL)
-               : reach != XPRS_REACH_REGIONAL)
+    if (direct) {
+        if (!xprs_reach_admits(reach, XPRS_REACH_REGIONAL)) return;
+    } else if (reach != XPRS_REACH_REGIONAL) {
+        m->st.not_regional++;
         return;
+    }
 
     const char *mv;
     int mn;
@@ -1037,14 +1075,18 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
      * bytes, and it is the time the words were said. */
     const char *tv;
     int tn2;
-    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
     uint32_t ts = 0;
     if (get(p, "ts", &tv, &tn2)) ts = ts_epoch(tv, tn2);
     if (!ts) ts = utc;
     if (!ts) return;                       /* no clock, no message */
     if (utc && utc > ts) {
         uint32_t fresh = direct ? MC_DM_FRESH_S : MC_BCAST_FRESH_S;
-        if (utc - ts > fresh) return;      /* old news after a restart */
+        if (utc - ts > fresh) {            /* old news after a restart */
+            if (m->st.stale++ % 50 == 0)
+                mlog(m, "mc: %s is %lu s old -- not mirrored (%lu so far)", xid,
+                     (unsigned long)(utc - ts), (unsigned long)m->st.stale);
+            return;
+        }
     }
 
     /* What one MeshCore message carries (MC_TEXT_MAX), and for a channel
@@ -1064,10 +1106,15 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
     text[tl] = 0;
 
     if (!direct) {
+        if (sender_spent(sv, now)) {
+            m->st.sender_capped++;
+            return;
+        }
         if (!bcast_take(m, now)) {
             m->st.bcast_capped++;
             return;
         }
+        sender_note(sv, now);
         int pn = mc_grp_txt_build(mc_public_key, ts, name, text, m->payload,
                                   (int)sizeof m->payload);
         if (!pn) return;

@@ -125,6 +125,13 @@ typedef struct {
 #define MC_DM_PARK_MS     (24u * 3600u * 1000u)
 #define MC_BCAST_FRESH_S  1800u
 #define MC_DM_FRESH_S     (6u * 3600u)
+/* Heard traffic is not mirrored in the first moments after boot, and never
+ * without a clock (the Meshtastic bridge's rule, docs/lora.md "Time"): the
+ * bearers replay old packets, and without a clock the freshness window
+ * above cannot be judged. */
+#define MC_MIRROR_SETTLE_MS 20000u
+/* One XPRS sender's share of the channel per hour. */
+#define MC_SENDER_PER_HOUR 4
 /* How far a flood packet travels through us. MeshCore's own limit is the
  * path itself (it stops when there is no room for another hash); this is
  * the same manners as Meshtastic's hop limit, on a channel we share. */
@@ -176,6 +183,7 @@ typedef struct {
 typedef struct {
     uint32_t seen_ms;            /* last XPRS packet from it */
     uint32_t advert_ms;          /* last advert we aired for it; 0 = never */
+    uint32_t sent_ms[MC_SENDER_PER_HOUR]; /* its last broadcasts here, for its share */
     bool     advert_due;         /* mc_mesh_work advertises it */
     bool     keep;               /* advertised: saved, evicted last */
     bool     keyed;              /* pub is derived; until then it has none */
@@ -244,6 +252,10 @@ typedef struct {
     uint32_t adverts_in, adverts_out, bcast_capped, dropped;
     uint32_t inbox_full;       /* packets dropped for want of a slot to work on */
     uint32_t paths_in;         /* PATH returns opened (the ack rides in them) */
+    /* Mirroring XPRS onto the channel: heard traffic refused for want of a
+     * clock, as too soon after boot, as old news, as not the Regional room's,
+     * and as one sender's share of the hour spent. */
+    uint32_t no_clock, settling, stale, not_regional, sender_capped;
 } mc_mesh_stats_t;
 
 typedef struct {

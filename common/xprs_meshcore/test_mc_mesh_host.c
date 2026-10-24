@@ -274,6 +274,13 @@ static int find_heard(uint8_t type, const char *text)
     return -1;
 }
 
+/* A case that starts a fresh hour: the bridge's budget and every sender's share. */
+static void budget_reset(mc_mesh_t *b)
+{
+    memset(b->bcast_min, 0, sizeof b->bcast_min);
+    for (int i = 0; i < MC_VNODES; i++) memset(b->vnodes[i].sent_ms, 0, sizeof b->vnodes[i].sent_ms);
+}
+
 /* An XPRS wire handed to both bridges, as the station's own send path does. */
 static void xprs_in(const char *wire, int origin)
 {
@@ -693,6 +700,80 @@ void test_mesh(void)
         mc_mesh_on_frame(&g_b[1], f, n, -100, -3);
         CHECK(g_b[1].st.relay_skipped == sk0 + 1);
         CHECK(g_b[1].st.relayed == rl0);
+    }
+
+    /* 17. No clock, nothing heard crosses -- a packet's own ts: cannot be
+     *     judged without one; the station's own user's words still go. */
+    {
+        uint32_t keep = g_utc;
+        g_utc = 0;
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        uint32_t nc = g_b[0].st.no_clock;
+        const char *h1 = "t:message f:X1QZ3N ts:2026-09-20_09:30:00 scope:regional m:heard without a clock";
+        const char *o1 = "t:message f:X1QZ3N ts:2026-09-20_09:30:30 scope:regional m:typed without a clock";
+        mc_mesh_on_xprs(&g_b[0], h1, (int)strlen(h1), MC_XPRS_HEARD);
+        mc_mesh_on_xprs(&g_b[0], o1, (int)strlen(o1), MC_XPRS_OWN);
+        tick_all(6000);
+        CHECK(find_heard(MC_PT_GRP_TXT, "heard without a clock") < 0);
+        CHECK(find_heard(MC_PT_GRP_TXT, "typed without a clock") >= 0);
+        CHECK(g_b[0].st.no_clock == nc + 1);
+        g_utc = keep;
+    }
+
+    /* 18. Just after boot nothing heard crosses either; twenty seconds
+     *     later it does. */
+    {
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        g_b[0].boot_ms = g_now;
+        uint32_t st = g_b[0].st.settling;
+        const char *s1 = "t:message f:X1QZ3N ts:2026-09-20_09:00:00 scope:regional m:too soon";
+        mc_mesh_on_xprs(&g_b[0], s1, (int)strlen(s1), MC_XPRS_HEARD);
+        CHECK(g_b[0].st.settling == st + 1);
+        tick_all(21000);
+        const char *s2 = "t:message f:X1QZ3N ts:2026-09-20_09:00:10 scope:regional m:settled";
+        mc_mesh_on_xprs(&g_b[0], s2, (int)strlen(s2), MC_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard(MC_PT_GRP_TXT, "too soon") < 0);
+        CHECK(find_heard(MC_PT_GRP_TXT, "settled") >= 0);
+    }
+
+    /* 19. Old news is counted, not dropped in silence; a global broadcast
+     *     (the default scope) is not the Regional room's and stays off. */
+    {
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        uint32_t stale0 = g_b[0].st.stale, nr0 = g_b[0].st.not_regional;
+        const char *old1 = "t:message f:X1QZ3N ts:2026-09-20_07:00:00 scope:regional m:two hours ago";
+        const char *gl = "t:message f:X1QZ3N ts:2026-09-20_09:00:00 m:to the whole world";
+        mc_mesh_on_xprs(&g_b[0], old1, (int)strlen(old1), MC_XPRS_HEARD);
+        mc_mesh_on_xprs(&g_b[0], gl, (int)strlen(gl), MC_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard(MC_PT_GRP_TXT, "two hours ago") < 0);
+        CHECK(find_heard(MC_PT_GRP_TXT, "to the whole world") < 0);
+        CHECK(g_b[0].st.stale == stale0 + 1);
+        CHECK(g_b[0].st.not_regional == nr0 + 1);
+    }
+
+    /* 20. One sender's share: four an hour, the fifth waits, while the
+     *     bridge's own budget still has room. */
+    {
+        uint16_t hour = g_b[0].cfg.bcast_per_hour;
+        g_b[0].cfg.bcast_per_hour = 12;
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        uint32_t sc0 = g_b[0].st.sender_capped;
+        char w[120];
+        for (int i = 1; i <= 5; i++) {
+            snprintf(w, sizeof w, "t:message f:X1QZ3N ts:2026-09-20_09:00:%02d scope:regional m:share %d", 40 + i, i);
+            mc_mesh_on_xprs(&g_b[0], w, (int)strlen(w), MC_XPRS_HEARD);
+        }
+        tick_all(12000);
+        CHECK(find_heard(MC_PT_GRP_TXT, "share 4") >= 0);
+        CHECK(find_heard(MC_PT_GRP_TXT, "share 5") < 0);
+        CHECK(g_b[0].st.sender_capped == sc0 + 1);
+        g_b[0].cfg.bcast_per_hour = hour;
     }
 
     printf("mc_mesh: %u frames heard, %u relayed, %u cancelled, %u in, %u out\n",

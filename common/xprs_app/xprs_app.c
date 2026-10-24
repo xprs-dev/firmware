@@ -9442,7 +9442,9 @@ static int api_lora_json(char *buf, size_t cap)
             "\"dm_not_here\":%lu,\"receipts\":%lu,\"adverts_in\":%lu,"
             "\"adverts_out\":%lu,\"unnamed\":%lu,\"dropped\":%lu,"
             "\"inbox_full\":%lu,\"bcast_capped\":%lu,\"rx_dupes\":%lu,"
-            "\"relay_skipped\":%lu,\"paths_in\":%lu}",
+            "\"relay_skipped\":%lu,\"paths_in\":%lu,"
+            "\"no_clock\":%lu,\"settling\":%lu,\"stale\":%lu,"
+            "\"not_regional\":%lu,\"sender_capped\":%lu}",
             (unsigned long)mc.rx_frames, (unsigned long)mc.rx_opened,
             (unsigned long)mc.relayed, (unsigned long)mc.text_in,
             (unsigned long)mc.text_out, (unsigned long)mc.dm_acked,
@@ -9451,7 +9453,9 @@ static int api_lora_json(char *buf, size_t cap)
             (unsigned long)mc.grp_unnamed, (unsigned long)mc.dropped,
             (unsigned long)mc.inbox_full, (unsigned long)mc.bcast_capped,
             (unsigned long)mc.rx_dupes, (unsigned long)mc.relay_skipped,
-            (unsigned long)mc.paths_in);
+            (unsigned long)mc.paths_in, (unsigned long)mc.no_clock,
+            (unsigned long)mc.settling, (unsigned long)mc.stale,
+            (unsigned long)mc.not_regional, (unsigned long)mc.sender_capped);
     if (n > 0 && (size_t)n < cap && xprslora_mc_stats(&mc)) {
         n += snprintf(buf + n, cap - (size_t)n, ",\"mc_nodes\":[");
         mc_node_t nd;

@@ -627,7 +627,8 @@ had ticked "OK to MQTT". Now:
 - Nodes are announced on Meshtastic only when their words cross (and then at
   most every `mt_ni_min`), so a quieter channel also means fewer NodeInfos.
 
-The MeshCore bridge follows the same two rules.
+The MeshCore bridge follows the same two rules, with the same share each and
+the same counters (`/api/status` `mc`).
 
 ### Time
 
@@ -654,6 +655,11 @@ wrong time):
   it does not, and with the day when that is not the reader's today
   (`[10-23 14:26]`). Counted as `dated`. Two minutes, so live chat stays
   clean and the 220-byte text budget is untouched in the common case.
+
+The MeshCore bridge has the same gate and the same counted stale drops; it
+needs no prefix, because a MeshCore channel message carries the sender's own
+timestamp (the XPRS packet's `ts:`), so its readers already see when the
+words were said.
 
 The station's own clock is NTP's, and until then its owner's (XPRS.md 11.10;
 `xst_clock_set` in xprs_station holds the ladder). Making the T-Deck a time

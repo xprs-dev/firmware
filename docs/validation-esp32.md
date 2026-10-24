@@ -195,3 +195,16 @@ its own `ts:`.
 |---|---|
 | T-Deck | `clock: ntp set` at 9 s -> `anchors epoch 486` -> `epoch 486 anchored on lan`; `settling:1` (a heard message inside the 20 s gate) |
 | C3 | `source:kept` at 7 s -> `now from ntp` at 68 s -> `epoch 691 anchored on lan`; the T-Deck archived `t:observation f:X3SQS6 … ts:2026-10-23_23:54:29 epoch:691.71` |
+
+## MeshCore: the same rules (2026-10-24)
+
+The MeshCore bridge now has the Meshtastic bridge's gate and counters: heard
+traffic crosses only under a clock and 20 s after boot (`no_clock`,
+`settling`), old news is counted (`stale`), only the Regional room crosses
+(`not_regional`), and each sender has four of the hour (`sender_capped`), on
+`/api/status` `mc`. It needs no time prefix: a MeshCore channel message
+carries the XPRS packet's own `ts:`, so its readers see when the words were
+said. Verified on the host (`test_mc_host.sh`, cases 17-20) -- the bench has
+no MeshCore node, and the T-Deck runs in `meshtastic` mode, so `mc` does not
+appear on its status. Both boards reflashed with the build that carries it
+(T-Deck `source:ntp`, `settling:1` at 40 s; C3 `source:ntp` at 9 s).
