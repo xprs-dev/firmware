@@ -203,6 +203,62 @@ typedef struct {
     size_t   data_len;
 } rns_packet_t;
 
+/* Packet contexts (RNS/Packet.py). */
+#define RNS_CTX_NONE           0x00
+#define RNS_CTX_RESOURCE       0x01
+#define RNS_CTX_RESOURCE_ADV   0x02
+#define RNS_CTX_RESOURCE_REQ   0x03
+#define RNS_CTX_RESOURCE_HMU   0x04
+#define RNS_CTX_RESOURCE_PRF   0x05
+#define RNS_CTX_KEEPALIVE      0xFA
+#define RNS_CTX_LINKCLOSE      0xFC
+#define RNS_CTX_LRRTT          0xFE
+#define RNS_CTX_LRPROOF        0xFF
+
+/* ── Primitives a link and a resource need beyond single packets ───────── */
+
+/** Fill [out] with random bytes (the platform's source). */
+void rns_random_bytes(uint8_t *out, size_t len);
+
+/** Ed25519: is [sig] (64) by [ed_pub] (32) over [msg]? */
+bool rns_ed25519_verify(const uint8_t ed_pub[32], const uint8_t sig[64],
+                        const uint8_t *msg, size_t len);
+
+/** Ed25519 keypair from the platform's randomness: pub(32), secret(64). */
+void rns_ed25519_keypair(uint8_t pub[32], uint8_t sec[64]);
+
+/**
+ * An RNS Token under a 64-byte key (signing = key[0:32], encryption =
+ * key[32:64]): iv(16) + AES-256-CBC(PKCS7(plain)) + HMAC-SHA256(iv+ct).
+ * Whole-buffer forms for the small packets a link exchanges.
+ * @return bytes written, or -1 (too small, or the HMAC did not verify).
+ */
+int rns_token_encrypt(const uint8_t key[64], const uint8_t *plain, size_t len,
+                      uint8_t *out, size_t out_cap);
+int rns_token_decrypt(const uint8_t key[64], const uint8_t *tok, size_t len,
+                      uint8_t *out, size_t out_cap);
+
+/* Incremental SHA-256, HMAC-SHA256 and AES-256-CBC decryption, for a
+ * resource that is checked and decrypted as it streams through a station
+ * with no room to hold it. Opaque storage sized for either backend. */
+typedef struct { unsigned char st[224]; } rns_sha256_ctx_t;
+void rns_sha256_init(rns_sha256_ctx_t *c);
+void rns_sha256_update(rns_sha256_ctx_t *c, const uint8_t *in, size_t len);
+void rns_sha256_final(rns_sha256_ctx_t *c, uint8_t out[32]);
+
+typedef struct { unsigned char st[480]; } rns_hmac_ctx_t;
+bool rns_hmac_init(rns_hmac_ctx_t *c, const uint8_t *key, size_t keylen);
+void rns_hmac_update(rns_hmac_ctx_t *c, const uint8_t *in, size_t len);
+void rns_hmac_final(rns_hmac_ctx_t *c, uint8_t out[32]);
+
+typedef struct { unsigned char st[320]; uint8_t iv[16]; } rns_cbc_ctx_t;
+bool rns_cbc_decrypt_init(rns_cbc_ctx_t *c, const uint8_t key[32],
+                          const uint8_t iv[16]);
+/** [len] is a multiple of 16; in and out may alias. */
+bool rns_cbc_decrypt_update(rns_cbc_ctx_t *c, const uint8_t *in, size_t len,
+                            uint8_t *out);
+void rns_cbc_decrypt_free(rns_cbc_ctx_t *c);
+
 /* ── Announces ──────────────────────────────────────────────────────────── */
 
 #define RNS_RANDOM_HASH_LEN 10

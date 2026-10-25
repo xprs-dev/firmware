@@ -33,6 +33,14 @@ except ImportError:
     sys.exit("PyYAML is needed: pip install pyyaml")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Where the images go under models/<id>/: `prebuilt` is the stable release the
+# page flashes; `prebuilt-beta` is the beta channel's (--out prebuilt-beta),
+# which the page does not offer and the firmware folder publishes as `beta`.
+OUT_DIR = "prebuilt"
+if "--out" in sys.argv:
+    i = sys.argv.index("--out")
+    OUT_DIR = sys.argv[i + 1]
+    del sys.argv[i:i + 2]
 BOOT_OFFSET = {"esp32": 0x1000, "esp32s3": 0x0, "esp32c3": 0x0}
 CHIP_FAMILY = {"esp32": "ESP32", "esp32s3": "ESP32-S3", "esp32c3": "ESP32-C3"}
 UF2CONV = glob.glob(os.path.expanduser(
@@ -82,7 +90,7 @@ def collect(b):
     if not proj or not env:
         return f"{b['id']}: no buildable project"
     build = os.path.join(ROOT, proj, ".pio", "build", env)
-    out = os.path.join(ROOT, "models", b["id"], "prebuilt")
+    out = os.path.join(ROOT, "models", b["id"], OUT_DIR)
     if not os.path.isdir(build):
         return f"{b['id']}: not built ({os.path.relpath(build, ROOT)} missing)"
     version = None

@@ -135,3 +135,38 @@ reuse potential.
 - **`same_base_call(a, b)`** -- callsign equality ignoring a `-n` device
   suffix and case, for comparing an `f:` with a device-table entry.
 
+## Reticulum beyond single packets
+
+- **`common/xprs_rns/rns_link.{c,h}`** -- an RNS link, initiator side,
+  wire-compatible with RNS 1.3.5 and with reticulum-dart (`rns_link.dart`):
+  request, proof verification, key derivation, token encrypt and decrypt.
+  Anything that needs a link to a peer (a resource, a request/response)
+  starts here; never re-implement the handshake.
+- **`common/xprs_rns/rns_resource.{c,h}`** -- an RNS resource RECEIVED AS A
+  STREAM: parts in a bounded cache, CBC and the three digests running, the
+  plaintext handed to a sink callback, so a 1.4 MB image goes into the OTA
+  slot through a few kilobytes of RAM. Any large fetch over Reticulum (an
+  image, a listing, a card of tiles) is this plus a sink.
+- **`rns_token_encrypt/decrypt`, `rns_ed25519_verify`, the incremental
+  `rns_sha256_*`, `rns_hmac_*`, `rns_cbc_decrypt_*`** in `rns.c`: the
+  primitives, with host (OpenSSL) and device (mbedtls) bodies behind one
+  interface, as the rest of that file already did.
+- **`test_rns_link_host.sh`** -- the pattern for testing C against the Dart
+  implementation without a radio: `reticulum-dart/tool/files_responder.dart`
+  is the real `xprs/files` responder speaking hex lines over pipes.
+
+## Folders and firmware
+
+- **`common/xprs_folder`** -- the XFL1 listing walker, folder and member
+  description readers, `<board>-<version>.bin` parsing and a dotted version
+  compare (`xfolder_version_cmp`). Reuse the version compare wherever a
+  version string is ordered; it is numeric, not lexical.
+- **`common/xprs_fwfetch` (`xfw.c`)** -- a state machine with every outside
+  effect injected (sign, send, route, sink, clock, lock), the same shape the
+  Dart core uses for routing. Copy the shape for the next unattended duty.
+- **`xota_push_begin_sha()`** -- an install approved by a digest the caller
+  already trusts (a verified signed description), beside the `xprsfw1`
+  approval line. `xota_publisher_key()` exposes the pinned `fwkey` to
+  whoever verifies the publisher's packets.
+- **`reply_lanes()` / `reply_air()`** -- see "Answering a station" above.
+

@@ -177,6 +177,18 @@ def to_json(b):
             fw["image"] = name
     if fw.get("artifact"):
         fw["artifact_url"] = f"{RAW_URL}/{fw['artifact']}"
+        # The digest and size of the image in the tree, so a reader can
+        # verify what it downloads before holding it (the app's firmware
+        # mirror does; docs/plan-firmware-folders.md).
+        art = os.path.join(ROOT, fw["artifact"])
+        if os.path.isfile(art):
+            import hashlib
+            h = hashlib.sha256()
+            with open(art, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 16), b""):
+                    h.update(chunk)
+            fw["sha256"] = h.hexdigest()
+            fw["size"] = os.path.getsize(art)
     for key in ("images", "screenshots"):
         for im in out.get(key) or []:
             if im.get("file"):

@@ -171,6 +171,7 @@ typedef struct {
     char     call[16];
     uint8_t  dest[RNS_HASH_LEN];
     uint8_t  xpub[RNS_KEY_HALF];
+    uint8_t  edpub[RNS_KEY_HALF];     /* the signing half: a link's proof is checked against it */
     uint32_t heard_s;
     uint8_t  id_hash[RNS_HASH_LEN];   /* SHA-256(pub)[:16]: the HKDF salt */
     /* The route, as the announce that taught us the peer told it: how far,
@@ -185,6 +186,7 @@ typedef struct {
 /* [XRNS_PEERS], big_calloc'd in init: off the .bss the RF sample bank caps
  * on the xwifi boards. Only reached once the bearer is up. */
 static xrns_peer_t *s_peers;
+static void (*s_link_cb)(const rns_packet_t *p);
 static uint32_t s_addressed_tx, s_addressed_rx, s_no_peer;
 /* Sent through a hub (HEADER_2), and path requests made. */
 static uint32_t s_via_hub, s_path_req;
@@ -211,6 +213,7 @@ static void peer_learn(const char *call, const uint8_t dest[RNS_HASH_LEN],
     memcpy(s_peers[slot].dest, dest, RNS_HASH_LEN);
     /* pub is x25519_pub || ed25519_pub; only the first half encrypts. */
     memcpy(s_peers[slot].xpub, pub, RNS_KEY_HALF);
+    memcpy(s_peers[slot].edpub, pub + RNS_KEY_HALF, RNS_KEY_HALF);
     s_peers[slot].heard_s = now;
     rns_identity_t idt;
     rns_identity_from_public(pub, &idt);
@@ -447,6 +450,16 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
 
     rns_packet_t p;
     if (!rns_packet_parse(frame, len, &p)) return;
+
+    /* A link this station opened (XPRS.md 11.2's bulk lane): its proof and
+     * everything addressed to the link id go to whoever opened it. Cheap:
+     * two byte compares, no crypto, and a station with no link open pays a
+     * function call. */
+    if (s_link_cb && (p.dest_type == RNS_DEST_LINK ||
+                      (p.packet_type == RNS_PACKET_PROOF && p.context == RNS_CTX_LRPROOF))) {
+        s_link_cb(&p);
+        if (p.dest_type == RNS_DEST_LINK) return;
+    }
 
     /* Addressed to US: somebody answered rather than announced.
      *
@@ -861,3 +874,42 @@ void xprsrns_init(xprsrns_wire_cb_t cb)
              s_ann_gap_s > 0 ? "hello only, every" : "every wire, gap",
              s_ann_gap_s);
 }
+
+/* ── The bulk lane's needs (xprs_fwfetch) ────────────────────────────── */
+
+void xprsrns_set_link_cb(void (*cb)(const rns_packet_t *p)) { s_link_cb = cb; }
+
+bool xprsrns_send_packet(const uint8_t *pkt, size_t len)
+{
+    if (!s_ready || !rns_tcp_is_up() || !pkt || !len) return false;
+    return rns_tcp_send(pkt, len);
+}
+
+bool xprsrns_peer_route(const char *call, uint8_t dest[RNS_HASH_LEN],
+                        uint8_t pub[RNS_PUB_LEN], uint8_t next_hop[RNS_HASH_LEN],
+                        bool *have_hop)
+{
+    if (!s_ready) return false;
+    const xrns_peer_t *pr = peer_find(call);
+    if (!pr) return false;
+    if (dest) {
+        /* Its `xprs/files` destination: the same identity, another name. */
+        static uint8_t files_name[RNS_NAME_HASH_LEN];
+        static bool have_name;
+        if (!have_name) {
+            const char *aspects[] = { "files" };
+            rns_name_hash("xprs", aspects, 1, files_name);
+            have_name = true;
+        }
+        rns_destination_hash(files_name, pr->id_hash, dest);
+    }
+    if (pub) {
+        memcpy(pub, pr->xpub, RNS_KEY_HALF);
+        memcpy(pub + RNS_KEY_HALF, pr->edpub, RNS_KEY_HALF);
+    }
+    bool hop = pr->hops > 1 && pr->have_next_hop;
+    if (next_hop && hop) memcpy(next_hop, pr->next_hop, RNS_HASH_LEN);
+    if (have_hop) *have_hop = hop;
+    return true;
+}
+

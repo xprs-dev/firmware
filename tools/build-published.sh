@@ -23,6 +23,13 @@ set -u
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 ALL="tdeck tdongle-s3 m5stack-core heltec-v3 epaper-1in54 esp32c3-mini generic"
+# CHANNEL=stable (default) publishes into models/<b>/prebuilt and the page;
+# CHANNEL=beta into models/<b>/prebuilt-beta, for the folder only. A beta
+# build carries a -beta.N version (version.txt), which a station on the
+# stable channel never sees and one on beta prefers over its release
+# (docs/plan-firmware-folders.md).
+CHANNEL="${CHANNEL:-stable}"
+OUT_DIR="prebuilt"; [ "$CHANNEL" = beta ] && OUT_DIR="prebuilt-beta"
 BOARDS="${*:-$ALL}"
 PIO="${PIO:-$HOME/.pio-venv/bin/pio}"
 LOCK="$HOME/bin/android-build-locked"
@@ -87,6 +94,15 @@ for b in $BOARDS; do
     done
     echo "$b ($env): $out | bench strings in the image: $hits"
     if [ "$hits" != 0 ] || ! echo "$out" | grep -q SUCCESS; then fail=1; break; fi
-    python3 tools/scripts/collect_prebuilt.py "$b" | tail -1
+    python3 tools/scripts/collect_prebuilt.py --out "$OUT_DIR" "$b" | tail -1
 done
+# The catalogue and the folder: every board's digest into docs/boards.json,
+# and the released images published as the firmware folder through the
+# maintainer's app (docs/plan-firmware-folders.md). A release without the
+# signed folder is one no station can take unattended, so a missing app
+# fails the publish rather than passing quietly.
+if [ "$fail" = 0 ]; then
+    [ "$CHANNEL" = stable ] && python3 tools/scripts/build_catalog.py -o index.html --json docs/boards.json
+    python3 tools/scripts/publish_folder.py --channel "$CHANNEL" || fail=1
+fi
 exit $fail

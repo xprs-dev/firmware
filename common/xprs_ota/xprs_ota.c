@@ -555,6 +555,12 @@ static struct {
     size_t  size, got;
     bool    open;
     bool verified;        /* verify() passed; commit() may restart */
+    /* By digest instead of by approval line: the caller verified a signed
+     * description (XPRS.md 7.7.1) from the pinned publisher naming board,
+     * version, size and this digest -- the same binding 11.8 asks for, as
+     * a packet the format defines. */
+    bool    by_sha;
+    uint8_t sha[32];
 } s_push;
 
 esp_err_t xota_push_begin(const char *version, size_t size, const char *sig)
@@ -574,6 +580,7 @@ esp_err_t xota_push_begin(const char *version, size_t size, const char *sig)
     snprintf(s_push.sig, sizeof s_push.sig, "%s", sig);
     s_push.size = size;
     s_push.got = 0;
+    s_push.by_sha = false;
 
     if (s_cfg.quiesce) s_cfg.quiesce(true);
     mbedtls_sha256_init(&s_sha);
@@ -598,6 +605,20 @@ esp_err_t xota_push_begin(const char *version, size_t size, const char *sig)
              version, (unsigned)size, s_push.part->label);
     return ESP_OK;
 }
+
+esp_err_t xota_push_begin_sha(const char *version, size_t size, const uint8_t sha[32])
+{
+    if (!version || !sha || !size) return ESP_ERR_INVALID_ARG;
+    uint8_t pub[32];
+    if (!publisher_key(pub)) return ESP_ERR_INVALID_STATE;   /* nothing pinned, nothing installs */
+    esp_err_t err = xota_push_begin(version, size, "by-digest");
+    if (err != ESP_OK) return err;
+    s_push.by_sha = true;
+    memcpy(s_push.sha, sha, 32);
+    return ESP_OK;
+}
+
+bool xota_publisher_key(uint8_t out[32]) { return publisher_key(out); }
 
 esp_err_t xota_push_write(const void *data, size_t len)
 {
@@ -639,8 +660,9 @@ esp_err_t xota_push_verify(void)
     mbedtls_sha256_finish(&s_sha, sha);
     mbedtls_sha256_free(&s_sha);
 
-    if (s_push.got != s_push.size ||
-        !approval_ok(s_push.version, s_push.size, sha, s_push.sig)) {
+    bool approved = s_push.by_sha ? memcmp(sha, s_push.sha, 32) == 0
+                                  : approval_ok(s_push.version, s_push.size, sha, s_push.sig);
+    if (s_push.got != s_push.size || !approved) {
         ESP_LOGE(TAG, "push refused: %s",
                  s_push.got != s_push.size ? "short" : "no valid approval");
         esp_ota_abort(s_push.h);

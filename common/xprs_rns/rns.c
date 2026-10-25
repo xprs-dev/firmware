@@ -29,6 +29,7 @@ extern int crypto_scalarmult_curve25519_tweet_base(unsigned char *q,
 #define rns_nacl_scalarmult_base crypto_scalarmult_curve25519_tweet_base
 
 #ifdef RNS_HOST_TEST
+#define OPENSSL_SUPPRESS_DEPRECATED 1
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
@@ -68,6 +69,50 @@ static void rns_random(uint8_t *out, size_t len)
 {
     for (size_t i = 0; i < len; i++) out[i] = (uint8_t)(rand() & 0xFF);
 }
+
+void rns_random_bytes(uint8_t *out, size_t len) { rns_random(out, len); }
+
+/* Incremental primitives, host side (OpenSSL). */
+void rns_sha256_init(rns_sha256_ctx_t *c) { SHA256_Init((SHA256_CTX *)c->st); }
+void rns_sha256_update(rns_sha256_ctx_t *c, const uint8_t *in, size_t len)
+{ SHA256_Update((SHA256_CTX *)c->st, in, len); }
+void rns_sha256_final(rns_sha256_ctx_t *c, uint8_t out[32])
+{ SHA256_Final(out, (SHA256_CTX *)c->st); }
+
+bool rns_hmac_init(rns_hmac_ctx_t *c, const uint8_t *key, size_t keylen)
+{
+    HMAC_CTX **h = (HMAC_CTX **)c->st;
+    *h = HMAC_CTX_new();
+    return *h && HMAC_Init_ex(*h, key, (int)keylen, EVP_sha256(), NULL) == 1;
+}
+void rns_hmac_update(rns_hmac_ctx_t *c, const uint8_t *in, size_t len)
+{ HMAC_Update(*(HMAC_CTX **)c->st, in, len); }
+void rns_hmac_final(rns_hmac_ctx_t *c, uint8_t out[32])
+{
+    unsigned int n = 32;
+    HMAC_Final(*(HMAC_CTX **)c->st, out, &n);
+    HMAC_CTX_free(*(HMAC_CTX **)c->st);
+}
+
+bool rns_cbc_decrypt_init(rns_cbc_ctx_t *c, const uint8_t key[32],
+                          const uint8_t iv[16])
+{
+    EVP_CIPHER_CTX **e = (EVP_CIPHER_CTX **)c->st;
+    *e = EVP_CIPHER_CTX_new();
+    if (!*e) return false;
+    if (EVP_DecryptInit_ex(*e, EVP_aes_256_cbc(), NULL, key, iv) != 1) return false;
+    EVP_CIPHER_CTX_set_padding(*e, 0);
+    return true;
+}
+bool rns_cbc_decrypt_update(rns_cbc_ctx_t *c, const uint8_t *in, size_t len,
+                            uint8_t *out)
+{
+    int outl = 0;
+    return EVP_DecryptUpdate(*(EVP_CIPHER_CTX **)c->st, out, &outl, in, (int)len) == 1
+           && (size_t)outl == len;
+}
+void rns_cbc_decrypt_free(rns_cbc_ctx_t *c)
+{ EVP_CIPHER_CTX_free(*(EVP_CIPHER_CTX **)c->st); }
 
 #else /* on the device */
 
@@ -110,6 +155,58 @@ static void rns_random(uint8_t *out, size_t len)
 {
     esp_fill_random(out, len);
 }
+
+void rns_random_bytes(uint8_t *out, size_t len) { rns_random(out, len); }
+
+/* Incremental primitives, device side (mbedtls). */
+void rns_sha256_init(rns_sha256_ctx_t *c)
+{
+    mbedtls_sha256_context *x = (mbedtls_sha256_context *)c->st;
+    mbedtls_sha256_init(x);
+    mbedtls_sha256_starts(x, 0);
+}
+void rns_sha256_update(rns_sha256_ctx_t *c, const uint8_t *in, size_t len)
+{ mbedtls_sha256_update((mbedtls_sha256_context *)c->st, in, len); }
+void rns_sha256_final(rns_sha256_ctx_t *c, uint8_t out[32])
+{
+    mbedtls_sha256_context *x = (mbedtls_sha256_context *)c->st;
+    mbedtls_sha256_finish(x, out);
+    mbedtls_sha256_free(x);
+}
+
+bool rns_hmac_init(rns_hmac_ctx_t *c, const uint8_t *key, size_t keylen)
+{
+    mbedtls_md_context_t *m = (mbedtls_md_context_t *)c->st;
+    mbedtls_md_init(m);
+    if (mbedtls_md_setup(m, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 1) != 0)
+        return false;
+    return mbedtls_md_hmac_starts(m, key, keylen) == 0;
+}
+void rns_hmac_update(rns_hmac_ctx_t *c, const uint8_t *in, size_t len)
+{ mbedtls_md_hmac_update((mbedtls_md_context_t *)c->st, in, len); }
+void rns_hmac_final(rns_hmac_ctx_t *c, uint8_t out[32])
+{
+    mbedtls_md_context_t *m = (mbedtls_md_context_t *)c->st;
+    mbedtls_md_hmac_finish(m, out);
+    mbedtls_md_free(m);
+}
+
+bool rns_cbc_decrypt_init(rns_cbc_ctx_t *c, const uint8_t key[32],
+                          const uint8_t iv[16])
+{
+    mbedtls_aes_context *a = (mbedtls_aes_context *)c->st;
+    mbedtls_aes_init(a);
+    memcpy(c->iv, iv, 16);
+    return mbedtls_aes_setkey_dec(a, key, 256) == 0;
+}
+bool rns_cbc_decrypt_update(rns_cbc_ctx_t *c, const uint8_t *in, size_t len,
+                            uint8_t *out)
+{
+    return mbedtls_aes_crypt_cbc((mbedtls_aes_context *)c->st, MBEDTLS_AES_DECRYPT,
+                                 len, c->iv, in, out) == 0;
+}
+void rns_cbc_decrypt_free(rns_cbc_ctx_t *c)
+{ mbedtls_aes_free((mbedtls_aes_context *)c->st); }
 #endif
 
 /* ── HKDF (RNS's variant — see rns.h) ───────────────────────────────────── */
@@ -611,3 +708,59 @@ bool rns_announce_parse(const rns_packet_t *p, rns_announce_t *out)
 {
     return rns_announce_open(p, out) && rns_announce_verify(p, out);
 }
+
+/* ── Tokens, Ed25519: what a link needs beyond single packets ─────────── */
+
+extern int crypto_sign_ed25519_tweet_keypair(unsigned char *, unsigned char *);
+
+bool rns_ed25519_verify(const uint8_t ed_pub[32], const uint8_t sig[64],
+                        const uint8_t *msg, size_t len)
+{
+    if (len > 1024) return false;
+    static uint8_t sm[64 + 1024], m[64 + 1024];
+    memcpy(sm, sig, 64);
+    memcpy(sm + 64, msg, len);
+    unsigned long long mlen = 0;
+    return crypto_sign_ed25519_tweet_open(m, &mlen, sm, 64 + len, ed_pub) == 0;
+}
+
+void rns_ed25519_keypair(uint8_t pub[32], uint8_t sec[64])
+{
+    crypto_sign_ed25519_tweet_keypair(pub, sec);
+}
+
+int rns_token_encrypt(const uint8_t key[64], const uint8_t *plain, size_t len,
+                      uint8_t *out, size_t out_cap)
+{
+    size_t padded = (len / 16 + 1) * 16;
+    size_t need = 16 + padded + 32;
+    if (out_cap < need) return -1;
+    uint8_t iv[16];
+    rns_random(iv, 16);
+    static uint8_t buf[RNS_MTU + 16];
+    if (padded > sizeof buf) return -1;
+    memcpy(buf, plain, len);
+    memset(buf + len, (int)(padded - len), padded - len);
+    memcpy(out, iv, 16);
+    if (!aes_cbc(key + 32, iv, true, buf, padded, out + 16)) return -1;
+    rns_hmac_sha256(key, 32, out, 16 + padded, out + 16 + padded);
+    return (int)need;
+}
+
+int rns_token_decrypt(const uint8_t key[64], const uint8_t *tok, size_t len,
+                      uint8_t *out, size_t out_cap)
+{
+    if (len < 16 + 16 + 32 || ((len - 48) % 16) != 0) return -1;
+    uint8_t mac[32];
+    rns_hmac_sha256(key, 32, tok, len - 32, mac);
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++) diff |= (uint8_t)(mac[i] ^ tok[len - 32 + i]);
+    if (diff) return -1;
+    size_t clen = len - 48;
+    if (out_cap < clen) return -1;
+    if (!aes_cbc(key + 32, tok, false, tok + 16, clen, out)) return -1;
+    uint8_t pad = out[clen - 1];
+    if (pad == 0 || pad > 16 || pad > clen) return -1;
+    return (int)(clen - pad);
+}
+

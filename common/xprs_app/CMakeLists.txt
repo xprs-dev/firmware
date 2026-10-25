@@ -14,5 +14,5 @@ idf_component_register(
              xprs_bearer_lan xprs_bearer_lora xprs_bearer_ble xprs_nostr xprs_sig xprs_id
              xprs_chan xprs_ui_api xprs_config esp_http_server
              xprs_index xprs_gossip xprs_cadence fatfs sdmmc xprs_api xprs_hotspot espcoredump
-             xprs_auth xprs_ota xprs_health xprs_diag xprs_common
+             xprs_auth xprs_ota xprs_fwfetch xprs_health xprs_diag xprs_common
              xprs_bearer_rns xprs_power xprs_tz xprs_bearer_wifi8)

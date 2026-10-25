@@ -2419,6 +2419,30 @@ lane. Every `t:result` (`idx_result_m`, `ota_answer`) and every replayed page
 goes through `reply_air()`. Checking it: `/api/log` shows `replay on ble:`
 beside `replay on espnow:` for a phone's ask; before, only the second.
 
+### Firmware from the publisher's folder, over Reticulum (2026-10-25)
+
+`common/xprs_fwfetch` makes a station update itself from the folder the
+project publishes (`docs/plan-firmware-folders.md`, XPRS.md 7.7.3, 11.2,
+11.8): every six hours it asks an archiver `cmd:history kind:file
+only:X1WATT` (the callsign the publisher's key derives), believes a `t:file`
+only when it verifies against the pinned `fwkey`, takes the newest
+`<board>-<version>.bin` tagged with its channel, asks the archiver for it
+with `cmd:file`, opens a link to that station's `xprs/files` destination and
+streams the resource into the OTA slot, then installs under 11.8's rollback.
+
+Nothing is configured: a published image pins the project's publisher key
+(`common/xprs_ota/fw_publisher.h`) on first boot, `fwauto` defaults to on and
+`fwchan` to `stable`. An operator may pin another key (`cfg set fwkey`), pick
+`beta`, or switch it off. The holders are the XPRS apps around the station,
+which keep every release automatically (the app's FirmwareMirrorService) and
+deposit the publisher's descriptions with their archivers, so the archiver a
+station asks has the answer and the bytes.
+
+Watching it: `/api/status` carries `fwfetch` (publisher, channel, the best
+image seen, the state of a fetch, counters) and `/api/log` shows `fwfetch:`
+lines. A station built on the bench without `fw_secrets.h` pins the project
+key as well; the T-Deck at home showed `publisher=X1WATT` after this landed.
+
 ## Validating on the device
 
 ### Screenshots of a screen board, and walking its panels (2026-10-24)

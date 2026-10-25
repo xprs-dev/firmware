@@ -89,6 +89,8 @@ static char s_pass[64];
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
 #include "xprs_station.h"
+#include "xfw.h"
+#include "fw_publisher.h"
 #include "xprs_ui.h"
 #include "xprs_config.h"
 #include "xprs_api.h"
@@ -2903,6 +2905,8 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
     /* Every heard packet is offered to the index; ping/pong and duplicates
      * are its problem to refuse, not ours to guess. */
     idx_enqueue(wire, len, rssi, bearer_code(bearer));
+    /* And to the firmware fetch, which cares about two shapes only. */
+    xfw_on_wire(wire, len);
 
     /* A history ask addressed to us (or to the whole channel) is copied for
      * idx_task; everything with a cost happens there. */
@@ -8143,6 +8147,52 @@ static void keyres_step(uint32_t now_s)
     }
 }
 
+/* ── The unattended firmware fetch, wired to what this file already has ── */
+
+static SemaphoreHandle_t s_fw_mtx;
+static const char *fw_running(void) { return xota_version(); }
+static const char *fw_channel(void) { return xcfg_get("fwchan", "stable"); }
+static bool fw_enabled(void) { return xcfg_get_bool("fwauto", true); }
+static uint32_t fw_now_s(void) { return (uint32_t)(esp_timer_get_time() / 1000000); }
+static bool fw_busy(void) { return xota_busy(); }
+static bool fw_pick(char *out, size_t cap) { return miss_archiver(out, cap); }
+static bool fw_sink_begin(const char *v, size_t size, const uint8_t sha[32])
+{ return xota_push_begin_sha(v, size, sha) == ESP_OK; }
+static bool fw_sink_write(const uint8_t *d, size_t n) { return xota_push_write(d, n) == ESP_OK; }
+static bool fw_sink_finish(void) { return xota_push_finish() == ESP_OK; }
+static void fw_lock(void)   { if (s_fw_mtx) xSemaphoreTake(s_fw_mtx, portMAX_DELAY); }
+static void fw_unlock(void) { if (s_fw_mtx) xSemaphoreGive(s_fw_mtx); }
+static void fw_say(const char *line) { ESP_LOGI(TAG, "%s", line); }
+
+static void fw_fetch_start(void)
+{
+    s_fw_mtx = xSemaphoreCreateMutex();
+    static xfw_cfg_t cfg;
+    cfg.board = s_board->board_id;
+    cfg.self = s_call;
+    cfg.running_version = fw_running;
+    cfg.publisher_key = xota_publisher_key;
+    cfg.channel = fw_channel;
+    cfg.enabled = fw_enabled;
+    cfg.now_s = fw_now_s;
+    cfg.epoch_s = xst_epoch_now;
+    cfg.busy = fw_busy;
+    cfg.pick_archiver = fw_pick;
+    cfg.sign = sign_wire;
+    cfg.send_to = xprsrns_send_to;
+    cfg.peer_route = xprsrns_peer_route;
+    cfg.send_packet = xprsrns_send_packet;
+    cfg.sink_begin = fw_sink_begin;
+    cfg.sink_write = fw_sink_write;
+    cfg.sink_finish = fw_sink_finish;
+    cfg.sink_abort = xota_push_abort;
+    cfg.lock = fw_lock;
+    cfg.unlock = fw_unlock;
+    cfg.say = fw_say;
+    xprsrns_set_link_cb(xfw_on_link_packet);
+    xfw_start(&cfg);
+}
+
 static void idx_task(void *arg)
 {
     (void)arg;
@@ -8880,6 +8930,9 @@ no_announce:
         /* An install, if one was asked for: minutes of flash work on the
          * task that already owns the card. */
         xota_poll();
+        /* And the unattended one: the publisher's folder, over Reticulum
+         * (docs/plan-firmware-folders.md). Same task, same reasons. */
+        xfw_poll();
 
         /*
          * Whose turn is it? The beacon that first introduces an archiver is
@@ -9584,6 +9637,13 @@ static int api_status_json(char *buf, size_t cap)
         int m = api_lora_json(buf + n + 1, cap - (size_t)n - 1);
         if (m > 0) { buf[n] = ','; n += 1 + m; }
         else buf[n] = 0;
+    }
+    /* The unattended firmware fetch, one line, quotes made safe for JSON. */
+    if (n > 0 && n < (int)cap) {
+        char st[320];
+        xfw_state(st, sizeof st);
+        for (char *c = st; *c; c++) if (*c == '"' || *c == '\\') *c = '\'';
+        n += snprintf(buf + n, cap - (size_t)n, ",\"fwfetch\":\"%s\"", st);
     }
     return n;
 }
@@ -10404,8 +10464,13 @@ void xapp_run(const xapp_board_t *board)
     /* A board with nothing pinned can install nothing and obey nobody.
      * Seed the compiled-in defaults ONCE; after that they are the
      * operator's, changeable with a cable or through the config share. */
-    if (!xcfg_get("fwkey", "")[0] && s_board->fw_key && s_board->fw_key[0])
-        xcfg_set("fwkey", s_board->fw_key);
+    if (!xcfg_get("fwkey", "")[0]) {
+        /* The board's own publisher when it names one, else the project's
+         * (fw_publisher.h): a station nobody configured still takes the
+         * releases, which is what unattended means. */
+        if (s_board->fw_key && s_board->fw_key[0]) xcfg_set("fwkey", s_board->fw_key);
+        else xcfg_set("fwkey", XPRS_FW_PUBLISHER_KEY);
+    }
     if (!xcfg_get("own1", "")[0] && s_board->fw_owner && s_board->fw_owner[0])
         xcfg_set("own1", s_board->fw_owner);
     if (!xcfg_get("scriptkey", "")[0] && s_board->script_key && s_board->script_key[0])
@@ -10433,6 +10498,7 @@ void xapp_run(const xapp_board_t *board)
         oc.air = idx_air;
         oc.quiesce = ota_quiesce;
         xota_start(&oc);
+        fw_fetch_start();
     }
     {
         /* Diagnostics over the air, behind the same gate as the updater. */
