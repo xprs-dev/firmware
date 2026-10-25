@@ -63,6 +63,7 @@ static struct {
 } s_f;
 
 static uint32_t s_next_ask_s, s_asks, s_fetches, s_installs, s_fails;
+static int s_try;                         /* which holder is being asked */
 static char s_last[160];
 
 static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -210,6 +211,7 @@ static void reset_fetch(const char *why)
 
 static void fetch_failed(const char *why, uint32_t now)
 {
+    s_try = 0;
     say("fwfetch: %s failed: %s", s_best.used ? s_best.img.version : "?", why);
     if (s_best.used) note_failed(s_best.e.sha, now);
     s_best.used = false;
@@ -273,14 +275,38 @@ static void ask_publisher(void)
     }
 }
 
+/* Who to ask for the bytes, in order: the publisher itself when it can be
+ * addressed (whoever published the folder holds its files, 12.9.2), then
+ * the archiver that replayed the description, then any archiver. One try
+ * each; a refusal moves to the next, so an archiver that keeps the
+ * description but not the image does not end the fetch. */
+static bool holder_at(int i, char *out, size_t cap)
+{
+    const char *c = NULL;
+    char arch[XPRS_CALL_LEN_MAX];
+    if (i == 0) c = s_pub_call;
+    else if (i == 1) c = s_best.from[0] ? s_best.from : NULL;
+    else if (i == 2 && s_cfg.pick_archiver && s_cfg.pick_archiver(arch, sizeof arch)) c = arch;
+    if (!c || !c[0]) return false;
+    /* The same station twice in the list is tried once. */
+    for (int k = 0; k < i; k++) {
+        char prev[XPRS_CALL_LEN_MAX];
+        if (holder_at(k, prev, sizeof prev) && same_call(prev, c)) return false;
+    }
+    if (!s_cfg.peer_route(c, NULL, NULL, NULL, NULL)) return false;
+    snprintf(out, cap, "%s", c);
+    return true;
+}
+
 static void start_fetch(uint32_t now)
 {
-    const char *holder = s_best.from[0] ? s_best.from : NULL;
-    char arch[XPRS_CALL_LEN_MAX];
-    if (!holder || !s_cfg.peer_route(holder, NULL, NULL, NULL, NULL)) {
-        if (s_cfg.pick_archiver && s_cfg.pick_archiver(arch, sizeof arch)) holder = arch;
+    char hbuf[XPRS_CALL_LEN_MAX];
+    const char *holder = NULL;
+    while (s_try < 3) {
+        if (holder_at(s_try, hbuf, sizeof hbuf)) { holder = hbuf; break; }
+        s_try++;
     }
-    if (!holder) { say("fwfetch: nobody to fetch %s from", s_best.img.version); return; }
+    if (!holder) { say("fwfetch: nobody to fetch %s from", s_best.img.version); s_try = 0; fetch_failed("no holder", now); return; }
     uint32_t ep = s_cfg.epoch_s ? s_cfg.epoch_s() : 0;
     if (!ep) return;
     char ts[24];
@@ -344,9 +370,12 @@ static void on_result(const xprs_t *p, uint32_t now)
     xprs_get_str(p, "m", m, sizeof m);
     int c = atoi(code);
     if (c == 202) { open_link(now); return; }
-    char why[96];
-    snprintf(why, sizeof why, "cmd:file answered %d%s%.40s", c, m[0] ? " " : "", m);
-    fetch_failed(why, now);
+    say("fwfetch: %s answered cmd:file with %d%s%.40s", s_f.holder, c, m[0] ? " " : "", m);
+    reset_fetch(NULL);
+    s_try++;
+    if (s_try < 3) { start_fetch(now); return; }
+    s_try = 0;
+    fetch_failed("every holder refused", now);
 }
 
 void xfw_on_link_packet(const rns_packet_t *p)
@@ -427,7 +456,12 @@ void xfw_poll(void)
         if (enabled && s_best.used && !(s_cfg.busy && s_cfg.busy())) start_fetch(now);
         break;
     case ST_ASKED:
-        if (now - s_f.at_s > CMD_WAIT_S) fetch_failed("no answer to cmd:file", now);
+        if (now - s_f.at_s > CMD_WAIT_S) {
+            say("fwfetch: %s did not answer cmd:file", s_f.holder);
+            reset_fetch(NULL);
+            if (++s_try < 3) start_fetch(now);
+            else { s_try = 0; fetch_failed("no answer to cmd:file", now); }
+        }
         break;
     case ST_LINKING:
         if (now - s_f.at_s > LINK_WAIT_S) {
