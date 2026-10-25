@@ -21,8 +21,9 @@
 #define LINK_WAIT_S      20u           /* an LRPROOF */
 #define LINK_TRIES       3
 #define STALL_S          4u            /* no part: ask again */
-#define DEAD_S           90u           /* no byte despite the asking: the link is gone, start over */
-#define FETCH_MAX_S      (40u * 60u)   /* the whole transfer */
+#define DEAD_S           90u           /* no byte despite the asking: the link is gone */
+#define RESUME_MAX       8             /* fresh links onto the same transfer (GET_RANGE from where it stopped) */
+#define FETCH_MAX_S      (60u * 60u)   /* the whole transfer, resumes included */
 #define FAIL_HOLD_S      (6u * 3600u)  /* a digest that failed is left alone */
 #define PARKED_MAX       8
 
@@ -60,6 +61,8 @@ static struct {
     rns_res_t *res;
     bool     sink_open;
     uint32_t got;
+    bool     resume;        /* the next link continues this transfer */
+    int      resumes;
     char     why[48];
 } s_f;
 
@@ -423,16 +426,34 @@ void xfw_on_link_packet(const rns_packet_t *p)
             int n = rns_link_proof(&s_f.link, p, pkt, sizeof pkt);
             if (n > 0 && s_cfg.send_packet(pkt, (size_t)n)) {
                 /* The sink first, so a slot that cannot be opened costs no
-                 * transfer; then GET_FILE. */
-                if (!s_cfg.sink_begin(s_best.img.version, s_best.e.size, s_best.e.sha)) {
+                 * transfer; then GET_FILE. A resumed transfer keeps the sink
+                 * it has and asks for the rest: GET_RANGE from the byte it
+                 * stopped at (the files protocol's 0x06), which the holder
+                 * serves as a resource like any other. */
+                if (!s_f.resume && !s_cfg.sink_begin(s_best.img.version, s_best.e.size, s_best.e.sha)) {
                     snprintf(s_f.why, sizeof s_f.why, "no slot for the image");
                     s_f.state = ST_FINISHING;
                 } else {
                     s_f.sink_open = true;
                     rns_res_sink_t sk = { sink_write, sink_done, NULL };
                     s_f.res = rns_res_new(&s_f.link, &sk);
-                    uint8_t get[33]; get[0] = 0x01; memcpy(get + 1, s_best.e.sha, 32);
-                    n = rns_link_encrypt(&s_f.link, RNS_CTX_NONE, get, sizeof get, pkt, sizeof pkt);
+                    uint8_t get[45];
+                    size_t gl;
+                    if (s_f.resume) {
+                        uint32_t off = s_f.got, rest = s_best.e.size - s_f.got;
+                        get[0] = 0x06; memcpy(get + 1, s_best.e.sha, 32);
+                        memset(get + 33, 0, 4);
+                        get[37] = (uint8_t)(off >> 24); get[38] = (uint8_t)(off >> 16);
+                        get[39] = (uint8_t)(off >> 8);  get[40] = (uint8_t)off;
+                        get[41] = (uint8_t)(rest >> 24); get[42] = (uint8_t)(rest >> 16);
+                        get[43] = (uint8_t)(rest >> 8);  get[44] = (uint8_t)rest;
+                        gl = 45;
+                        s_f.resume = false;
+                    } else {
+                        get[0] = 0x01; memcpy(get + 1, s_best.e.sha, 32);
+                        gl = 33;
+                    }
+                    n = rns_link_encrypt(&s_f.link, RNS_CTX_NONE, get, gl, pkt, sizeof pkt);
                     if (n > 0 && s_f.res && s_cfg.send_packet(pkt, (size_t)n)) {
                         s_f.state = ST_GETTING;
                         s_f.at_s = s_f.last_part_s = s_f.last_progress_s = s_cfg.now_s();
@@ -517,6 +538,22 @@ void xfw_poll(void)
          * 2026-10-25 at 1.60 of 1.69 MB) and no amount of asking brings it
          * back. Drop it and ask the next holder from the start. */
         if (s_f.res && now > s_f.last_progress_s && now - s_f.last_progress_s >= DEAD_S) {
+            if (s_f.got > 0 && s_f.got < s_best.e.size && s_f.resumes < RESUME_MAX &&
+                s_cfg.peer_route(s_f.holder, NULL, NULL, NULL, NULL)) {
+                /* The bytes so far are in the sink and the holder is still
+                 * routable: a fresh link, and the rest from here. The link
+                 * under a long transfer dies every ten minutes or so on a
+                 * hub path (2026-10-25: twice at 1.2 and 1.6 MB of 1.69). */
+                say("fwfetch: nothing from %s for %us; resuming at %u bytes on a fresh link (%d)",
+                    s_f.holder, (unsigned)DEAD_S, (unsigned)s_f.got, s_f.resumes + 1);
+                rns_res_free(s_f.res);
+                s_f.res = NULL;
+                s_f.resume = true;
+                s_f.resumes++;
+                s_f.link_tries = 0;
+                open_link(now);
+                break;
+            }
             say("fwfetch: nothing from %s for %us at %u bytes; starting over",
                 s_f.holder, (unsigned)DEAD_S, (unsigned)s_f.got);
             reset_fetch(NULL);
