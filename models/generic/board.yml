@@ -101,7 +101,7 @@ firmware:
   toolchain: esp-idf
   project: models/generic/firmware
   env: generic
-  version: 0.1.0
+  version: 0.2.0
   artifact: models/generic/prebuilt/firmware.bin
   flash_port: usb-serial
   flashing: "esptool over the CP210x / CH340 USB-serial port; the BOOT button if the board does not enter the bootloader by itself"
