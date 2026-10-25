@@ -94,7 +94,7 @@ firmware:
   toolchain: esp-idf
   project: models/esp32c3-mini/firmware
   env: c3mini
-  version: 0.2.0
+  version: 0.2.1
   artifact: models/esp32c3-mini/prebuilt/firmware.bin
   flash_port: native-usb
   flashing: "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned"
