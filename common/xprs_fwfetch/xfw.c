@@ -247,15 +247,18 @@ static void send_pkt(const uint8_t *pkt, size_t len, void *ctx)
 
 /* ── the fetch ───────────────────────────────────────────────────────── */
 
-static void ask_publisher(void)
+/* True when an ask went out; false when there was nobody to ask yet (the
+ * uplink or its peers are not up), which is asked again in a minute rather
+ * than next period. */
+static bool ask_publisher(void)
 {
     char arch[XPRS_CALL_LEN_MAX];
     if (!s_cfg.pick_archiver || !s_cfg.pick_archiver(arch, sizeof arch)) {
-        say("fwfetch: no archiver to ask for %s's folder", s_pub_call);
-        return;
+        say("fwfetch: no archiver to ask for %s's folder yet", s_pub_call);
+        return false;
     }
     uint32_t ep = s_cfg.epoch_s ? s_cfg.epoch_s() : 0;
-    if (!ep) return;                        /* a signed ask needs a time */
+    if (!ep) return false;                  /* a signed ask needs a time */
     char ts[24], since[24];
     time_t t = (time_t)ep, ts0 = (time_t)(ep - ASK_WINDOW_DAYS * 86400u);
     struct tm tmv;
@@ -266,13 +269,13 @@ static void ask_publisher(void)
     char w[XPRS_MAX_WIRE + 1];
     int n = snprintf(w, sizeof w, "t:command f:%s d:%s ts:%s cmd:history kind:file only:%s since:%s",
                  s_cfg.self ? s_cfg.self : "", arch, ts, s_pub_call, since);
-    if (n <= 0 || n >= (int)sizeof w) return;
+    if (n <= 0 || n >= (int)sizeof w) return false;
     n = s_cfg.sign(w, n, (int)sizeof w);
-    if (n > 0 && s_cfg.send_to(arch, w, n)) {
-        s_asks++;
-        snprintf(s_best.from, sizeof s_best.from, "%s", arch);
-        say("fwfetch: asked %s for %s's firmware folder", arch, s_pub_call);
-    }
+    if (n <= 0 || !s_cfg.send_to(arch, w, n)) return false;
+    s_asks++;
+    snprintf(s_best.from, sizeof s_best.from, "%s", arch);
+    say("fwfetch: asked %s for %s's firmware folder", arch, s_pub_call);
+    return true;
 }
 
 /* Who to ask for the bytes, in order: the publisher itself when it can be
@@ -450,8 +453,9 @@ void xfw_poll(void)
     switch (s_f.state) {
     case ST_IDLE:
         if (enabled && now >= s_next_ask_s && !(s_cfg.busy && s_cfg.busy())) {
-            s_next_ask_s = now + ASK_EVERY_S + (uint32_t)(rand() % (ASK_JITTER_S + 1));
-            ask_publisher();
+            s_next_ask_s = ask_publisher()
+                ? now + ASK_EVERY_S + (uint32_t)(rand() % (ASK_JITTER_S + 1))
+                : now + 60;
         }
         if (enabled && s_best.used && !(s_cfg.busy && s_cfg.busy())) start_fetch(now);
         break;
