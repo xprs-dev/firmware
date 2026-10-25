@@ -21,6 +21,7 @@
 #define LINK_WAIT_S      20u           /* an LRPROOF */
 #define LINK_TRIES       3
 #define STALL_S          4u            /* no part: ask again */
+#define DEAD_S           90u           /* no byte despite the asking: the link is gone, start over */
 #define FETCH_MAX_S      (40u * 60u)   /* the whole transfer */
 #define FAIL_HOLD_S      (6u * 3600u)  /* a digest that failed is left alone */
 #define PARKED_MAX       8
@@ -53,7 +54,7 @@ static struct {
     state_t  state;
     char     holder[XPRS_CALL_LEN_MAX];
     char     ask_id[XPRS_ID_LEN];
-    uint32_t at_s, started_s, last_part_s;
+    uint32_t at_s, started_s, last_part_s, last_progress_s;
     int      link_tries;
     rns_link_t link;
     rns_res_t *res;
@@ -235,7 +236,7 @@ static bool sink_write(const uint8_t *d, size_t len, void *ctx)
     if (!s_f.sink_open) return false;
     if (!s_cfg.sink_write(d, len)) return false;
     s_f.got += (uint32_t)len;
-    s_f.last_part_s = s_cfg.now_s();
+    s_f.last_part_s = s_f.last_progress_s = s_cfg.now_s();
     return true;
 }
 
@@ -422,7 +423,7 @@ void xfw_on_link_packet(const rns_packet_t *p)
                     n = rns_link_encrypt(&s_f.link, RNS_CTX_NONE, get, sizeof get, pkt, sizeof pkt);
                     if (n > 0 && s_f.res && s_cfg.send_packet(pkt, (size_t)n)) {
                         s_f.state = ST_GETTING;
-                        s_f.at_s = s_f.last_part_s = s_cfg.now_s();
+                        s_f.at_s = s_f.last_part_s = s_f.last_progress_s = s_cfg.now_s();
                     } else {
                         snprintf(s_f.why, sizeof s_f.why, "GET_FILE not sent");
                         s_f.state = ST_FINISHING;
@@ -494,6 +495,19 @@ void xfw_poll(void)
         break;
     case ST_GETTING:
         if (now - s_f.started_s > FETCH_MAX_S) { snprintf(s_f.why, sizeof s_f.why, "transfer took too long"); s_f.state = ST_FINISHING; break; }
+        /* Asking again every few seconds recovers a lost part; asking for a
+         * minute and a half with nothing back means the link is dead under
+         * us (a hub between re-routed, the holder closed it as stale: seen
+         * 2026-10-25 at 1.60 of 1.69 MB) and no amount of asking brings it
+         * back. Drop it and ask the next holder from the start. */
+        if (s_f.res && now - s_f.last_progress_s >= DEAD_S) {
+            say("fwfetch: nothing from %s for %us at %u bytes; starting over",
+                s_f.holder, (unsigned)DEAD_S, (unsigned)s_f.got);
+            reset_fetch(NULL);
+            if (++s_try < 3) start_fetch(now);
+            else { s_try = 0; fetch_failed("the holder stopped answering", now); }
+            break;
+        }
         if (s_f.res && now - s_f.last_part_s >= STALL_S) {
             s_f.last_part_s = now;
             rns_res_retry(s_f.res, send_pkt, NULL);

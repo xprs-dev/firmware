@@ -71,7 +71,7 @@ and asks nobody for anything:
   with a microSD lands the image on the card first (`/idx/fw/<board>-
   <version>.bin`), checks the digest there and only then copies it into the
   OTA slot; the copy stays on the card, the folder's member by its digest,
-  for the stations around it (step 7's first half).
+  for the stations around it (step 7's first half). Written and built; not yet exercised on the bench, whose T-Deck has no card in it at the moment (`/api/status` says `storage: flash`).
 
 **Bench run, 2026-10-25 18:23 to 18:39.** A T-Deck flashed as 0.6.0-beta.0
 on `fwchan beta` heard the beta folder's descriptions on the LAN,
