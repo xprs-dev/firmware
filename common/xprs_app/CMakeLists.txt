@@ -15,4 +15,4 @@ idf_component_register(
              xprs_chan xprs_ui_api xprs_config esp_http_server
              xprs_index xprs_gossip xprs_cadence fatfs sdmmc xprs_api xprs_hotspot espcoredump
              xprs_auth xprs_ota xprs_fwfetch xprs_health xprs_diag xprs_common
-             xprs_bearer_rns xprs_power xprs_tz xprs_bearer_wifi8)
+             xprs_bearer_rns xprs_power xprs_tz)

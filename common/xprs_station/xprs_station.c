@@ -876,6 +876,10 @@ void xst_chat_save(const char *path)
 void xst_chat_load(const char *path)
 {
     chat_ensure();
+    /* A boot that could not place the ring (seen on a T-Deck after a USB
+     * reset: three StoreProhibited panics in a row, then a clean boot) runs
+     * without the saved conversation rather than falling over here. */
+    if (!s_chat) { ESP_LOGW(TAG, "chat: no ring this boot; %s not loaded", path ? path : "-"); return; }
     if (!path || !*path) return;
     FILE *f = fopen(path, "rb");
     if (!f) return;

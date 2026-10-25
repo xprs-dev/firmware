@@ -41,24 +41,11 @@
 #include "xprs.h"
 #include "xprsnow.h"
 #include "xprslan.h"
-#if CONFIG_XPRS_WIFI8
-#include "xprswifi8.h"
-/* xwifi is the replacement, not an addition: where it is compiled in,
- * ESP-NOW is off unless the owner turns it back on. A board with no xwifi
- * port (CONFIG_XPRS_WIFI8 unset) keeps ESP-NOW as its only WiFi-class
- * bearer, so it stays on there. */
-#define XPRS_ESPNOW_DEFAULT_ON false
-#else
 #define XPRS_ESPNOW_DEFAULT_ON true
-#endif
 /* And the screen's: a board with a panel but no PSRAM cannot pay ~20 KB of
  * heap for it while the XPRS-WiFi radio runs; the owner can still turn it
  * on (cfg set screen_on yes) and give something else up. */
-#if CONFIG_XPRS_WIFI8 && !CONFIG_SPIRAM
-#define XPRS_SCREEN_DEFAULT_ON false
-#else
 #define XPRS_SCREEN_DEFAULT_ON true
-#endif
 #include "xprsble.h"
 #include "xprslora.h"
 #include "lr_worth.h"
@@ -3800,11 +3787,6 @@ static void bridge_out(const char *wire, int len, from_t from)
     /* Onto the other bearers. */
     if (from != FROM_LAN  && igate)  xprslan_offer(wire, len);
     if (from != FROM_NOW  && bridge) xprsnow_offer(wire, len);
-#if CONFIG_XPRS_WIFI8
-    /* XPRS-WiFi shares FROM_NOW with ESP-NOW (one WiFi radio): a packet heard on
-     * either is not re-offered onto the WiFi radio, only onto the others. */
-    if (from != FROM_NOW  && bridge) xprswifi8_offer(wire, len);
-#endif
     if (from != FROM_LORA && bridge && lora_ok)
         xprslora_offer(wire, len);
     if (from != FROM_BLE  && bridge) xprsble_offer(wire, len);
@@ -3820,10 +3802,6 @@ static void bridge_out(const char *wire, int len, from_t from)
      * reach but inside ours. */
     if (from == FROM_NOW  && xcfg_get_bool("digi_on", true))
         xprsnow_digipeat(wire, len);
-#if CONFIG_XPRS_WIFI8
-    if (from == FROM_NOW  && xcfg_get_bool("digi_on", true))
-        xprswifi8_digipeat(wire, len);
-#endif
     if (from == FROM_LORA && xcfg_get_bool("digi_on", true) && lora_ok)
         xprslora_digipeat(wire, len);
     if (from == FROM_BLE  && xcfg_get_bool("digi_ble_on", true))
@@ -3864,16 +3842,6 @@ static void heard_espnow(const char *id, const char *wire, int len)
     }
 }
 
-#if CONFIG_XPRS_WIFI8
-/* XPRS-WiFi has no sender MAC; it reports SNR where ESP-NOW reports RSSI. The
- * receive handling is otherwise identical, so this hands the ESP-NOW path a
- * zero MAC and the SNR as the signal and reuses it. */
-static void on_wifi8(const char *wire, int len, int snr_db)
-{
-    static const uint8_t no_mac[6] = {0};
-    on_espnow(wire, len, no_mac, snr_db);
-}
-#endif
 
 static void on_lan(const char *wire, int len, uint32_t ip)
 {
@@ -4018,9 +3986,6 @@ static void mesh_out(const char *wire, int len)
     bool local = !xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_GLOBAL);
     if (xcfg_get_bool("igate_on", true)) xprslan_send(wire, len);
     if (bridge && xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON)) xprsnow_send(wire, len);
-#if CONFIG_XPRS_WIFI8
-    if (bridge && xcfg_get_bool("wifi8_on", true)) xprswifi8_send(wire, len);
-#endif
     if (bridge && xprsble_is_active()) xprsble_send(wire, len);
     if (bridge && !local && xprsrns_is_up()) xprsrns_send(wire, len);
 }
@@ -4185,12 +4150,6 @@ static int lan_beacon(char *out, int cap)
     return observation_beacon("lan", out, cap, 0);
 }
 
-#if CONFIG_XPRS_WIFI8
-static int wifi8_beacon(char *out, int cap)
-{
-    return observation_beacon("wifi8", out, cap, 0);
-}
-#endif
 
 /*
  * The BLE5 beacon, aired from the status tick rather than by the bearer.
@@ -9816,7 +9775,8 @@ static int api_status_json(char *buf, size_t cap)
         char st[320];
         xfw_state(st, sizeof st);
         for (char *c = st; *c; c++) if (*c == '"' || *c == '\\') *c = '\'';
-        n += snprintf(buf + n, cap - (size_t)n, ",\"fwfetch\":\"%s\"", st);
+        n += snprintf(buf + n, cap - (size_t)n, ",\"fwfetch\":\"%s\",\"storage\":\"%s\"",
+                      st, s_card_mounted ? "card" : "flash");
     }
     return n;
 }
@@ -10909,33 +10869,6 @@ void xapp_run(const xapp_board_t *board)
         air_identity();
     }
 
-#if CONFIG_XPRS_WIFI8
-    /* The long-range XPRS-WiFi bearer, on the same radio, time-sliced with the
-     * hotspot and the uplink (see xprswifi8.h). Brought up after the LAN bearer
-     * for the same reason ESP-NOW is: that task pumps the shared re-air queue,
-     * though this bearer also drives its own tick. It replaces ESP-NOW rather
-     * than running beside it -- XPRS_ESPNOW_DEFAULT_ON is false on a board
-     * compiled with CONFIG_XPRS_WIFI8, so the owner gets one of the two
-     * running by default, not both; either can still be turned back on. */
-    if (xcfg_get_bool("wifi8_on", true)) {
-        xprswifi8_cfg_t wc = XPRSWIFI8_CFG_DEFAULT;
-        /* With 802.11 off there is nothing to time-slice against — give
-         * XPRS-WiFi the radio full time (the bearer brings the PHY up itself). */
-        if (!xcfg_get_bool("wifi_on", true)) wc.slot_ms = 0;
-        /* One look per window: the second look costs a 32 KB window buffer
-         * from the internal heap (xw_*_look_buffer), which the boards that
-         * carry this bearer do not have spare. The ~2.5 dB it buys is a
-         * per-board tune for later, not a default this RAM class can pay. */
-        wc.looks = 1;
-        if (xprswifi8_start(s_call, &wc) == ESP_OK) {
-            xprswifi8_set_rx_cb(on_wifi8);
-            xprswifi8_set_heard_cb(heard_espnow);   /* §23.7 reairing is bearer-agnostic */
-            xprswifi8_set_beacon(wifi8_beacon, 60, 7);
-        } else {
-            ESP_LOGW(TAG, "XPRS-WiFi bearer did not start");
-        }
-    }
-#endif
 
     /* The LoRa radio, on the boards that have one. After the LAN bearer,
      * whose task is what pumps this one's queue too. */

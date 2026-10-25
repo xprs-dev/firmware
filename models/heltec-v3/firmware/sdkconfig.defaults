@@ -43,13 +43,6 @@ CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 # Montserrat 14 but NOT 10; tdongle_ui uses the 10px font, so enable it here.
 CONFIG_LV_FONT_MONTSERRAT_10=y
 
-# The long-range XPRS-WiFi bearer (xwifi), replacing ESP-NOW. The S3 port's
-# stated requirements (xw_port_esp32s3.h): PHY cert-test functions, FreeRTOS
-# and heap code in flash, and 240 MHz exactly.
-CONFIG_XPRS_WIFI8=y
-CONFIG_ESP_PHY_ENABLE_CERT_TEST=y
-CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
-CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 
 # ── The xwifi RAM diet ──────────────────────────────────────────────────────
