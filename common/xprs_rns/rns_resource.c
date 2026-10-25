@@ -16,6 +16,20 @@
 
 #define HASHMAP_EXHAUSTED 0xFF
 
+/* The hashmap is a RING, not the whole segment's map: only the hashes of
+ * parts between the frontier and the known horizon are ever consulted, and
+ * the horizon runs at most two batches plus the window ahead (the sender
+ * hands out RNS_RES_BATCH hashes per advertisement or HMU, and the next
+ * batch is asked only when fewer than a window of known parts remain). A
+ * 1 MB segment has ~2,260 parts: 9 KB as a map, 1 KB as a ring, and no
+ * allocation while the transfer runs. */
+#ifndef RNS_RES_RING
+#define RNS_RES_RING 256
+#endif
+_Static_assert(RNS_RES_RING % 8 == 0, "ring is a whole number of bitmap bytes");
+_Static_assert(RNS_RES_RING >= 2 * RNS_RES_BATCH + RNS_RES_CACHE_PARTS + WIN_MAX_FAST,
+               "the ring must hold two batches beyond the widest window");
+
 typedef struct {
     bool     used;
     uint32_t index;
@@ -40,8 +54,8 @@ struct rns_res {
     uint32_t transfer_size;                  /* encrypted stream length */
     uint8_t  res_hash[32], map_random[4];
     bool     encrypted;
-    uint8_t *hashmap;                        /* n * 4 */
-    uint8_t *have;                           /* bitmap, n bits: known hash */
+    uint8_t  hashmap[4 * RNS_RES_RING];      /* hash of part i at slot i % RING */
+    uint8_t  have[RNS_RES_RING / 8];         /* bitmap, same slots: hash known */
     uint32_t known;                          /* contiguous known hashes from 0 */
     bool     hmu_out;
     uint32_t frontier;                       /* next part index to stream */
@@ -138,8 +152,6 @@ void rns_res_free(rns_res_t *r)
     if (!r) return;
     if (r->cbc_on) rns_cbc_decrypt_free(&r->cbc);
     if (r->hmac_on) { uint8_t t[32]; rns_hmac_final(&r->hmac, t); }
-    free(r->hashmap);
-    free(r->have);
     free(r);
 }
 
@@ -158,8 +170,21 @@ const char *rns_res_state(const rns_res_t *r, char *buf, size_t cap)
     return buf;
 }
 
-static bool known_bit(const rns_res_t *r, uint32_t i) { return (r->have[i >> 3] >> (i & 7)) & 1; }
-static void set_known(rns_res_t *r, uint32_t i) { r->have[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+/* Ring slots: a part's hash lives at i % RING while i is within RING of
+ * the frontier; the slot is reused for i + RING once the frontier has
+ * passed i, so the known bit is cleared as the frontier advances. */
+static bool in_ring(const rns_res_t *r, uint32_t i)
+{ return i >= r->frontier && i < r->frontier + RNS_RES_RING; }
+static uint8_t *slot_of(rns_res_t *r, uint32_t i) { return r->hashmap + 4 * (i % RNS_RES_RING); }
+static const uint8_t *slot_rd(const rns_res_t *r, uint32_t i) { return r->hashmap + 4 * (i % RNS_RES_RING); }
+static bool known_bit(const rns_res_t *r, uint32_t i)
+{ return in_ring(r, i) && ((r->have[(i % RNS_RES_RING) >> 3] >> (i & 7)) & 1); }
+static void set_known(rns_res_t *r, uint32_t i)
+{ if (in_ring(r, i)) r->have[(i % RNS_RES_RING) >> 3] |= (uint8_t)(1u << (i & 7)); }
+static void clear_known(rns_res_t *r, uint32_t i)
+{ r->have[(i % RNS_RES_RING) >> 3] &= (uint8_t)~(1u << (i & 7)); }
+/* The frontier moves past its part: that slot now belongs to part + RING. */
+static void advance(rns_res_t *r) { clear_known(r, r->frontier); r->frontier++; }
 
 static int find_hash(const rns_res_t *r, const uint8_t h[4])
 {
@@ -168,7 +193,7 @@ static int find_hash(const rns_res_t *r, const uint8_t h[4])
     uint32_t lo = r->frontier, hi = r->frontier + r->window + cache_cap();
     if (hi > r->known) hi = r->known;
     for (uint32_t i = lo; i < hi; i++)
-        if (memcmp(r->hashmap + 4 * i, h, 4) == 0) return (int)i;
+        if (memcmp(slot_rd(r, i), h, 4) == 0) return (int)i;
     return -1;
 }
 
@@ -356,13 +381,13 @@ static bool take_part(rns_res_t *r, const uint8_t *d, size_t len)
 {
     /* Stream the frontier part and everything cached right behind it. */
     if (!stream_feed(r, d, len)) { fail(r, "sink"); return false; }
-    r->frontier++;
+    advance(r);
     for (;;) {
         cached_part_t *c = cache_find(r, r->frontier);
         if (!c) break;
         c->used = false;
         if (!stream_feed(r, c->data, c->len)) { fail(r, "sink"); return false; }
-        r->frontier++;
+        advance(r);
     }
     return true;
 }
@@ -424,7 +449,7 @@ static void pump(rns_res_t *r, void (*send)(const uint8_t *, size_t, void *), vo
         if (known_not_received < r->window && r->known > 0 && r->known % RNS_RES_BATCH == 0) {
             uint8_t req[1 + 4 + 32];
             req[0] = HASHMAP_EXHAUSTED;
-            memcpy(req + 1, r->hashmap + 4 * (r->known - 1), 4);
+            memcpy(req + 1, slot_rd(r, r->known - 1), 4);
             memcpy(req + 5, r->res_hash, 32);
             r->hmu_out = true;
             emit(r, RNS_CTX_RESOURCE_REQ, req, sizeof req, send, sctx);
@@ -444,7 +469,7 @@ static void pump(rns_res_t *r, void (*send)(const uint8_t *, size_t, void *), vo
         if (cache_find(r, i) || out_has(r, i)) continue;
         if (r->n_out >= WIN_MAX_FAST) break;
         r->outstanding[r->n_out++] = i;
-        memcpy(req + rl, r->hashmap + 4 * i, 4);
+        memcpy(req + rl, slot_rd(r, i), 4);
         rl += 4;
         picked++;
         if (rl + 4 > sizeof req) break;
@@ -511,10 +536,7 @@ static bool ingest_adv(rns_res_t *r, const uint8_t *plain, size_t len)
     r->encrypted = (f & 1) != 0;
     if (r->encrypted && r->transfer_size < 48) return false;
 
-    free(r->hashmap); free(r->have);
-    r->hashmap = calloc(n ? n : 1, 4);
-    r->have = calloc(n / 8 + 1, 1);
-    if (!r->hashmap || !r->have) return false;
+    memset(r->have, 0, sizeof r->have);
     r->known = 0; r->hmu_out = false; r->frontier = 0; r->n_out = 0;
     memset(r->cache, 0, sizeof r->cache);
     r->window = WIN_START; r->win_min = WIN_MIN0; r->win_max = WIN_MAX_SLOW;
@@ -523,6 +545,7 @@ static bool ingest_adv(rns_res_t *r, const uint8_t *plain, size_t len)
     r->seg_complete = false;
     uint32_t first = (uint32_t)(ml / 4);
     if (first > r->n) first = r->n;
+    if (first > RNS_RES_RING) first = RNS_RES_RING;   /* parts 0..first-1 are slots 0..first-1 */
     memcpy(r->hashmap, map, 4 * first);
     for (uint32_t k = 0; k < first; k++) set_known(r, k);
     r->known = first;
@@ -548,8 +571,8 @@ static void ingest_hmu(rns_res_t *r, const uint8_t *plain, size_t len)
     uint32_t count = (uint32_t)(ml / 4);
     for (uint32_t k = 0; k < count; k++) {
         uint32_t idx = base + k;
-        if (idx < r->n && !known_bit(r, idx)) {
-            memcpy(r->hashmap + 4 * idx, map + 4 * k, 4);
+        if (idx < r->n && in_ring(r, idx) && !known_bit(r, idx)) {
+            memcpy(slot_of(r, idx), map + 4 * k, 4);
             set_known(r, idx);
         }
     }

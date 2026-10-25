@@ -34,6 +34,13 @@
 #
 # NVS lives at 0x9000 on every board and must never be in the written range --
 # it holds the callsign, the identity and the WiFi credentials.
+#
+# The chip defaults to the S3. An ESP32-C3 mini (its ota_0 is 0x20000 too)
+# is flashed the way its platformio.ini says, the stub skipped and the baud
+# pinned:
+#
+#   CHIP=esp32c3 BAUD=115200 ESPTOOL_FLAGS=--no-stub \
+#       tools/flash-chunked.sh <port> firmware.bin 0x20000
 set -u
 PORT=${1:?usage: flash-chunked.sh <port> <image.bin> <offset>}
 IMG=${2:?usage: flash-chunked.sh <port> <image.bin> <offset>}
@@ -74,8 +81,8 @@ for f in "$TMP"/part_*; do
     off=$(( BASE + 10#$i * CHUNK ))
     ok=0
     for try in 1 2 3 4; do
-        if $PY "$ET" --chip esp32s3 --port "$PORT" --baud 460800 \
-             --before default_reset --after no_reset \
+        if $PY "$ET" --chip "${CHIP:-esp32s3}" --port "$PORT" --baud "${BAUD:-460800}" \
+             --before default_reset --after no_reset ${ESPTOOL_FLAGS:-} \
              write_flash "$(printf 0x%x $off)" "$f" > "$TMP/log" 2>&1; then
             ok=1; break
         fi

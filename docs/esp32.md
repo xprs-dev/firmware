@@ -1286,6 +1286,7 @@ reboot. Measured by overflowing them:
 | `xprsidx_wr` | 4096 | FATFS and the SDMMC driver; 3072 overflowed under a burst |
 | `xprslan` | 5120 | two SHA-256 derivations per datagram, a BLE re-air and a log line; 4096 overflowed |
 | `aprsis` | 6144 | line parsing, DNS, socket; 4096 overflowed |
+| `rns_tcp` | 8192 | the Reticulum hub socket, and since the station fetches its own firmware (`common/xprs_fwfetch`) the streamed resource receiver, the OTA write and a log line on the same stack. The C3 ran it at 6144 before that; the 8192 is the default every other board uses |
 | `heartbeat` | 3072 | `ESP_LOG` with ten arguments is almost all of it; 2048 overflowed |
 | `mcwork` | 6144 | one Ed25519 verification. `-fstack-usage` put the verify frame at 3.9 KB (2.7 KB for the verify, 0.7 KB for the point addition under it, the rest SHA-512 and the bridge); the RUNTIME high-water on the bench, 2026-10-03, says only **904 bytes of the 6,144 are ever spare**, so the whole pass costs about 5,240. Do not trim it |
 

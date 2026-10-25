@@ -138,7 +138,14 @@ reuse potential.
   STREAM: parts in a bounded cache, CBC and the three digests running, the
   plaintext handed to a sink callback, so a 1.4 MB image goes into the OTA
   slot through a few kilobytes of RAM. Any large fetch over Reticulum (an
-  image, a listing, a card of tiles) is this plus a sink.
+  image, a listing, a card of tiles) is this plus a sink. The part hashmap
+  is a RING (`RNS_RES_RING`, 256 slots, `slot_of()` / `in_ring()` /
+  `advance()`): a segment's map is never held whole, because only the
+  hashes between the frontier and the known horizon are ever consulted,
+  and the horizon runs at most two batches ahead. One block of 6.8 KB on
+  an ESP32-C3 (`RNS_RES_CACHE_PARTS=8`), nothing allocated mid-transfer.
+  The same trick fits any windowed receiver whose index is handed out in
+  batches: keep the window, not the table.
 - **`rns_token_encrypt/decrypt`, `rns_ed25519_verify`, the incremental
   `rns_sha256_*`, `rns_hmac_*`, `rns_cbc_decrypt_*`** in `rns.c`: the
   primitives, with host (OpenSSL) and device (mbedtls) bodies behind one

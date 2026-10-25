@@ -96,6 +96,21 @@ after a round that asked and thirty-five after a 429, and an app serves a
 mirrored image to anyone past that budget (app commit 836ba63, in the next
 app release).
 
+**The ESP32-C3, 2026-10-26.** The same fetcher runs on the board with no
+PSRAM and about 30 KB of heap free with the radios up. What had to change
+for it was the receiver's memory, not the chain: the resource receiver
+kept a 4-byte hash per part for the whole segment (9 KB for a 1 MB
+segment, allocated when the advertisement arrived, on a heap whose largest
+free block was 13 KB) beside a 7.5 KB part cache. The hashmap is now a
+ring of 256 hashes (only the stretch between the frontier and the known
+horizon is ever consulted) and the C3 builds with an 8-part cache: one
+6.8 KB block for the whole receiver, nothing allocated while the bytes
+flow. Its Reticulum task stack goes from 6144 to the 8192 every other
+board gives it, because the receiver, the OTA write and a log line now
+share that stack. The bench C3 (X3SQS6) was on a 0.1.0 build from before
+the fetcher existed, so it got one more flash over the cable; from there
+it updates itself like the T-Deck.
+
 Not written: a station serving the copies on its card to its neighbours
 (`serve:files`, `q:have`, `cmd:file` as a responder: step 7's second half).
 

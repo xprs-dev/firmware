@@ -34,7 +34,8 @@ extern "C" {
 
 #ifndef RNS_RES_CACHE_PARTS
 /* Parts held ahead of the frontier (and the widest window). 16 parts of a
- * 464-byte SDU is about 7.5 KB: a board without PSRAM can afford it. */
+ * 464-byte SDU is about 7.5 KB; a board without PSRAM builds with 8 and
+ * still streams faster than its hub path delivers. */
 #define RNS_RES_CACHE_PARTS 16
 #endif
 #define RNS_RES_SDU_MAX   464
@@ -52,9 +53,11 @@ typedef struct {
 } rns_res_sink_t;
 
 /** Opaque receiver state. Allocate with rns_res_new(), free with
- *  rns_res_free(); it carries a cache of RNS_RES_CACHE_PARTS parts and a
- *  hashmap for the current segment (4 bytes per part, allocated per
- *  segment). */
+ *  rns_res_free(); one block, carrying a cache of RNS_RES_CACHE_PARTS parts
+ *  and a ring of RNS_RES_RING part hashes (the map is never held whole:
+ *  only the hashes between the frontier and the known horizon matter).
+ *  Nothing is allocated while a transfer runs. A board without PSRAM sets
+ *  RNS_RES_CACHE_PARTS=8 in its build flags: about 5 KB in all. */
 rns_res_t *rns_res_new(const rns_link_t *link, const rns_res_sink_t *sink);
 void rns_res_free(rns_res_t *r);
 
