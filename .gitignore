@@ -49,3 +49,4 @@ tools/xsign
 # idf.py (as opposed to PlatformIO) writes a BARE sdkconfig next to the project.
 # Generated, and from whichever IDF version happened to run -- never an input.
 sdkconfig
+dist/
