@@ -64,6 +64,7 @@ static struct {
 
 static uint32_t s_next_ask_s, s_asks, s_fetches, s_installs, s_fails;
 static int s_try;                         /* which holder is being asked */
+static uint32_t s_retry_s;                /* nobody to ask: try again then */
 static char s_last[160];
 
 static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -312,7 +313,14 @@ static void start_fetch(uint32_t now)
         if (holder_at(s_try, hbuf, sizeof hbuf)) { holder = hbuf; break; }
         s_try++;
     }
-    if (!holder) { say("fwfetch: nobody to fetch %s from", s_best.img.version); s_try = 0; fetch_failed("no holder", now); return; }
+    if (!holder) {
+        /* Nobody addressable yet is not a failed image: the route may come
+         * with the next announce. Try again in a minute, keep the digest. */
+        say("fwfetch: nobody addressable to fetch %s from yet", s_best.img.version);
+        s_try = 0;
+        s_retry_s = now + 60;
+        return;
+    }
     uint32_t ep = s_cfg.epoch_s ? s_cfg.epoch_s() : 0;
     if (!ep) return;
     char ts[24];
@@ -460,7 +468,8 @@ void xfw_poll(void)
                 ? now + ASK_EVERY_S + (uint32_t)(rand() % (ASK_JITTER_S + 1))
                 : now + 60;
         }
-        if (enabled && s_best.used && !(s_cfg.busy && s_cfg.busy())) start_fetch(now);
+        if (enabled && s_best.used && now >= s_retry_s && !(s_cfg.busy && s_cfg.busy()))
+            start_fetch(now);
         break;
     case ST_ASKED:
         if (now - s_f.at_s > CMD_WAIT_S) {
