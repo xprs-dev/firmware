@@ -296,7 +296,10 @@ static bool holder_at(int i, char *out, size_t cap)
         char prev[XPRS_CALL_LEN_MAX];
         if (holder_at(k, prev, sizeof prev) && same_call(prev, c)) return false;
     }
-    if (!s_cfg.peer_route(c, NULL, NULL, NULL, NULL)) return false;
+    if (!s_cfg.peer_route(c, NULL, NULL, NULL, NULL)) {
+        if (s_cfg.want) s_cfg.want(c);      /* next time it may be */
+        return false;
+    }
     snprintf(out, cap, "%s", c);
     return true;
 }

@@ -60,6 +60,10 @@ typedef struct {
     bool (*peer_route)(const char *call, uint8_t dest[RNS_HASH_LEN],
                        uint8_t pub[RNS_PUB_LEN], uint8_t next_hop[RNS_HASH_LEN],
                        bool *have_hop);
+    /** Ask the uplink to learn a callsign's route (a path request answered
+     *  by its announce), so a holder named but not yet addressable becomes
+     *  one. May be NULL. */
+    void (*want)(const char *call);
     /** Put one raw Reticulum packet on the uplink. */
     bool (*send_packet)(const uint8_t *pkt, size_t len);
     /** The image sink: xprs_ota's push door, by digest. */

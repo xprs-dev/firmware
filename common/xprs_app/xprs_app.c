@@ -8181,6 +8181,7 @@ static void fw_fetch_start(void)
     cfg.sign = sign_wire;
     cfg.send_to = xprsrns_send_to;
     cfg.peer_route = xprsrns_peer_route;
+    cfg.want = xprsrns_want;
     cfg.send_packet = xprsrns_send_packet;
     cfg.sink_begin = fw_sink_begin;
     cfg.sink_write = fw_sink_write;
