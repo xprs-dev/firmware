@@ -69,14 +69,13 @@ Released: app 1.3.4 carries the mirror; the beta channel's images
 (0.6.0-beta.1) are on `main` under `models/<board>/prebuilt-beta`; stable
 stays at the page's 0.5.x images until the beta has proven itself.
 
-**One-time setup of the publishing machine**, the only thing that is not
-automatic, because it is the key: the XPRS desktop app on the build machine
-must hold the publisher identity (restore the account whose key is in
-`fw_publisher.h`, or change that header and the app's constant to a key the
-machine holds) and have Settings > Remote control API on. From then on every
-`tools/build-published.sh` run signs and publishes the channel's folder
-without anyone touching anything. Until it exists, `docs/firmware.json` is
-absent and every app's mirror reports the feed unreachable.
+**The publishing machine** is set up: the XPRS desktop app on the build
+laptop holds the publisher identity (X1WATT, seeded headlessly with the
+app's `tool/seed_publisher_profile_test.dart`) with the remote API on, and
+the first `docs/firmware.json` carries both channels signed by it. From here
+every `tools/build-published.sh` run (stable, or `CHANNEL=beta`) signs and
+publishes without anyone touching anything, and the apps pick the result up
+within six hours.
 
 Not written: a station with storage keeping and serving copies to its
 neighbours (step 7), and a bench run of the whole chain against a real
