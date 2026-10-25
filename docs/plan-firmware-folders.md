@@ -77,9 +77,18 @@ every `tools/build-published.sh` run (stable, or `CHANNEL=beta`) signs and
 publishes without anyone touching anything, and the apps pick the result up
 within six hours.
 
+**Bench run, 2026-10-25 18:23 to 18:39.** A T-Deck flashed as 0.6.0-beta.0
+on `fwchan beta` heard the beta folder's descriptions on the LAN (the
+laptop app re-aired them on a mirror tick), resolved X1WATT over
+Reticulum, got a 202 to its `cmd:file`, opened the link, streamed the
+1,692,480-byte resource through the hub path, installed it and rebooted.
+Its next `t:service` announce in the laptop's archive reads
+`fw:0.6.0-beta.1 uptime:10m`; the one before the reboot read
+`fw:0.6.0-beta.0`. Nobody touched anything. The station exposes no
+version over HTTP, so the archive's service announces are the record.
+
 Not written: a station with storage keeping and serving copies to its
-neighbours (step 7), and a bench run of the whole chain against a real
-release.
+neighbours (step 7).
 
 ## Work, in order
 
