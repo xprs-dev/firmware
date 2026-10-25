@@ -65,9 +65,22 @@ and asks nobody for anything:
   folder, fetches a newer image for its board over a Reticulum link and
   resource, and installs it under 11.8 (`common/xprs_fwfetch`).
 
+Released: app 1.3.4 carries the mirror; the beta channel's images
+(0.6.0-beta.1) are on `main` under `models/<board>/prebuilt-beta`; stable
+stays at the page's 0.5.x images until the beta has proven itself.
+
+**One-time setup of the publishing machine**, the only thing that is not
+automatic, because it is the key: the XPRS desktop app on the build machine
+must hold the publisher identity (restore the account whose key is in
+`fw_publisher.h`, or change that header and the app's constant to a key the
+machine holds) and have Settings > Remote control API on. From then on every
+`tools/build-published.sh` run signs and publishes the channel's folder
+without anyone touching anything. Until it exists, `docs/firmware.json` is
+absent and every app's mirror reports the feed unreachable.
+
 Not written: a station with storage keeping and serving copies to its
-neighbours (step 7), the beta channel's build, and a bench run of the whole
-chain against a real release.
+neighbours (step 7), and a bench run of the whole chain against a real
+release.
 
 ## Work, in order
 
