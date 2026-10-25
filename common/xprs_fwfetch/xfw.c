@@ -66,6 +66,9 @@ static struct {
 static uint32_t s_next_ask_s, s_asks, s_fetches, s_installs, s_fails;
 static int s_try;                         /* which holder is being asked */
 static uint32_t s_retry_s;                /* nobody to ask: try again then */
+static bool     s_round_asked, s_round_429; /* this round cost a holder an ask; one said 429 */
+#define ROUND_ASKED_S   (10u * 60u)       /* a round that asked and got nothing: next in */
+#define ROUND_429_S     (35u * 60u)       /* a holder is over budget (2 asks an hour for a stranger) */
 static char s_last[160];
 
 static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -221,6 +224,7 @@ static void reset_fetch(const char *why)
 static void fetch_failed(const char *why, uint32_t now)
 {
     s_try = 0;
+    s_round_asked = s_round_429 = false;
     say("fwfetch: %s failed: %s", s_best.used ? s_best.img.version : "?", why);
     if (s_best.used) note_failed(s_best.e.sha, now);
     s_best.used = false;
@@ -323,10 +327,16 @@ static void start_fetch(uint32_t now)
     }
     if (!holder) {
         /* Nobody addressable yet is not a failed image: the route may come
-         * with the next announce. Try again in a minute, keep the digest. */
-        say("fwfetch: nobody addressable to fetch %s from yet", s_best.img.version);
+         * with the next announce. Try again in a minute, keep the digest.
+         * A round that did ask somebody and got nothing waits longer: every
+         * ask spends that holder's budget for us (31.2), and a 429 means
+         * it is spent for a while. */
+        uint32_t wait = s_round_429 ? ROUND_429_S : s_round_asked ? ROUND_ASKED_S : 60;
+        say("fwfetch: nobody %sto fetch %s from; again in %us",
+            s_round_asked ? "else " : "addressable yet ", s_best.img.version, (unsigned)wait);
         s_try = 0;
-        s_retry_s = now + 60;
+        s_round_asked = s_round_429 = false;
+        s_retry_s = now + wait;
         return;
     }
     uint32_t ep = s_cfg.epoch_s ? s_cfg.epoch_s() : 0;
@@ -364,6 +374,7 @@ static void start_fetch(uint32_t now)
     s_f.state = ST_ASKED;
     s_f.at_s = s_f.started_s = now;
     s_fetches++;
+    s_round_asked = true;
     say("fwfetch: asked %s for %s %s (%u bytes)", holder, s_best.img.board,
         s_best.img.version, (unsigned)s_best.e.size);
 }
@@ -392,6 +403,7 @@ static void on_result(const xprs_t *p, uint32_t now)
     xprs_get_str(p, "m", m, sizeof m);
     int c = atoi(code);
     if (c == 202) { open_link(now); return; }
+    if (c == 429) s_round_429 = true;
     say("fwfetch: %s answered cmd:file with %d%s%.40s", s_f.holder, c, m[0] ? " " : "", m);
     reset_fetch(NULL);
     s_try++;
@@ -451,8 +463,12 @@ void xfw_on_link_packet(const rns_packet_t *p)
 void xfw_poll(void)
 {
     if (!s_on) return;
-    uint32_t now = s_cfg.now_s();
     lock();
+    /* Read AFTER the lock: the link task may have moved the fetch's marks
+     * past a clock read taken while waiting for it, and an unsigned
+     * difference then wraps to "ninety seconds ago" (seen 2026-10-25: a
+     * transfer declared dead three seconds in). */
+    uint32_t now = s_cfg.now_s();
 
     /* Parked wires: descriptions and the answer to our ask. */
     for (int i = 0; i < PARKED_MAX; i++) {
@@ -500,7 +516,7 @@ void xfw_poll(void)
          * us (a hub between re-routed, the holder closed it as stale: seen
          * 2026-10-25 at 1.60 of 1.69 MB) and no amount of asking brings it
          * back. Drop it and ask the next holder from the start. */
-        if (s_f.res && now - s_f.last_progress_s >= DEAD_S) {
+        if (s_f.res && now > s_f.last_progress_s && now - s_f.last_progress_s >= DEAD_S) {
             say("fwfetch: nothing from %s for %us at %u bytes; starting over",
                 s_f.holder, (unsigned)DEAD_S, (unsigned)s_f.got);
             reset_fetch(NULL);
@@ -508,7 +524,7 @@ void xfw_poll(void)
             else { s_try = 0; fetch_failed("the holder stopped answering", now); }
             break;
         }
-        if (s_f.res && now - s_f.last_part_s >= STALL_S) {
+        if (s_f.res && now > s_f.last_part_s && now - s_f.last_part_s >= STALL_S) {
             s_f.last_part_s = now;
             rns_res_retry(s_f.res, send_pkt, NULL);
         }
