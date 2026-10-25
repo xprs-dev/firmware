@@ -23,7 +23,10 @@ name: release
 # XPRS-WiFi library), so that repository is checked out beside this one at
 # the commit .xwifi-commit pins. While it is private the checkout needs a
 # token that can read it: the secret XWIFI_TOKEN (a fine-grained PAT with
-# read access to xprs-dev/xwifi); a public xwifi needs none.
+# read access to xprs-dev/xwifi); a public xwifi needs none. Without either
+# an empty xwifi component stands in, which is enough for every board whose
+# sdkconfig.defaults leaves CONFIG_XPRS_WIFI8 off; a board that turns it on
+# (the Heltec V3) then fails its build with a line saying so.
 
 on:
   push:
@@ -58,11 +61,20 @@ jobs:
         id: xwifi
         run: echo "commit=$(cat .xwifi-commit)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        id: xwifi_checkout
+        continue-on-error: true
         with:
           repository: xprs-dev/xwifi
           ref: ${{ steps.xwifi.outputs.commit }}
           path: xwifi
           token: ${{ secrets.XWIFI_TOKEN || github.token }}
+      - name: An empty xwifi when the library could not be fetched
+        if: steps.xwifi_checkout.outcome != 'success'
+        working-directory: ${{ github.workspace }}
+        run: |
+          rm -rf xwifi && mkdir xwifi
+          echo 'idf_component_register()' > xwifi/CMakeLists.txt
+          echo "::warning::xprs-dev/xwifi could not be checked out (set the XWIFI_TOKEN secret or make it public); boards with CONFIG_XPRS_WIFI8 on will not build"
       - name: The version and the channel
         id: ver
         run: |
@@ -92,6 +104,9 @@ jobs:
           PROJ=$(python3 -c "import yaml;print(yaml.safe_load(open('models/${{ matrix.board }}/board.yml'))['firmware']['project'])")
           ENV=$(python3 -c "import yaml;print(yaml.safe_load(open('models/${{ matrix.board }}/board.yml'))['firmware']['env'])")
           echo "${{ steps.ver.outputs.version }}" > "$PROJ/version.txt"
+          if grep -q '^CONFIG_XPRS_WIFI8=y' "$PROJ/sdkconfig.defaults" && [ ! -f ../xwifi/linker.lf ]; then
+            echo "::error::${{ matrix.board }} needs the xwifi library and it was not checked out"; exit 1
+          fi
           cp "$PROJ/src/wifi_secrets.h.example" "$PROJ/src/wifi_secrets.h"
           [ -f "$PROJ/src/fw_secrets.h.example" ] && cp "$PROJ/src/fw_secrets.h.example" "$PROJ/src/fw_secrets.h"
           echo "proj=$PROJ" >> "$GITHUB_OUTPUT"
