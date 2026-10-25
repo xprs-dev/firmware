@@ -82,6 +82,20 @@ it and rebooted. Its next `t:service` announce in the laptop's archive reads
 `fw:0.6.0-beta.0`. Nobody touched anything. The station exposes no
 version over HTTP, so the archive's service announces are the record.
 
+**Second bench run, 2026-10-25 21:12 to 21:27, from a tag.** `v0.6.0-beta.2`
+was built, signed and published by the workflow alone. The T-Deck asked
+X1WATT, started the resource, lost its hub TCP connection a minute in
+(`rns_tcp: recv failed (errno 104)`, reconnected two seconds later): the
+link under the transfer dies with that socket, which is what had killed
+the two earlier attempts at 1.2 and 1.6 MB. Ninety seconds without a byte,
+it opened a fresh link and asked for the rest with `GET_RANGE` from byte
+7388, finished at 21:27, installed and restarted as 0.6.0-beta.2. On the
+laptop, the station's `cmd:file` had also been meeting the archiver's
+stranger budget (two asks an hour, 429): the station now waits ten minutes
+after a round that asked and thirty-five after a 429, and an app serves a
+mirrored image to anyone past that budget (app commit 836ba63, in the next
+app release).
+
 Not written: a station serving the copies on its card to its neighbours
 (`serve:files`, `q:have`, `cmd:file` as a responder: step 7's second half).
 
