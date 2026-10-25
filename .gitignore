@@ -32,6 +32,7 @@ tools/tinynimble_probe/sdkconfig.*
 *.bin
 *.elf
 !models/*/prebuilt/*.bin
+!models/*/prebuilt-beta/*.bin
 
 # CREDENTIALS. Every project here keeps a committed `*.example` next to a real
 # file that must never be. WiFi passwords and APRS-IS passcodes live in these.
