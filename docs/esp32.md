@@ -2402,6 +2402,32 @@ controller's own memory beside the hub link.
 
 ## Validating on the device
 
+### Screenshots of a screen board, and walking its panels (2026-10-24)
+
+`curl -s http://<ip>/api/screen -o shot.bmp` is the screenshot (docs/API.md).
+Two things to know before trusting one:
+
+- **A full frame takes seconds, not microseconds.** On the T-Deck a 320x240
+  capture measured 8.2 s: every row is a hand-off between the UI task and the
+  HTTP task plus a TCP chunk on a WiFi shared with BLE and ESP-NOW. The whole
+  capture used to have a 5 s deadline, so every capture past five seconds came
+  back as a clean HTTP reply cut off at a different row -- it looked like the
+  network. The ceiling is 30 s now, and what stops a capture early is the first
+  row nobody takes within 2 s, after which every remaining slice returns at
+  once (`cap_slice` in `xprs_app.c`). A truncated BMP is a bug; report it.
+- **Walk panels with the console keys, and mind the composer.** `1`..`7` jump
+  to a panel over the USB console. On a board with a keyboard, the Chat panel
+  sends printable keys into the composer -- a script that steps 1..7 types its
+  own digits into a draft. Press Escape (0x1b) to drop the draft and go home,
+  then jump straight to the next panel. `U`/`D` (uppercase, kept out of the
+  composer) move table selections; the chat room rail answers only the
+  trackball and touch.
+- **A capture can land between two halves of a render.** The table is filled
+  before the title flag is read, so a capture taken right after a panel change
+  can show the new rows under the old title. On the glass the title follows on
+  the next UI tick; wait a few seconds before judging a title.
+
+
 - **Opening `/dev/ttyACM0` reboots the board.** `monitor-capture.sh` asserts DTR
   whether or not `-r` is passed, and the board needs ~28 s afterwards before it
   is on the network again. A probe sent during a capture hits a rebooting

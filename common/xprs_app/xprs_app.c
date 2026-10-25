@@ -6135,6 +6135,19 @@ static int wui_render(xui_row_t *tr)
 }
 #undef WROW
 
+/* "12s", "5m", "3h": an age that fits a narrow column. One shape for the
+ * Reachable panel and the chat list, the same as the UI's Traffic table
+ * (xui_flow_rows); Reachable used to print raw seconds, "3600s". */
+static void fmt_age(char *out, size_t cap, uint32_t age)
+{
+    if (age < 60)
+        snprintf(out, cap, "%lus", (unsigned long)age);
+    else if (age < 3600)
+        snprintf(out, cap, "%lum", (unsigned long)(age / 60));
+    else
+        snprintf(out, cap, "%luh", (unsigned long)(age / 3600));
+}
+
 static void ui_render(void)
 {
     char body[720];
@@ -6280,7 +6293,11 @@ static void ui_render(void)
     }
     case 3: {   /* Devices: everyone in reach, detail on selection */
         static const char *const hdr[4] = { "Call", "Link", "Dist", "When" };
-        static const int cw[4] = { 80, 74, 60, 106 };
+        /* The call column fits a bridged Meshtastic name, "MT" and eight hex
+         * digits (86 px at the table's 12 px, plus padding): at 80 it broke
+         * them over two lines, "MTBA3CFB / 90". The room comes from When,
+         * which holds "59s". */
+        static const int cw[4] = { 102, 66, 60, 92 };
         xui_table_setup(4, hdr, cw);
 
         xui_row_t *tr = tr_all;          /* render_scratch() */
@@ -6307,8 +6324,7 @@ static void ui_render(void)
                          devs[i].call, devs[i].bearer,
                          (unsigned long)age);
             }
-            snprintf(r->cell[3], sizeof r->cell[3], "%lus",
-                     (unsigned long)age);
+            fmt_age(r->cell[3], sizeof r->cell[3], age);
         }
         xui_table_rows(tr, nr);
         list_n = nr;
@@ -6784,16 +6800,7 @@ static void ui_render(void)
                          ric, c->text);
             }
             if (c->ep && nowep) {
-                uint32_t age = nowep - c->ep;
-                if (age < 60)
-                    snprintf(r->cell[2], sizeof r->cell[2], "%lus",
-                             (unsigned long)age);
-                else if (age < 3600)
-                    snprintf(r->cell[2], sizeof r->cell[2], "%lum",
-                             (unsigned long)(age / 60));
-                else
-                    snprintf(r->cell[2], sizeof r->cell[2], "%luh",
-                             (unsigned long)(age / 3600));
+                fmt_age(r->cell[2], sizeof r->cell[2], nowep - c->ep);
             } else {
                 r->cell[2][0] = 0;
             }
@@ -9740,15 +9747,30 @@ static struct {
     int64_t           deadline_us;
 } s_cap;
 
-/* Five seconds for a screenshot nobody is collecting. A working peer answers
- * each row in microseconds, so this can only fire on one that stopped. */
-#define CAP_TOTAL_US (5 * 1000 * 1000LL)
+/* The ceiling on a whole screenshot. It is NOT what catches a peer that went
+ * away -- the first row nobody takes within 2 s does that, and stops every
+ * slice still to come (below). This only bounds a peer that keeps taking
+ * rows impossibly slowly.
+ *
+ * It was 5 s, on the belief that "a working peer answers each row in
+ * microseconds". It does not: each row is a hand-off between two tasks and
+ * a TCP chunk on a station whose WiFi is shared with BLE and ESP-NOW, and a
+ * full 320x240 frame on the T-Deck measured 8.2 s on 2026-10-24. Every
+ * capture longer than five seconds came back cut off -- a clean HTTP close
+ * at a different row each time -- which looked like a network fault and
+ * was this constant. 30 s is a third of the 90 s watchdog, and the flush
+ * feeds that watchdog on every slice anyway. */
+#define CAP_TOTAL_US (30 * 1000 * 1000LL)
 
 /* Runs on the UI task, inside the repaint. */
 static void cap_slice(int x1, int y1, int x2, int y2,
                       const uint16_t *px, void *ctx)
 {
     (void)ctx;
+    /* Stopped: the rest of this repaint's slices go to the panel only. One
+     * line, and it is what turns "a peer that left" from 2 s a slice into
+     * 2 s once. */
+    if (!s_cap.want) return;
     int w = x2 - x1 + 1;
     if (w > CAP_ROW_MAX) return;
     for (int y = y1; y <= y2; y++, px += w) {
@@ -9757,12 +9779,12 @@ static void cap_slice(int x1, int y1, int x2, int y2,
         s_cap.row_x1 = x1;
         s_cap.row_x2 = x2;
         xSemaphoreGive(s_cap.ready);
-        /* If the HTTP side has gone away, do not wedge the UI task. The
-         * per-row timeout alone did not achieve that: it bounded each row
-         * and nothing bounded the frame. */
-        if (xSemaphoreTake(s_cap.taken, pdMS_TO_TICKS(2000)) != pdTRUE) return;
-        if (esp_timer_get_time() > s_cap.deadline_us) {
-            s_cap.want = false;        /* stop the slices still to come */
+        /* A row not taken in 2 s: the HTTP side is gone. Stop the whole
+         * capture, not just this slice, or every later slice waits its own
+         * 2 s and a dead peer holds the UI task for minutes. */
+        if (xSemaphoreTake(s_cap.taken, pdMS_TO_TICKS(2000)) != pdTRUE ||
+            esp_timer_get_time() > s_cap.deadline_us) {
+            s_cap.want = false;
             return;
         }
     }

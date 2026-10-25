@@ -9,11 +9,16 @@
  */
 
 #include "xprs_ui.h"
+#include "radar_layout.h"
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include "lvgl.h"
+/* Montserrat with accents (xui_font_12.c): what people write is not ASCII. */
+LV_FONT_DECLARE(xui_font_12);
+LV_FONT_DECLARE(xui_font_14);
 #include "esp_log.h"
 #include "esp_task_wdt.h"
 #include "xprs_art.h"
@@ -125,6 +130,8 @@ static lv_point_t s_tick_pts[12][2];
 static lv_obj_t *s_blip_dot[XUI_BLIP_MAX];
 static lv_obj_t *s_blip_halo[XUI_BLIP_MAX];
 static lv_obj_t *s_blip_lbl[XUI_BLIP_MAX];
+/* The range labels on the rings: names keep off them (radar_layout). */
+static lv_obj_t *s_ring_lbl[2];
 
 /* The generic table + the detail strip under it (the Flow panel is one
  * preset of it; any panel may reconfigure columns and rows). */
@@ -522,6 +529,10 @@ static void build_ui(void)
 {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_remove_style_all(scr);
+    /* Text font is inherited: everything below that names no font of its
+     * own -- table cells, chat bubbles -- reads it from here, and the
+     * default it replaces (LVGL's Montserrat 14) has no accented letters. */
+    lv_obj_set_style_text_font(scr, &xui_font_14, 0);
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -537,7 +548,7 @@ static void build_ui(void)
 
     s_status_label = lv_label_create(top);
     lv_label_set_text(s_status_label, "XPRS  00:00:00");
-    lv_obj_set_style_text_font(s_status_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_status_label, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_status_label, lv_color_black(), 0);
     lv_obj_align(s_status_label, LV_ALIGN_LEFT_MID, 6, 0);
 
@@ -553,7 +564,7 @@ static void build_ui(void)
      */
     s_batt_label = lv_label_create(top);
     lv_label_set_text(s_batt_label, "");
-    lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_batt_label, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_batt_label, lv_color_black(), 0);
     lv_obj_set_width(s_batt_label, XUI_BATT_W);
     lv_obj_set_style_text_align(s_batt_label, LV_TEXT_ALIGN_RIGHT, 0);
@@ -565,7 +576,7 @@ static void build_ui(void)
      * by side is a status bar, and nobody labels those. */
     s_clock_label = lv_label_create(top);
     lv_label_set_text(s_clock_label, "");
-    lv_obj_set_style_text_font(s_clock_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_clock_label, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_clock_label, lv_color_black(), 0);
     lv_obj_set_width(s_clock_label, XUI_CLOCK_W);
     lv_obj_set_style_text_align(s_clock_label, LV_TEXT_ALIGN_RIGHT, 0);
@@ -574,7 +585,7 @@ static void build_ui(void)
 
     s_title_label = lv_label_create(top);
     lv_label_set_text(s_title_label, "");
-    lv_obj_set_style_text_font(s_title_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_title_label, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_title_label, lv_color_black(), 0);
     /* The panel name gets whatever the callsign, the clock and the battery
      * have not claimed, and is centred inside THAT -- see the lane note by
@@ -605,7 +616,7 @@ static void build_ui(void)
 
     s_body_label = lv_label_create(center);
     lv_label_set_text(s_body_label, "--");
-    lv_obj_set_style_text_font(s_body_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_body_label, &xui_font_14, 0);
     lv_obj_set_style_text_color(s_body_label, lv_color_white(), 0);
     lv_label_set_long_mode(s_body_label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(s_body_label, LV_PCT(100));
@@ -641,7 +652,7 @@ static void build_ui(void)
 
         s_home_name[i] = lv_label_create(s_home);
         lv_label_set_text(s_home_name[i], "");
-        lv_obj_set_style_text_font(s_home_name[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(s_home_name[i], &xui_font_12, 0);
         lv_obj_set_style_text_color(s_home_name[i], lv_color_white(), 0);
         lv_label_set_long_mode(s_home_name[i], LV_LABEL_LONG_DOT);
         lv_obj_set_width(s_home_name[i], s_home_col_w - 34);
@@ -649,7 +660,7 @@ static void build_ui(void)
 
         s_home_detail[i] = lv_label_create(s_home);
         lv_label_set_text(s_home_detail[i], "");
-        lv_obj_set_style_text_font(s_home_detail[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(s_home_detail[i], &xui_font_12, 0);
         lv_obj_set_style_text_color(s_home_detail[i],
                                     lv_palette_lighten(LV_PALETTE_GREY, 2), 0);
         lv_obj_set_style_text_align(s_home_detail[i], LV_TEXT_ALIGN_RIGHT, 0);
@@ -712,6 +723,7 @@ static void build_ui(void)
         lv_obj_center(ring);
 
         lv_obj_t *rl = lv_label_create(s_radar);
+        s_ring_lbl[i] = rl;
         lv_label_set_text(rl, ring_txt[i]);
         lv_obj_set_style_text_font(rl, &lv_font_montserrat_10, 0);
         lv_obj_set_style_text_color(rl, lv_color_make(0, 120, 0), 0);
@@ -803,13 +815,13 @@ static void build_ui(void)
 
     s_home_heard_word = lv_label_create(s_home);
     lv_label_set_text(s_home_heard_word, "devices");
-    lv_obj_set_style_text_font(s_home_heard_word, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(s_home_heard_word, &xui_font_14, 0);
     lv_obj_set_style_text_color(s_home_heard_word,
                                 lv_color_make(255, 140, 0), 0);
 
     s_home_heard_caption = lv_label_create(s_home);
     lv_label_set_text(s_home_heard_caption, "in reach");
-    lv_obj_set_style_text_font(s_home_heard_caption, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_home_heard_caption, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_home_heard_caption,
                                 lv_palette_lighten(LV_PALETTE_GREY, 1), 0);
     lv_obj_align(s_home_heard_caption, LV_ALIGN_BOTTOM_LEFT, 0, -6);
@@ -824,7 +836,7 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(s_flowtab, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_flowtab, 0, 0);
     lv_obj_set_style_pad_all(s_flowtab, 0, 0);
-    lv_obj_set_style_text_font(s_flowtab, &lv_font_montserrat_12,
+    lv_obj_set_style_text_font(s_flowtab, &xui_font_12,
                                LV_PART_ITEMS);
     lv_obj_set_style_text_color(s_flowtab, lv_color_white(), LV_PART_ITEMS);
     lv_obj_set_style_bg_color(s_flowtab, lv_color_black(), LV_PART_ITEMS);
@@ -833,7 +845,7 @@ static void build_ui(void)
     lv_obj_set_style_border_color(s_flowtab, lv_color_make(40, 40, 40),
                                   LV_PART_ITEMS);
     lv_obj_set_style_pad_ver(s_flowtab, 4, LV_PART_ITEMS);
-    lv_obj_set_style_pad_hor(s_flowtab, 4, LV_PART_ITEMS);
+    lv_obj_set_style_pad_hor(s_flowtab, 3, LV_PART_ITEMS);
     lv_obj_set_scrollbar_mode(s_flowtab, LV_SCROLLBAR_MODE_OFF);
     lv_table_set_col_cnt(s_flowtab, 5);
     lv_table_set_row_cnt(s_flowtab, 1);
@@ -866,7 +878,7 @@ static void build_ui(void)
      * grey border, and body-size text so it reads like content, not a bar. */
     s_flow_content = lv_label_create(scr);
     lv_label_set_text(s_flow_content, "");
-    lv_obj_set_style_text_font(s_flow_content, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_flow_content, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_flow_content, lv_color_white(), 0);
     lv_obj_set_style_bg_color(s_flow_content, lv_color_make(16, 22, 36), 0);
     lv_obj_set_style_bg_opa(s_flow_content, LV_OPA_COVER, 0);
@@ -939,7 +951,7 @@ static void build_ui(void)
     for (int i = 0; i < 3; i++) {
         s_key_label[i] = lv_label_create(bot);
         lv_label_set_text(s_key_label[i], "");
-        lv_obj_set_style_text_font(s_key_label[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(s_key_label[i], &xui_font_12, 0);
         lv_obj_set_style_text_color(s_key_label[i], lv_color_black(), 0);
         lv_obj_align(s_key_label[i], LV_ALIGN_CENTER,
                      s_w * key_frac[i] / 100 - s_w / 2, 0);
@@ -947,7 +959,7 @@ static void build_ui(void)
 
     s_count_label = lv_label_create(bot);
     lv_label_set_text(s_count_label, "");
-    lv_obj_set_style_text_font(s_count_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_count_label, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_count_label, lv_color_black(), 0);
     lv_obj_align(s_count_label, LV_ALIGN_RIGHT_MID, -6, 0);
 }
@@ -1061,7 +1073,7 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
                                            lv_palette_main(LV_PALETTE_BLUE),
                                            lv_palette_main(LV_PALETTE_GREY),
                                            true,
-                                           &lv_font_montserrat_14);
+                                           &xui_font_14);
     lv_disp_set_theme(s_disp, th);
 
     build_ui();
@@ -1220,7 +1232,12 @@ void xui_table_rows(const xui_row_t *rows, int n)
 void xui_flow_rows(const xui_flow_t *rows, int n)
 {
     static const char *const hdr[5] = { "From", "To", "Type", "Dist", "When" };
-    static const int ref_w[5] = { 70, 54, 90, 54, 52 };  /* first fits X1RD89-7 */
+    /* Widths measured from the 12 px font's own advance table, 3 px of
+     * padding a side, each the widest value the column holds: a bridged
+     * Meshtastic name ("MT0CA9CDCF", 86 px), a 6-character station, an icon
+     * and 8 letters, a bolt and "~10m", the word "When". 320 exactly. At
+     * 70 px the sender's name broke over two lines, "MTBA3CF / B90". */
+    static const int ref_w[5] = { 94, 54, 79, 48, 45 };
     xui_table_setup(5, hdr, ref_w);
 
     /* Static: 8 rows of cells would not be kind to the UI task's stack. */
@@ -1238,7 +1255,7 @@ void xui_flow_rows(const xui_flow_t *rows, int n)
          * a bolt for ESP-NOW, the antenna for the LAN (no range there). */
         if (r->dist_m >= 0)
             snprintf(tr[i].cell[3], sizeof tr[i].cell[3],
-                     LV_SYMBOL_CHARGE " ~%dm", (int)(r->dist_m + 0.5f));
+                     LV_SYMBOL_CHARGE "~%dm", (int)(r->dist_m + 0.5f));
         else
             snprintf(tr[i].cell[3], sizeof tr[i].cell[3], LV_SYMBOL_WIFI);
         if (r->age_s < 60)
@@ -1465,116 +1482,122 @@ void xui_radar_blips(const xui_blip_t *blips, int n)
 {
     if (!s_radar) return;
     if (n > XUI_BLIP_MAX) n = XUI_BLIP_MAX;
+    for (int i = n; i < XUI_BLIP_MAX; i++) {
+        lv_obj_add_flag(s_blip_dot[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_blip_halo[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    if (n <= 0) return;
 
-    /* First pass: place every contact (dot + halo), remember where. */
-    int bx[XUI_BLIP_MAX], by[XUI_BLIP_MAX];
-    for (int i = 0; i < XUI_BLIP_MAX; i++) {
-        if (i >= n) {
-            lv_obj_add_flag(s_blip_dot[i], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_blip_halo[i], LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        /* Bearing from the label: no direction is known, so give each
-         * station a stable, label-derived angle -- it holds its spot on the
-         * scope between updates instead of jumping. */
+    /* What the names must stay clear of: the ring labels and the centre,
+     * where the RX flash lives. The geometry itself is radar_layout's, a
+     * pure file with a host test, because the version that lived here put
+     * seven names in one unreadable stack at the bottom of the scope. */
+    const int c = s_radar_size / 2;
+    rl_rect_t keep[3];
+    int nk = 0;
+    for (int i = 0; i < 2; i++) {
+        if (!s_ring_lbl[i]) continue;
+        lv_obj_update_layout(s_ring_lbl[i]);
+        /* A clear 4 px around it, not just no overlap: a name flush
+         * against "10m" read as one phrase, "MT66B7F06F 10m", which looks
+         * like that station's range. */
+        keep[nk++] = (rl_rect_t){ lv_obj_get_x(s_ring_lbl[i]) - 4,
+                                  lv_obj_get_y(s_ring_lbl[i]) - 4,
+                                  lv_obj_get_width(s_ring_lbl[i]) + 8,
+                                  lv_obj_get_height(s_ring_lbl[i]) + 8 };
+    }
+    keep[nk++] = (rl_rect_t){ c - 9, c - 9, 18, 18 };
+    const rl_scope_t scope = { c, c, s_radar_r - 3, keep, nk };
+
+    /* Bearing from the label: no direction is known, so each station gets
+     * a stable, label-derived angle -- it holds its spot between updates.
+     * Distance sets the radius; a crowded ring is spread by angle only. */
+    float ang[XUI_BLIP_MAX];
+    int rad[XUI_BLIP_MAX], bx[XUI_BLIP_MAX], by[XUI_BLIP_MAX];
+    for (int i = 0; i < n; i++) {
         uint32_t hsh = 5381;
-        for (const char *c = blips[i].label; *c; c++)
-            hsh = hsh * 33 + (uint8_t)*c;
-        float ang = (float)(hsh % 360) * (2.0f * (float)M_PI / 360.0f);
-        int r = radius_for(blips[i].meters);
-        bx[i] = s_radar_size / 2 + (int)(sinf(ang) * r);
-        by[i] = s_radar_size / 2 - (int)(cosf(ang) * r);
-
+        for (const char *ch = blips[i].label; *ch; ch++)
+            hsh = hsh * 33 + (uint8_t)*ch;
+        ang[i] = (float)(hsh % 360) * (2.0f * (float)M_PI / 360.0f);
+        rad[i] = radius_for(blips[i].meters);
+    }
+    rl_spread_dots(&scope, ang, rad, n, 12, bx, by);
+    for (int i = 0; i < n; i++) {
         lv_obj_clear_flag(s_blip_dot[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(s_blip_dot[i], bx[i] - 3, by[i] - 3);
         lv_obj_clear_flag(s_blip_halo[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(s_blip_halo[i], bx[i] - 7, by[i] - 7);
     }
 
-    /* Second pass: the labels. A label belongs NEXT TO its contact -- try
-     * the eight positions around the dot in preference order and take the
-     * first that covers nothing (other contacts' halos, labels already
-     * placed, the scope's centre where the RX flash lives). Only if every
-     * spot is taken does it slide down as a last resort. */
-    int lrx[XUI_BLIP_MAX], lry[XUI_BLIP_MAX];
-    int lrw[XUI_BLIP_MAX], lrh[XUI_BLIP_MAX];
+    /* Measure each name's three forms: with its range (two lines), the
+     * name alone, and the short name a crowded scope can still afford (a
+     * Meshtastic node's last four hex digits, its own short name). A label
+     * is made visible to be measured; nothing is drawn inside this
+     * function, so it cannot flicker, and the layout re-hides what has no
+     * room. */
+    /* Static, like the table's rows: one caller, on the UI task, and these
+     * are ~800 bytes the UI task's 8 KB (6 KB on a short heap) stack need
+     * not carry -- nothing here measures that stack's high-water mark. */
+    static rl_size_t fm[XUI_BLIP_MAX][RL_FORMS];
+    static char full[XUI_BLIP_MAX][24], shrt[XUI_BLIP_MAX][12];
+    int order[XUI_BLIP_MAX];
     for (int i = 0; i < n; i++) {
-        char txt[24];
-        if (blips[i].meters >= 0)
-            snprintf(txt, sizeof txt, "%s\n~%dm", blips[i].label,
+        lv_obj_t *lb = s_blip_lbl[i];
+        lv_obj_clear_flag(lb, LV_OBJ_FLAG_HIDDEN);
+
+        lv_label_set_text(lb, blips[i].label);
+        lv_obj_update_layout(lb);
+        fm[i][1] = (rl_size_t){ lv_obj_get_width(lb), lv_obj_get_height(lb) };
+
+        if (blips[i].meters >= 0) {
+            snprintf(full[i], sizeof full[i], "%s\n~%dm", blips[i].label,
                      (int)(blips[i].meters + 0.5f));
-        else
-            snprintf(txt, sizeof txt, "%s", blips[i].label);
+            lv_label_set_text(lb, full[i]);
+            lv_obj_update_layout(lb);
+            fm[i][0] = (rl_size_t){ lv_obj_get_width(lb), lv_obj_get_height(lb) };
+        } else {
+            full[i][0] = 0;
+            fm[i][0] = (rl_size_t){ 0, 0 };          /* no range to show */
+        }
+
+        rl_short_name(blips[i].label, shrt[i], sizeof shrt[i]);
+        if (strcmp(shrt[i], blips[i].label) != 0) {
+            lv_label_set_text(lb, shrt[i]);
+            lv_obj_update_layout(lb);
+            fm[i][2] = (rl_size_t){ lv_obj_get_width(lb), lv_obj_get_height(lb) };
+        } else {
+            fm[i][2] = (rl_size_t){ 0, 0 };          /* already as short */
+        }
+        order[i] = i;
+    }
+    /* Nearest first: that is the name a person is looking for. Unknown
+     * range last. Insertion sort, twelve at most. */
+    for (int i = 1; i < n; i++) {
+        int k = order[i], j = i - 1;
+        float mk = blips[k].meters < 0 ? 1e9f : blips[k].meters;
+        while (j >= 0) {
+            float mj = blips[order[j]].meters < 0 ? 1e9f : blips[order[j]].meters;
+            if (mj <= mk) break;
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = k;
+    }
+
+    uint8_t form[XUI_BLIP_MAX];
+    rl_rect_t at[XUI_BLIP_MAX];
+    rl_place_labels(&scope, bx, by, n, order, fm, form, at);
+    for (int i = 0; i < n; i++) {
+        if (form[i] == RL_HIDDEN) {
+            lv_obj_add_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_label_set_text(s_blip_lbl[i],
+                          form[i] == RL_FULL    ? full[i] :
+                          form[i] == RL_COMPACT ? blips[i].label : shrt[i]);
+        lv_obj_set_pos(s_blip_lbl[i], at[i].x, at[i].y);
         lv_obj_clear_flag(s_blip_lbl[i], LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(s_blip_lbl[i], txt);
-        lv_obj_update_layout(s_blip_lbl[i]);
-        int lw = lv_obj_get_width(s_blip_lbl[i]);
-        int lh = lv_obj_get_height(s_blip_lbl[i]);
-
-        /* Candidates around the dot: beside first, then under/over, then
-         * the diagonals. The far side of the scope prefers the inner side
-         * so the label stays inside the circle. */
-        bool right_half = bx[i] > s_radar_size / 2;
-        int cand[8][2] = {
-            { right_half ? bx[i] - 10 - lw : bx[i] + 10, by[i] - lh / 2 },
-            { right_half ? bx[i] + 10 : bx[i] - 10 - lw, by[i] - lh / 2 },
-            { bx[i] - lw / 2, by[i] + 10 },
-            { bx[i] - lw / 2, by[i] - 10 - lh },
-            { bx[i] + 8, by[i] + 8 },
-            { bx[i] - 8 - lw, by[i] + 8 },
-            { bx[i] + 8, by[i] - 8 - lh },
-            { bx[i] - 8 - lw, by[i] - 8 - lh },
-        };
-
-        int lx = cand[2][0], ly = cand[2][1];   /* fallback: below */
-        for (int c = 0; c < 8; c++) {
-            int tx = cand[c][0], ty = cand[c][1];
-            if (tx < 2) tx = 2;
-            if (tx + lw > s_radar_size - 2) tx = s_radar_size - 2 - lw;
-            if (ty < 2) ty = 2;
-            if (ty + lh > s_radar_size - 2) ty = s_radar_size - 2 - lh;
-            bool free = true;
-            int ccx = s_radar_size / 2 - 9;
-            if (tx < ccx + 18 && ccx < tx + lw &&
-                ty < ccx + 18 && ccx < ty + lh) free = false;
-            for (int j = 0; free && j < n; j++) {
-                if (j == i) continue;
-                int jx = bx[j] - 8, jy = by[j] - 8;
-                if (tx < jx + 16 && jx < tx + lw &&
-                    ty < jy + 16 && jy < ty + lh) free = false;
-            }
-            for (int j = 0; free && j < i; j++) {
-                if (tx < lrx[j] + lrw[j] && lrx[j] < tx + lw &&
-                    ty < lry[j] + lrh[j] && lry[j] < ty + lh) free = false;
-            }
-            if (free) { lx = tx; ly = ty; goto placed; }
-        }
-        /* Nothing free around the dot: slide the below-position down. */
-        for (int pass = 0; pass < n + XUI_BLIP_MAX; pass++) {
-            bool moved = false;
-            for (int j = 0; j < n; j++) {
-                if (j == i) continue;
-                int jx = bx[j] - 8, jy = by[j] - 8;
-                if (lx < jx + 16 && jx < lx + lw &&
-                    ly < jy + 16 && jy < ly + lh) { ly = jy + 17; moved = true; }
-            }
-            for (int j = 0; j < i; j++) {
-                if (lx < lrx[j] + lrw[j] && lrx[j] < lx + lw &&
-                    ly < lry[j] + lrh[j] && lry[j] < ly + lh) {
-                    ly = lry[j] + lrh[j] + 1;
-                    moved = true;
-                }
-            }
-            if (!moved) break;
-        }
-        if (lx < 2) lx = 2;
-        if (lx + lw > s_radar_size - 2) lx = s_radar_size - 2 - lw;
-        if (ly + lh > s_radar_size - 2) ly = s_radar_size - 2 - lh;
-        if (ly < 2) ly = 2;
-placed:
-        lv_obj_set_pos(s_blip_lbl[i], lx, ly);
-        lrx[i] = lx; lry[i] = ly; lrw[i] = lw; lrh[i] = lh;
     }
 }
 
@@ -1638,14 +1661,14 @@ static void chat_build(void)
 
         s_room_lbl[i] = lv_label_create(s_room_row[i]);
         lv_label_set_text(s_room_lbl[i], "");
-        lv_obj_set_style_text_font(s_room_lbl[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(s_room_lbl[i], &xui_font_12, 0);
         lv_obj_align(s_room_lbl[i], LV_ALIGN_LEFT_MID, 6, 0);
     }
 
     /* The room header, over the conversation. */
     s_chat_head = lv_label_create(s_chat);
     lv_label_set_text(s_chat_head, "");
-    lv_obj_set_style_text_font(s_chat_head, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_chat_head, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_chat_head, XUI_C_ACCENT, 0);
     lv_obj_set_pos(s_chat_head, s_rail_w + 6, 2);
 
@@ -1678,7 +1701,7 @@ static void chat_build(void)
 
     s_chat_input_lbl = lv_label_create(s_chat_input);
     lv_label_set_text(s_chat_input_lbl, "");
-    lv_obj_set_style_text_font(s_chat_input_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_chat_input_lbl, &xui_font_12, 0);
     lv_label_set_long_mode(s_chat_input_lbl, LV_LABEL_LONG_CLIP);
     lv_obj_set_width(s_chat_input_lbl, s_w - s_rail_w - 36);
     lv_obj_align(s_chat_input_lbl, LV_ALIGN_LEFT_MID, 5, 0);
@@ -1686,7 +1709,7 @@ static void chat_build(void)
     /* The send glyph, the web page's single '>' in accent. */
     s_chat_send = lv_label_create(s_chat_input);
     lv_label_set_text(s_chat_send, LV_SYMBOL_RIGHT);
-    lv_obj_set_style_text_font(s_chat_send, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_chat_send, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_chat_send, XUI_C_ACCENT, 0);
     lv_obj_align(s_chat_send, LV_ALIGN_RIGHT_MID, -6, 0);
 
@@ -1751,7 +1774,7 @@ void xui_chat_rooms(const xui_room_t *rooms, int n, int sel)
             continue;
         }
 
-        lv_obj_set_style_text_font(s_room_lbl[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(s_room_lbl[i], &xui_font_12, 0);
         if (i == sel) {
             lv_obj_set_style_text_color(s_room_lbl[i], XUI_C_ACCENT, 0);
             lv_obj_set_style_border_width(s_room_row[i], 2, 0);
@@ -1836,7 +1859,7 @@ void xui_chat_msgs(const xui_msg_t *msgs, int n, const char *header)
          * screen, which is exactly what the first build drew. */
         lv_obj_set_width(t, LV_SIZE_CONTENT);
         lv_obj_set_style_max_width(t, maxw - 14, 0);
-        lv_obj_set_style_text_font(t, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(t, &xui_font_12, 0);
         lv_obj_set_style_text_color(t, XUI_C_TEXT, 0);
 
         if (m->outgoing) {
@@ -2108,7 +2131,7 @@ void xui_splash_show(void)
     lv_obj_t *word = lv_label_create(s_splash);
     lv_label_set_text(word, "XPRS");
     lv_obj_set_style_text_font(word, wide ? &lv_font_montserrat_20
-                                          : &lv_font_montserrat_14, 0);
+                                          : &xui_font_14, 0);
     lv_obj_set_style_text_color(word, XART_BONE, 0);
     lv_obj_set_style_text_letter_space(word,
         (wide ? lv_font_montserrat_20.line_height
@@ -2117,7 +2140,7 @@ void xui_splash_show(void)
 
     s_splash_status = lv_label_create(s_splash);
     lv_label_set_text(s_splash_status, "");
-    lv_obj_set_style_text_font(s_splash_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_splash_status, &xui_font_12, 0);
     lv_obj_set_style_text_color(s_splash_status, XART_BONE, 0);
     lv_obj_set_style_text_opa(s_splash_status, LV_OPA_70, 0);
     lv_obj_align(s_splash_status, LV_ALIGN_BOTTOM_MID, 0, -8);

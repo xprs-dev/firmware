@@ -91,3 +91,34 @@ reuse potential.
   with per-chunk retry; the reliable way onto a native-USB S3 (T-Deck/T-Dongle)
   whose single-write flash dies partway, and the only way to recover a
   boot-looping one (the churning USB device fails a plain `pio upload`).
+
+## Screen layout and text
+
+- **`common/xprs_ui/radar_layout.{c,h}`** — pure placement for anything drawn
+  around points on a round scope: `rl_spread_dots()` keeps dots apart (and off
+  keep-out rectangles) by turning them around the centre without changing their
+  radius; `rl_place_labels()` gives each label the longest of up to three forms
+  that has a fully clear spot inside the circle, tries three passes so a long
+  early label cannot crowd out a short later one, and HIDES a label rather than
+  pushing it somewhere wrong. `rl_short_name()` is the Meshtastic short name
+  (last four hex digits of an `MT` node). Host test: `test_radar_host.sh`.
+  Reuse the shape for any map or scope view; keep LVGL out of the geometry so
+  it stays testable.
+- **`common/xprs_ui/xui_font_12.c` / `xui_font_14.c`** — Montserrat with
+  Latin-1, Latin Extended-A, typographic punctuation and the euro sign, plus
+  LVGL's symbol glyphs. LVGL's built-in Montserrat is ASCII only and draws a
+  box for "á". Use these for any text that came from a person. Regenerate
+  with LVGL's `scripts/built_in_font/built_in_font_gen.py` and lv_font_conv
+  1.5.2; the range is in each file's Opts line. The big UI sets 14 on the
+  screen object so everything that names no font inherits it.
+- **`common/xprs_api/xapi_jesc.c`** — the JSON string escaper: valid UTF-8 is
+  copied whole, any byte that is not part of a valid sequence is escaped as
+  `\u00XX`, controls and DEL escaped. Host test: `test_jesc_host.sh`. Every
+  JSON this firmware writes from text should go through it; two other
+  escapers (`msgstore.c`, `ble_hello.c`) pass high bytes raw and would emit
+  invalid JSON on a stray byte.
+- **`fmt_age()` in `xprs_app.c`** — "12s" / "5m" / "3h" for a narrow column;
+  the UI's Traffic table formats the same way inside `xui_flow_rows`.
+- **Sizing a table column**: measure, don't guess. The advance widths are in
+  the font's `.adv_w` table (1/16 px); a column needs the widest value it
+  holds plus `pad_hor` on both sides.
