@@ -86,6 +86,7 @@ static char s_pass[64];
 #include <math.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include "mbedtls/sha256.h"
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
 #include "xprs_station.h"
@@ -7253,8 +7254,11 @@ static const esp_vfs_fat_mount_config_t k_card_mc = {
     .allocation_unit_size = 16 * 1024,
 };
 
+static bool s_card_mounted;   /* /idx is a microSD, not the flash FAT */
+
 static void card_said(const sdmmc_card_t *card, const char *bus)
 {
+    s_card_mounted = true;
     ESP_LOGI(TAG, "storage: microSD on %s at /idx, %llu MB; the archive is there",
              bus, (unsigned long long)card->csd.capacity * card->csd.sector_size /
                   (1024u * 1024u));
@@ -8191,10 +8195,143 @@ static bool fw_pick(char *out, size_t cap)
             xprsrns_want(s_cu_peers[i].call);
     return false;
 }
+/*
+ * Where the fetched image lands. A station with a microSD puts it on the
+ * card first (/idx/fw/<board>-<version>.bin), checks the digest THERE, and
+ * only then copies it into the OTA slot: the flash is never written from
+ * a stream that may still turn out wrong, a transfer that dies costs a
+ * file and not a slot, and the copy stays on the card -- the folder's
+ * member, by its digest, for the stations around this one to be served
+ * (docs/plan-firmware-folders.md, step 7). Without a card the bytes go
+ * straight into the slot, as before, and xota verifies them on the way.
+ */
+#define FW_DIR "/idx/fw"
+static FILE   *s_fw_file;
+static char    s_fw_path[72];
+static char    s_fw_name[48];
+static char    s_fw_ver[24];
+static size_t  s_fw_size;
+static uint8_t s_fw_sha[32];
+
+static void fw_file_drop(void)
+{
+    if (s_fw_file) { fclose(s_fw_file); s_fw_file = NULL; }
+    if (s_fw_path[0]) { unlink(s_fw_path); s_fw_path[0] = 0; }
+}
+
 static bool fw_sink_begin(const char *v, size_t size, const uint8_t sha[32])
-{ return xota_push_begin_sha(v, size, sha) == ESP_OK; }
-static bool fw_sink_write(const uint8_t *d, size_t n) { return xota_push_write(d, n) == ESP_OK; }
-static bool fw_sink_finish(void) { return xota_push_finish() == ESP_OK; }
+{
+    if (!s_card_mounted) return xota_push_begin_sha(v, size, sha) == ESP_OK;
+    uint8_t pub[32];
+    if (!xota_publisher_key(pub)) return false;      /* the same gate xota keeps */
+    fw_file_drop();
+    mkdir(FW_DIR, 0777);
+    snprintf(s_fw_name, sizeof s_fw_name, "%s-%s.bin", s_board->board_id, v);
+    snprintf(s_fw_path, sizeof s_fw_path, FW_DIR "/%s.part", s_fw_name);
+    s_fw_file = fopen(s_fw_path, "wb");
+    if (!s_fw_file) {
+        ESP_LOGW(TAG, "fwfetch: cannot open %s; the slot takes the stream instead", s_fw_path);
+        s_fw_path[0] = 0;
+        return xota_push_begin_sha(v, size, sha) == ESP_OK;
+    }
+    snprintf(s_fw_ver, sizeof s_fw_ver, "%s", v);
+    s_fw_size = size;
+    memcpy(s_fw_sha, sha, 32);
+    ESP_LOGI(TAG, "fwfetch: %s lands on the card first", s_fw_name);
+    return true;
+}
+
+static bool fw_sink_write(const uint8_t *d, size_t n)
+{
+    if (!s_fw_file) return xota_push_write(d, n) == ESP_OK;
+    return fwrite(d, 1, n, s_fw_file) == n;
+}
+
+/* The file's digest, read back from the card in small bites. */
+static bool fw_file_digest(const char *path, uint8_t out[32], size_t *len)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    static uint8_t buf[2048];
+    mbedtls_sha256_context c;
+    mbedtls_sha256_init(&c);
+    mbedtls_sha256_starts(&c, 0);
+    size_t n, total = 0;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+        mbedtls_sha256_update(&c, buf, n);
+        total += n;
+        if ((total & 0xFFFF) < n) vTaskDelay(1);
+    }
+    fclose(f);
+    mbedtls_sha256_finish(&c, out);
+    mbedtls_sha256_free(&c);
+    *len = total;
+    return true;
+}
+
+/* Every older image of this board on the card goes; the one just proven stays. */
+static void fw_prune(const char *keep)
+{
+    DIR *d = opendir(FW_DIR);
+    if (!d) return;
+    size_t bl = strlen(s_board->board_id);
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strncmp(e->d_name, s_board->board_id, bl) != 0 || e->d_name[bl] != '-') continue;
+        if (strcmp(e->d_name, keep) == 0) continue;
+        char p[sizeof FW_DIR + sizeof e->d_name + 1];
+        snprintf(p, sizeof p, FW_DIR "/%.*s", (int)sizeof e->d_name - 1, e->d_name);
+        unlink(p);
+        ESP_LOGI(TAG, "fwfetch: dropped %s from the card", e->d_name);
+    }
+    closedir(d);
+}
+
+static bool fw_sink_finish(void)
+{
+    if (!s_fw_file) return xota_push_finish() == ESP_OK;
+    fclose(s_fw_file);
+    s_fw_file = NULL;
+    uint8_t got[32];
+    size_t len = 0;
+    if (!fw_file_digest(s_fw_path, got, &len) || len != s_fw_size || memcmp(got, s_fw_sha, 32) != 0) {
+        ESP_LOGW(TAG, "fwfetch: %s on the card is not the image described (%u bytes); dropped",
+                 s_fw_name, (unsigned)len);
+        fw_file_drop();
+        return false;
+    }
+    char final[72];
+    snprintf(final, sizeof final, FW_DIR "/%s", s_fw_name);
+    unlink(final);
+    if (rename(s_fw_path, final) != 0) {
+        ESP_LOGW(TAG, "fwfetch: cannot keep %s on the card", s_fw_name);
+        fw_file_drop();
+        return false;
+    }
+    s_fw_path[0] = 0;
+    fw_prune(s_fw_name);
+    ESP_LOGI(TAG, "fwfetch: %s verified on the card (%u bytes); installing from it",
+             s_fw_name, (unsigned)len);
+    /* Into the slot from the card: xota hashes it once more on the way,
+     * verifies, commits and restarts. */
+    if (xota_push_begin_sha(s_fw_ver, s_fw_size, s_fw_sha) != ESP_OK) return false;
+    FILE *f = fopen(final, "rb");
+    if (!f) { xota_push_abort(); return false; }
+    static uint8_t buf[2048];
+    size_t n;
+    bool ok = true;
+    while (ok && (n = fread(buf, 1, sizeof buf, f)) > 0)
+        ok = xota_push_write(buf, n) == ESP_OK;
+    fclose(f);
+    if (!ok) { xota_push_abort(); return false; }
+    return xota_push_finish() == ESP_OK;
+}
+
+static void fw_sink_abort(void)
+{
+    if (s_fw_file || s_fw_path[0]) fw_file_drop();
+    else xota_push_abort();
+}
 static void fw_lock(void)   { if (s_fw_mtx) xSemaphoreTake(s_fw_mtx, portMAX_DELAY); }
 static void fw_unlock(void) { if (s_fw_mtx) xSemaphoreGive(s_fw_mtx); }
 static void fw_say(const char *line) { ESP_LOGI(TAG, "%s", line); }
@@ -8221,7 +8358,7 @@ static void fw_fetch_start(void)
     cfg.sink_begin = fw_sink_begin;
     cfg.sink_write = fw_sink_write;
     cfg.sink_finish = fw_sink_finish;
-    cfg.sink_abort = xota_push_abort;
+    cfg.sink_abort = fw_sink_abort;
     cfg.lock = fw_lock;
     cfg.unlock = fw_unlock;
     cfg.say = fw_say;

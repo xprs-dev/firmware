@@ -8,7 +8,7 @@
 idf_component_register(
     SRCS "xprs_app.c" "xprs_setup.c"
     INCLUDE_DIRS "include"
-    REQUIRES nvs_flash log esp_timer esp_hw_support esp_wifi esp_event
+    REQUIRES mbedtls nvs_flash log esp_timer esp_hw_support esp_wifi esp_event
              esp_netif esp_eth lwip driver
              xprs_codec xprs_station xprs_bearer xprs_bearer_now
              xprs_bearer_lan xprs_bearer_lora xprs_bearer_ble xprs_nostr xprs_sig xprs_id

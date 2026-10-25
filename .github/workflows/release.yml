@@ -1,0 +1,184 @@
+name: release
+
+# A firmware release, from a tag to stations updating themselves, with
+# nobody in the loop (docs/plan-firmware-folders.md):
+#
+#   git tag v0.6.1 && git push origin v0.6.1          -> the stable channel
+#   git tag v0.7.0-beta.1 && git push origin v0.7.0-beta.1   -> the beta channel
+#
+# Every ESP32 board is built with the tag's version and no bench secrets,
+# the images are signed as the project's firmware folder (XPRS.md 7.7.3) by
+# the publisher key the stations pin, the images and the signed folder are
+# committed to main (the page and docs/firmware.json live there and xprs.dev
+# serves them) and attached to a GitHub release. From then on every XPRS
+# app mirrors the images and relays the descriptions, and every station on
+# that channel fetches its image over Reticulum and installs it.
+#
+# The publisher key is the repository secret XPRS_PUBLISHER_NSEC. It is the
+# key common/xprs_ota/fw_publisher.h names; publish_folder.py refuses any
+# other, so a wrong secret fails the release rather than signing something
+# no station would take.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build and publish (x.y.z, or x.y.z-beta.N for the beta channel)'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  PIO_VERSION: '6.1.18'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [tdeck, tdongle-s3, m5stack-core, heltec-v3, epaper-1in54, esp32c3-mini, generic]
+    steps:
+      - uses: actions/checkout@v4
+      - name: The version and the channel
+        id: ver
+        run: |
+          VER="${{ inputs.version }}"; [ -n "$VER" ] || VER="${GITHUB_REF_NAME#v}"
+          echo "$VER" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[a-z]+\.[0-9]+)?$' ||
+            { echo "::error::'$VER' is not x.y.z or x.y.z-beta.N"; exit 1; }
+          CHANNEL=stable; case "$VER" in *-*) CHANNEL=beta;; esac
+          OUT=prebuilt; [ "$CHANNEL" = beta ] && OUT=prebuilt-beta
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: PlatformIO
+        run: pip install "platformio==$PIO_VERSION" pyyaml
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/platforms
+            ~/.platformio/packages
+          key: pio-${{ runner.os }}-${{ hashFiles(format('models/{0}/firmware/platformio.ini', matrix.board)) }}
+      - name: Prepare the project (the tag's version, no bench secrets)
+        id: proj
+        run: |
+          PROJ=$(python3 -c "import yaml;print(yaml.safe_load(open('models/${{ matrix.board }}/board.yml'))['firmware']['project'])")
+          ENV=$(python3 -c "import yaml;print(yaml.safe_load(open('models/${{ matrix.board }}/board.yml'))['firmware']['env'])")
+          echo "${{ steps.ver.outputs.version }}" > "$PROJ/version.txt"
+          cp "$PROJ/src/wifi_secrets.h.example" "$PROJ/src/wifi_secrets.h"
+          [ -f "$PROJ/src/fw_secrets.h.example" ] && cp "$PROJ/src/fw_secrets.h.example" "$PROJ/src/fw_secrets.h"
+          echo "proj=$PROJ" >> "$GITHUB_OUTPUT"
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: pio run -d "${{ steps.proj.outputs.proj }}" -e "${{ steps.proj.outputs.env }}"
+      - name: Collect the image
+        run: |
+          python3 tools/scripts/collect_prebuilt.py --out "${{ steps.ver.outputs.out }}" "${{ matrix.board }}"
+          test -f "models/${{ matrix.board }}/${{ steps.ver.outputs.out }}/firmware.bin"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.board }}
+          path: models/${{ matrix.board }}/${{ steps.ver.outputs.out }}/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    # Publish what built: a board that fails to build is listed in the release
+    # notes and left out of the folder, the others are not held back by it.
+    if: always() && needs.build.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: mainrepo
+          fetch-depth: 1
+      - name: The version and the channel
+        id: ver
+        run: |
+          VER="${{ inputs.version }}"; [ -n "$VER" ] || VER="${GITHUB_REF_NAME#v}"
+          CHANNEL=stable; case "$VER" in *-*) CHANNEL=beta;; esac
+          OUT=prebuilt; [ "$CHANNEL" = beta ] && OUT=prebuilt-beta
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "out=$OUT" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          path: built
+          pattern: image-*
+      - name: Place the images
+        id: images
+        run: |
+          # The other channel's folder is kept as main has it: the document
+          # carries both.
+          cp mainrepo/docs/firmware.json docs/firmware.json 2>/dev/null || true
+          built=""; missing=""
+          for b in tdeck tdongle-s3 m5stack-core heltec-v3 epaper-1in54 esp32c3-mini generic; do
+            if [ -f "built/image-$b/firmware.bin" ]; then
+              rm -rf "models/$b/${{ steps.ver.outputs.out }}"
+              mkdir -p "models/$b/${{ steps.ver.outputs.out }}"
+              cp built/image-$b/* "models/$b/${{ steps.ver.outputs.out }}/"
+              built="$built $b"
+            else
+              missing="$missing $b"
+            fi
+          done
+          [ -n "$built" ] || { echo "::error::no board built"; exit 1; }
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+      - name: Sign and publish the folder
+        env:
+          XPRS_PUBLISHER_NSEC: ${{ secrets.XPRS_PUBLISHER_NSEC }}
+        run: |
+          sudo apt-get install -y -qq libssl-dev >/dev/null
+          pip install pyyaml >/dev/null
+          [ "${{ steps.ver.outputs.channel }}" = stable ] &&
+            python3 tools/scripts/build_catalog.py -o index.html --json docs/boards.json
+          python3 tools/scripts/publish_folder.py --channel "${{ steps.ver.outputs.channel }}"
+      - name: Commit the images and the signed folder to main
+        run: |
+          for b in ${{ steps.images.outputs.built }}; do
+            rm -rf "mainrepo/models/$b/${{ steps.ver.outputs.out }}"
+            mkdir -p "mainrepo/models/$b"
+            cp -r "models/$b/${{ steps.ver.outputs.out }}" "mainrepo/models/$b/"
+          done
+          cp docs/firmware.json mainrepo/docs/firmware.json
+          if [ "${{ steps.ver.outputs.channel }}" = stable ]; then
+            cp docs/boards.json mainrepo/docs/boards.json
+            cp index.html mainrepo/index.html
+          fi
+          cd mainrepo
+          git config user.name "xprs-release"
+          git config user.email "release@xprs.dev"
+          git add -A models/*/prebuilt models/*/prebuilt-beta docs/firmware.json docs/boards.json index.html
+          git commit -q -m "firmware ${{ steps.ver.outputs.version }} (${{ steps.ver.outputs.channel }}): images and the signed folder" || echo "nothing to commit"
+          git push origin HEAD:main
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.ver.outputs.version }}"; CH="${{ steps.ver.outputs.channel }}"
+          TAG="v$VER"
+          if [ "${GITHUB_REF_TYPE}" != tag ]; then
+            git tag "$TAG" 2>/dev/null && git push origin "$TAG" || true
+          fi
+          {
+            echo "XPRS firmware $VER, the **$CH** channel."
+            echo
+            echo "Boards:${{ steps.images.outputs.built }}"
+            [ -n "${{ steps.images.outputs.missing }}" ] && echo "Did not build:${{ steps.images.outputs.missing }}"
+            echo
+            echo "Signed folder: docs/firmware.json on main (served at https://xprs.dev/firmware/docs/firmware.json)."
+            echo "A station on the $CH channel with automatic updates on fetches its image over Reticulum and installs it; nobody touches it."
+          } > notes.md
+          PRE=""; [ "$CH" = beta ] && PRE="--prerelease"
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          gh release create "$TAG" $PRE --title "firmware $VER ($CH)" --notes-file notes.md dist/$CH/*.bin dist/$CH/listing.xfl docs/firmware.json

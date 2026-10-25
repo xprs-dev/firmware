@@ -97,10 +97,12 @@ for b in $BOARDS; do
     python3 tools/scripts/collect_prebuilt.py --out "$OUT_DIR" "$b" | tail -1
 done
 # The catalogue and the folder: every board's digest into docs/boards.json,
-# and the released images published as the firmware folder through the
-# maintainer's app (docs/plan-firmware-folders.md). A release without the
-# signed folder is one no station can take unattended, so a missing app
-# fails the publish rather than passing quietly.
+# and the released images signed as the firmware folder with the publisher
+# key in XPRS_PUBLISHER_NSEC (docs/plan-firmware-folders.md). A release
+# without the signed folder is one no station can take unattended, so a
+# missing key fails the publish rather than passing quietly. Releases
+# normally come from .github/workflows/release.yml, which does all of this
+# on a tag; this script is the same chain on a bench.
 if [ "$fail" = 0 ]; then
     [ "$CHANNEL" = stable ] && python3 tools/scripts/build_catalog.py -o index.html --json docs/boards.json
     python3 tools/scripts/publish_folder.py --channel "$CHANNEL" || fail=1

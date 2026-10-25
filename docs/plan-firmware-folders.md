@@ -44,17 +44,21 @@ Two folders per publisher: `XPRS firmware stable` and `XPRS firmware beta`.
 A station's `fwchan` picks one; `fwauto` (`off`, `stable`, `beta`) says
 whether it installs without being told.
 
-## Status (2026-10-25, evening)
+## Status (2026-10-25, night)
 
 Every step is in code and host-tested; the chain is automatic end to end
 and asks nobody for anything:
 
-- **Release**: `tools/build-published.sh` builds the images, writes their
-  digests into `docs/boards.json`, and runs `tools/scripts/publish_folder.py`,
-  which asks the maintainer's own XPRS app (the profile whose key is the
-  project's firmware publisher, `common/xprs_ota/fw_publisher.h`) to publish
-  the images as the folder: the signed descriptions come back and are
-  committed as `docs/firmware.json`. A release without them fails.
+- **Release** is a tag. `git tag v0.6.1 && git push origin v0.6.1` runs
+  `.github/workflows/release.yml`: every ESP32 board is built with that
+  version and no bench secrets, `tools/scripts/publish_folder.py` signs the
+  images as the firmware folder with the publisher key from the repository
+  secret `XPRS_PUBLISHER_NSEC` (through `tools/xsign.c`, the station's own
+  signer, and refused unless it is the key `common/xprs_ota/fw_publisher.h`
+  pins), and the images, `docs/firmware.json`, the catalogue and the page
+  are committed to `main` and attached to a GitHub release. A version with
+  a `-beta.N` suffix is the beta channel; without, stable. The same chain
+  runs on a bench as `tools/build-published.sh`.
 - **Every app** (`FirmwareMirrorService`, on by default, six-hourly) reads
   that document, believes only what verifies against the publisher's key,
   downloads and verifies the images, keeps the newest set, serves them by
@@ -63,32 +67,23 @@ and asks nobody for anything:
 - **Every published station** pins the publisher's key on first boot and,
   with `fwauto` on by default, asks its archivers for the publisher's
   folder, fetches a newer image for its board over a Reticulum link and
-  resource, and installs it under 11.8 (`common/xprs_fwfetch`).
-
-Released: app 1.3.4 carries the mirror; the beta channel's images
-(0.6.0-beta.1) are on `main` under `models/<board>/prebuilt-beta`; stable
-stays at the page's 0.5.x images until the beta has proven itself.
-
-**The publishing machine** is set up: the XPRS desktop app on the build
-laptop holds the publisher identity (X1WATT, seeded headlessly with the
-app's `tool/seed_publisher_profile_test.dart`) with the remote API on, and
-the first `docs/firmware.json` carries both channels signed by it. From here
-every `tools/build-published.sh` run (stable, or `CHANNEL=beta`) signs and
-publishes without anyone touching anything, and the apps pick the result up
-within six hours.
+  resource, and installs it under 11.8 (`common/xprs_fwfetch`). A station
+  with a microSD lands the image on the card first (`/idx/fw/<board>-
+  <version>.bin`), checks the digest there and only then copies it into the
+  OTA slot; the copy stays on the card, the folder's member by its digest,
+  for the stations around it (step 7's first half).
 
 **Bench run, 2026-10-25 18:23 to 18:39.** A T-Deck flashed as 0.6.0-beta.0
-on `fwchan beta` heard the beta folder's descriptions on the LAN (the
-laptop app re-aired them on a mirror tick), resolved X1WATT over
-Reticulum, got a 202 to its `cmd:file`, opened the link, streamed the
-1,692,480-byte resource through the hub path, installed it and rebooted.
-Its next `t:service` announce in the laptop's archive reads
+on `fwchan beta` heard the beta folder's descriptions on the LAN,
+resolved X1WATT over Reticulum, got a 202 to its `cmd:file`, opened the
+link, streamed the 1,692,480-byte resource through the hub path, installed
+it and rebooted. Its next `t:service` announce in the laptop's archive reads
 `fw:0.6.0-beta.1 uptime:10m`; the one before the reboot read
 `fw:0.6.0-beta.0`. Nobody touched anything. The station exposes no
 version over HTTP, so the archive's service announces are the record.
 
-Not written: a station with storage keeping and serving copies to its
-neighbours (step 7).
+Not written: a station serving the copies on its card to its neighbours
+(`serve:files`, `q:have`, `cmd:file` as a responder: step 7's second half).
 
 ## Work, in order
 

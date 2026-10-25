@@ -11,11 +11,11 @@
  * together. A build for one board therefore cannot install on another, and
  * last version's approval cannot be replayed onto the next one.
  *
- * THE KEY DOES NOT GO INTO CI. It is the maintainer's identity key: the
- * same nsec that signs this operator's packets. A key in a build runner is
- * a key every maintainer with push access and every compromised action can
- * use, and this one can put code on a roof. So CI builds and hashes, and
- * approving a build is a deliberate local act.
+ * The key is the project's firmware publisher (common/xprs_ota/
+ * fw_publisher.h). Since 2026-10-25 it also lives in the release workflow's
+ * secret, which signs every release's folder (.github/workflows/release.yml):
+ * a station updates itself from that, and this tool is for the deliberate
+ * local approval of one image pushed over a cable.
  *
  *   dart run tools/sign_firmware.dart \
  *       --board m5stack-core --version 1.4.2 \

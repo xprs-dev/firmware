@@ -1,19 +1,18 @@
-/* xsign -- sign one line with an XPRS key, for DEVELOPMENT ONLY.
+/* xsign -- sign one line with an XPRS key, with the SAME C code the station
+ * verifies with: if the two ever disagree, every station refuses every
+ * bundle. tools/scripts/publish_folder.py runs it to sign a firmware
+ * release's folder descriptions (docs/plan-firmware-folders.md), on the
+ * release workflow and on a bench alike.
  *
- * Production signing is tools/sign_firmware.dart, which takes an nsec file and
- * whose header states the rule this file must not undermine: THE KEY DOES NOT
- * GO INTO CI. This exists because bringing a script bundle up on a bench needs
- * a signature in a shell loop, and because the resulting signature must be
- * produced by the SAME C code the station verifies with -- if the two ever
- * disagree, every station refuses every bundle.
- *
- * It takes the private scalar as hex on the command line, which is exactly the
- * handling a real key must never get. Use a throwaway key for the bench.
+ * It takes the private scalar as hex on the command line. In the release
+ * workflow the scalar comes from a repository secret and never leaves the
+ * runner; on a bench use a throwaway key.
  *
  * Build: gcc -DXPRSSIG_HOST_TEST -I../common/xprs_sig \
  *            -o xsign xsign.c ../common/xprs_sig/xprssig.c -lcrypto
- * Usage: xsign <32-byte-priv-hex> "<line to sign>"
- *        xsign --pub <32-byte-priv-hex>
+ * Usage: xsign <32-byte-priv-hex> "<line to sign>"      prints the sig (base85)
+ *        xsign --pub <32-byte-priv-hex>                   prints the x-only public key
+ *        xsign --verify <32-byte-pub-hex> "<line>" <sig>  exit 0 when it verifies
  */
 
 #include <stdio.h>
@@ -45,9 +44,23 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (argc == 5 && strcmp(argv[1], "--verify") == 0) {
+        if (!unhex(argv[2], pub, XPRSSIG_KEY_LEN)) { fprintf(stderr, "bad key\n"); return 2; }
+        unsigned char digest[32], sig[XPRSSIG_LEN];
+        SHA256((const unsigned char *)argv[3], strlen(argv[3]), digest);
+        if (xprssig_b85_decode(argv[4], strlen(argv[4]), sig, sizeof sig) != XPRSSIG_LEN) {
+            fprintf(stderr, "bad signature encoding\n");
+            return 2;
+        }
+        if (!xprssig_verify(digest, sig, pub)) { printf("BAD\n"); return 1; }
+        printf("OK\n");
+        return 0;
+    }
+
     if (argc != 3) {
-        fprintf(stderr, "usage: %s <priv-hex> \"<line>\"\n       %s --pub <priv-hex>\n",
-                argv[0], argv[0]);
+        fprintf(stderr, "usage: %s <priv-hex> \"<line>\"\n       %s --pub <priv-hex>\n"
+                        "       %s --verify <pub-hex> \"<line>\" <sig>\n",
+                argv[0], argv[0], argv[0]);
         return 2;
     }
     if (!unhex(argv[1], priv, XPRSSIG_KEY_LEN)) { fprintf(stderr, "bad key\n"); return 2; }

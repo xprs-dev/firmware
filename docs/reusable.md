@@ -169,4 +169,14 @@ reuse potential.
   approval line. `xota_publisher_key()` exposes the pinned `fwkey` to
   whoever verifies the publisher's packets.
 - **`reply_lanes()` / `reply_air()`** -- see "Answering a station" above.
+- **`fw_file_digest()` / `fw_prune()` (xprs_app.c)** -- hash a file on the
+  card in 2 KB bites with a breath every 64 KB, and drop every file of a
+  `<board>-` family but one. The pattern for anything that keeps a
+  content-addressed copy on /idx: land it as `.part`, prove it, rename it.
+- **`tools/xsign.c`** -- sign and `--verify` one packet line with the
+  station's own signer, host-built. `tools/scripts/publish_folder.py`
+  wraps it with `bech32_decode()` / `bech32_encode()` (nsec, npub) and the
+  packet signing rule (sig over the line without `sig:`/`via:`, placed
+  before `m:`); reuse those three for any tool that signs packets outside
+  the app.
 
