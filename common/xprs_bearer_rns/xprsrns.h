@@ -189,6 +189,13 @@ static inline bool xprsrns_send_to(const char *c, const char *wire, int len)
 { (void)c; (void)wire; (void)len; return false; }
 static inline bool xprsrns_can_address(const char *c) { (void)c; return false; }
 static inline int xprsrns_peer_count(void) { return 0; }
+static inline void xprsrns_set_link_cb(void (*cb)(const rns_packet_t *p)) { (void)cb; }
+static inline bool xprsrns_send_packet(const uint8_t *pkt, size_t len)
+{ (void)pkt; (void)len; return false; }
+static inline bool xprsrns_peer_route(const char *call, uint8_t dest[RNS_HASH_LEN],
+                                      uint8_t pub[RNS_PUB_LEN], uint8_t next_hop[RNS_HASH_LEN],
+                                      bool *have_hop)
+{ (void)call; (void)dest; (void)pub; (void)next_hop; (void)have_hop; return false; }
 static inline void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx,
                                            uint32_t *np, int *peers)
 { if (tx) *tx = 0; if (rx) *rx = 0; if (np) *np = 0; if (peers) *peers = 0; }
