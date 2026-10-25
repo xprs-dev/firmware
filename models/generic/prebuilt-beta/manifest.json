@@ -1,6 +1,6 @@
 {
   "name": "XPRS Any ESP32 board",
-  "version": "0.6.0-beta.3",
+  "version": "0.6.0-beta.4",
   "new_install_prompt_erase": true,
   "builds": [
     {
