@@ -15,6 +15,7 @@ sdkconfig.tdongle
 sdkconfig.epaper
 sdkconfig.c3mini
 sdkconfig.c3qemu
+sdkconfig.c3xwifi
 # Slipped through this list until 2026-10-03 and was therefore COMMITTED,
 # which is how the Heltec came to build a resolved config older than its own
 # defaults: the Reticulum bearer its defaults disable was on, and the task
@@ -31,6 +32,7 @@ tools/tinynimble_probe/sdkconfig.*
 *.bin
 *.elf
 !models/*/prebuilt/*.bin
+!models/*/prebuilt-beta/*.bin
 
 # CREDENTIALS. Every project here keeps a committed `*.example` next to a real
 # file that must never be. WiFi passwords and APRS-IS passcodes live in these.
@@ -48,3 +50,4 @@ tools/xsign
 # idf.py (as opposed to PlatformIO) writes a BARE sdkconfig next to the project.
 # Generated, and from whichever IDF version happened to run -- never an input.
 sdkconfig
+dist/
