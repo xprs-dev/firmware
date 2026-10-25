@@ -1073,6 +1073,11 @@ static stats_blob_t *blob_borrow(void)
 
 void xst_stats_load(const char *path)
 {
+    /* Same first-touch rule as the chat ring: the storage task loads
+     * stats.bin at mount, and on the C3 that beats xst_init to it (a Store
+     * access fault in idx at boot, every boot once stats.bin existed). */
+    chat_ensure();
+    if (!s_sb10) return;
     FILE *f = fopen(path, "rb");
     if (!f) return;
     stats_blob_t *bl = blob_borrow();
@@ -1097,6 +1102,7 @@ void xst_stats_load(const char *path)
 
 void xst_stats_save(const char *path)
 {
+    if (!s_sb10) return;              /* nothing gathered yet */
     stats_blob_t *bl = blob_borrow();
     if (!bl) {
         /* Skipped, not lost: the rings are still in RAM and the next round
