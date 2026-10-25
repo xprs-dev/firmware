@@ -18,6 +18,12 @@ name: release
 # key common/xprs_ota/fw_publisher.h names; publish_folder.py refuses any
 # other, so a wrong secret fails the release rather than signing something
 # no station would take.
+#
+# common/xwifi is a symlink to the sibling checkout of xprs-dev/xwifi (the
+# XPRS-WiFi library), so that repository is checked out beside this one at
+# the commit .xwifi-commit pins. While it is private the checkout needs a
+# token that can read it: the secret XWIFI_TOKEN (a fine-grained PAT with
+# read access to xprs-dev/xwifi); a public xwifi needs none.
 
 on:
   push:
@@ -37,12 +43,26 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: firmware
     strategy:
       fail-fast: false
       matrix:
         board: [tdeck, tdongle-s3, m5stack-core, heltec-v3, epaper-1in54, esp32c3-mini, generic]
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: firmware
+      - name: The xwifi commit this tree builds against
+        id: xwifi
+        run: echo "commit=$(cat .xwifi-commit)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: xprs-dev/xwifi
+          ref: ${{ steps.xwifi.outputs.commit }}
+          path: xwifi
+          token: ${{ secrets.XWIFI_TOKEN || github.token }}
       - name: The version and the channel
         id: ver
         run: |
@@ -65,7 +85,7 @@ jobs:
           path: |
             ~/.platformio/platforms
             ~/.platformio/packages
-          key: pio-${{ runner.os }}-${{ hashFiles(format('models/{0}/firmware/platformio.ini', matrix.board)) }}
+          key: pio-${{ runner.os }}-${{ hashFiles(format('firmware/models/{0}/firmware/platformio.ini', matrix.board)) }}
       - name: Prepare the project (the tag's version, no bench secrets)
         id: proj
         run: |
@@ -85,7 +105,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: image-${{ matrix.board }}
-          path: models/${{ matrix.board }}/${{ steps.ver.outputs.out }}/
+          path: firmware/models/${{ matrix.board }}/${{ steps.ver.outputs.out }}/
           if-no-files-found: error
 
   publish:
