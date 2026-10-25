@@ -2075,6 +2075,8 @@ static bool pol_priority_hook(const char *wire, int len)
 static void ota_answer(const char *to, const char *bearer, const char *id,
                        int code, const char *msg);
 static void idx_air(const char *bearer, const char *wire, int len);
+static void reply_air(const char *ask_bearer, const char *asker,
+                      const char *wire, int len);
 
 /* Is anybody the owner of this station yet? */
 static bool pol_owned(void)
@@ -2883,7 +2885,7 @@ static void ota_answer(const char *to, const char *bearer, const char *id,
     /* Every bearer idx_air knows, Bluetooth included: a phone setting a
      * station up over Bluetooth is listening there and nowhere else, and a
      * refusal sent to the LAN instead was a refusal it never heard. */
-    idx_air(bearer, w, n);
+    reply_air(bearer, to, w, n);
 }
 
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
@@ -7150,7 +7152,60 @@ static void idx_result_m(const char *bearer, const char *to,
     if (m && m[0] && n > 0 && n < (int)sizeof w - 4)
         n += snprintf(w + n, sizeof w - (size_t)n, " m:%s", m);
     n = sign_wire(w, n, sizeof w);
-    idx_air(bearer, w, n);
+    reply_air(bearer, to, w, n);
+}
+
+/* Where a directed answer goes (XPRS.md 12.0): the bearer the ask arrived
+ * on is "a sound default, not a constraint", and the station answers on
+ * every bearer when it cannot tell which path reaches the asker.
+ *
+ * Measured at home, 2026-10-25: a phone asked this T-Deck for the rooms'
+ * history over Bluetooth; the C3 beside it relayed the ask over ESP-NOW and
+ * that copy arrived FIRST, so the twelve-packet replay and every result code
+ * went out on ESP-NOW, a radio no phone has, and the phone heard silence
+ * while its Bluetooth copies of the same ask were dropped as repeats. So:
+ * the arrival bearer, plus the local bearer this station last heard the
+ * ASKER itself on (the device table, in range), and when the asker is not
+ * in the table at all, every local bearer. LoRa and Reticulum keep their
+ * own lane -- airtime there is dear and a Reticulum answer is addressed.
+ * Duplicates dedup on the section 5 identifier. idx_task only. */
+#define REPLY_LANES 3
+static bool same_base_call(const char *a, const char *b)
+{
+    while (*a && *a != '-' && *b && *b != '-') {
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b)) return false;
+        a++; b++;
+    }
+    return (!*a || *a == '-') && (!*b || *b == '-');
+}
+
+static int reply_lanes(const char *ask_bearer, const char *asker,
+                       char out[REPLY_LANES][7])
+{
+    int n = 0;
+    snprintf(out[n++], 7, "%s", ask_bearer ? ask_bearer : "ble");
+    if (bearer_reach(ask_bearer) != XPRS_REACH_LOCAL) return n;
+    static xst_dev_t devs[XST_SEEN_MAX];
+    const char *heard_on = NULL;
+    int nd = xst_devices(devs, XST_SEEN_MAX, 600);
+    for (int i = 0; i < nd; i++)
+        if (asker && same_base_call(devs[i].call, asker)) { heard_on = devs[i].bearer; break; }
+    if (heard_on && bearer_reach(heard_on) == XPRS_REACH_LOCAL) {
+        if (strcmp(heard_on, out[0]) != 0) snprintf(out[n++], 7, "%s", heard_on);
+        return n;
+    }
+    static const char *const k_local[] = { "ble", "espnow", "lan" };
+    for (int i = 0; i < 3 && n < REPLY_LANES; i++)
+        if (strcmp(k_local[i], out[0]) != 0) snprintf(out[n++], 7, "%s", k_local[i]);
+    return n;
+}
+
+static void reply_air(const char *ask_bearer, const char *asker,
+                      const char *wire, int len)
+{
+    char lanes[REPLY_LANES][7];
+    int n = reply_lanes(ask_bearer, asker, lanes);
+    for (int i = 0; i < n; i++) idx_air(lanes[i], wire, len);
 }
 
 /* Does this station run at always-on scale (XPRS.md 12.9.4, 36.9.4)?
@@ -7855,7 +7910,7 @@ static void idx_answer_history(const char *ask_wire, int ask_len,
     for (int i = 0; i < s_page->n; i++) {
         vTaskDelay(pdMS_TO_TICKS(1500));
         esp_task_wdt_reset();
-        idx_air(bearer, s_page->wire[i], s_page->len[i]);
+        reply_air(bearer, from, s_page->wire[i], s_page->len[i]);
     }
     vTaskDelay(pdMS_TO_TICKS(1500));
     idx_result(bearer, from, cmdid, s_page->more ? 206 : 200);

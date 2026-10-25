@@ -313,6 +313,17 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
     }
     if (httpd_query_key_value(query, "dir", p, sizeof p) == ESP_OK)
         ctx.dir = p[0] == 'i' ? 1 : p[0] == 'o' ? 2 : 0;
+    /* room=local|regional|global: one chat room at a time (spec/API-HTTP.md).
+     * The page asked for the newest 200 messages and filed them itself, and a
+     * bridged Meshtastic channel filled all 200: Local and Global stayed empty
+     * while the station held their conversations. An unknown room asks for
+     * nothing rather than for everything. */
+    if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK) {
+        q.room = !strcmp(p, "local")    ? XPRS_REACH_LOCAL + 1
+                 : !strcmp(p, "regional") ? XPRS_REACH_REGIONAL + 1
+                 : !strcmp(p, "global")   ? XPRS_REACH_GLOBAL + 1
+                                          : 0xFF;   /* matches nothing */
+    }
     char mailcall[48] = {0};
     if (mail_only) {
         if (httpd_query_key_value(query, "call", mailcall,

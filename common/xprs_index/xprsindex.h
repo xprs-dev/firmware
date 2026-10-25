@@ -213,6 +213,13 @@ typedef struct {
      * section 36 mail rule; anything answering the RADIO leaves it false.
      */
     bool     trusted;
+    /**
+     * One chat room (XPRS.md 9.11), for the web chat's `room=`: 0 any, else
+     * XPRS_REACH_LOCAL/REGIONAL/GLOBAL plus one. Matches an undirected record
+     * (no `d:`, or a `#` channel) heard in range, by the scope its author
+     * wrote. Asked a room at a time, one busy room cannot fill the page.
+     */
+    uint8_t  room;
 } xprsidx_query_t;
 
 typedef struct {

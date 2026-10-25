@@ -16,7 +16,7 @@ XPRS=../xprs_codec
 # inside a file that has a main() and so cannot be linked in here.
 gcc -Wall -Wextra -Werror -O1 -DXPRSIDX_HOST_TEST \
     -I. -I"$XPRS" \
-    -o /tmp/test_xprsindex \
+    -o ${TMPDIR:-/tmp}/test_xprsindex \
     xprsindex.c "$XPRS"/xprs.c test_xprsindex_host.c test_sha256_host.c
 
-/tmp/test_xprsindex
+${TMPDIR:-/tmp}/test_xprsindex

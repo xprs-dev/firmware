@@ -2400,6 +2400,25 @@ RAM, less than the 113,864 it held without it. What is still to measure on
 the board itself: the BLE receive task (8 KB), and WiFi's and the BLE
 controller's own memory beside the hub link.
 
+### A directed answer goes where the asker can hear (2026-10-25)
+
+A phone at home asked the T-Deck for the rooms' history over Bluetooth. The
+C3 beside it relayed the ask over ESP-NOW, that copy arrived first, and the
+whole answer -- `202`, twelve packets, `206` -- went out on ESP-NOW, a radio
+no phone has. The Bluetooth copies of the same ask arrived a second later and
+were dropped as repeats (one answer per command id), so the station's log
+read as a complete, correct replay while the phone heard nothing. The symptom
+on the phone: only what arrived live, never what was said while away.
+
+XPRS.md 12.0 already rules it: the arrival bearer is a default, not a
+constraint, and a station that cannot tell which path reaches the asker
+answers on every bearer. `reply_lanes()` is that rule: the arrival bearer,
+plus the local bearer the device table last heard the asker on, or every
+local bearer when the asker is unknown; LoRa and Reticulum keep their own
+lane. Every `t:result` (`idx_result_m`, `ota_answer`) and every replayed page
+goes through `reply_air()`. Checking it: `/api/log` shows `replay on ble:`
+beside `replay on espnow:` for a phone's ask; before, only the second.
+
 ## Validating on the device
 
 ### Screenshots of a screen board, and walking its panels (2026-10-24)

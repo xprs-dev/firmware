@@ -122,3 +122,16 @@ reuse potential.
 - **Sizing a table column**: measure, don't guess. The advance widths are in
   the font's `.adv_w` table (1/16 px); a column needs the widest value it
   holds plus `pad_hor` on both sides.
+
+## Answering a station
+
+- **`reply_lanes()` / `reply_air()` in `xprs_app.c`** -- where a directed
+  answer goes (XPRS.md 12.0): the bearer the ask arrived on plus the local
+  bearer the asker was last heard on, or every local bearer when the asker
+  is unknown. Every `t:result` and every replayed record already uses it;
+  anything new that answers a particular station (a `cmd:file` grant, a
+  future `cmd:who`) should call `reply_air` rather than `idx_air` with the
+  arrival bearer, or a relayed ask gets its answer on the relay's radio.
+- **`same_base_call(a, b)`** -- callsign equality ignoring a `-n` device
+  suffix and case, for comparing an `f:` with a device-table entry.
+
