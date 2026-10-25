@@ -8155,7 +8155,42 @@ static const char *fw_channel(void) { return xcfg_get("fwchan", "stable"); }
 static bool fw_enabled(void) { return xcfg_get_bool("fwauto", true); }
 static uint32_t fw_now_s(void) { return (uint32_t)(esp_timer_get_time() / 1000000); }
 static bool fw_busy(void) { return xota_busy(); }
-static bool fw_pick(char *out, size_t cap) { return miss_archiver(out, cap); }
+/* Reticulum first; failing that, the local bearers the archiver was heard
+ * on -- the ask carries d:, so only it answers. The hub link at home flaps
+ * (recv failed, errno 104) and a station two metres away was unreachable
+ * through a server on another continent. */
+static bool fw_send_to(const char *call, const char *wire, int len)
+{
+    if (xprsrns_send_to(call, wire, len)) return true;
+    idx_air("lan", wire, len);
+    idx_air("espnow", wire, len);
+    return true;
+}
+
+static bool fw_pick(char *out, size_t cap)
+{
+    if (miss_archiver(out, cap)) return true;
+    /* Nobody over Reticulum: an archiver heard on a local bearer will do
+     * for the ASK (fw_send_to airs it there); the bytes need a Reticulum
+     * route, which the want below pulls. */
+    for (int i = 0; i < CU_PEERS; i++)
+        if (s_cu_peers[i].used && s_cu_peers[i].bearer[0] &&
+            strcmp(s_cu_peers[i].bearer, "rns") != 0) {
+            snprintf(out, cap, "%s", s_cu_peers[i].call);
+            for (int k = 0; k < CU_PEERS; k++)
+                if (s_cu_peers[k].used && !xprsrns_can_address(s_cu_peers[k].call))
+                    xprsrns_want(s_cu_peers[k].call);
+            return true;
+        }
+    /* Nobody addressable yet, as after a reboot before the announces come
+     * round: pull the routes of the archivers this station knows, so the
+     * next minute's try finds one (the uplink answers a path request with
+     * the peer's announce). */
+    for (int i = 0; i < CU_PEERS; i++)
+        if (s_cu_peers[i].used && !xprsrns_can_address(s_cu_peers[i].call))
+            xprsrns_want(s_cu_peers[i].call);
+    return false;
+}
 static bool fw_sink_begin(const char *v, size_t size, const uint8_t sha[32])
 { return xota_push_begin_sha(v, size, sha) == ESP_OK; }
 static bool fw_sink_write(const uint8_t *d, size_t n) { return xota_push_write(d, n) == ESP_OK; }
@@ -8179,7 +8214,7 @@ static void fw_fetch_start(void)
     cfg.busy = fw_busy;
     cfg.pick_archiver = fw_pick;
     cfg.sign = sign_wire;
-    cfg.send_to = xprsrns_send_to;
+    cfg.send_to = fw_send_to;
     cfg.peer_route = xprsrns_peer_route;
     cfg.want = xprsrns_want;
     cfg.send_packet = xprsrns_send_packet;

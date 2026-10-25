@@ -23,7 +23,7 @@
 #define STALL_S          4u            /* no part: ask again */
 #define FETCH_MAX_S      (40u * 60u)   /* the whole transfer */
 #define FAIL_HOLD_S      (6u * 3600u)  /* a digest that failed is left alone */
-#define PARKED_MAX       4
+#define PARKED_MAX       8
 
 typedef enum { ST_IDLE, ST_ASKED, ST_LINKING, ST_GETTING, ST_FINISHING } state_t;
 
@@ -142,9 +142,16 @@ void xfw_on_wire(const char *wire, int len)
     if (!s_on || !wire || len <= 0 || len > XPRS_MAX_WIRE) return;
     /* Cheap tests only here: the type and who it is from or for. */
     if (strncmp(wire, "t:file ", 7) == 0) {
-        if (!s_have_key) return;
+        /* The publisher's, and about THIS board: a release airs a
+         * description per board in one burst, and parking space is for
+         * the one that matters. */
+        if (!s_have_key || !s_cfg.board) return;
         const char *f = strstr(wire, " f:");
         if (!f || !same_call(f + 3, s_pub_call)) return;
+        const char *nm = strstr(wire, " name:");
+        if (!nm) return;
+        size_t bl = strlen(s_cfg.board);
+        if (strncmp(nm + 6, s_cfg.board, bl) != 0 || nm[6 + bl] != '-') return;
     } else if (strncmp(wire, "t:result ", 9) == 0) {
         if (s_f.state != ST_ASKED) return;
         const char *r = strstr(wire, " r:");
