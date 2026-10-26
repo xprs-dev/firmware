@@ -1,6 +1,6 @@
 {
   "name": "XPRS ESP32-C3 Mini",
-  "version": "0.6.0-beta.5",
+  "version": "0.6.0-beta.6",
   "new_install_prompt_erase": true,
   "builds": [
     {

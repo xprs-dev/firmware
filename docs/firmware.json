@@ -1,5 +1,5 @@
 {
-  "generated": "2026-10-26T02:15:24Z",
+  "generated": "2026-10-26T15:35:38Z",
   "publisher": {
     "callsign": "X1WATT",
     "key": "7756ba1e8d04b9eea1bd7e8be8e573b93add4cbfd388abe7bb1bf6673e7b47e9"
@@ -76,64 +76,64 @@
     ]
   },
   "beta": {
-    "listing": "0cf113867332a7b498bdd0d3a1ddd3e49d65d966c08688a90b61cd6cfe77e42f",
-    "listing_text": "XFL1\nr3FDRgpFoGUmwuju4uT5C0zPejjAf_ytu0hmkXqXVpU.bin 1435936 esp32c3-mini-0.6.0-beta.5.bin\nnXR_1opwKjL-LxbhPNd9y9mRaxHuYUBja9_qaT0SyJs.bin 1436592 generic-0.6.0-beta.5.bin\nvp1pOlFJFfJ_wSV_pv0u_uxFRcrUsuvkqtnEuigr6zE.bin 1575136 heltec-v3-0.6.0-beta.5.bin\nNlh750A62RDOgR0P-sqlCbWMduhWqMFSsLTkmXOpKLU.bin 1744256 m5stack-core-0.6.0-beta.5.bin\n4_ckP6ImrGEhY9mO4mdnGgSY22Nscv-WJyOTbqvXQDY.bin 1696176 tdeck-0.6.0-beta.5.bin\nxkXwdDUBTclH4x2sarZq9Q2PPBo7HheMm1BRHp3zgIc.bin 1666320 tdongle-s3-0.6.0-beta.5.bin\n",
+    "listing": "c651aa8951446e0e8a387b804b4209039427b8a430564ac5e19b1bcca946be8f",
+    "listing_text": "XFL1\n_0KPnV6gl5ZxHbkARu57OMFTXu75lNfDE2Bz-Ay8KPo.bin 1442112 esp32c3-mini-0.6.0-beta.6.bin\n4ZFzZyrJbd-S930R2c2R_AaUnXs4ZM4uXK9-wfwgF6s.bin 1441648 generic-0.6.0-beta.6.bin\nmUNTjzTUutEMNPuMyJrixdehxj67OFjzMNc_4aoF-WA.bin 1580000 heltec-v3-0.6.0-beta.6.bin\naHOXN723JVylD7YosevlPeX5SuqRhT7y4kep_ylzu7c.bin 1749376 m5stack-core-0.6.0-beta.6.bin\nWFOL-Uwi8e2QYcxKoU0RI2QGLnQDuMyGdBtZTdfJWug.bin 1701024 tdeck-0.6.0-beta.6.bin\nXEdTi5JWlOFSLbews3mtK5Li1Ay9Vq3wXec7GoySxiw.bin 1671264 tdongle-s3-0.6.0-beta.6.bin\n",
     "wires": [
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:DPEThnMyp7SYvdDTod3T5J1l2WbAhoipC2HNbP535C8.xfl kind:folder count:6 size:9554416 sig:&HO7vm%mA]p*jp%g76D#@+BC[@9S93!B=64NNy9U4)IQj&=>d*(!WnVMrvAo m:XPRS firmware beta",
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:r3FDRgpFoGUmwuju4uT5C0zPejjAf_ytu0hmkXqXVpU.bin size:1435936 tag:beta name:esp32c3-mini-0.6.0-beta.5.bin sig:G[j3BQxDi@Ya81+m3[0LvF5+b@H5Wf1qqCMuHMB-X?YM9Fixp?s.hxSXwI(>",
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:nXR_1opwKjL-LxbhPNd9y9mRaxHuYUBja9_qaT0SyJs.bin size:1436592 tag:beta name:generic-0.6.0-beta.5.bin sig:@Zz_-z!CSOy@-h9kHb-$wczonmV[]fiXJenVzRq@@Ha/5!%?%p-AW-xFrmB3",
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:vp1pOlFJFfJ_wSV_pv0u_uxFRcrUsuvkqtnEuigr6zE.bin size:1575136 tag:beta name:heltec-v3-0.6.0-beta.5.bin sig:k5B5gu?3Q?#t,n23kFe&ICz&Lox(!5Df)xms8[nmwA&d=6<5epx/l$2]Z_a/",
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:Nlh750A62RDOgR0P-sqlCbWMduhWqMFSsLTkmXOpKLU.bin size:1744256 tag:beta name:m5stack-core-0.6.0-beta.5.bin sig:rj[g$DslMwv5,*O)_-B[OoJhmcfpFIex.&Z&GaTB7MB//nY-NMO87L0)nE@@",
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:4_ckP6ImrGEhY9mO4mdnGgSY22Nscv-WJyOTbqvXQDY.bin size:1696176 tag:beta name:tdeck-0.6.0-beta.5.bin sig:B.+3Zkr[5dm#+.UqE*M%?!jYIIh?>=KFf.U?[<H1[HC.+?5lZyiyi5UO2On@",
-      "t:file f:X1WATT ts:2026-10-26_02:15:24 file:xkXwdDUBTclH4x2sarZq9Q2PPBo7HheMm1BRHp3zgIc.bin size:1666320 tag:beta name:tdongle-s3-0.6.0-beta.5.bin sig:XF4w+bmHEK>%MD15[=KAWw1RuniahJFuqzVCE=o]HL)4z-QS<,JS>Bqz@$l8"
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:xlGqiVFEbg6KOHuAS0IJA5QnuKQwVkrF4ZsbzKlGvo8.xfl kind:folder count:6 size:9585424 sig:@?KHnRLgZfGgS9$V,5B^FTuip.my767LBdCs_#gAoKJ84F5F1*Ju)1j5yqEB m:XPRS firmware beta",
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:_0KPnV6gl5ZxHbkARu57OMFTXu75lNfDE2Bz-Ay8KPo.bin size:1442112 tag:beta name:esp32c3-mini-0.6.0-beta.6.bin sig:e.@XS<?rkd8;kWHD?RJt*yPl2*hBg@Rb9dMd,SzZv*0hodQejvo-1a_f]P31",
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:4ZFzZyrJbd-S930R2c2R_AaUnXs4ZM4uXK9-wfwgF6s.bin size:1441648 tag:beta name:generic-0.6.0-beta.6.bin sig:CGo7Y^$xW)!L2Vsj?JV%3]x^2H,0BTv;R/mPUIf+6RZOj*0BUmkm(lCS4GMN",
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:mUNTjzTUutEMNPuMyJrixdehxj67OFjzMNc_4aoF-WA.bin size:1580000 tag:beta name:heltec-v3-0.6.0-beta.6.bin sig:H;B*Dq]+abbE6VHFN1D_f#&DClh^lJlr-4?wl.!ic4ug[K=>gD%Z(V4qOWa+",
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:aHOXN723JVylD7YosevlPeX5SuqRhT7y4kep_ylzu7c.bin size:1749376 tag:beta name:m5stack-core-0.6.0-beta.6.bin sig:8zJq@LC<DOvkB9H(0c#9RbRn)MN-4qH@]<.Itx3&OxmbVcS1RIE3S-<NZe=j",
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:WFOL-Uwi8e2QYcxKoU0RI2QGLnQDuMyGdBtZTdfJWug.bin size:1701024 tag:beta name:tdeck-0.6.0-beta.6.bin sig:V*3/mGrm%%<0A(nxtms-<jIm?vcN^.A]t(HZR2_)k@fROFrzsNY^C5^PNqHK",
+      "t:file f:X1WATT ts:2026-10-26_15:35:38 file:XEdTi5JWlOFSLbews3mtK5Li1Ay9Vq3wXec7GoySxiw.bin size:1671264 tag:beta name:tdongle-s3-0.6.0-beta.6.bin sig:dEM)4-st(Xx3RC3fbsojM.sdyKu03Ha%y2F&VA!W?[em*duWyH4qNFJ%o(d="
     ],
     "members": [
       {
         "board": "esp32c3-mini",
-        "version": "0.6.0-beta.5",
-        "name": "esp32c3-mini-0.6.0-beta.5.bin",
-        "sha256": "af7143460a45a06526c2e8eee2e4f90b4ccf7a38c07ffcadbb4866917a975695",
-        "size": 1435936,
+        "version": "0.6.0-beta.6",
+        "name": "esp32c3-mini-0.6.0-beta.6.bin",
+        "sha256": "ff428f9d5ea09796711db90046ee7b38c1535eeef994d7c3136073f80cbc28fa",
+        "size": 1442112,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/prebuilt-beta/firmware.bin"
       },
       {
         "board": "generic",
-        "version": "0.6.0-beta.5",
-        "name": "generic-0.6.0-beta.5.bin",
-        "sha256": "9d747fd68a702a32fe2f16e13cd77dcbd9916b11ee6140636bdfea693d12c89b",
-        "size": 1436592,
+        "version": "0.6.0-beta.6",
+        "name": "generic-0.6.0-beta.6.bin",
+        "sha256": "e19173672ac96ddf92f77d11d9cd91fc06949d7b3864ce2e5caf7ec1fc2017ab",
+        "size": 1441648,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/prebuilt-beta/firmware.bin"
       },
       {
         "board": "heltec-v3",
-        "version": "0.6.0-beta.5",
-        "name": "heltec-v3-0.6.0-beta.5.bin",
-        "sha256": "be9d693a514915f27fc1257fa6fd2efeec4545cad4b2ebe4aad9c4ba282beb31",
-        "size": 1575136,
+        "version": "0.6.0-beta.6",
+        "name": "heltec-v3-0.6.0-beta.6.bin",
+        "sha256": "9943538f34d4bad10c34fb8cc89ae2c5d7a1c63ebb3858f330d73fe1aa05f960",
+        "size": 1580000,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt-beta/firmware.bin"
       },
       {
         "board": "m5stack-core",
-        "version": "0.6.0-beta.5",
-        "name": "m5stack-core-0.6.0-beta.5.bin",
-        "sha256": "36587be7403ad910ce811d0ffacaa509b58c76e856a8c152b0b4e49973a928b5",
-        "size": 1744256,
+        "version": "0.6.0-beta.6",
+        "name": "m5stack-core-0.6.0-beta.6.bin",
+        "sha256": "68739737bdb7255ca50fb628b1ebe53de5f94aea91853ef2e247a9ff2973bbb7",
+        "size": 1749376,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt-beta/firmware.bin"
       },
       {
         "board": "tdeck",
-        "version": "0.6.0-beta.5",
-        "name": "tdeck-0.6.0-beta.5.bin",
-        "sha256": "e3f7243fa226ac612163d98ee267671a0498db636c72ff962723936eabd74036",
-        "size": 1696176,
+        "version": "0.6.0-beta.6",
+        "name": "tdeck-0.6.0-beta.6.bin",
+        "sha256": "58538bf94c22f1ed9061cc4aa14d112364062e7403b8cc86741b594dd7c95ae8",
+        "size": 1701024,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt-beta/firmware.bin"
       },
       {
         "board": "tdongle-s3",
-        "version": "0.6.0-beta.5",
-        "name": "tdongle-s3-0.6.0-beta.5.bin",
-        "sha256": "c645f07435014dc947e31dac6ab66af50d8f3c1a3b1e178c9b50511e9df38087",
-        "size": 1666320,
+        "version": "0.6.0-beta.6",
+        "name": "tdongle-s3-0.6.0-beta.6.bin",
+        "sha256": "5c47538b925694e1522db7b0b379ad2b92e2d40cbd56adf05de73b1a8c92c62c",
+        "size": 1671264,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt-beta/firmware.bin"
       }
     ]
