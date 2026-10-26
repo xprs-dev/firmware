@@ -126,6 +126,25 @@ reuse potential.
   arrival bearer, or a relayed ask gets its answer on the relay's radio.
 - **`same_base_call(a, b)`** -- callsign equality ignoring a `-n` device
   suffix and case, for comparing an `f:` with a device-table entry.
+- **`xst_dev_path(row, window, &path)` (`xprs_station`)** -- how far a
+  device-table row is, in metres, with the relay legs added up: `total_m`
+  (-1 while a leg is unknown), `near_m` (to the nearest relay, or the whole
+  way for a neighbour), `far_m`, `relay`. The HTTP devices list, the radar
+  and the Reachable table all draw from it; anything that prints a distance
+  for a station should, rather than `xst_est_distance_m(row.rssi)`, which
+  for a relayed row is the relay's distance.
+- **`xst_far_note(observer, call, digit)` / `xst_far_rssi()`** -- what the
+  neighbours said they hear and how loud (their `hears:` + `zhq:`), one
+  (observer, callsign) pair a row. Fed from `seen_note` for every
+  observation heard in person or verified. Reuse it for any "how far is X
+  from Y" question (a route choice, a map) instead of parsing observations
+  again.
+- **`via_tail()` and `xst_dev_t.via`** -- a packet's relay chain with this
+  station's own callsign left out (a gateway's translation names the
+  gateway, XPRS.md 9.11.5), the nearest two kept. `xst_ingest_parsed_ex(...,
+  hops_more)` adds hops the wire cannot express (a Meshtastic node's own
+  relays, from the frame's hop_start - hop_limit, carried through
+  `mt_mesh_ops_t.deliver`'s `rssi, hops`).
 
 ## Reticulum beyond single packets
 

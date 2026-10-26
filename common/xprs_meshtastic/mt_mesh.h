@@ -62,8 +62,13 @@ typedef struct {
     uint32_t (*random)(void);
     /* A translated XPRS wire for every bearer except LoRa, and the local
      * UI. [sign]: sign it as this station (gateway receipts); the
-     * translations of other people's words are never signed. */
-    void     (*deliver)(void *ctx, const char *wire, int len, bool sign);
+     * translations of other people's words are never signed. [rssi] is
+     * the frame's, when the node itself aired it, 0 when a Meshtastic relay
+     * did (then the reading is the relay's, and says nothing about the
+     * node); [hops] is how many of that network's relays it came through
+     * (hop_start - hop_limit). Both 0 for a receipt. */
+    void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
+                        int rssi, int hops);
     /* The time field for a packet composed now, e.g. "ts:2026-09-19_12:04:00"
      * (seconds zeroed when [to_minute]), or an epoch: when there is no clock.
      * Returns its length, 0 when the station can say nothing. */
@@ -268,6 +273,10 @@ typedef struct {
      * on purpose -- a busy public channel never goes quiet, and a radio
      * that stayed for it would never serve the other network again. */
     uint32_t        last_dm_ms;
+    /* The frame being handled: what ops.deliver says about its translation
+     * (see there). Set by mt_mesh_on_frame before it decodes. */
+    int             rx_rssi;
+    int             rx_hops;
     uint8_t         bcast_min[60];   /* mirrored broadcasts per minute */
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;

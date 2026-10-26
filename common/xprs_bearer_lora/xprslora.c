@@ -2233,10 +2233,11 @@ void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
 
 static xprslora_mt_hooks_t s_hooks;
 
-static void mt_deliver(void *ctx, const char *wire, int len, bool sign)
+static void mt_deliver(void *ctx, const char *wire, int len, bool sign,
+                       int rssi, int hops)
 {
     (void)ctx;
-    if (s_hooks.deliver) s_hooks.deliver(wire, len, sign);
+    if (s_hooks.deliver) s_hooks.deliver(wire, len, sign, rssi, hops);
 }
 
 static int mt_stamp(void *ctx, char *out, int cap, bool to_minute)

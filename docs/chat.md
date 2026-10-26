@@ -38,14 +38,28 @@ buffer for every reply, and four clients may be connected.
 and are not yet in that document:
 
 - `GET /api/xprs/devices` -> `{ok, heard, count, devices:[{call, bearer,
-  rssi, dist_m, hops, age_s}]}` -- the list `xst_devices()` keeps, the same
-  one the Reachable panel prints and the radar plots, 300-second window.
-  One row per station: `bearer`, `hops` and `age_s` are the station's
-  latest contact, and `rssi` is its strongest radio reading inside the
-  window, whichever bearer carried the last packet (a LAN packet has no
-  signal and must not cost the row its distance). `dist_m` is
-  `xst_est_distance_m()`: RSSI through a log-distance model, an estimate
-  and no better than the room.
+  rssi, dist_m, hops, age_s, via?, near_m?, far_m?}]}` -- the list
+  `xst_devices()` keeps, the same one the Reachable panel prints and the
+  radar plots, 300-second window. One row per station: `bearer` and
+  `age_s` are the station's latest contact; `hops` is the SHORTEST fresh
+  path to it (a neighbour whose packet also came round through a relay is
+  still a neighbour), and `rssi` the strongest radio reading on a row of
+  that hop count (a LAN packet has no signal and must not cost the row its
+  distance; a relayed copy's signal is the relay's and never stands in for
+  a direct reading). `dist_m` is the whole way, through
+  `xst_est_distance_m()` (RSSI through a log-distance model, an estimate
+  and no better than the room): for a neighbour that is its own signal; for
+  a station a relay carried here it is the leg to the nearest relay plus
+  what that relay itself measured to the station, said in the relay's
+  observation (`hears:` with the `zhq:` digits) and kept by
+  `xst_far_note()`. While a leg is unknown `dist_m` is -1. A relayed row
+  also carries `via` (the nearest relay), `near_m` (the leg to it) and
+  `far_m` (the legs beyond, -1 unknown), so the page can show the first leg
+  as a floor (`>~12 m via X3SEP2`). On the gateway itself a Meshtastic node
+  is a neighbour on `lora` at its frame's signal (`via:` naming the station
+  is not a hop); a frame that came through Meshtastic's own relays counts
+  them in `hops` and has no distance. Bench 2026-10-26: Meshtastic nodes
+  the T-Deck bridged read, on the C3's page, as being where the T-Deck was.
 - `GET /api/stats?view=` -> `{ok, view, bucket_s, points, devices[], rx[],
   tx[]}` -- the three series of the Stats panel. `view` 0 ten-minute,
   1 hourly, 2 daily. `points` is 0 until NTP has spoken.

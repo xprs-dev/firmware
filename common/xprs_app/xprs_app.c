@@ -676,7 +676,8 @@ static struct { const char *txt; int act; } s_bar[3];
 static void set_bar(void);
 static void settings_ok(int row);
 
-static void mesh_deliver(const char *wire, int len, bool sign);
+static void mesh_deliver(const char *wire, int len, bool sign, int rssi,
+                         int hops);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
 static int32_t mesh_tz(bool *known);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
@@ -2878,7 +2879,17 @@ static void ota_answer(const char *to, const char *bearer, const char *id,
     reply_air(bearer, to, w, n);
 }
 
+static void seen_note_ex(const char *wire, int len, const char *bearer,
+                         int rssi, int hops_more);
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
+{
+    seen_note_ex(wire, len, bearer, rssi, 0);
+}
+
+/* [hops_more]: hops via: cannot express (a Meshtastic node's own relays,
+ * xst_ingest_parsed_ex); 0 everywhere but the bridge's translations. */
+static void seen_note_ex(const char *wire, int len, const char *bearer,
+                         int rssi, int hops_more)
 {
     xprs_t sp;
     char call[XPRS_CALL_LEN];
@@ -3185,6 +3196,33 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
         xprsrns_note_address(from, lx);
     } while (0);
 
+    /* ── How far the neighbours' neighbours are ───────────────────────
+     * An observation's hears: with its zhq: digits (observation_beacon) is
+     * a relay's own reading of each station it hears: the far leg of a
+     * relayed row's distance (xst_dev_path). Believed from a neighbour in
+     * person, like the devices table itself, or from a signed copy that
+     * travelled; nothing is written for a bare claim from the internet.
+     * Cheap and unquota'd: it is a table of 24 digits, not gossip. */
+    do {
+        char type[16], from[XPRS_CALL_LEN], hears[208], q[XST_SEEN_MAX + 2];
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "observation") != 0) break;
+        if (!xprs_get_str(&sp, "zhq", q, sizeof q)) break;
+        if (!xprs_get_str(&sp, "hears", hears, sizeof hears)) break;
+        if (!xprs_get_str(&sp, "f", from, sizeof from) || !from[0]) break;
+        if (strcasecmp(from, s_call) == 0) break;
+        bool direct = xprs_get(&sp, "via", NULL) == NULL &&
+                      bearer_reach(bearer) == XPRS_REACH_LOCAL;
+        if (!direct && !verified(&sp)) break;
+        int i = 0;
+        for (char *tok = hears; tok && *tok && q[i]; i++) {
+            char *next = strchr(tok, ',');
+            if (next) *next = 0;
+            if (q[i] >= '0' && q[i] <= '9') xst_far_note(from, tok, q[i] - '0');
+            tok = next ? next + 1 : NULL;
+        }
+    } while (0);
+
     /* ── Gossip intake (36.9.4): who else heard whom ───────────────────
      * hears: is directly-heard-only by 10.6.3, so each listed callsign
      * pairs with the OBSERVER as its gateway.
@@ -3381,7 +3419,7 @@ static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 
     /* Chat ring + rx/device stats + devices list live in xprs_station now,
      * shared with every board that has a screen. */
-    xst_ingest_parsed(&sp, bearer, rssi);
+    xst_ingest_parsed_ex(&sp, bearer, rssi, hops_more);
     chat_note_unread(&sp);
 
     flow_t *fl = &s_flow[s_flow_n % FLOW_MAX];
@@ -3965,6 +4003,8 @@ struct meshq_s {
     volatile bool full;
     bool sign;
     int len;
+    int rssi;                 /* the frame's, 0 when a Meshtastic relay aired it */
+    int hops;                 /* that network's relays it came through */
     char wire[XPRS_MAX_WIRE + 1];
 };
 static struct meshq_s *s_meshq;  /* [MESHQ_N], big_calloc'd off the .bss */
@@ -3991,7 +4031,8 @@ static void mesh_out(const char *wire, int len)
 }
 
 /* The LoRa task, under the bridge's mutex: a copy and a flag, nothing else. */
-static void mesh_deliver(const char *wire, int len, bool sign)
+static void mesh_deliver(const char *wire, int len, bool sign, int rssi,
+                         int hops)
 {
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
     for (int i = 0; i < MESHQ_N; i++) {
@@ -4000,6 +4041,8 @@ static void mesh_deliver(const char *wire, int len, bool sign)
         s_meshq[i].wire[len] = 0;
         s_meshq[i].len = len;
         s_meshq[i].sign = sign;
+        s_meshq[i].rssi = rssi;
+        s_meshq[i].hops = hops;
         s_meshq[i].full = true;            /* last: idx_task reads the rest */
         return;
     }
@@ -4033,11 +4076,15 @@ static void mesh_drain(void)
         char w[XPRS_MAX_WIRE + 1];
         int n = s_meshq[i].len;
         bool sign = s_meshq[i].sign;
+        int rssi = s_meshq[i].rssi, hops = s_meshq[i].hops;
         memcpy(w, s_meshq[i].wire, (size_t)n + 1);
         s_meshq[i].full = false;
         if (!sign) {
             s_heard_count++;
-            seen_note(w, n, "lora", 0);
+            /* The node's own signal, and its own network's hops: the
+             * translation's via: names this gateway, which the devices
+             * table does not count as a hop (xst_ingest_parsed_ex). */
+            seen_note_ex(w, n, "lora", rssi, hops);
             ESP_LOGI(TAG, "mesh   %3dB  %s", n, w);
             mesh_out(w, n);
             continue;
@@ -4209,9 +4256,13 @@ static void air_signed_observations(void)
      * the worked example of 36.6 is exactly a ble observation fetched over
      * the internet. Without the fan-out, "X3R8XX hears X1A67X on ble" was
      * a fact only other BLE listeners could ever learn. */
-    static const char *k_bearers[] = { "ble", "lan", "espnow" };
+    /* lora too: what the bridge hears there (a Meshtastic node is a
+     * neighbour on that radio, at the frame's signal) is the one reading
+     * of the node anybody has, and the leg a station behind us needs to
+     * place it (xst_dev_path). An empty lora list costs nothing below. */
+    static const char *k_bearers[] = { "ble", "lan", "espnow", "lora" };
     bool deposited = false;
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         char wire[XPRS_MAX_WIRE + 1];
         int n = observation_beacon(k_bearers[i], wire, (int)sizeof wire,
                                    SIG_ROOM);
@@ -6229,7 +6280,9 @@ static void ui_render(void)
         for (int i = 0; i < nblip; i++) {
             snprintf(blips[i].label, sizeof blips[i].label, "%s",
                      devs[i].call);
-            blips[i].meters = xst_est_distance_m(devs[i].rssi);
+            xst_path_t pt;
+            xst_dev_path(&devs[i], UI_INRANGE_SEC, &pt);
+            blips[i].meters = pt.total_m < 0 ? -1.0f : (float)pt.total_m;
         }
         xui_radar_blips(blips, nblip);
         xui_set_title("Radar 1/7");
@@ -6274,8 +6327,32 @@ static void ui_render(void)
             xui_row_t *r = &tr[i];
             snprintf(r->cell[0], sizeof r->cell[0], "%s", devs[i].call);
             snprintf(r->cell[1], sizeof r->cell[1], "%s", devs[i].bearer);
-            if (devs[i].rssi) {
-                int m = (int)(xst_est_distance_m(devs[i].rssi) + 0.5f);
+            xst_path_t pt;
+            xst_dev_path(&devs[i], UI_INRANGE_SEC, &pt);
+            if (pt.relay[0]) {
+                /* Carried here by a relay: the whole way when the relay
+                 * has said how far the station is from it, else the leg
+                 * to the relay as a floor. */
+                if (pt.total_m >= 0)
+                    snprintf(r->cell[2], sizeof r->cell[2], "~%dm", pt.total_m);
+                else if (pt.near_m >= 0)
+                    snprintf(r->cell[2], sizeof r->cell[2], ">%dm", pt.near_m);
+                else
+                    snprintf(r->cell[2], sizeof r->cell[2], "-");
+                if (pt.total_m >= 0)
+                    snprintf(r->detail, sizeof r->detail,
+                             "%s through %s: about %d m to %s and %d m "
+                             "beyond it, %d m in all. Heard %lu s ago.",
+                             devs[i].call, pt.relay, pt.near_m, pt.relay,
+                             pt.far_m, pt.total_m, (unsigned long)age);
+                else
+                    snprintf(r->detail, sizeof r->detail,
+                             "%s through %s, %d m away; %s has not said "
+                             "how far %s is from it. Heard %lu s ago.",
+                             devs[i].call, pt.relay, pt.near_m, pt.relay,
+                             devs[i].call, (unsigned long)age);
+            } else if (pt.total_m >= 0) {
+                int m = pt.total_m;
                 snprintf(r->cell[2], sizeof r->cell[2], "~%dm", m);
                 snprintf(r->detail, sizeof r->detail,
                          "%s via %s: %d dBm, about %d m away. "
@@ -9797,18 +9874,36 @@ static int api_devices_json(char *buf, size_t cap)
     int nr = xst_devices(devs, XST_SEEN_MAX, UI_INRANGE_SEC);
     int n = snprintf(buf, cap, ",\"heard\":%lu,\"devices\":[",
                      (unsigned long)s_heard_count);
+    int put = 0;
     for (int i = 0; i < nr && n > 0 && n < (int)cap; i++) {
         const xst_dev_t *d = &devs[i];
-        int dist = d->rssi ? (int)xst_est_distance_m(d->rssi) : -1;
-        n += snprintf(buf + n, cap - n,
+        /* dist_m is the whole way (xst_dev_path): for a relayed station,
+         * this station to the relay plus what the relay said, and -1 while
+         * a leg is unknown; such a row also says the relay and the legs. */
+        xst_path_t pt;
+        xst_dev_path(d, UI_INRANGE_SEC, &pt);
+        char row[200];
+        int m = snprintf(row, sizeof row,
             "%s{\"call\":\"%s\",\"bearer\":\"%s\",\"rssi\":%d,"
-            "\"dist_m\":%d,\"hops\":%u,\"age_s\":%lu}",
-            i ? "," : "", d->call, d->bearer, d->rssi, dist,
+            "\"dist_m\":%d,\"hops\":%u,\"age_s\":%lu",
+            i ? "," : "", d->call, d->bearer, d->rssi, pt.total_m,
             (unsigned)d->hops,
             (unsigned long)((now - d->last_ms) / 1000));
+        if (pt.relay[0] && m > 0 && m < (int)sizeof row)
+            m += snprintf(row + m, sizeof row - (size_t)m,
+                          ",\"via\":\"%s\",\"near_m\":%d,\"far_m\":%d",
+                          pt.relay, pt.near_m, pt.far_m);
+        if (m > 0 && m < (int)sizeof row)
+            m += snprintf(row + m, sizeof row - (size_t)m, "}");
+        /* The reply buffer is one 2 KB page: a list that outgrows it ends
+         * early and whole, never cut mid-row. */
+        if (m <= 0 || m >= (int)sizeof row || n + m + 24 >= (int)cap) break;
+        memcpy(buf + n, row, (size_t)m + 1);
+        n += m;
+        put++;
     }
     if (n > 0 && n < (int)cap)
-        n += snprintf(buf + n, cap - n, "],\"count\":%d", nr);
+        n += snprintf(buf + n, cap - n, "],\"count\":%d", put);
     return (n > 0 && n < (int)cap) ? n : (int)cap - 1;
 }
 

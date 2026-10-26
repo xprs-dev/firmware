@@ -500,7 +500,10 @@ static int stamp(mt_mesh_t *m, char *out, int cap)
 /* One wire to the station. */
 static void deliver(mt_mesh_t *m, const char *wire, int len, bool sign)
 {
-    if (m->ops.deliver) m->ops.deliver(m->ops.ctx, wire, len, sign);
+    if (!m->ops.deliver) return;
+    /* A receipt is ours; a translation carries the frame's own reading. */
+    m->ops.deliver(m->ops.ctx, wire, len, sign,
+                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops);
 }
 
 /* Is [t] one of the two tapbacks XPRS has a word for? (section 28 assigns
@@ -782,10 +785,14 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
 void mt_mesh_on_frame(mt_mesh_t *m, const uint8_t *frame, int len, int rssi,
                       int snr)
 {
-    (void)rssi;
     mt_hdr_t h;
     if (!m || !mt_hdr_parse(frame, len, &h) || !h.from) return;
     m->st.rx_frames++;
+    /* What a translation of this frame may say about the node's distance:
+     * the reading is the node's own only when nothing relayed the frame. A
+     * frame from firmware too old to write hop_start reads as direct. */
+    m->rx_hops = h.hop_start > h.hop_limit ? h.hop_start - h.hop_limit : 0;
+    m->rx_rssi = m->rx_hops ? 0 : rssi;
     uint32_t now = m->ops.now_ms();
 
     if (seen_has(m, h.from, h.id, now)) {

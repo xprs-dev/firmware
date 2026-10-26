@@ -34,8 +34,10 @@ static int g_nheard;
 static int g_aired[NB];
 static bool g_radio_busy;       /* air() refuses while set */
 
-static void t_deliver(void *ctx, const char *wire, int len, bool sign)
+static void t_deliver(void *ctx, const char *wire, int len, bool sign,
+                      int rssi, int hops)
 {
+    (void)rssi; (void)hops;
     int who = (int)(intptr_t)ctx;
     if (g_ndl >= 64) return;
     memcpy(g_dl[g_ndl].wire, wire, (size_t)len);

@@ -50,6 +50,16 @@ static bool s_tz_known;     /* false: nobody has said, and s_tz_off is 0 */
 /* ── Who we have heard, by name ─────────────────────────────────────── */
 static xst_dev_t *s_seen;        /* [XST_SEEN_MAX], big_calloc'd off the .bss (RF-bank ceiling) */
 
+/* What the neighbours said they hear (xst_far_note): the far leg of a relayed
+ * distance. Same allocation story as s_seen. */
+typedef struct {
+    char     obs[XPRS_CALL_LEN];
+    char     call[XPRS_CALL_LEN];
+    uint8_t  q;
+    uint32_t ms;
+} far_t;
+static far_t *s_far;             /* [XST_FAR_MAX] */
+
 /* ── The chat ring ──────────────────────────────────────────────────── */
 /* Was an XPRS_PSRAM_BSS static; xprs_big_calloc'd in xst_init (same PSRAM
  * preference) so .bss stays clear of the RF sample banks on xwifi boards. */
@@ -123,11 +133,12 @@ static void chat_ensure(void)
          * placement where there is PSRAM and moves them off the bank where
          * there is not. */
         s_seen     = xprs_big_calloc(XST_SEEN_MAX, sizeof *s_seen);
+        s_far      = xprs_big_calloc(XST_FAR_MAX,  sizeof *s_far);
         s_sb10     = xprs_big_calloc(XST_SB10_N,  sizeof *s_sb10);
         s_sb10_id  = xprs_big_calloc(XST_SB10_N,  sizeof *s_sb10_id);
         s_sbday    = xprs_big_calloc(XST_SBDAY_N, sizeof *s_sbday);
         s_sbday_id = xprs_big_calloc(XST_SBDAY_N, sizeof *s_sbday_id);
-        assert(s_seen && s_sb10 && s_sb10_id && s_sbday && s_sbday_id);
+        assert(s_seen && s_far && s_sb10 && s_sb10_id && s_sbday && s_sbday_id);
     }
 }
 
@@ -243,9 +254,11 @@ void xst_set_call(const char *own_call)
 
 /* Devices row upsert. Caller holds no lock. */
 static void dev_upsert(const char *call, const char *bearer, int rssi,
-                       uint8_t hops)
+                       uint8_t hops, const char *via)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (!s_seen) return;         /* a sighting before xst_init (the C3's
+                                  * boot order): nothing to keep it in yet */
     LOCK();
     int slot = -1, oldest = 0;
     bool same = false;
@@ -274,6 +287,7 @@ static void dev_upsert(const char *call, const char *bearer, int rssi,
     snprintf(s_seen[slot].bearer, sizeof s_seen[slot].bearer, "%s", bearer);
     s_seen[slot].rssi = rssi;
     s_seen[slot].hops = hops;
+    snprintf(s_seen[slot].via, sizeof s_seen[slot].via, "%s", via ? via : "");
     s_seen[slot].last_ms = now;
     UNLOCK();
 }
@@ -282,7 +296,41 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
 {
     if (!call || !call[0]) return;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return;
-    dev_upsert(call, bearer ? bearer : "", rssi, 0);
+    dev_upsert(call, bearer ? bearer : "", rssi, 0, "");
+}
+
+/* The hops a packet took and who took them, for its devices row.
+ *
+ * Counts the via: entries that are not this station -- a gateway's
+ * translation of a Meshtastic frame names the gateway (XPRS.md 9.11.5), and
+ * on the gateway that node was heard directly -- and writes the chain's tail
+ * into [out] (cap XST_VIA_LEN), oldest first, nearest last, dropping the
+ * farthest entries when the chain is longer than the room. */
+static int via_tail(const xprs_t *p, char *out, int cap)
+{
+    out[0] = 0;
+    char v[128];
+    if (!xprs_get_str(p, "via", v, sizeof v)) return 0;
+    const char *ent[16];
+    int n = 0;
+    for (char *t = v; t && *t && n < 16; ) {
+        char *c = strchr(t, ',');
+        if (c) *c = 0;
+        if (*t && !(s_call[0] && strcasecmp(t, s_call) == 0)) ent[n++] = t;
+        t = c ? c + 1 : NULL;
+    }
+    /* The longest tail that fits. */
+    int first = n, len = 0;
+    while (first > 0) {
+        int l = (int)strlen(ent[first - 1]) + (len ? 1 : 0);
+        if (len + l >= cap) break;
+        len += l;
+        first--;
+    }
+    int w = 0;
+    for (int i = first; i < n; i++)
+        w += snprintf(out + w, (size_t)(cap - w), "%s%s", w ? "," : "", ent[i]);
+    return n;
 }
 
 /* `ts:` (XPRS 4, UTC "YYYY-MM-DD_HH:MM:SS") as seconds since 1970, or 0. */
@@ -426,6 +474,12 @@ void xst_set_lora_local(bool local)
 
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
 {
+    return xst_ingest_parsed_ex(p, bearer, rssi, 0);
+}
+
+bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
+                          int hops_more)
+{
     char call[XPRS_CALL_LEN];
     if (!xprs_get_str(p, "f", call, sizeof call)) return false;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return false;
@@ -460,10 +514,12 @@ bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
     }
 
     /* How many stations carried this here. A via: chain means the sender
-     * is NOT a neighbour -- it is reachable only through somebody. */
-    int hops = xprs_via_count(p);
+     * is NOT a neighbour -- it is reachable only through somebody; the
+     * chain's tail is kept so the distance can be added up (xst_dev_path). */
+    char via[XST_VIA_LEN];
+    int hops = via_tail(p, via, sizeof via) + (hops_more > 0 ? hops_more : 0);
     dev_upsert(call, bearer ? bearer : "", rssi,
-               hops > 255 ? 255 : (uint8_t)hops);
+               hops > 255 ? 255 : (uint8_t)hops, via);
     return true;
 }
 
@@ -542,6 +598,12 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
      * station has inside the same window. A blip without a distance because
      * the last packet happened to come over WiFi would be the radar
      * forgetting what it measured a moment ago. */
+    /* Hops and via: are the SHORTEST fresh path, not the latest: a neighbour
+     * whose packet also came back round through a relay on another bearer is
+     * still a neighbour, and "how far" is answered by the nearest path. The
+     * borrowed signal is then the strongest reading on a row of THAT hop
+     * count -- a relayed copy's rssi is the relay's transmission and must
+     * not stand in for a direct reading that happens to be weaker. */
     int m = 0;
     for (int i = 0; i < n; i++) {
         int k = -1;
@@ -552,8 +614,14 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
             rows[m++] = rows[i];              /* m <= i: in place is safe */
             continue;
         }
-        if (rows[i].rssi && (!rows[k].rssi || rows[i].rssi > rows[k].rssi))
+        if (rows[i].hops < rows[k].hops) {
+            rows[k].hops = rows[i].hops;
+            memcpy(rows[k].via, rows[i].via, sizeof rows[k].via);
             rows[k].rssi = rows[i].rssi;
+        } else if (rows[i].hops == rows[k].hops && rows[i].rssi &&
+                   (!rows[k].rssi || rows[i].rssi > rows[k].rssi)) {
+            rows[k].rssi = rows[i].rssi;
+        }
     }
     if (m > max) m = max;
     for (int i = 0; i < m; i++) out[i] = rows[i];
@@ -1044,6 +1112,108 @@ float xst_est_distance_m(int rssi)
     return powf(10.0f, ((-40.0f - (float)rssi) / 27.0f));
 }
 
+static int est_m(int rssi)
+{
+    return rssi ? (int)(xst_est_distance_m(rssi) + 0.5f) : -1;
+}
+
+void xst_far_note(const char *observer, const char *call, int q)
+{
+    if (!s_far || !observer || !observer[0] || !call || !call[0]) return;
+    if (q < 0) q = 0;
+    if (q > 9) q = 9;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    LOCK();
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < XST_FAR_MAX; i++) {
+        if (s_far[i].obs[0] && strcasecmp(s_far[i].obs, observer) == 0 &&
+            strcasecmp(s_far[i].call, call) == 0) { slot = i; break; }
+        if (!s_far[i].obs[0]) { if (slot < 0) slot = i; }
+        else if (s_far[i].ms < s_far[oldest].ms) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    snprintf(s_far[slot].obs, sizeof s_far[slot].obs, "%s", observer);
+    snprintf(s_far[slot].call, sizeof s_far[slot].call, "%s", call);
+    s_far[slot].q = (uint8_t)q;
+    s_far[slot].ms = now ? now : 1;
+    UNLOCK();
+}
+
+int xst_far_rssi(const char *observer, const char *call, int ttl_sec)
+{
+    if (!s_far || !observer || !call) return 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    int r = 0;
+    LOCK();
+    for (int i = 0; i < XST_FAR_MAX; i++) {
+        if (!s_far[i].obs[0] || strcasecmp(s_far[i].obs, observer) != 0 ||
+            strcasecmp(s_far[i].call, call) != 0) continue;
+        if ((now - s_far[i].ms) / 1000 < (uint32_t)ttl_sec)
+            /* The middle of the digit's step: xst_signal_bucket puts
+             * -100 dBm at 0 and 7 dB a step. */
+            r = -97 + 7 * (int)s_far[i].q;
+        break;
+    }
+    UNLOCK();
+    return r;
+}
+
+void xst_dev_path(const xst_dev_t *d, int in_range_sec, xst_path_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->total_m = out->near_m = out->far_m = -1;
+    if (!d) return;
+    if (d->hops == 0 || !d->via[0]) {
+        /* A neighbour (or a Meshtastic node beyond relays nobody can name:
+         * then its rssi is 0 and the answer is unknown, honestly). */
+        out->near_m = est_m(d->rssi);
+        out->far_m = d->hops ? -1 : 0;
+        out->total_m = d->hops ? -1 : out->near_m;
+        return;
+    }
+    char chain[XST_VIA_LEN];
+    memcpy(chain, d->via, sizeof chain);
+    const char *rel[4];
+    int n = 0;
+    for (char *t = chain; t && *t && n < 4; ) {
+        char *c = strchr(t, ',');
+        if (c) *c = 0;
+        rel[n++] = t;
+        t = c ? c + 1 : NULL;
+    }
+    snprintf(out->relay, sizeof out->relay, "%s", rel[n - 1]);
+
+    /* The near leg: us to the relay that handed the packet over. Its own
+     * fresh direct row is a reading of the same transmitter, usually a
+     * better one than the single packet; failing that, the packet's. */
+    int rssi = 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    LOCK();
+    if (s_seen) for (int i = 0; i < XST_SEEN_MAX; i++) {
+        if (!s_seen[i].call[0] || s_seen[i].hops || !s_seen[i].rssi) continue;
+        if (strcasecmp(s_seen[i].call, out->relay) != 0) continue;
+        if ((now - s_seen[i].last_ms) / 1000 >= (uint32_t)in_range_sec) continue;
+        if (!rssi || s_seen[i].rssi > rssi) rssi = s_seen[i].rssi;
+    }
+    UNLOCK();
+    if (!rssi) rssi = d->rssi;
+    out->near_m = est_m(rssi);
+
+    /* The far legs, farthest first: rel[0] heard the sender, rel[1] heard
+     * rel[0], and so on up to the nearest relay. Each is that relay's own
+     * saying; one missing, or a chain longer than the tail kept, and the
+     * total is unknown. */
+    bool known = d->hops <= n;
+    int far = 0;
+    for (int i = 0; i < n && known; i++) {
+        int r = xst_far_rssi(rel[i], i ? rel[i - 1] : d->call, 3 * in_range_sec);
+        if (!r) known = false;
+        else far += est_m(r);
+    }
+    out->far_m = known ? far : -1;
+    out->total_m = (known && out->near_m >= 0) ? out->near_m + far : -1;
+}
+
 /* ── Persistence: the whole rings, serialised (magic XST1) ──────────── */
 #define STATS_MAGIC 0x31545358u   /* "XST1" */
 typedef struct {
@@ -1139,6 +1309,7 @@ void xst_test_reset(void)
 {
     chat_ensure();
     memset(s_seen, 0, XST_SEEN_MAX * sizeof *s_seen);
+    memset(s_far, 0, XST_FAR_MAX * sizeof *s_far);
     memset(s_chat, 0, XST_CHAT_MAX * sizeof *s_chat);
 }
 #endif

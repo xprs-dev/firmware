@@ -471,8 +471,11 @@ void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
  *  xprslora_mt_offer from here is safe). */
 typedef struct {
     /* A translated wire for every bearer but LoRa and for the local UI;
-     * [sign] = sign it as this station first (a gateway receipt). */
-    void (*deliver)(const char *wire, int len, bool sign);
+     * [sign] = sign it as this station first (a gateway receipt). [rssi]
+     * is the frame's when the node aired it itself, 0 when a Meshtastic
+     * relay did; [hops] how many of that network's relays it came through
+     * (mt_mesh_ops_t.deliver). */
+    void (*deliver)(const char *wire, int len, bool sign, int rssi, int hops);
     /* The time field, "ts:..." (seconds zeroed when [to_minute]) or
      * "epoch:..."; returns its length. */
     int  (*stamp)(char *out, int cap, bool to_minute);

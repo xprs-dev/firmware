@@ -506,6 +506,127 @@ static void test_scope_rooms(void)
     xst_set_lora_local(false);
 }
 
+/* ── A relayed station's distance (xst_dev_path) ───────────────────────── */
+
+/* Ingest one wire as the station would, on [bearer] at [rssi]. */
+static void ingest(const char *wire, const char *bearer, int rssi, int more)
+{
+    xst_test_now_ms += 1;
+    xprs_t p;
+    if (xprs_parse(wire, (int)strlen(wire), &p))
+        xst_ingest_parsed_ex(&p, bearer, rssi, more);
+}
+
+static int row_of(const char *call, xst_dev_t *out)
+{
+    xst_dev_t rows[XST_SEEN_MAX];
+    int n = xst_devices(rows, XST_SEEN_MAX, 300);
+    for (int i = 0; i < n; i++)
+        if (strcmp(rows[i].call, call) == 0) { *out = rows[i]; return 1; }
+    return 0;
+}
+
+static void test_path(void)
+{
+    reset();
+    xst_dev_t d;
+    xst_path_t pt;
+    const int m50 = (int)(xst_est_distance_m(-50) + 0.5f);
+    const int m62 = (int)(xst_est_distance_m(-62) + 0.5f);   /* digit 5 */
+    const int m70 = (int)(xst_est_distance_m(-70) + 0.5f);
+
+    /* A neighbour: the whole distance is the near leg. */
+    hear("X3SEP2", "espnow", -50);
+    CHECK(row_of("X3SEP2", &d) && d.hops == 0 && d.via[0] == 0, "neighbour");
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == m50 && pt.near_m == m50 && pt.far_m == 0 &&
+          pt.relay[0] == 0, "neighbour: total %d near %d far %d",
+          pt.total_m, pt.near_m, pt.far_m);
+
+    /* A Meshtastic node the neighbour bridged: the packet's signal is the
+     * neighbour's. Until the neighbour says how far the node is, the total
+     * is unknown and the near leg is a floor. */
+    ingest("t:message f:MT1234 via:X3SEP2 m:hi", "espnow", -50, 0);
+    CHECK(row_of("MT1234", &d) && d.hops == 1 && !strcmp(d.via, "X3SEP2"),
+          "relayed row: hops %d via '%s'", d.hops, d.via);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == -1 && pt.near_m == m50 && pt.far_m == -1 &&
+          !strcmp(pt.relay, "X3SEP2"), "unsaid: total %d near %d far %d '%s'",
+          pt.total_m, pt.near_m, pt.far_m, pt.relay);
+
+    /* The neighbour's observation says it hears the node at digit 5. */
+    xst_far_note("X3SEP2", "MT1234", 5);
+    CHECK(xst_far_rssi("X3SEP2", "MT1234", 900) == -62, "digit 5 is -62 dBm");
+    CHECK(xst_far_rssi("X3SEP2", "MT9999", 900) == 0, "never said");
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == m50 + m62 && pt.far_m == m62,
+          "summed: total %d = %d + %d", pt.total_m, m50, m62);
+
+    /* The near leg prefers the relay's own fresh direct row over the one
+     * packet: the relay now heard louder. */
+    hear("X3SEP2", "espnow", -40);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.near_m == (int)(xst_est_distance_m(-40) + 0.5f),
+          "near leg from the relay's row: %d", pt.near_m);
+
+    /* The saying ages out. */
+    xst_test_now_ms += 901 * 1000;
+    CHECK(xst_far_rssi("X3SEP2", "MT1234", 900) == 0, "stale saying");
+
+    /* Two relays: node -> X1GATE -> X3SEP2 -> us. Both legs must be said. */
+    reset();
+    hear("X3SEP2", "espnow", -50);
+    ingest("t:message f:MT1234 via:X1GATE,X3SEP2 m:hi", "espnow", -50, 0);
+    CHECK(row_of("MT1234", &d) && d.hops == 2 &&
+          !strcmp(d.via, "X1GATE,X3SEP2"), "two hops, via '%s'", d.via);
+    xst_far_note("X3SEP2", "X1GATE", 5);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == -1 && !strcmp(pt.relay, "X3SEP2"), "gate unsaid");
+    xst_far_note("X1GATE", "MT1234", 5);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == m50 + 2 * m62, "three legs: %d", pt.total_m);
+
+    /* A chain longer than the tail kept: the farthest legs are unknown. */
+    ingest("t:message f:X1FAR via:X1AAAAAA,X1BBBBBB,X1CCCCCC m:hi", "espnow",
+           -50, 0);
+    CHECK(row_of("X1FAR", &d) && d.hops == 3 &&
+          !strcmp(d.via, "X1BBBBBB,X1CCCCCC"), "tail kept: '%s'", d.via);
+    xst_far_note("X1CCCCCC", "X1BBBBBB", 9);
+    xst_far_note("X1BBBBBB", "X1FAR", 9);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == -1 && pt.far_m == -1, "a cut chain is unknown");
+
+    /* On the gateway itself the translation names the gateway: the node is
+     * a neighbour there, at the frame's own signal. */
+    reset();
+    ingest("t:message f:MT1234 via:" SELF " m:hi", "lora", -70, 0);
+    CHECK(row_of("MT1234", &d) && d.hops == 0 && d.via[0] == 0,
+          "own callsign is not a hop: hops %d via '%s'", d.hops, d.via);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == m70, "gateway sees the node at %d", pt.total_m);
+
+    /* ...unless Meshtastic's own relays carried the frame: then the signal
+     * is theirs, the hops are counted and the distance is unknown. */
+    ingest("t:message f:MT5678 via:" SELF " m:hi", "lora", 0, 2);
+    CHECK(row_of("MT5678", &d) && d.hops == 2 && d.via[0] == 0,
+          "meshtastic hops: %d", d.hops);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == -1 && pt.near_m == -1, "nobody can say");
+
+    /* One row per station: the shortest path wins, and a relayed copy's
+     * signal never stands in for a direct one. */
+    reset();
+    ingest("t:message f:X1DUAL m:a", "lora", -80, 0);
+    ingest("t:message f:X1DUAL via:X3SEP2 m:a", "espnow", -40, 0);
+    CHECK(row_of("X1DUAL", &d) && d.hops == 0 && d.rssi == -80 &&
+          !strcmp(d.bearer, "espnow"), "direct path kept: hops %d rssi %d on %s",
+          d.hops, d.rssi, d.bearer);
+    ingest("t:message f:X1LAN m:a", "lan", 0, 0);
+    ingest("t:message f:X1LAN via:X3SEP2 m:a", "espnow", -40, 0);
+    CHECK(row_of("X1LAN", &d) && d.hops == 0 && d.rssi == 0,
+          "a LAN neighbour has no distance, not the relay's");
+}
+
 int main(void)
 {
     printf("xprs_station host tests (XPRS.md 10.6.3, 10.6.4)\n");
@@ -523,6 +644,7 @@ int main(void)
     test_chat_replay();
     test_scope_rooms();
     test_heard();
+    test_path();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }
