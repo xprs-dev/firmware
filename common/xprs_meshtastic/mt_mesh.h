@@ -69,6 +69,11 @@ typedef struct {
      * (hop_start - hop_limit). Both 0 for a receipt. */
     void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
                         int rssi, int hops);
+    /* A node of the other network was heard (any decoded frame, not only
+     * the ones that become a translation: a node that sends telemetry and
+     * never texts is in reach all the same). [rssi] and [hops] as for
+     * deliver. Optional. */
+    void     (*heard)(void *ctx, const char *call, int rssi, int hops);
     /* The time field for a packet composed now, e.g. "ts:2026-09-19_12:04:00"
      * (seconds zeroed when [to_minute]), or an epoch: when there is no clock.
      * Returns its length, 0 when the station can say nothing. */

@@ -145,6 +145,12 @@ reuse potential.
   hops_more)` adds hops the wire cannot express (a Meshtastic node's own
   relays, from the frame's hop_start - hop_limit, carried through
   `mt_mesh_ops_t.deliver`'s `rssi, hops`).
+- **`heard` hook (`mt_mesh_ops_t`, `mc_mesh_ops_t`, `xprslora_mt_hooks_t`)
+  -> `xst_dev_note_hops(call, "lora", rssi, hops)`** -- every decoded frame
+  of the other network puts its node in the devices table at its own
+  signal, not only the frames that become a translation. A new bridge (or
+  any other listener that learns of a station without an XPRS wire) should
+  report sightings this way rather than through a fake wire.
 
 ## Reticulum beyond single packets
 

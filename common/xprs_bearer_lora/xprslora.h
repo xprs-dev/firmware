@@ -476,6 +476,10 @@ typedef struct {
      * relay did; [hops] how many of that network's relays it came through
      * (mt_mesh_ops_t.deliver). */
     void (*deliver)(const char *wire, int len, bool sign, int rssi, int hops);
+    /* A node of the other network was heard, translation or not: for the
+     * devices table (a Meshtastic node that only sends telemetry is in reach
+     * all the same, and its reading is what hears: on lora carries). */
+    void (*heard)(const char *call, int rssi, int hops);
     /* The time field, "ts:..." (seconds zeroed when [to_minute]) or
      * "epoch:..."; returns its length. */
     int  (*stamp)(char *out, int cap, bool to_minute);

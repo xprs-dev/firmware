@@ -2240,6 +2240,12 @@ static void mt_deliver(void *ctx, const char *wire, int len, bool sign,
     if (s_hooks.deliver) s_hooks.deliver(wire, len, sign, rssi, hops);
 }
 
+static void mt_heard(void *ctx, const char *call, int rssi, int hops)
+{
+    (void)ctx;
+    if (s_hooks.heard) s_hooks.heard(call, rssi, hops);
+}
+
 static int mt_stamp(void *ctx, char *out, int cap, bool to_minute)
 {
     (void)ctx;
@@ -2339,7 +2345,7 @@ esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
     s_hooks = *hooks;
     mt_mesh_ops_t ops = {
         .air = lr_air_mt, .now_ms = lr_now_ms, .random = lr_random,
-        .deliver = mt_deliver, .stamp = mt_stamp, .nick_of = mt_nick, .tz_offset = mt_tz,
+        .deliver = mt_deliver, .heard = mt_heard, .stamp = mt_stamp, .nick_of = mt_nick, .tz_offset = mt_tz,
         .log = mt_log, .keys_load = mt_keys_load, .keys_save = mt_keys_save,
         .vnodes_load = mt_vnodes_load, .vnodes_save = mt_vnodes_save,
         .utc_now = mt_utc,
@@ -2636,7 +2642,7 @@ esp_err_t xprslora_mc_start(const xprslora_mt_hooks_t *hooks,
     s_hooks = *hooks;
     mc_mesh_ops_t ops = {
         .air = lr_air_mc, .now_ms = lr_now_ms, .random = lr_random,
-        .deliver = mt_deliver, .stamp = mt_stamp, .nick_of = mt_nick,
+        .deliver = mt_deliver, .heard = mt_heard, .stamp = mt_stamp, .nick_of = mt_nick,
         .log = mt_log, .keys_load = mc_keys_load, .keys_save = mc_keys_save,
         .vnodes_load = mc_vnodes_load, .vnodes_save = mc_vnodes_save,
         .utc_now = mt_utc,

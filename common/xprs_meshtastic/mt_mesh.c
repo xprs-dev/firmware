@@ -687,6 +687,11 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
         nd->heard_ms = now ? now : 1;
         nd->snr = (int8_t)snr;
         if (nd->xprs) from_ours = true;
+        if (!nd->xprs && m->ops.heard) {
+            char c[12];
+            mt_call_of_node(h->from, c, sizeof c);
+            m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops);
+        }
     }
 
     switch (d->portnum) {

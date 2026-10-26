@@ -69,6 +69,9 @@ typedef struct {
      * receipt. As mt_mesh_ops_t.deliver. */
     void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
                         int rssi, int hops);
+    /* A node of the other network was heard (its advert). Optional; as
+     * mt_mesh_ops_t.heard. */
+    void     (*heard)(void *ctx, const char *call, int rssi, int hops);
     int      (*stamp)(void *ctx, char *out, int cap, bool to_minute);
     uint32_t (*utc_now)(void *ctx);
     bool     (*nick_of)(void *ctx, const char *call, char *out, int cap);

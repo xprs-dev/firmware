@@ -55,10 +55,12 @@ and are not yet in that document:
   `xst_far_note()`. While a leg is unknown `dist_m` is -1. A relayed row
   also carries `via` (the nearest relay), `near_m` (the leg to it) and
   `far_m` (the legs beyond, -1 unknown), so the page can show the first leg
-  as a floor (`>~12 m via X3SEP2`). On the gateway itself a Meshtastic node
-  is a neighbour on `lora` at its frame's signal (`via:` naming the station
-  is not a hop); a frame that came through Meshtastic's own relays counts
-  them in `hops` and has no distance. Bench 2026-10-26: Meshtastic nodes
+  as a floor (`>~12 m via X3SEP2`). On the gateway itself a Meshtastic or
+  MeshCore node is a neighbour on `lora` at its frame's signal, from every
+  decoded frame and not only the texts that become translations (the
+  bridges' `heard` hook; `via:` naming the station is not a hop); a frame
+  that came through that network's own relays counts them in `hops` and
+  has no distance. Bench 2026-10-26: Meshtastic nodes
   the T-Deck bridged read, on the C3's page, as being where the T-Deck was.
 - `GET /api/stats?view=` -> `{ok, view, bucket_s, points, devices[], rx[],
   tx[]}` -- the three series of the Stats panel. `view` 0 ten-minute,

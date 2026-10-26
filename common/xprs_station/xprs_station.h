@@ -152,6 +152,11 @@ void xst_chat_note(const xprs_t *p);
 /* A sighting that is not an XPRS wire (an RNS announce, a blemesh
  * neighbour): keeps the devices list honest about everything in reach. */
 void xst_dev_note(const char *call, const char *bearer, int rssi);
+/* Same, [hops] away through relays of another network that via: cannot
+ * name (a bridge's sighting of a Meshtastic or MeshCore node); rssi 0 then,
+ * since the reading is the last relay's. */
+void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
+                       int hops);
 
 /* Bank transmitted-packet totals into the stats rings. Call once per UI
  * tick with the CUMULATIVE total across the board's bearers; the primed

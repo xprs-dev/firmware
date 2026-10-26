@@ -664,6 +664,11 @@ static void advert_in(mc_mesh_t *m, const uint8_t *payload, int plen,
         nd->xprs = true;                 /* another bridge's virtual node */
         return;
     }
+    if (m->ops.heard) {
+        char c[11];
+        mc_call_of_pub(a.pub, c);
+        m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops);
+    }
     /* The key is the address, so it is worth keeping: it is what a direct
      * message to this node is sealed to. */
     key_put(m, a.pub);

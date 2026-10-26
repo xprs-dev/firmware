@@ -678,6 +678,7 @@ static void settings_ok(int row);
 
 static void mesh_deliver(const char *wire, int len, bool sign, int rssi,
                          int hops);
+static void mesh_heard(const char *call, int rssi, int hops);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
 static int32_t mesh_tz(bool *known);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
@@ -694,6 +695,7 @@ static void lora_start_bridge(void)
 {
     static const xprslora_mt_hooks_t hooks = {
         .deliver = mesh_deliver,
+        .heard = mesh_heard,
         .stamp = mesh_stamp,
         .nick_of = NULL,
         .tz_offset = mesh_tz,
@@ -4028,6 +4030,15 @@ static void mesh_out(const char *wire, int len)
     if (bridge && xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON)) xprsnow_send(wire, len);
     if (bridge && xprsble_is_active()) xprsble_send(wire, len);
     if (bridge && !local && xprsrns_is_up()) xprsrns_send(wire, len);
+}
+
+/* The LoRa task, under the bridge's mutex: a node of the other network was
+ * heard. The devices table takes a sighting from any task (one critical
+ * section), so this is the whole of it: the node on lora at its frame's
+ * signal, or behind its own network's relays with no signal. */
+static void mesh_heard(const char *call, int rssi, int hops)
+{
+    xst_dev_note_hops(call, "lora", rssi, hops);
 }
 
 /* The LoRa task, under the bridge's mutex: a copy and a flag, nothing else. */
@@ -9657,6 +9668,33 @@ static int api_serve_json(char *buf, size_t cap)
     return snprintf(buf, cap, "\"index\",\"history\",\"mailbox\"");
 }
 
+/* A node's name as a JSON string, at most [max] bytes of it, cut at a
+ * UTF-8 boundary with quotes and backslashes escaped. Bench 2026-10-26: a
+ * Meshtastic name ending in flag emoji was cut mid-sequence by %.20s and
+ * /api/status stopped parsing as JSON (and as UTF-8). */
+static int json_name(char *out, size_t cap, const char *name, int max)
+{
+    int end = 0;
+    for (int i = 0; name[i] && i < max; ) {
+        unsigned char c = (unsigned char)name[i];
+        int len = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3
+                : (c >> 3) == 30 ? 4 : 1;
+        if (i + len > max) break;
+        i += len;
+        end = i;
+    }
+    size_t n = 0;
+    if (n < cap) out[n++] = '"';
+    for (int i = 0; i < end && n + 2 < cap; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '"' || c == '\\') out[n++] = '\\';
+        out[n++] = c < 0x20 ? ' ' : (char)c;
+    }
+    if (n < cap) out[n++] = '"';
+    if (n < cap) out[n] = 0; else if (cap) out[cap - 1] = 0;
+    return (int)n;
+}
+
 static int api_lora_json(char *buf, size_t cap)
 {
     if (!s_board->lora || !xprslora_is_active()) return 0;
@@ -9748,8 +9786,8 @@ static int api_lora_json(char *buf, size_t cap)
         int have = xprslora_mt_node(0, &nd), shown = 0;
         for (int i = 0; i < have && shown < 6 && (size_t)n < cap; i++) {
             if (!xprslora_mt_node(i, &nd) || !nd.long_name[0]) continue;
-            n += snprintf(buf + n, cap - (size_t)n, "%s\"%.20s\"",
-                          shown ? "," : "", nd.long_name);
+            if (shown) buf[n++] = ',';
+            n += json_name(buf + n, cap - (size_t)n, nd.long_name, 20);
             shown++;
         }
         if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]");
@@ -9786,8 +9824,8 @@ static int api_lora_json(char *buf, size_t cap)
         int have = xprslora_mc_node(0, &nd), shown = 0;
         for (int i = 0; i < have && shown < 6 && (size_t)n < cap; i++) {
             if (!xprslora_mc_node(i, &nd) || !nd.name[0]) continue;
-            n += snprintf(buf + n, cap - (size_t)n, "%s\"%.20s\"",
-                          shown ? "," : "", nd.name);
+            if (shown) buf[n++] = ',';
+            n += json_name(buf + n, cap - (size_t)n, nd.name, 20);
             shown++;
         }
         if ((size_t)n < cap) n += snprintf(buf + n, cap - (size_t)n, "]");

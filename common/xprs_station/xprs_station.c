@@ -299,6 +299,16 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
     dev_upsert(call, bearer ? bearer : "", rssi, 0, "");
 }
 
+void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
+                       int hops)
+{
+    if (!call || !call[0]) return;
+    if (s_call[0] && strcasecmp(call, s_call) == 0) return;
+    if (hops < 0) hops = 0;
+    dev_upsert(call, bearer ? bearer : "", hops ? 0 : rssi,
+               hops > 255 ? 255 : (uint8_t)hops, "");
+}
+
 /* The hops a packet took and who took them, for its devices row.
  *
  * Counts the via: entries that are not this station -- a gateway's
