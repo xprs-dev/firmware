@@ -160,6 +160,15 @@ reuse potential.
   description readers, `<board>-<version>.bin` parsing and a dotted version
   compare (`xfolder_version_cmp`). Reuse the version compare wherever a
   version string is ordered; it is numeric, not lexical.
+- **Tables allocated at init, read from other tasks (`chat_ensure()`,
+  `peer_find()`, `xst_stats_load()`)** -- on the single-core C3 the indexer
+  and the bearers are up before `app_main` reaches `xst_init()` and
+  `xprsrns_init()`, and a packet heard two seconds into the boot reaches
+  their tables first. Two shapes, both already in the tree: allocate on
+  first touch (`chat_ensure()`, which the stats loader now calls too), or
+  make every reader answer "nothing yet" while the pointer is NULL
+  (`s_peers` in xprsrns.c). A new `xprs_big_calloc`'d table takes one of
+  the two; a bare `s_table[i]` from another task is the C3's boot panic.
 - **`common/xprs_fwfetch` (`xfw.c`)** -- a state machine with every outside
   effect injected (sign, send, route, sink, clock, lock), the same shape the
   Dart core uses for routing. Copy the shape for the next unattended duty.

@@ -15,6 +15,8 @@
 /* ── cadence ─────────────────────────────────────────────────────────── */
 #define ASK_FIRST_S      120u          /* after boot */
 #define ASK_EVERY_S      (6u * 3600u)
+#define ASK_UNANSWERED_S (10u * 60u)   /* the archiver said nothing: ask again (it may have been rebooting) */
+#define ASK_UNANSWERED_N 3u            /* ...this many times before settling into ASK_EVERY_S */
 #define ASK_JITTER_S     600u
 #define ASK_WINDOW_DAYS  30u
 #define CMD_WAIT_S       45u           /* a 202 for our cmd:file */
@@ -67,6 +69,8 @@ static struct {
 } s_f;
 
 static uint32_t s_next_ask_s, s_asks, s_fetches, s_installs, s_fails;
+static uint32_t s_asked_at_s, s_heard_at_s;   /* the last folder ask; the last publisher's description that verified */
+static uint32_t s_unanswered;                 /* asks in a row with no description back */
 static int s_try;                         /* which holder is being asked */
 static uint32_t s_retry_s;                /* nobody to ask: try again then */
 static bool     s_round_asked, s_round_429; /* this round cost a holder an ask; one said 429 */
@@ -197,6 +201,7 @@ static void note_failed(const uint8_t sha[32], uint32_t now)
 static void consider(const xprs_t *p, const char *from, uint32_t now)
 {
     if (!xprsid_verify(p, s_key)) { say("fwfetch: a t:file as %s did not verify", s_pub_call); return; }
+    s_heard_at_s = now;                      /* the folder reached us, whatever it holds for this board */
     xfolder_entry_t e;
     if (!xfolder_desc_member(p, &e)) return;
     char tag[16] = "";
@@ -509,9 +514,21 @@ void xfw_poll(void)
     switch (s_f.state) {
     case ST_IDLE:
         if (enabled && now >= s_next_ask_s && !(s_cfg.busy && s_cfg.busy())) {
-            s_next_ask_s = ask_publisher()
-                ? now + ASK_EVERY_S + (uint32_t)(rand() % (ASK_JITTER_S + 1))
-                : now + 60;
+            /* An ask the archiver never answered (it was rebooting, as the
+             * bench T-Deck was, installing its own update, the moment the
+             * C3 asked it) is retried in ten minutes a few times, not in
+             * six hours; an answered one, or a folder with nothing for this
+             * board, settles into the long cadence. */
+            bool unanswered = s_asked_at_s && s_heard_at_s < s_asked_at_s;
+            s_unanswered = unanswered ? s_unanswered + 1 : 0;
+            if (ask_publisher()) {
+                s_asked_at_s = now;
+                s_next_ask_s = (unanswered || !s_heard_at_s) && s_unanswered < ASK_UNANSWERED_N
+                    ? now + ASK_UNANSWERED_S
+                    : now + ASK_EVERY_S + (uint32_t)(rand() % (ASK_JITTER_S + 1));
+            } else {
+                s_next_ask_s = now + 60;
+            }
         }
         if (enabled && s_best.used && now >= s_retry_s && !(s_cfg.busy && s_cfg.busy()))
             start_fetch(now);

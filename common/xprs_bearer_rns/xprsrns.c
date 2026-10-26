@@ -184,7 +184,11 @@ typedef struct {
 } xrns_peer_t;
 
 /* [XRNS_PEERS], big_calloc'd in init: off the .bss the RF sample bank caps
- * on the xwifi boards. Only reached once the bearer is up. */
+ * on the boards without PSRAM. NOT only reached once the bearer is up: on
+ * the C3 a t:service heard over BLE two seconds into the boot had the
+ * indexer asking xprsrns_can_address() before xprsrns_init() ran (a Load
+ * access fault in idx, 2026-10-26), so every reader tolerates the table
+ * not being there yet: nobody is addressable before init. */
 static xrns_peer_t *s_peers;
 static void (*s_link_cb)(const rns_packet_t *p);
 static uint32_t s_addressed_tx, s_addressed_rx, s_no_peer;
@@ -199,7 +203,7 @@ static uint32_t s_undecryptable;
 static void peer_learn(const char *call, const uint8_t dest[RNS_HASH_LEN],
                        const uint8_t pub[RNS_PUB_LEN], const rns_packet_t *via)
 {
-    if (!call || !call[0]) return;
+    if (!call || !call[0] || !s_peers) return;
     uint32_t now = (uint32_t)time(NULL);
     int slot = -1;
     uint32_t oldest = 0xFFFFFFFFu;
@@ -362,7 +366,7 @@ static int ask_for(const uint8_t dest[RNS_HASH_LEN])
 
 static const xrns_peer_t *peer_find(const char *call)
 {
-    if (!call || !call[0]) return NULL;
+    if (!call || !call[0] || !s_peers) return NULL;
     for (int i = 0; i < XRNS_PEERS; i++)
         if (strcasecmp(s_peers[i].call, call) == 0) return &s_peers[i];
     return NULL;
@@ -373,6 +377,7 @@ bool xprsrns_can_address(const char *call) { return peer_find(call) != NULL; }
 int xprsrns_peer_count(void)
 {
     int n = 0;
+    if (!s_peers) return 0;
     for (int i = 0; i < XRNS_PEERS; i++) if (s_peers[i].call[0]) n++;
     return n;
 }
@@ -586,7 +591,7 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
 bool xprsrns_peer_at(int i, char *call, size_t cap)
 {
     if (i < 0 || i >= XRNS_PEERS || !call || !cap) return false;
-    if (!s_peers[i].call[0]) return false;   /* a hole, not the end */
+    if (!s_peers || !s_peers[i].call[0]) return false;   /* a hole, not the end */
     snprintf(call, cap, "%s", s_peers[i].call);
     return true;
 }

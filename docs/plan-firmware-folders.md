@@ -72,6 +72,9 @@ and asks nobody for anything:
   <version>.bin`), checks the digest there and only then copies it into the
   OTA slot; the copy stays on the card, the folder's member by its digest,
   for the stations around it (step 7's first half). Written and built; not yet exercised on the bench, whose T-Deck has no card in it at the moment (`/api/status` says `storage: flash`).
+- **The ESP32-C3** runs the same fetcher since `v0.6.0-beta.4` (the beta.3
+  C3 image has a boot race in the statistics loader and must not be
+  flashed). Its receiver is one 6.8 KB block; see below.
 
 **Bench run, 2026-10-25 18:23 to 18:39.** A T-Deck flashed as 0.6.0-beta.0
 on `fwchan beta` heard the beta folder's descriptions on the LAN,
@@ -109,7 +112,13 @@ flow. Its Reticulum task stack goes from 6144 to the 8192 every other
 board gives it, because the receiver, the OTA write and a log line now
 share that stack. The bench C3 (X3SQS6) was on a 0.1.0 build from before
 the fetcher existed, so it got one more flash over the cable; from there
-it updates itself like the T-Deck.
+it updates itself like the T-Deck. That flash found two boot-order races
+the C3's single core exposes (the statistics loader filling rings
+`xst_init` had not allocated, the indexer looking up a Reticulum peer
+before `xprsrns_init`), both fixed, and one cadence hole: the C3's first
+folder ask went to the T-Deck at the very second the T-Deck was rebooting
+into beta.4, and an unanswered ask used to wait six hours. It now retries
+in ten minutes, three times, before settling into the long cadence.
 
 Not written: a station serving the copies on its card to its neighbours
 (`serve:files`, `q:have`, `cmd:file` as a responder: step 7's second half).
