@@ -61,7 +61,14 @@ struct rns_res {
     uint32_t frontier;                       /* next part index to stream */
     uint32_t outstanding[WIN_MAX_FAST];
     uint32_t n_out;
-    cached_part_t cache[RNS_RES_CACHE_PARTS];
+    /* The part cache is RNS_RES_CACHE_PARTS SEPARATE blocks, taken from the
+     * heap the first time each is needed and kept until the receiver is
+     * freed. One 472-byte block fits a fragmented heap where a 4 KB one does
+     * not: on the C3 a receiver in one piece failed its calloc with 16 KB
+     * free. A slot that cannot be had is no error: the part is dropped and
+     * asked again, and the window never grows past the slots there are. */
+    cached_part_t *cache[RNS_RES_CACHE_PARTS];
+    uint32_t cache_n;                        /* slots allocated so far */
     uint32_t window, win_min, win_max, fast_rounds;
     bool     seg_complete;
 
@@ -85,6 +92,18 @@ struct rns_res {
 };
 
 static uint32_t cache_cap(void) { return RNS_RES_CACHE_PARTS; }
+
+/* A free slot, allocating the next one when every allocated slot is in
+ * use; NULL when the heap will not give another. */
+static cached_part_t *cache_slot(struct rns_res *r)
+{
+    for (uint32_t k = 0; k < r->cache_n; k++) if (!r->cache[k]->used) return r->cache[k];
+    if (r->cache_n >= RNS_RES_CACHE_PARTS) return NULL;
+    cached_part_t *c = calloc(1, sizeof *c);
+    if (!c) return NULL;
+    r->cache[r->cache_n++] = c;
+    return c;
+}
 
 /* ── msgpack, the subset the advertisement and the HMU use ───────────── */
 
@@ -152,6 +171,7 @@ void rns_res_free(rns_res_t *r)
     if (!r) return;
     if (r->cbc_on) rns_cbc_decrypt_free(&r->cbc);
     if (r->hmac_on) { uint8_t t[32]; rns_hmac_final(&r->hmac, t); }
+    for (uint32_t k = 0; k < r->cache_n; k++) free(r->cache[k]);
     free(r);
 }
 
@@ -211,8 +231,8 @@ static bool out_has(const rns_res_t *r, uint32_t idx)
 
 static cached_part_t *cache_find(rns_res_t *r, uint32_t idx)
 {
-    for (uint32_t k = 0; k < cache_cap(); k++)
-        if (r->cache[k].used && r->cache[k].index == idx) return &r->cache[k];
+    for (uint32_t k = 0; k < r->cache_n; k++)
+        if (r->cache[k]->used && r->cache[k]->index == idx) return r->cache[k];
     return NULL;
 }
 
@@ -418,8 +438,7 @@ static bool ingest_part(rns_res_t *r, const uint8_t *d, size_t len)
     if ((uint32_t)idx == r->frontier) {
         if (!take_part(r, d, len)) return false;
     } else {
-        cached_part_t *slot = NULL;
-        for (uint32_t k = 0; k < cache_cap(); k++) if (!r->cache[k].used) { slot = &r->cache[k]; break; }
+        cached_part_t *slot = cache_slot(r);
         if (!slot) return true;               /* no room: it will be asked again */
         slot->used = true; slot->index = (uint32_t)idx; slot->len = (uint16_t)len;
         memcpy(slot->data, d, len);
@@ -538,7 +557,7 @@ static bool ingest_adv(rns_res_t *r, const uint8_t *plain, size_t len)
 
     memset(r->have, 0, sizeof r->have);
     r->known = 0; r->hmu_out = false; r->frontier = 0; r->n_out = 0;
-    memset(r->cache, 0, sizeof r->cache);
+    for (uint32_t k = 0; k < r->cache_n; k++) r->cache[k]->used = false;
     r->window = WIN_START; r->win_min = WIN_MIN0; r->win_max = WIN_MAX_SLOW;
     if (r->win_max > cache_cap()) r->win_max = cache_cap();
     r->fast_rounds = 0;

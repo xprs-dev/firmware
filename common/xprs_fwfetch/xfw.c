@@ -29,7 +29,8 @@
 #define FAIL_HOLD_S      (6u * 3600u)  /* a digest that failed is left alone */
 #define PARKED_MAX       8
 
-typedef enum { ST_IDLE, ST_ASKED, ST_LINKING, ST_GETTING, ST_FINISHING } state_t;
+typedef enum { ST_IDLE, ST_ASKED, ST_SETTLING, ST_LINKING, ST_GETTING, ST_FINISHING } state_t;
+#define SETTLE_S 5u   /* between opening the slot (which quiesces the station) and the link */
 
 static xfw_cfg_t s_cfg;
 static bool s_on;
@@ -64,6 +65,7 @@ static struct {
     bool     sink_open;
     uint32_t got;
     bool     resume;        /* the next link continues this transfer */
+    bool     deferred;      /* this attempt ends for a reason of ours: keep the image, try later */
     int      resumes;
     char     why[48];
 } s_f;
@@ -410,7 +412,23 @@ static void on_result(const xprs_t *p, uint32_t now)
     xprs_get_str(p, "code", code, sizeof code);
     xprs_get_str(p, "m", m, sizeof m);
     int c = atoi(code);
-    if (c == 202) { open_link(now); return; }
+    if (c == 202) {
+        /* The slot first, and the link only once the station has settled:
+         * opening the slot quiesces the station (the hotspot comes down,
+         * storage pauses), and on the C3 that bounced the hub socket a
+         * second later -- under a link that had just come up, so the
+         * GET_FILE went into a dead socket and the link died with it. A
+         * resumed transfer has its slot and goes straight to the link. */
+        if (s_f.resume) { open_link(now); return; }
+        if (!s_cfg.sink_begin(s_best.img.version, s_best.e.size, s_best.e.sha)) {
+            fetch_failed("no slot for the image", now);
+            return;
+        }
+        s_f.sink_open = true;
+        s_f.state = ST_SETTLING;
+        s_f.at_s = now;
+        return;
+    }
     if (c == 429) s_round_429 = true;
     say("fwfetch: %s answered cmd:file with %d%s%.40s", s_f.holder, c, m[0] ? " " : "", m);
     reset_fetch(NULL);
@@ -435,7 +453,7 @@ void xfw_on_link_packet(const rns_packet_t *p)
                  * it has and asks for the rest: GET_RANGE from the byte it
                  * stopped at (the files protocol's 0x06), which the holder
                  * serves as a resource like any other. */
-                if (!s_f.resume && !s_cfg.sink_begin(s_best.img.version, s_best.e.size, s_best.e.sha)) {
+                if (!s_f.sink_open && !s_cfg.sink_begin(s_best.img.version, s_best.e.size, s_best.e.sha)) {
                     snprintf(s_f.why, sizeof s_f.why, "no slot for the image");
                     s_f.state = ST_FINISHING;
                 } else {
@@ -463,7 +481,13 @@ void xfw_on_link_packet(const rns_packet_t *p)
                         s_f.state = ST_GETTING;
                         s_f.at_s = s_f.last_part_s = s_f.last_progress_s = s_cfg.now_s();
                     } else {
-                        snprintf(s_f.why, sizeof s_f.why, "GET_FILE not sent");
+                        /* Both are the station's moment, not the image's:
+                         * no heap for the receiver (the C3, with 16 KB free
+                         * and nothing contiguous), or the hub socket gone.
+                         * Deferred, not failed: the digest is not held
+                         * against for six hours. */
+                        snprintf(s_f.why, sizeof s_f.why, "%s", !s_f.res ? "no memory for the receiver" : "GET_FILE not sent");
+                        s_f.deferred = true;
                         s_f.state = ST_FINISHING;
                     }
                 }
@@ -541,6 +565,9 @@ void xfw_poll(void)
             else { s_try = 0; fetch_failed("no answer to cmd:file", now); }
         }
         break;
+    case ST_SETTLING:
+        if (now - s_f.at_s >= SETTLE_S) open_link(now);
+        break;
     case ST_LINKING:
         if (now - s_f.at_s > LINK_WAIT_S) {
             if (s_f.link_tries < LINK_TRIES) open_link(now);
@@ -584,6 +611,14 @@ void xfw_poll(void)
         }
         break;
     case ST_FINISHING:
+        if (s_f.why[0] && s_f.deferred) {
+            say("fwfetch: %s deferred: %s; again in %u min", s_best.img.version, s_f.why,
+                (unsigned)(ROUND_ASKED_S / 60));
+            reset_fetch(s_f.why);
+            s_try = 0;
+            s_retry_s = now + ROUND_ASKED_S;
+            break;
+        }
         if (s_f.why[0]) { fetch_failed(s_f.why, now); break; }
         say("fwfetch: %s %s arrived (%u bytes), installing", s_best.img.board,
             s_best.img.version, (unsigned)s_f.got);
@@ -602,7 +637,7 @@ void xfw_poll(void)
 
 const char *xfw_state(char *buf, size_t cap)
 {
-    static const char *names[] = { "idle", "asked", "linking", "getting", "finishing" };
+    static const char *names[] = { "idle", "asked", "settling", "linking", "getting", "finishing" };
     char st[120] = "";
     if (s_f.res) rns_res_state(s_f.res, st, sizeof st);
     snprintf(buf, cap, "%s publisher=%s chan=%s best=%s state=%s%s%s got=%u asks=%u fetches=%u installs=%u fails=%u last=%s",

@@ -53,11 +53,13 @@ typedef struct {
 } rns_res_sink_t;
 
 /** Opaque receiver state. Allocate with rns_res_new(), free with
- *  rns_res_free(); one block, carrying a cache of RNS_RES_CACHE_PARTS parts
- *  and a ring of RNS_RES_RING part hashes (the map is never held whole:
- *  only the hashes between the frontier and the known horizon matter).
- *  Nothing is allocated while a transfer runs. A board without PSRAM sets
- *  RNS_RES_CACHE_PARTS=8 in its build flags: about 5 KB in all. */
+ *  rns_res_free(): one block of about 2 KB (a ring of RNS_RES_RING part
+ *  hashes: the map is never held whole, only the hashes between the
+ *  frontier and the known horizon matter), plus up to RNS_RES_CACHE_PARTS
+ *  part slots of 472 bytes each, taken one at a time as parts arrive out
+ *  of order and kept until the free. Small blocks, so it fits the
+ *  fragmented heap of a board without PSRAM; a slot the heap refuses only
+ *  narrows the window. */
 rns_res_t *rns_res_new(const rns_link_t *link, const rns_res_sink_t *sink);
 void rns_res_free(rns_res_t *r);
 

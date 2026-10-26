@@ -118,7 +118,19 @@ the C3's single core exposes (the statistics loader filling rings
 before `xprsrns_init`), both fixed, and one cadence hole: the C3's first
 folder ask went to the T-Deck at the very second the T-Deck was rebooting
 into beta.4, and an unanswered ask used to wait six hours. It now retries
-in ten minutes, three times, before settling into the long cadence.
+in ten minutes, three times, before settling into the long cadence. The
+first real attempt then showed the other face of the C3's heap: 16 KB
+free the moment the link came up, none of it in one 6.8 KB piece, so the
+receiver's calloc failed and the image was held against for six hours.
+The receiver is now a 2 KB block plus part slots of 472 bytes taken one
+at a time, and an attempt that ends for a reason of the station's own (no
+memory, the hub socket gone) is deferred ten minutes, not failed. The
+attempt after that found the order wrong: the slot was opened at the
+link's proof, opening it quiesces the station (hotspot down, storage
+paused), and on the C3 that bounced the hub TCP socket one second later,
+under a link that had just come up: the GET_FILE went into a dead socket.
+The fetcher now opens the slot on the holder's 202, settles five seconds,
+and only then asks for the link.
 
 Not written: a station serving the copies on its card to its neighbours
 (`serve:files`, `q:have`, `cmd:file` as a responder: step 7's second half).

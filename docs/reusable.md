@@ -142,10 +142,13 @@ reuse potential.
   is a RING (`RNS_RES_RING`, 256 slots, `slot_of()` / `in_ring()` /
   `advance()`): a segment's map is never held whole, because only the
   hashes between the frontier and the known horizon are ever consulted,
-  and the horizon runs at most two batches ahead. One block of 6.8 KB on
-  an ESP32-C3 (`RNS_RES_CACHE_PARTS=8`), nothing allocated mid-transfer.
-  The same trick fits any windowed receiver whose index is handed out in
-  batches: keep the window, not the table.
+  and the horizon runs at most two batches ahead. The part cache is
+  `RNS_RES_CACHE_PARTS` separate 472-byte blocks taken lazily
+  (`cache_slot()`), because on the C3 one 6.8 KB calloc failed with 16 KB
+  free: a fragmented heap gives small blocks when it will not give one
+  large one, and a slot it refuses only narrows the window. Two rules for
+  any receiver on a board without PSRAM: keep the window, not the table;
+  and ask the heap for many small blocks, each one optional.
 - **`rns_token_encrypt/decrypt`, `rns_ed25519_verify`, the incremental
   `rns_sha256_*`, `rns_hmac_*`, `rns_cbc_decrypt_*`** in `rns.c`: the
   primitives, with host (OpenSSL) and device (mbedtls) bodies behind one

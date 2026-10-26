@@ -101,11 +101,15 @@ int main(void)
     char st[300]; xfw_state(st, sizeof st);
     CHECK(strstr(st, "state=asked") && strstr(st, "best=0.5.2"), "%s", st);
 
-    /* The holder says 202: a link request goes out, to its files destination. */
+    /* The holder says 202: the slot opens first (that quiesces the station),
+     * the link request goes out five seconds later, to its files destination. */
     xprs_t ask; CHECK(xprs_parse(sent_wire, (int)strlen(sent_wire), &ask), "parse ask");
     char id[XPRS_ID_LEN]; xprs_id(&ask, id);
     n = snprintf(w, sizeof w, "t:result f:X3ARC1 d:X3SEP2 ts:2026-10-25_12:00:01 r:%s code:202", id);
     feed(w, n);
+    xfw_state(st, sizeof st);
+    CHECK(sink_begun == 1 && packets_sent == 0 && strstr(st, "state=settling"), "slot open, settling: %s", st);
+    now_s += 5; xfw_poll();
     CHECK(packets_sent == 1 && (last_pkt[0] & 3) == RNS_PACKET_LINKREQUEST, "LINKREQUEST sent (%d packets, %s)", packets_sent, last_said);
     xfw_state(st, sizeof st);
     CHECK(strstr(st, "state=linking"), "%s", st);
@@ -114,7 +118,7 @@ int main(void)
     now_s += 21; xfw_poll(); now_s += 21; xfw_poll(); now_s += 21; xfw_poll();
     xfw_state(st, sizeof st);
     CHECK(strstr(st, "state=idle") && strstr(st, "fails=1"), "%s", st);
-    CHECK(sink_begun == 0 && sink_aborted == 0, "no slot was touched");
+    CHECK(sink_begun == 1 && sink_aborted == 1, "the slot was opened and given back");
     n = describe(w, sizeof w, "tdeck-0.5.2.bin", "stable", 1460192, publisher_priv); feed(w, n);
     CHECK(sent_n == 2, "the failed digest is not asked for again within the hold");
 
