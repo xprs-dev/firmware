@@ -126,6 +126,14 @@ reuse potential.
   arrival bearer, or a relayed ask gets its answer on the relay's radio.
 - **`same_base_call(a, b)`** -- callsign equality ignoring a `-n` device
   suffix and case, for comparing an `f:` with a device-table entry.
+- **The `cfg` console lines are an interface, not a debug aid.** The app's
+  flasher claims a board it just wrote over the same USB cable
+  (`app/lib/services/flash/station_console.dart`): it waits for the banner
+  `XPRS station <call>`, sends `cfg get own1`, `cfg set own1 <npub>`,
+  `cfg set own1c <call>`, `cfg del own2..own4`, and matches the answers
+  `own1=<v>`, `<key>=<v> (saved)` and `<key> cleared` exactly as
+  `xcfg_console` prints them. Change those words, or the owner keys
+  `pol_take_owner` writes, and change the app with them.
 - **`xst_dev_path(row, window, &path)` (`xprs_station`)** -- how far a
   device-table row is, in metres, with the relay legs added up: `total_m`
   (-1 while a leg is unknown), `near_m` (to the nearest relay, or the whole
