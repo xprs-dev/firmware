@@ -133,12 +133,14 @@ const char *xst_clock_src_name(void);   /* "none", "kept", "hint", "owner", "ntp
 bool xst_ingest(const char *wire, int len, const char *bearer, int rssi);
 /* Same, when the caller already parsed. Returns false on own echo/no f:. */
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi);
-/* Same, with [hops_more] hops that via: cannot express: a Meshtastic node
- * whose frame reached the gateway through that network's own relays (its
- * hop_start - hop_limit). Such a frame's rssi is the last relay's, so the
- * caller passes 0 for it and the row's distance is honestly unknown. */
+/* Same, with [hops_more] hops that via: cannot express (a Meshtastic node
+ * whose frame reached the gateway through that network's own repeaters,
+ * its hop_start - hop_limit) and [relay], the last of those repeaters when
+ * the bridge could name it ("" or NULL otherwise): it becomes the row's
+ * via when the wire itself names no relay but this station. The rssi is
+ * the frame's as measured, the repeater's transmission when relayed. */
 bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
-                          int hops_more);
+                          int hops_more, const char *relay);
 
 /** Whether LoRa also counts as a local bearer here ([lora] local, XPRS.md
  *  9.11.1): a chat heard on a bearer wider than its scope is not shown in a
@@ -152,11 +154,14 @@ void xst_chat_note(const xprs_t *p);
 /* A sighting that is not an XPRS wire (an RNS announce, a blemesh
  * neighbour): keeps the devices list honest about everything in reach. */
 void xst_dev_note(const char *call, const char *bearer, int rssi);
-/* Same, [hops] away through relays of another network that via: cannot
- * name (a bridge's sighting of a Meshtastic or MeshCore node); rssi 0 then,
- * since the reading is the last relay's. */
+/* Same, [hops] away through repeaters of another network that via: cannot
+ * name (a bridge's sighting of a Meshtastic or MeshCore node). [rssi] is
+ * what the radio measured either way -- the node's own when hops is 0,
+ * the last repeater's otherwise, which is still a distance to whoever it
+ * was heard from; [relay] names that repeater when the bridge could,
+ * "" or NULL otherwise. */
 void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
-                       int hops);
+                       int hops, const char *relay);
 
 /* Bank transmitted-packet totals into the stats rings. Call once per UI
  * tick with the CUMULATIVE total across the board's bearers; the primed
@@ -288,7 +293,14 @@ typedef struct {
                                   * a neighbour: then it is the total); -1 */
     int  far_m;                  /* the legs beyond the nearest relay, 0 for
                                   * a neighbour, -1 when one is unknown */
-    char relay[XPRS_CALL_LEN];   /* the nearest relay, empty for a neighbour */
+    int  floor_m;                /* the legs that ARE known, added up: at
+                                  * least this far. For a node behind a
+                                  * Meshtastic repeater it is the measured
+                                  * distance to that repeater, which is what
+                                  * a person next to this station wants to
+                                  * see. -1 only when nothing is known. */
+    char relay[XPRS_CALL_LEN];   /* the nearest relay, empty for a neighbour
+                                  * or a repeater the bridge could not name */
 } xst_path_t;
 /* [in_range_sec] bounds which rows and sayings count (the relay's own row
  * for the near leg; three times that for the relays' sayings, which are

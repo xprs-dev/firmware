@@ -300,13 +300,14 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
 }
 
 void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
-                       int hops)
+                       int hops, const char *relay)
 {
     if (!call || !call[0]) return;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return;
     if (hops < 0) hops = 0;
-    dev_upsert(call, bearer ? bearer : "", hops ? 0 : rssi,
-               hops > 255 ? 255 : (uint8_t)hops, "");
+    dev_upsert(call, bearer ? bearer : "", rssi,
+               hops > 255 ? 255 : (uint8_t)hops,
+               hops && relay ? relay : "");
 }
 
 /* The hops a packet took and who took them, for its devices row.
@@ -484,11 +485,11 @@ void xst_set_lora_local(bool local)
 
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
 {
-    return xst_ingest_parsed_ex(p, bearer, rssi, 0);
+    return xst_ingest_parsed_ex(p, bearer, rssi, 0, "");
 }
 
 bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
-                          int hops_more)
+                          int hops_more, const char *relay)
 {
     char call[XPRS_CALL_LEN];
     if (!xprs_get_str(p, "f", call, sizeof call)) return false;
@@ -528,6 +529,10 @@ bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
      * chain's tail is kept so the distance can be added up (xst_dev_path). */
     char via[XST_VIA_LEN];
     int hops = via_tail(p, via, sizeof via) + (hops_more > 0 ? hops_more : 0);
+    /* A repeater of the other network, named by the bridge, is the relay
+     * the wire could not write. */
+    if (hops_more > 0 && !via[0] && relay && relay[0])
+        snprintf(via, sizeof via, "%s", relay);
     dev_upsert(call, bearer ? bearer : "", rssi,
                hops > 255 ? 255 : (uint8_t)hops, via);
     return true;
@@ -1171,14 +1176,17 @@ int xst_far_rssi(const char *observer, const char *call, int ttl_sec)
 void xst_dev_path(const xst_dev_t *d, int in_range_sec, xst_path_t *out)
 {
     memset(out, 0, sizeof *out);
-    out->total_m = out->near_m = out->far_m = -1;
+    out->total_m = out->near_m = out->far_m = out->floor_m = -1;
     if (!d) return;
     if (d->hops == 0 || !d->via[0]) {
-        /* A neighbour (or a Meshtastic node beyond relays nobody can name:
-         * then its rssi is 0 and the answer is unknown, honestly). */
+        /* A neighbour -- or a node behind repeaters of another network
+         * that the bridge could not name: then the signal is the last
+         * repeater's, the near leg is the measured distance to it, and
+         * that is the floor; the rest nobody can say. */
         out->near_m = est_m(d->rssi);
         out->far_m = d->hops ? -1 : 0;
         out->total_m = d->hops ? -1 : out->near_m;
+        out->floor_m = out->near_m;
         return;
     }
     char chain[XST_VIA_LEN];
@@ -1212,15 +1220,18 @@ void xst_dev_path(const xst_dev_t *d, int in_range_sec, xst_path_t *out)
     /* The far legs, farthest first: rel[0] heard the sender, rel[1] heard
      * rel[0], and so on up to the nearest relay. Each is that relay's own
      * saying; one missing, or a chain longer than the tail kept, and the
-     * total is unknown. */
+     * total is unknown -- but every leg that IS known still bounds the
+     * distance from below, and that bound is the floor. */
     bool known = d->hops <= n;
-    int far = 0;
-    for (int i = 0; i < n && known; i++) {
+    int far = 0, floor = out->near_m >= 0 ? out->near_m : -1;
+    for (int i = 0; i < n; i++) {
         int r = xst_far_rssi(rel[i], i ? rel[i - 1] : d->call, 3 * in_range_sec);
-        if (!r) known = false;
-        else far += est_m(r);
+        if (!r) { known = false; continue; }
+        far += est_m(r);
+        floor = (floor < 0 ? 0 : floor) + est_m(r);
     }
     out->far_m = known ? far : -1;
+    out->floor_m = floor;
     out->total_m = (known && out->near_m >= 0) ? out->near_m + far : -1;
 }
 

@@ -33,9 +33,9 @@ static dl_t g_dl[64];
 static int g_ndl;
 
 static void t_deliver(void *ctx, const char *wire, int len, bool sign,
-                      int rssi, int hops)
+                      int rssi, int hops, const char *relay)
 {
-    (void)rssi; (void)hops;
+    (void)rssi; (void)hops; (void)relay;
     int who = (int)(intptr_t)ctx;
     if (g_ndl >= 64 || len >= (int)sizeof g_dl[0].wire) return;
     memcpy(g_dl[g_ndl].wire, wire, (size_t)len);

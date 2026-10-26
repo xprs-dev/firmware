@@ -677,8 +677,9 @@ static void set_bar(void);
 static void settings_ok(int row);
 
 static void mesh_deliver(const char *wire, int len, bool sign, int rssi,
-                         int hops);
-static void mesh_heard(const char *call, int rssi, int hops);
+                         int hops, const char *relay);
+static void mesh_heard(const char *call, int rssi, int hops,
+                       const char *relay);
 static int  mesh_stamp(char *out, int cap, bool to_minute);
 static int32_t mesh_tz(bool *known);
 static esp_err_t lora_apply_mode(xprslora_mode_t mode);
@@ -2882,16 +2883,18 @@ static void ota_answer(const char *to, const char *bearer, const char *id,
 }
 
 static void seen_note_ex(const char *wire, int len, const char *bearer,
-                         int rssi, int hops_more);
+                         int rssi, int hops_more, const char *relay);
 static void seen_note(const char *wire, int len, const char *bearer, int rssi)
 {
-    seen_note_ex(wire, len, bearer, rssi, 0);
+    seen_note_ex(wire, len, bearer, rssi, 0, "");
 }
 
-/* [hops_more]: hops via: cannot express (a Meshtastic node's own relays,
- * xst_ingest_parsed_ex); 0 everywhere but the bridge's translations. */
+/* [hops_more]: hops via: cannot express (a Meshtastic node's own relays)
+ * and [relay] the last of them when it could be named
+ * (xst_ingest_parsed_ex); 0 and "" everywhere but the bridge's
+ * translations. */
 static void seen_note_ex(const char *wire, int len, const char *bearer,
-                         int rssi, int hops_more)
+                         int rssi, int hops_more, const char *relay)
 {
     xprs_t sp;
     char call[XPRS_CALL_LEN];
@@ -3421,7 +3424,7 @@ static void seen_note_ex(const char *wire, int len, const char *bearer,
 
     /* Chat ring + rx/device stats + devices list live in xprs_station now,
      * shared with every board that has a screen. */
-    xst_ingest_parsed_ex(&sp, bearer, rssi, hops_more);
+    xst_ingest_parsed_ex(&sp, bearer, rssi, hops_more, relay);
     chat_note_unread(&sp);
 
     flow_t *fl = &s_flow[s_flow_n % FLOW_MAX];
@@ -4005,8 +4008,9 @@ struct meshq_s {
     volatile bool full;
     bool sign;
     int len;
-    int rssi;                 /* the frame's, 0 when a Meshtastic relay aired it */
+    int rssi;                 /* the frame's, as the radio measured it */
     int hops;                 /* that network's relays it came through */
+    char relay[12];           /* the last of them, when it could be named */
     char wire[XPRS_MAX_WIRE + 1];
 };
 static struct meshq_s *s_meshq;  /* [MESHQ_N], big_calloc'd off the .bss */
@@ -4036,14 +4040,15 @@ static void mesh_out(const char *wire, int len)
  * heard. The devices table takes a sighting from any task (one critical
  * section), so this is the whole of it: the node on lora at its frame's
  * signal, or behind its own network's relays with no signal. */
-static void mesh_heard(const char *call, int rssi, int hops)
+static void mesh_heard(const char *call, int rssi, int hops,
+                       const char *relay)
 {
-    xst_dev_note_hops(call, "lora", rssi, hops);
+    xst_dev_note_hops(call, "lora", rssi, hops, relay);
 }
 
 /* The LoRa task, under the bridge's mutex: a copy and a flag, nothing else. */
 static void mesh_deliver(const char *wire, int len, bool sign, int rssi,
-                         int hops)
+                         int hops, const char *relay)
 {
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
     for (int i = 0; i < MESHQ_N; i++) {
@@ -4054,6 +4059,8 @@ static void mesh_deliver(const char *wire, int len, bool sign, int rssi,
         s_meshq[i].sign = sign;
         s_meshq[i].rssi = rssi;
         s_meshq[i].hops = hops;
+        snprintf(s_meshq[i].relay, sizeof s_meshq[i].relay, "%s",
+                 relay ? relay : "");
         s_meshq[i].full = true;            /* last: idx_task reads the rest */
         return;
     }
@@ -4088,14 +4095,17 @@ static void mesh_drain(void)
         int n = s_meshq[i].len;
         bool sign = s_meshq[i].sign;
         int rssi = s_meshq[i].rssi, hops = s_meshq[i].hops;
+        char relay[12];
+        memcpy(relay, s_meshq[i].relay, sizeof relay);
         memcpy(w, s_meshq[i].wire, (size_t)n + 1);
         s_meshq[i].full = false;
         if (!sign) {
             s_heard_count++;
-            /* The node's own signal, and its own network's hops: the
-             * translation's via: names this gateway, which the devices
-             * table does not count as a hop (xst_ingest_parsed_ex). */
-            seen_note_ex(w, n, "lora", rssi, hops);
+            /* The frame's signal, its own network's hops and the repeater
+             * it was heard from: the translation's via: names this
+             * gateway, which the devices table does not count as a hop
+             * (xst_ingest_parsed_ex). */
+            seen_note_ex(w, n, "lora", rssi, hops, relay);
             ESP_LOGI(TAG, "mesh   %3dB  %s", n, w);
             mesh_out(w, n);
             continue;
@@ -6293,7 +6303,10 @@ static void ui_render(void)
                      devs[i].call);
             xst_path_t pt;
             xst_dev_path(&devs[i], UI_INRANGE_SEC, &pt);
-            blips[i].meters = pt.total_m < 0 ? -1.0f : (float)pt.total_m;
+            /* The whole way when known, else as far as IS known: a blip
+             * at the repeater it was heard from beats no blip. */
+            int bm = pt.total_m >= 0 ? pt.total_m : pt.floor_m;
+            blips[i].meters = bm < 0 ? -1.0f : (float)bm;
         }
         xui_radar_blips(blips, nblip);
         xui_set_title("Radar 1/7");
@@ -6340,28 +6353,38 @@ static void ui_render(void)
             snprintf(r->cell[1], sizeof r->cell[1], "%s", devs[i].bearer);
             xst_path_t pt;
             xst_dev_path(&devs[i], UI_INRANGE_SEC, &pt);
-            if (pt.relay[0]) {
-                /* Carried here by a relay: the whole way when the relay
-                 * has said how far the station is from it, else the leg
-                 * to the relay as a floor. */
+            if (devs[i].hops) {
+                /* Carried here by a relay: the whole way when every leg
+                 * has been said, else what IS known as a floor -- for a
+                 * node behind a Meshtastic repeater, the measured distance
+                 * to that repeater. */
+                const char *who = pt.relay[0] ? pt.relay : "a repeater";
                 if (pt.total_m >= 0)
                     snprintf(r->cell[2], sizeof r->cell[2], "~%dm", pt.total_m);
-                else if (pt.near_m >= 0)
-                    snprintf(r->cell[2], sizeof r->cell[2], ">%dm", pt.near_m);
+                else if (pt.floor_m >= 0)
+                    snprintf(r->cell[2], sizeof r->cell[2], ">%dm", pt.floor_m);
                 else
                     snprintf(r->cell[2], sizeof r->cell[2], "-");
                 if (pt.total_m >= 0)
                     snprintf(r->detail, sizeof r->detail,
                              "%s through %s: about %d m to %s and %d m "
                              "beyond it, %d m in all. Heard %lu s ago.",
-                             devs[i].call, pt.relay, pt.near_m, pt.relay,
+                             devs[i].call, who, pt.near_m, who,
                              pt.far_m, pt.total_m, (unsigned long)age);
+                else if (pt.floor_m >= 0)
+                    snprintf(r->detail, sizeof r->detail,
+                             "%s heard through %s about %d m away, %u hop%s; "
+                             "how far it is beyond that nobody has said. "
+                             "Heard %lu s ago.",
+                             devs[i].call, who, pt.floor_m,
+                             (unsigned)devs[i].hops, devs[i].hops > 1 ? "s" : "",
+                             (unsigned long)age);
                 else
                     snprintf(r->detail, sizeof r->detail,
-                             "%s through %s, %d m away; %s has not said "
-                             "how far %s is from it. Heard %lu s ago.",
-                             devs[i].call, pt.relay, pt.near_m, pt.relay,
-                             devs[i].call, (unsigned long)age);
+                             "%s through %s, %u hop%s away; no signal on "
+                             "this path. Heard %lu s ago.",
+                             devs[i].call, who, (unsigned)devs[i].hops,
+                             devs[i].hops > 1 ? "s" : "", (unsigned long)age);
             } else if (pt.total_m >= 0) {
                 int m = pt.total_m;
                 snprintf(r->cell[2], sizeof r->cell[2], "~%dm", m);
@@ -9917,20 +9940,24 @@ static int api_devices_json(char *buf, size_t cap)
         const xst_dev_t *d = &devs[i];
         /* dist_m is the whole way (xst_dev_path): for a relayed station,
          * this station to the relay plus what the relay said, and -1 while
-         * a leg is unknown; such a row also says the relay and the legs. */
+         * a leg is unknown; such a row also says the relay (when it could
+         * be named), the legs, and floor_m, the legs that ARE known -- for
+         * a node behind a Meshtastic repeater, the measured distance to
+         * that repeater. */
         xst_path_t pt;
         xst_dev_path(d, UI_INRANGE_SEC, &pt);
-        char row[200];
+        char row[220];
         int m = snprintf(row, sizeof row,
             "%s{\"call\":\"%s\",\"bearer\":\"%s\",\"rssi\":%d,"
             "\"dist_m\":%d,\"hops\":%u,\"age_s\":%lu",
             i ? "," : "", d->call, d->bearer, d->rssi, pt.total_m,
             (unsigned)d->hops,
             (unsigned long)((now - d->last_ms) / 1000));
-        if (pt.relay[0] && m > 0 && m < (int)sizeof row)
+        if (d->hops && m > 0 && m < (int)sizeof row)
             m += snprintf(row + m, sizeof row - (size_t)m,
-                          ",\"via\":\"%s\",\"near_m\":%d,\"far_m\":%d",
-                          pt.relay, pt.near_m, pt.far_m);
+                          ",\"via\":\"%s\",\"near_m\":%d,\"far_m\":%d,"
+                          "\"floor_m\":%d",
+                          pt.relay, pt.near_m, pt.far_m, pt.floor_m);
         if (m > 0 && m < (int)sizeof row)
             m += snprintf(row + m, sizeof row - (size_t)m, "}");
         /* The reply buffer is one 2 KB page: a list that outgrows it ends

@@ -54,8 +54,12 @@ and are not yet in that document:
   observation (`hears:` with the `zhq:` digits) and kept by
   `xst_far_note()`. While a leg is unknown `dist_m` is -1. A relayed row
   also carries `via` (the nearest relay), `near_m` (the leg to it) and
-  `far_m` (the legs beyond, -1 unknown), so the page can show the first leg
-  as a floor (`>~12 m via X3SEP2`). On the gateway itself a Meshtastic or
+  `far_m` (the legs beyond, -1 unknown) and `floor_m` (the legs that ARE
+  known, added up), so the page can show a floor (`>~12 m via X3SEP2`). A
+  node behind a Meshtastic or MeshCore repeater keeps the signal the radio
+  measured, which is the repeater's: its `floor_m` is the distance to that
+  repeater, and `via` names the repeater when the frame's relay byte (or
+  MeshCore path hash) matches exactly one node the bridge knows. On the gateway itself a Meshtastic or
   MeshCore node is a neighbour on `lora` at its frame's signal, from every
   decoded frame and not only the texts that become translations (the
   bridges' `heard` hook; `via:` naming the station is not a hop); a frame

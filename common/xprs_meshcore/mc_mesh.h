@@ -63,15 +63,17 @@ typedef struct {
     bool     (*air)(void *ctx, const uint8_t *frame, int len, int prio);
     uint32_t (*now_ms)(void);
     uint32_t (*random)(void);
-    /* [rssi] is the frame's when the node aired it itself, 0 when a
-     * MeshCore repeater did (the path names the repeaters, and the reading
-     * is the last one's); [hops] is the path's length. Both 0 for a
+    /* [rssi] is the frame's as this radio measured it (the node's own
+     * when the path is empty, the last repeater's otherwise); [hops] is
+     * the path's length; [relay] names the last repeater when its path
+     * hash matches exactly one node we know, "" otherwise. 0, 0, "" for a
      * receipt. As mt_mesh_ops_t.deliver. */
     void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
-                        int rssi, int hops);
-    /* A node of the other network was heard (its advert). Optional; as
-     * mt_mesh_ops_t.heard. */
-    void     (*heard)(void *ctx, const char *call, int rssi, int hops);
+                        int rssi, int hops, const char *relay);
+    /* A node of the other network was heard (its advert), or a repeater
+     * we could name (hops 0). Optional; as mt_mesh_ops_t.heard. */
+    void     (*heard)(void *ctx, const char *call, int rssi, int hops,
+                      const char *relay);
     int      (*stamp)(void *ctx, char *out, int cap, bool to_minute);
     uint32_t (*utc_now)(void *ctx);
     bool     (*nick_of)(void *ctx, const char *call, char *out, int cap);
@@ -232,6 +234,7 @@ typedef struct {
     int8_t   snr;
     int16_t  rssi;               /* what ops.deliver will say of it */
     uint8_t  hops;
+    char     relay[12];
     uint8_t  payload[MC_PAYLOAD_MAX];
 } mc_inbox_t;
 
@@ -303,6 +306,7 @@ typedef struct {
      * a parked packet. */
     int             rx_rssi;
     int             rx_hops;
+    char            rx_relay[12];
     uint8_t         bcast_min[60];
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;

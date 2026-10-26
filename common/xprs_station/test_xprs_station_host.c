@@ -509,12 +509,18 @@ static void test_scope_rooms(void)
 /* ── A relayed station's distance (xst_dev_path) ───────────────────────── */
 
 /* Ingest one wire as the station would, on [bearer] at [rssi]. */
-static void ingest(const char *wire, const char *bearer, int rssi, int more)
+static void ingest_via(const char *wire, const char *bearer, int rssi,
+                       int more, const char *relay)
 {
     xst_test_now_ms += 1;
     xprs_t p;
     if (xprs_parse(wire, (int)strlen(wire), &p))
-        xst_ingest_parsed_ex(&p, bearer, rssi, more);
+        xst_ingest_parsed_ex(&p, bearer, rssi, more, relay);
+}
+
+static void ingest(const char *wire, const char *bearer, int rssi, int more)
+{
+    ingest_via(wire, bearer, rssi, more, "");
 }
 
 static int row_of(const char *call, xst_dev_t *out)
@@ -551,15 +557,16 @@ static void test_path(void)
           "relayed row: hops %d via '%s'", d.hops, d.via);
     xst_dev_path(&d, 300, &pt);
     CHECK(pt.total_m == -1 && pt.near_m == m50 && pt.far_m == -1 &&
-          !strcmp(pt.relay, "X3SEP2"), "unsaid: total %d near %d far %d '%s'",
-          pt.total_m, pt.near_m, pt.far_m, pt.relay);
+          pt.floor_m == m50 && !strcmp(pt.relay, "X3SEP2"),
+          "unsaid: total %d near %d far %d floor %d '%s'",
+          pt.total_m, pt.near_m, pt.far_m, pt.floor_m, pt.relay);
 
     /* The neighbour's observation says it hears the node at digit 5. */
     xst_far_note("X3SEP2", "MT1234", 5);
     CHECK(xst_far_rssi("X3SEP2", "MT1234", 900) == -62, "digit 5 is -62 dBm");
     CHECK(xst_far_rssi("X3SEP2", "MT9999", 900) == 0, "never said");
     xst_dev_path(&d, 300, &pt);
-    CHECK(pt.total_m == m50 + m62 && pt.far_m == m62,
+    CHECK(pt.total_m == m50 + m62 && pt.far_m == m62 && pt.floor_m == pt.total_m,
           "summed: total %d = %d + %d", pt.total_m, m50, m62);
 
     /* The near leg prefers the relay's own fresh direct row over the one
@@ -581,7 +588,8 @@ static void test_path(void)
           !strcmp(d.via, "X1GATE,X3SEP2"), "two hops, via '%s'", d.via);
     xst_far_note("X3SEP2", "X1GATE", 5);
     xst_dev_path(&d, 300, &pt);
-    CHECK(pt.total_m == -1 && !strcmp(pt.relay, "X3SEP2"), "gate unsaid");
+    CHECK(pt.total_m == -1 && !strcmp(pt.relay, "X3SEP2") &&
+          pt.floor_m == m50 + m62, "gate unsaid: floor %d", pt.floor_m);
     xst_far_note("X1GATE", "MT1234", 5);
     xst_dev_path(&d, 300, &pt);
     CHECK(pt.total_m == m50 + 2 * m62, "three legs: %d", pt.total_m);
@@ -605,13 +613,29 @@ static void test_path(void)
     xst_dev_path(&d, 300, &pt);
     CHECK(pt.total_m == m70, "gateway sees the node at %d", pt.total_m);
 
-    /* ...unless Meshtastic's own relays carried the frame: then the signal
-     * is theirs, the hops are counted and the distance is unknown. */
-    ingest("t:message f:MT5678 via:" SELF " m:hi", "lora", 0, 2);
-    CHECK(row_of("MT5678", &d) && d.hops == 2 && d.via[0] == 0,
-          "meshtastic hops: %d", d.hops);
+    /* ...unless Meshtastic's own repeaters carried the frame: then the
+     * signal is the last repeater's, the hops are counted, and what the
+     * radio measured is the floor -- the distance to that repeater. */
+    ingest("t:message f:MT5678 via:" SELF " m:hi", "lora", -70, 2);
+    CHECK(row_of("MT5678", &d) && d.hops == 2 && d.via[0] == 0 && d.rssi == -70,
+          "meshtastic hops: %d rssi %d", d.hops, d.rssi);
     xst_dev_path(&d, 300, &pt);
-    CHECK(pt.total_m == -1 && pt.near_m == -1, "nobody can say");
+    CHECK(pt.total_m == -1 && pt.near_m == m70 && pt.floor_m == m70 &&
+          pt.relay[0] == 0, "heard through an unnamed repeater %d m away",
+          pt.floor_m);
+    /* The bridge named the repeater: it is the row's relay, and its own
+     * direct sighting gives the near leg. */
+    xst_dev_note_hops("MTREPEAT", "lora", -70, 0, "");
+    ingest_via("t:message f:MT5678 via:" SELF " m:hi", "lora", -70, 2, "MTREPEAT");
+    CHECK(row_of("MT5678", &d) && d.hops == 2 && !strcmp(d.via, "MTREPEAT"),
+          "named repeater: via '%s'", d.via);
+    xst_dev_path(&d, 300, &pt);
+    CHECK(pt.total_m == -1 && pt.floor_m == m70 && !strcmp(pt.relay, "MTREPEAT"),
+          "floor to the named repeater: %d via %s", pt.floor_m, pt.relay);
+    /* A bridge sighting with hops keeps its signal too. */
+    xst_dev_note_hops("MT9999", "lora", -70, 3, NULL);
+    CHECK(row_of("MT9999", &d) && d.hops == 3 && d.rssi == -70 && d.via[0] == 0,
+          "sighting behind repeaters keeps the reading");
 
     /* One row per station: the shortest path wins, and a relayed copy's
      * signal never stands in for a direct one. */

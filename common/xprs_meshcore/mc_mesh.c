@@ -493,7 +493,8 @@ static void deliver(mc_mesh_t *m, const char *wire, int len, bool sign)
     if (!m->ops.deliver) return;
     /* A receipt is ours; a translation carries the frame's own reading. */
     m->ops.deliver(m->ops.ctx, wire, len, sign,
-                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops);
+                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops,
+                   sign ? "" : m->rx_relay);
 }
 
 /* The text a packet may carry in m: no line breaks, no NUL. */
@@ -667,7 +668,7 @@ static void advert_in(mc_mesh_t *m, const uint8_t *payload, int plen,
     if (m->ops.heard) {
         char c[11];
         mc_call_of_pub(a.pub, c);
-        m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops);
+        m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops, m->rx_relay);
     }
     /* The key is the address, so it is worth keeping: it is what a direct
      * message to this node is sealed to. */
@@ -821,7 +822,28 @@ static void inbox_put(mc_mesh_t *m, const mc_pkt_t *p, uint32_t hash, int snr)
     slot->snr = (int8_t)snr;
     slot->rssi = (int16_t)m->rx_rssi;
     slot->hops = (uint8_t)m->rx_hops;
+    memcpy(slot->relay, m->rx_relay, sizeof slot->relay);
     memcpy(slot->payload, p->payload, (size_t)p->payload_len);
+}
+
+/* The repeater that aired a relayed copy: the path's last hash is the
+ * first byte(s) of its key. When exactly one node we know matches, it is
+ * named, and it is a direct sighting at this signal (the heard hook). */
+static void relay_name(mc_mesh_t *m, const mc_pkt_t *p, int rssi)
+{
+    if (!p->hops || !p->hash_size) return;
+    const uint8_t *hash = p->path + (p->hops - 1) * p->hash_size;
+    const mc_node_t *hit = NULL;
+    for (size_t i = 0; i < sizeof m->nodes / sizeof m->nodes[0]; i++) {
+        const mc_node_t *nd = &m->nodes[i];
+        if (!nd->heard_ms || nd->xprs ||
+            memcmp(nd->pub, hash, p->hash_size) != 0) continue;
+        if (hit) return;
+        hit = nd;
+    }
+    if (!hit) return;
+    mc_call_of_pub(hit->pub, m->rx_relay);
+    if (m->ops.heard) m->ops.heard(m->ops.ctx, m->rx_relay, rssi, 0, "");
 }
 
 void mc_mesh_on_frame(mc_mesh_t *m, const uint8_t *frame, int len, int rssi,
@@ -831,10 +853,14 @@ void mc_mesh_on_frame(mc_mesh_t *m, const uint8_t *frame, int len, int rssi,
     if (!m || !mc_parse(frame, len, &p)) return;
     m->st.rx_frames++;
     /* What a translation of this packet may say about the node's distance:
-     * the path holds one hash per repeater it came through, and the reading
-     * is the node's own only when the path is empty. */
+     * the path holds one hash per repeater it came through; the signal is
+     * what this radio measured, the node's own when the path is empty and
+     * the last repeater's otherwise -- a distance to whoever it was heard
+     * from, either way. */
     m->rx_hops = p.hops;
-    m->rx_rssi = p.hops ? 0 : rssi;
+    m->rx_rssi = rssi;
+    m->rx_relay[0] = 0;
+    if (p.hops) relay_name(m, &p, rssi);
     uint32_t now = m->ops.now_ms();
     uint32_t hash = mc_packet_hash(&p);
 
@@ -1193,6 +1219,7 @@ void mc_mesh_work(mc_mesh_t *m, uint32_t now)
         in->used = false;
         m->rx_rssi = in->rssi;
         m->rx_hops = in->hops;
+        memcpy(m->rx_relay, in->relay, sizeof m->rx_relay);
         if (in->type == MC_PT_ADVERT)
             advert_in(m, in->payload, in->len, in->hash, in->snr);
         else if (in->type == MC_PT_TXT_MSG || in->type == MC_PT_PATH)

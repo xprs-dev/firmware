@@ -129,7 +129,8 @@ reuse potential.
 - **`xst_dev_path(row, window, &path)` (`xprs_station`)** -- how far a
   device-table row is, in metres, with the relay legs added up: `total_m`
   (-1 while a leg is unknown), `near_m` (to the nearest relay, or the whole
-  way for a neighbour), `far_m`, `relay`. The HTTP devices list, the radar
+  way for a neighbour), `far_m`, `floor_m` (the known legs: print `>N m`
+  with it when the total is unknown), `relay`. The HTTP devices list, the radar
   and the Reachable table all draw from it; anything that prints a distance
   for a station should, rather than `xst_est_distance_m(row.rssi)`, which
   for a relayed row is the relay's distance.

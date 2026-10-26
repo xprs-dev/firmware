@@ -503,7 +503,8 @@ static void deliver(mt_mesh_t *m, const char *wire, int len, bool sign)
     if (!m->ops.deliver) return;
     /* A receipt is ours; a translation carries the frame's own reading. */
     m->ops.deliver(m->ops.ctx, wire, len, sign,
-                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops);
+                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops,
+                   sign ? "" : m->rx_relay);
 }
 
 /* Is [t] one of the two tapbacks XPRS has a word for? (section 28 assigns
@@ -690,7 +691,7 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
         if (!nd->xprs && m->ops.heard) {
             char c[12];
             mt_call_of_node(h->from, c, sizeof c);
-            m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops);
+            m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops, m->rx_relay);
         }
     }
 
@@ -787,17 +788,39 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     }
 }
 
+/* The repeater that aired a relayed copy, when the header's relay byte
+ * names exactly one node we know. That repeater transmitted and we heard
+ * it: a direct sighting at this signal, said through the heard hook. */
+static void relay_name(mt_mesh_t *m, uint8_t byte, int rssi)
+{
+    if (!byte) return;                       /* older firmware: none */
+    const mt_node_t *hit = NULL;
+    for (int i = 0; i < MT_NODES; i++) {
+        const mt_node_t *nd = &m->nodes[i];
+        if (!nd->heard_ms || nd->xprs || (uint8_t)nd->num != byte) continue;
+        if (hit) return;                     /* two candidates: say nothing */
+        hit = nd;
+    }
+    if (!hit) return;
+    mt_call_of_node(hit->num, m->rx_relay, sizeof m->rx_relay);
+    if (m->ops.heard) m->ops.heard(m->ops.ctx, m->rx_relay, rssi, 0, "");
+}
+
 void mt_mesh_on_frame(mt_mesh_t *m, const uint8_t *frame, int len, int rssi,
                       int snr)
 {
     mt_hdr_t h;
     if (!m || !mt_hdr_parse(frame, len, &h) || !h.from) return;
     m->st.rx_frames++;
-    /* What a translation of this frame may say about the node's distance:
-     * the reading is the node's own only when nothing relayed the frame. A
-     * frame from firmware too old to write hop_start reads as direct. */
+    /* What a translation of this frame may say about the node's distance.
+     * The signal is what this radio measured: the node's own when nothing
+     * relayed the frame, the last repeater's when something did -- still a
+     * distance, to whoever it was heard from. A frame from firmware too old
+     * to write hop_start reads as direct. */
     m->rx_hops = h.hop_start > h.hop_limit ? h.hop_start - h.hop_limit : 0;
-    m->rx_rssi = m->rx_hops ? 0 : rssi;
+    m->rx_rssi = rssi;
+    m->rx_relay[0] = 0;
+    if (m->rx_hops) relay_name(m, h.relay_node, rssi);
     uint32_t now = m->ops.now_ms();
 
     if (seen_has(m, h.from, h.id, now)) {

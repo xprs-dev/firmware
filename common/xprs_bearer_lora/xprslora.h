@@ -472,14 +472,17 @@ void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
 typedef struct {
     /* A translated wire for every bearer but LoRa and for the local UI;
      * [sign] = sign it as this station first (a gateway receipt). [rssi]
-     * is the frame's when the node aired it itself, 0 when a Meshtastic
-     * relay did; [hops] how many of that network's relays it came through
-     * (mt_mesh_ops_t.deliver). */
-    void (*deliver)(const char *wire, int len, bool sign, int rssi, int hops);
+     * is the frame's as the radio measured it (the node's own, or the last
+     * repeater's when the frame was relayed); [hops] how many of that
+     * network's relays it came through; [relay] the last repeater's
+     * callsign when it could be named, "" otherwise (mt_mesh_ops_t.deliver). */
+    void (*deliver)(const char *wire, int len, bool sign, int rssi, int hops,
+                    const char *relay);
     /* A node of the other network was heard, translation or not: for the
      * devices table (a Meshtastic node that only sends telemetry is in reach
-     * all the same, and its reading is what hears: on lora carries). */
-    void (*heard)(const char *call, int rssi, int hops);
+     * all the same, and its reading is what hears: on lora carries). Also
+     * a named repeater, at hops 0. */
+    void (*heard)(const char *call, int rssi, int hops, const char *relay);
     /* The time field, "ts:..." (seconds zeroed when [to_minute]) or
      * "epoch:..."; returns its length. */
     int  (*stamp)(char *out, int cap, bool to_minute);
