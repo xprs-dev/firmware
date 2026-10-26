@@ -490,7 +490,10 @@ static int stamp(mc_mesh_t *m, char *out, int cap)
 
 static void deliver(mc_mesh_t *m, const char *wire, int len, bool sign)
 {
-    if (m->ops.deliver) m->ops.deliver(m->ops.ctx, wire, len, sign);
+    if (!m->ops.deliver) return;
+    /* A receipt is ours; a translation carries the frame's own reading. */
+    m->ops.deliver(m->ops.ctx, wire, len, sign,
+                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops);
 }
 
 /* The text a packet may carry in m: no line breaks, no NUL. */
@@ -811,16 +814,22 @@ static void inbox_put(mc_mesh_t *m, const mc_pkt_t *p, uint32_t hash, int snr)
     slot->len = (uint8_t)p->payload_len;
     slot->hash = hash;
     slot->snr = (int8_t)snr;
+    slot->rssi = (int16_t)m->rx_rssi;
+    slot->hops = (uint8_t)m->rx_hops;
     memcpy(slot->payload, p->payload, (size_t)p->payload_len);
 }
 
 void mc_mesh_on_frame(mc_mesh_t *m, const uint8_t *frame, int len, int rssi,
                       int snr)
 {
-    (void)rssi;
     mc_pkt_t p;
     if (!m || !mc_parse(frame, len, &p)) return;
     m->st.rx_frames++;
+    /* What a translation of this packet may say about the node's distance:
+     * the path holds one hash per repeater it came through, and the reading
+     * is the node's own only when the path is empty. */
+    m->rx_hops = p.hops;
+    m->rx_rssi = p.hops ? 0 : rssi;
     uint32_t now = m->ops.now_ms();
     uint32_t hash = mc_packet_hash(&p);
 
@@ -1177,6 +1186,8 @@ void mc_mesh_work(mc_mesh_t *m, uint32_t now)
         mc_inbox_t *in = &m->inbox[i];
         if (!in->used) continue;
         in->used = false;
+        m->rx_rssi = in->rssi;
+        m->rx_hops = in->hops;
         if (in->type == MC_PT_ADVERT)
             advert_in(m, in->payload, in->len, in->hash, in->snr);
         else if (in->type == MC_PT_TXT_MSG || in->type == MC_PT_PATH)

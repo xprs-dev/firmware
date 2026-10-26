@@ -63,7 +63,12 @@ typedef struct {
     bool     (*air)(void *ctx, const uint8_t *frame, int len, int prio);
     uint32_t (*now_ms)(void);
     uint32_t (*random)(void);
-    void     (*deliver)(void *ctx, const char *wire, int len, bool sign);
+    /* [rssi] is the frame's when the node aired it itself, 0 when a
+     * MeshCore repeater did (the path names the repeaters, and the reading
+     * is the last one's); [hops] is the path's length. Both 0 for a
+     * receipt. As mt_mesh_ops_t.deliver. */
+    void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
+                        int rssi, int hops);
     int      (*stamp)(void *ctx, char *out, int cap, bool to_minute);
     uint32_t (*utc_now)(void *ctx);
     bool     (*nick_of)(void *ctx, const char *call, char *out, int cap);
@@ -222,6 +227,8 @@ typedef struct {
     uint8_t  len;
     uint32_t hash;
     int8_t   snr;
+    int16_t  rssi;               /* what ops.deliver will say of it */
+    uint8_t  hops;
     uint8_t  payload[MC_PAYLOAD_MAX];
 } mc_inbox_t;
 
@@ -288,6 +295,11 @@ typedef struct {
      * one delivered, or one of ours acknowledged. Channel chatter is
      * deliberately not counted (see mt_mesh.h). */
     uint32_t        last_dm_ms;
+    /* The packet being handled: what ops.deliver says about its
+     * translation. Set by mc_mesh_on_frame, and again by mc_mesh_work for
+     * a parked packet. */
+    int             rx_rssi;
+    int             rx_hops;
     uint8_t         bcast_min[60];
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;
