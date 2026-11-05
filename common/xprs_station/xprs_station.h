@@ -25,6 +25,13 @@ extern "C" {
  * lan" cannot describe the one path that matters on a mixed mesh: in over
  * Bluetooth, out over the LAN. 24 rows at ~32 B is under a kilobyte. */
 #define XST_SEEN_MAX  24
+/* The tail of a row's via: chain, "X3SEP2,X1ABCD" -- two relays. A longer
+ * path keeps its nearest two; the legs beyond are unknown and the path says
+ * so rather than guess. */
+#define XST_VIA_LEN   24
+/* What other stations said they hear and how loud (their hears:/zhq:), one
+ * (observer, callsign) pair a row: the far leg of every relayed distance. */
+#define XST_FAR_MAX   24
 
 /* How many callsigns we will take from somebody else's `hears:`. 10.6.3:
  * "about twenty-five callsigns fit a packet". Taking fewer than the sender
@@ -43,7 +50,15 @@ typedef struct {
     int      rssi;               /* 0 when the bearer has none (LAN) */
     uint8_t  hops;               /* via: entries when last heard; 0 = direct.
                                   * What separates a neighbour from a station
-                                  * somebody's relay carried to us. */
+                                  * somebody's relay carried to us. This
+                                  * station's own callsign in via: is not a
+                                  * hop (a gateway's translation names the
+                                  * gateway); a Meshtastic node's own relays
+                                  * count through xst_ingest_parsed_ex. */
+    char     via[XST_VIA_LEN];   /* the relays that carried the last packet,
+                                  * comma-joined, oldest first, NEAREST LAST,
+                                  * the tail that fits; empty when direct. What
+                                  * xst_dev_path() walks. */
     uint8_t  q;                  /* the signal bucket last SAID about this row
                                   * (see xst_signal_bucket). Kept because the
                                   * bucket is hysteretic: without the previous
@@ -87,12 +102,45 @@ void xst_set_call(const char *own_call);
 void xst_set_tz(int off_sec, bool known);
 int  xst_tz(bool *known);
 
+/* ── The clock (XPRS.md 4.8, 11.10, 15.7) ──────────────────────────────
+ * Where the wall clock came from, ranked. A wrong clock is not cosmetic: it
+ * mis-dates every packet and signature the station airs, breaks the 300 s
+ * command window of 11.4, and turns the bridges' old-news gates inside out.
+ * So a source never moves a clock a better one set, an equal one only moves
+ * it forward, and a stranger's packet sets nothing. */
+typedef enum {
+    XST_CLK_NONE  = 0,   /* no clock: packets say epoch:<boots>.<uptime> */
+    XST_CLK_HINT  = 1,   /* several verified neighbours agreed (opt-in) */
+    XST_CLK_OWNER = 2,   /* the ts: of a command that verified as the owner's */
+    XST_CLK_NTP   = 3,   /* the network's, which the station believes as it is */
+} xst_clock_src_t;
+
+/* Take [epoch] from [src] when the ladder allows. Refused: a source below
+ * the one that set the clock; anything but NTP turning a valid clock back
+ * (11.10: each accepted word is later than the last, and the chip keeps a
+ * clock across a reset that nobody this boot can vouch for -- "kept");
+ * anything before 2023-11 or after 2040, whoever says it. [who] is for the
+ * log. True when the clock was set. Any task. */
+bool xst_clock_set(xst_clock_src_t src, uint32_t epoch, const char *who);
+/* The network set the clock itself (SNTP writes it): record the source. */
+void xst_clock_from_ntp(void);
+xst_clock_src_t xst_clock_src(void);
+const char *xst_clock_src_name(void);   /* "none", "kept", "hint", "owner", "ntp" */
+
 /* Ingest one heard wire (any task; cheap). Parses internally and feeds
  * devices + chat + rx/device stats. Returns false when the wire does not
  * parse, carries no f:, or is our own echo. */
 bool xst_ingest(const char *wire, int len, const char *bearer, int rssi);
 /* Same, when the caller already parsed. Returns false on own echo/no f:. */
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi);
+/* Same, with [hops_more] hops that via: cannot express (a Meshtastic node
+ * whose frame reached the gateway through that network's own repeaters,
+ * its hop_start - hop_limit) and [relay], the last of those repeaters when
+ * the bridge could name it ("" or NULL otherwise): it becomes the row's
+ * via when the wire itself names no relay but this station. The rssi is
+ * the frame's as measured, the repeater's transmission when relayed. */
+bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
+                          int hops_more, const char *relay);
 
 /** Whether LoRa also counts as a local bearer here ([lora] local, XPRS.md
  *  9.11.1): a chat heard on a bearer wider than its scope is not shown in a
@@ -106,6 +154,14 @@ void xst_chat_note(const xprs_t *p);
 /* A sighting that is not an XPRS wire (an RNS announce, a blemesh
  * neighbour): keeps the devices list honest about everything in reach. */
 void xst_dev_note(const char *call, const char *bearer, int rssi);
+/* Same, [hops] away through repeaters of another network that via: cannot
+ * name (a bridge's sighting of a Meshtastic or MeshCore node). [rssi] is
+ * what the radio measured either way -- the node's own when hops is 0,
+ * the last repeater's otherwise, which is still a distance to whoever it
+ * was heard from; [relay] names that repeater when the bridge could,
+ * "" or NULL otherwise. */
+void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
+                       int hops, const char *relay);
 
 /* Bank transmitted-packet totals into the stats rings. Call once per UI
  * tick with the CUMULATIVE total across the board's bearers; the primed
@@ -219,6 +275,43 @@ bool xst_catchup_due(const char *call, int absent_sec);
  * n=2.7): honestly rough, but -46 and -85 are a room and a street apart.
  * -1 when rssi is 0 (bearer without RSSI). */
 float xst_est_distance_m(int rssi);
+
+/* ── How far a station is when somebody carried it here ───────────────
+ *
+ * A relayed row's rssi is the RELAY's transmission: it says how far the
+ * relay is, not the sender. The sender's distance has two legs -- this
+ * station to the nearest relay, measured here, and the relay to the sender,
+ * measured by the relay and said in its observation (`hears:` with the
+ * `zhq:` digits, one a neighbour, xst_signal_bucket's scale), which
+ * xst_far_note() keeps. xst_dev_path() adds the legs up along the row's
+ * via: tail; a leg nobody has said leaves the total unknown rather than
+ * short. Bench 2026-10-26: a Meshtastic node the T-Deck bridged read as
+ * being where the T-Deck was. */
+typedef struct {
+    int  total_m;                /* the whole way, -1 when a leg is unknown */
+    int  near_m;                 /* this station to the nearest relay (or to
+                                  * a neighbour: then it is the total); -1 */
+    int  far_m;                  /* the legs beyond the nearest relay, 0 for
+                                  * a neighbour, -1 when one is unknown */
+    int  floor_m;                /* the legs that ARE known, added up: at
+                                  * least this far. For a node behind a
+                                  * Meshtastic repeater it is the measured
+                                  * distance to that repeater, which is what
+                                  * a person next to this station wants to
+                                  * see. -1 only when nothing is known. */
+    char relay[XPRS_CALL_LEN];   /* the nearest relay, empty for a neighbour
+                                  * or a repeater the bridge could not name */
+} xst_path_t;
+/* [in_range_sec] bounds which rows and sayings count (the relay's own row
+ * for the near leg; three times that for the relays' sayings, which are
+ * aired every minute or slower in a crowd). */
+void xst_dev_path(const xst_dev_t *d, int in_range_sec, xst_path_t *out);
+/* [observer] said it hears [call] at signal digit [q] (0 barely there .. 9
+ * loud). Any task. */
+void xst_far_note(const char *observer, const char *call, int q);
+/* The rssi that digit stands for (the middle of its 7 dB step), 0 when the
+ * observer never said or said more than [ttl_sec] ago. */
+int  xst_far_rssi(const char *observer, const char *call, int ttl_sec);
 
 /* ── The conversation, kept ───────────────────────────────────────────
  *

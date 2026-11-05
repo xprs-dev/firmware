@@ -62,14 +62,31 @@ typedef struct {
     uint32_t (*random)(void);
     /* A translated XPRS wire for every bearer except LoRa, and the local
      * UI. [sign]: sign it as this station (gateway receipts); the
-     * translations of other people's words are never signed. */
-    void     (*deliver)(void *ctx, const char *wire, int len, bool sign);
+     * translations of other people's words are never signed. [rssi] is
+     * the frame's as this radio measured it: the node's own signal when
+     * nothing relayed the frame, the last repeater's when something did;
+     * [hops] is how many of that network's relays it came through
+     * (hop_start - hop_limit); [relay] names that last repeater when the
+     * header's relay byte matches exactly one node we know, "" otherwise.
+     * 0, 0, "" for a receipt. */
+    void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
+                        int rssi, int hops, const char *relay);
+    /* A node of the other network was heard (any decoded frame, not only
+     * the ones that become a translation: a node that sends telemetry and
+     * never texts is in reach all the same). Also a repeater we could name,
+     * at hops 0: it transmitted, we heard it. Arguments as for deliver.
+     * Optional. */
+    void     (*heard)(void *ctx, const char *call, int rssi, int hops,
+                      const char *relay);
     /* The time field for a packet composed now, e.g. "ts:2026-09-19_12:04:00"
      * (seconds zeroed when [to_minute]), or an epoch: when there is no clock.
      * Returns its length, 0 when the station can say nothing. */
     int      (*stamp)(void *ctx, char *out, int cap, bool to_minute);
     /* UTC now in seconds, or 0 when the station has no clock (optional). */
     uint32_t (*utc_now)(void *ctx);
+    /* The station's offset from UTC in seconds, [known] false when nobody
+     * has said (optional): a text mirrored late then says its time in UTC. */
+    int32_t  (*tz_offset)(void *ctx, bool *known);
     /* A verified nick for an XPRS callsign, when the station holds one. */
     bool     (*nick_of)(void *ctx, const char *call, char *out, int cap);
     /* One log line (optional). */
@@ -141,6 +158,20 @@ typedef struct {
  * hides a repeat from its user but not from the channel's airtime. */
 #define MT_BCAST_FRESH_S  1800u
 #define MT_DM_FRESH_S     (6u * 3600u)
+/* Heard traffic is not mirrored in the first moments after boot (the wait
+ * the NodeInfo already has), and never without a clock: the carousel of
+ * old packets the bearers replay would land on LongFast as news, dated by
+ * the reader's radio as the moment they arrived. */
+#define MT_MIRROR_SETTLE_MS 20000u
+/* A text older than this when it is aired carries the time it was written
+ * in front, because a Meshtastic frame has no field for it. */
+#define MT_DATE_AGE_S     120u
+/* Text bytes in one frame: 239 after the header, less the Data's own
+ * fields (at most 17). */
+#define MT_TEXT_MAX       220
+/* One XPRS sender's share of the channel: this many broadcasts an hour, so
+ * that one busy person cannot spend the bridge's whole hourly budget. */
+#define MT_SENDER_PER_HOUR 4
 
 typedef struct {
     bool     used;
@@ -175,6 +206,7 @@ typedef struct {
     uint32_t num;
     uint32_t seen_ms;            /* last XPRS packet from it */
     uint32_t announced_ms;       /* last NodeInfo we aired for it; 0 = never */
+    uint32_t sent_ms[MT_SENDER_PER_HOUR]; /* its last broadcasts here, for its share */
     bool     announce_due;       /* the tick announces it (curve work) */
     bool     keep;               /* announced on Meshtastic: saved, evicted last */
     char     call[MT_CALL_LEN];  /* bare */
@@ -214,6 +246,13 @@ typedef struct {
     uint32_t dm_not_here;      /* DMs to a node this bridge never heard, left */
     uint32_t nodeinfo_out, bcast_capped, dropped;
     uint32_t pki_in, pki_fail, key_asks;
+    /* Mirroring XPRS onto the mesh: heard traffic refused for want of a
+     * clock, refused as too soon after boot, refused as old news; and texts
+     * aired with the time they were written in front. */
+    uint32_t no_clock, settling, stale, dated;
+    /* Broadcasts refused as not the Regional room's (9.11.3), and as one
+     * sender's share of the hour spent. */
+    uint32_t not_regional, sender_capped;
 } mt_mesh_stats_t;
 
 typedef struct {
@@ -243,6 +282,11 @@ typedef struct {
      * on purpose -- a busy public channel never goes quiet, and a radio
      * that stayed for it would never serve the other network again. */
     uint32_t        last_dm_ms;
+    /* The frame being handled: what ops.deliver says about its translation
+     * (see there). Set by mt_mesh_on_frame before it decodes. */
+    int             rx_rssi;
+    int             rx_hops;
+    char            rx_relay[12];
     uint8_t         bcast_min[60];   /* mirrored broadcasts per minute */
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;
@@ -254,6 +298,7 @@ typedef struct {
     uint8_t         frame[MT_FRAME_MAX];
     char            wire[XPRS_MAX_WIRE + 64];
     char            text[XPRS_MAX_WIRE + 1];
+    char            payload[MT_TEXT_MAX + 16];   /* a text with its time in front */
     char            logline[120];
 } mt_mesh_t;
 

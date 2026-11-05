@@ -1286,6 +1286,7 @@ reboot. Measured by overflowing them:
 | `xprsidx_wr` | 4096 | FATFS and the SDMMC driver; 3072 overflowed under a burst |
 | `xprslan` | 5120 | two SHA-256 derivations per datagram, a BLE re-air and a log line; 4096 overflowed |
 | `aprsis` | 6144 | line parsing, DNS, socket; 4096 overflowed |
+| `rns_tcp` | 8192 | the Reticulum hub socket, and since the station fetches its own firmware (`common/xprs_fwfetch`) the streamed resource receiver, the OTA write and a log line on the same stack. The C3 ran it at 6144 before that; the 8192 is the default every other board uses |
 | `heartbeat` | 3072 | `ESP_LOG` with ten arguments is almost all of it; 2048 overflowed |
 | `mcwork` | 6144 | one Ed25519 verification. `-fstack-usage` put the verify frame at 3.9 KB (2.7 KB for the verify, 0.7 KB for the point addition under it, the rest SHA-512 and the bridge); the RUNTIME high-water on the bench, 2026-10-03, says only **904 bytes of the 6,144 are ever spare**, so the whole pass costs about 5,240. Do not trim it |
 
@@ -2400,7 +2401,76 @@ RAM, less than the 113,864 it held without it. What is still to measure on
 the board itself: the BLE receive task (8 KB), and WiFi's and the BLE
 controller's own memory beside the hub link.
 
+### A directed answer goes where the asker can hear (2026-10-25)
+
+A phone at home asked the T-Deck for the rooms' history over Bluetooth. The
+C3 beside it relayed the ask over ESP-NOW, that copy arrived first, and the
+whole answer -- `202`, twelve packets, `206` -- went out on ESP-NOW, a radio
+no phone has. The Bluetooth copies of the same ask arrived a second later and
+were dropped as repeats (one answer per command id), so the station's log
+read as a complete, correct replay while the phone heard nothing. The symptom
+on the phone: only what arrived live, never what was said while away.
+
+XPRS.md 12.0 already rules it: the arrival bearer is a default, not a
+constraint, and a station that cannot tell which path reaches the asker
+answers on every bearer. `reply_lanes()` is that rule: the arrival bearer,
+plus the local bearer the device table last heard the asker on, or every
+local bearer when the asker is unknown; LoRa and Reticulum keep their own
+lane. Every `t:result` (`idx_result_m`, `ota_answer`) and every replayed page
+goes through `reply_air()`. Checking it: `/api/log` shows `replay on ble:`
+beside `replay on espnow:` for a phone's ask; before, only the second.
+
+### Firmware from the publisher's folder, over Reticulum (2026-10-25)
+
+`common/xprs_fwfetch` makes a station update itself from the folder the
+project publishes (`docs/plan-firmware-folders.md`, XPRS.md 7.7.3, 11.2,
+11.8): every six hours it asks an archiver `cmd:history kind:file
+only:X1WATT` (the callsign the publisher's key derives), believes a `t:file`
+only when it verifies against the pinned `fwkey`, takes the newest
+`<board>-<version>.bin` tagged with its channel, asks the archiver for it
+with `cmd:file`, opens a link to that station's `xprs/files` destination and
+streams the resource into the OTA slot, then installs under 11.8's rollback.
+
+Nothing is configured: a published image pins the project's publisher key
+(`common/xprs_ota/fw_publisher.h`) on first boot, `fwauto` defaults to on and
+`fwchan` to `stable`. An operator may pin another key (`cfg set fwkey`), pick
+`beta`, or switch it off. The holders are the XPRS apps around the station,
+which keep every release automatically (the app's FirmwareMirrorService) and
+deposit the publisher's descriptions with their archivers, so the archiver a
+station asks has the answer and the bytes.
+
+Watching it: `/api/status` carries `fwfetch` (publisher, channel, the best
+image seen, the state of a fetch, counters) and `/api/log` shows `fwfetch:`
+lines. A station built on the bench without `fw_secrets.h` pins the project
+key as well; the T-Deck at home showed `publisher=X1WATT` after this landed.
+
 ## Validating on the device
+
+### Screenshots of a screen board, and walking its panels (2026-10-24)
+
+`curl -s http://<ip>/api/screen -o shot.bmp` is the screenshot (docs/API.md).
+Two things to know before trusting one:
+
+- **A full frame takes seconds, not microseconds.** On the T-Deck a 320x240
+  capture measured 8.2 s: every row is a hand-off between the UI task and the
+  HTTP task plus a TCP chunk on a WiFi shared with BLE and ESP-NOW. The whole
+  capture used to have a 5 s deadline, so every capture past five seconds came
+  back as a clean HTTP reply cut off at a different row -- it looked like the
+  network. The ceiling is 30 s now, and what stops a capture early is the first
+  row nobody takes within 2 s, after which every remaining slice returns at
+  once (`cap_slice` in `xprs_app.c`). A truncated BMP is a bug; report it.
+- **Walk panels with the console keys, and mind the composer.** `1`..`7` jump
+  to a panel over the USB console. On a board with a keyboard, the Chat panel
+  sends printable keys into the composer -- a script that steps 1..7 types its
+  own digits into a draft. Press Escape (0x1b) to drop the draft and go home,
+  then jump straight to the next panel. `U`/`D` (uppercase, kept out of the
+  composer) move table selections; the chat room rail answers only the
+  trackball and touch.
+- **A capture can land between two halves of a render.** The table is filled
+  before the title flag is read, so a capture taken right after a panel change
+  can show the new rows under the old title. On the glass the title follows on
+  the next UI tick; wait a few seconds before judging a title.
+
 
 - **Opening `/dev/ttyACM0` reboots the board.** `monitor-capture.sh` asserts DTR
   whether or not `-r` is passed, and the board needs ~28 s afterwards before it

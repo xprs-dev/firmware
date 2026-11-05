@@ -11,6 +11,7 @@
 #include <time.h>
 
 #include "xprsindex.h"
+#include "xprs.h"
 
 static int g_fail = 0;
 /* The store converts ts: to epoch internally; the test needs the same number. */
@@ -92,6 +93,49 @@ static void test_recent_of_a_type(const char *dir)
     /* Newest first: X3RLY4 was the last warning written. */
     CHECK(strcmp(c.first.from, "X3RLY4") == 0, "newest warning is %s", c.first.from);
     CHECK(strstr(c.first.wire, "kind:fire") != NULL, "wire not kept verbatim");
+    xprsindex_close(st);
+}
+
+/* The web chat's room=: a busy room cannot hide a quiet one, a 1:1 is in
+ * none, and scope:local in the text is not a scope. */
+static void test_one_room_at_a_time(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    char w[280];
+    /* Record 0 is not in a type tail (xi_query_recent_typed): a beacon first. */
+    const char *b0 = "t:observation f:X3WX00 link:ble peers:1 ts:" TS_2026;
+    xprsindex_add(st, b0, (int)strlen(b0), -60, false, 0);
+    const char *loc = "t:message f:X1LOC1 scope:local ts:" TS_2026 " m:near";
+    xprsindex_add(st, loc, (int)strlen(loc), -60, false, 0);
+    const char *glo = "t:message f:X1GLO1 ts:" TS_2026 " m:say scope:local here";
+    xprsindex_add(st, glo, (int)strlen(glo), -60, false, 0);
+    const char *dm = "t:message f:X1DM01 d:X1LOC1 scope:local ts:" TS_2026 " m:psst";
+    xprsindex_add(st, dm, (int)strlen(dm), -60, false, 0);
+    for (int i = 0; i < 60; i++) {
+        snprintf(w, sizeof w, "t:message f:MT%06d scope:regional ts:%s m:flood %d",
+                 i, TS_2026, i);
+        xprsindex_add(st, w, (int)strlen(w), -60, false, 0);
+    }
+    collect_t c = {0};
+    xprsidx_query_t q = { .type = XI_T_MESSAGE, .newest_first = true, .limit = 20,
+                          .trusted = true, .room = XPRS_REACH_LOCAL + 1 };
+    size_t n = xprsindex_query(st, &q, collect, &c);
+    CHECK(n == 1 && strcmp(c.first.from, "X1LOC1") == 0,
+          "local room: %zu rows, first %s", n, c.first.from);
+    memset(&c, 0, sizeof c);
+    q.room = XPRS_REACH_GLOBAL + 1;
+    n = xprsindex_query(st, &q, collect, &c);
+    CHECK(n == 1 && strcmp(c.first.from, "X1GLO1") == 0,
+          "global room: %zu rows, first %s", n, c.first.from);
+    memset(&c, 0, sizeof c);
+    q.room = XPRS_REACH_REGIONAL + 1;
+    n = xprsindex_query(st, &q, collect, &c);
+    CHECK(n == 20, "regional room: %zu rows", n);
+    memset(&c, 0, sizeof c);
+    q.room = 0xFF;
+    CHECK(xprsindex_query(st, &q, collect, &c) == 0, "an unknown room matched");
     xprsindex_close(st);
 }
 
@@ -1570,6 +1614,7 @@ int main(void)
     printf("xprsindex host tests\n");
     test_recent_of_a_type(dir);
     test_a_year_ago(dir);
+    test_one_room_at_a_time(dir);
     test_mail_is_not_public(dir);
     test_refuses_what_it_should(dir);
     test_reopen(dir);

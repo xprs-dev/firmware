@@ -15,6 +15,10 @@ CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 
 # 4 MB: the V1 module (ESP32-S3FH4R2). The V2's 8 MB runs this image too.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+# Built for size: at the debug level (-Og) the image outgrew its 1.5 MB
+# slot (1,610,969 bytes in 0.6.0-beta.3..6). The slots stay as they are,
+# since a board in the field cannot change its partition table over the air.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 
 # ── LVGL, for one black-and-white page (common/xprs_ui_paper) ─────────────
 # The faces the page uses. 14 is the Kconfig default; 32 is the temperature.

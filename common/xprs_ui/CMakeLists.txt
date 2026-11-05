@@ -4,7 +4,7 @@
 # board links exactly one of the two. LVGL arrives from the component
 # registry via idf_component.yml.
 idf_component_register(
-    SRCS "xprs_ui.c"
+    SRCS "xprs_ui.c" "radar_layout.c" "xui_font_12.c" "xui_font_14.c"
     INCLUDE_DIRS "."
     REQUIRES mbedtls log lvgl__lvgl esp_timer xprs_common xprs_art
              esp_system

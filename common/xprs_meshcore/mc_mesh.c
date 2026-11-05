@@ -268,6 +268,23 @@ static void bcast_roll(mc_mesh_t *m, uint32_t now)
     }
 }
 
+static bool sender_spent(const mc_vnode_t *v, uint32_t now)
+{
+    int recent = 0;
+    for (int i = 0; i < MC_SENDER_PER_HOUR; i++)
+        if (v->sent_ms[i] && since(now, v->sent_ms[i]) < 3600000) recent++;
+    return recent >= MC_SENDER_PER_HOUR;
+}
+static void sender_note(mc_vnode_t *v, uint32_t now)
+{
+    int slot = 0;
+    for (int i = 0; i < MC_SENDER_PER_HOUR; i++) {
+        if (!v->sent_ms[i]) { slot = i; break; }
+        if (since(v->sent_ms[slot], v->sent_ms[i]) > 0) slot = i;   /* oldest */
+    }
+    v->sent_ms[slot] = now ? now : 1;
+}
+
 static bool bcast_take(mc_mesh_t *m, uint32_t now)
 {
     bcast_roll(m, now);
@@ -473,7 +490,11 @@ static int stamp(mc_mesh_t *m, char *out, int cap)
 
 static void deliver(mc_mesh_t *m, const char *wire, int len, bool sign)
 {
-    if (m->ops.deliver) m->ops.deliver(m->ops.ctx, wire, len, sign);
+    if (!m->ops.deliver) return;
+    /* A receipt is ours; a translation carries the frame's own reading. */
+    m->ops.deliver(m->ops.ctx, wire, len, sign,
+                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops,
+                   sign ? "" : m->rx_relay);
 }
 
 /* The text a packet may carry in m: no line breaks, no NUL. */
@@ -510,7 +531,7 @@ static void text_in(mc_mesh_t *m, const uint8_t from_pub[32], uint32_t hash,
 
     char env[160];
     int en = snprintf(env, sizeof env,
-                      "t:message f:%s%s%s%s%.*s scope:local zmid:%s",
+                      "t:message f:%s%s%s%s%.*s scope:regional zmid:%s",
                       from, dst ? " d:" : "", dst ? dst : "", tn ? " " : "",
                       tn, ts, zid);
     if (en <= 0 || en >= (int)sizeof env) return;
@@ -573,7 +594,7 @@ static void identity_in(mc_mesh_t *m, mc_node_t *nd, uint32_t hash)
     int tn = stamp(m, ts, sizeof ts);
     hex8(hash, zid);
     int wl = snprintf(m->wire, sizeof m->wire,
-                      "t:identity f:%s%s%.*s scope:local nick:%s zmid:%s via:%s",
+                      "t:identity f:%s%s%.*s scope:regional nick:%s zmid:%s via:%s",
                       from, tn ? " " : "", tn, ts, nick, zid, m->call);
     if (wl > 0 && wl <= XPRS_MAX_WIRE) {
         deliver(m, m->wire, wl, false);
@@ -643,6 +664,11 @@ static void advert_in(mc_mesh_t *m, const uint8_t *payload, int plen,
     if (names_our_node(a.name, a.pub)) {
         nd->xprs = true;                 /* another bridge's virtual node */
         return;
+    }
+    if (m->ops.heard) {
+        char c[11];
+        mc_call_of_pub(a.pub, c);
+        m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops, m->rx_relay);
     }
     /* The key is the address, so it is worth keeping: it is what a direct
      * message to this node is sealed to. */
@@ -794,16 +820,47 @@ static void inbox_put(mc_mesh_t *m, const mc_pkt_t *p, uint32_t hash, int snr)
     slot->len = (uint8_t)p->payload_len;
     slot->hash = hash;
     slot->snr = (int8_t)snr;
+    slot->rssi = (int16_t)m->rx_rssi;
+    slot->hops = (uint8_t)m->rx_hops;
+    memcpy(slot->relay, m->rx_relay, sizeof slot->relay);
     memcpy(slot->payload, p->payload, (size_t)p->payload_len);
+}
+
+/* The repeater that aired a relayed copy: the path's last hash is the
+ * first byte(s) of its key. When exactly one node we know matches, it is
+ * named, and it is a direct sighting at this signal (the heard hook). */
+static void relay_name(mc_mesh_t *m, const mc_pkt_t *p, int rssi)
+{
+    if (!p->hops || !p->hash_size) return;
+    const uint8_t *hash = p->path + (p->hops - 1) * p->hash_size;
+    const mc_node_t *hit = NULL;
+    for (size_t i = 0; i < sizeof m->nodes / sizeof m->nodes[0]; i++) {
+        const mc_node_t *nd = &m->nodes[i];
+        if (!nd->heard_ms || nd->xprs ||
+            memcmp(nd->pub, hash, p->hash_size) != 0) continue;
+        if (hit) return;
+        hit = nd;
+    }
+    if (!hit) return;
+    mc_call_of_pub(hit->pub, m->rx_relay);
+    if (m->ops.heard) m->ops.heard(m->ops.ctx, m->rx_relay, rssi, 0, "");
 }
 
 void mc_mesh_on_frame(mc_mesh_t *m, const uint8_t *frame, int len, int rssi,
                       int snr)
 {
-    (void)rssi;
     mc_pkt_t p;
     if (!m || !mc_parse(frame, len, &p)) return;
     m->st.rx_frames++;
+    /* What a translation of this packet may say about the node's distance:
+     * the path holds one hash per repeater it came through; the signal is
+     * what this radio measured, the node's own when the path is empty and
+     * the last repeater's otherwise -- a distance to whoever it was heard
+     * from, either way. */
+    m->rx_hops = p.hops;
+    m->rx_rssi = rssi;
+    m->rx_relay[0] = 0;
+    if (p.hops) relay_name(m, &p, rssi);
     uint32_t now = m->ops.now_ms();
     uint32_t hash = mc_packet_hash(&p);
 
@@ -976,6 +1033,24 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
      * somebody's chat. */
     if (strcmp(type, "message") != 0) return;
 
+    /* Heard traffic crosses only under a clock, and not in the first moments
+     * after boot (the Meshtastic bridge's rule, mt_mesh_on_xprs): the bearers
+     * keep old packets moving, and a bridge with no clock cannot judge the
+     * freshness window below. The station's own user's words go regardless. */
+    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
+    if (origin != MC_XPRS_OWN) {
+        if (!utc) {
+            if (m->st.no_clock++ % 50 == 0)
+                mlog(m, "mc: no clock -- heard traffic is not mirrored (%lu so far)",
+                     (unsigned long)m->st.no_clock);
+            return;
+        }
+        if (since(now, m->boot_ms) < (int32_t)MC_MIRROR_SETTLE_MS) {
+            m->st.settling++;
+            return;
+        }
+    }
+
     const char *dv;
     int dn = 0;
     bool direct = false;
@@ -1018,10 +1093,18 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
         }
         return;
     }
-    /* XPRS.md 9.11: this network is a radio band, a regional bearer, so a
-     * local packet does not go on it and neither does one whose scope word
-     * this station does not know. Regional and global do. */
-    if (!xprs_reach_admits(xprs_scope_reach(p), XPRS_REACH_REGIONAL)) return;
+    /* XPRS.md 9.11.3/9.11.5: the public channel is one valley's air, shared,
+     * so a broadcast crosses only from the Regional room -- not the global
+     * conversation that travels the internet, not a local one, not a scope
+     * word this station does not know. A direct message is for one node
+     * this bridge hears, wherever its author stood: it crosses unless local. */
+    xprs_reach_t reach = xprs_scope_reach(p);
+    if (direct) {
+        if (!xprs_reach_admits(reach, XPRS_REACH_REGIONAL)) return;
+    } else if (reach != XPRS_REACH_REGIONAL) {
+        m->st.not_regional++;
+        return;
+    }
 
     const char *mv;
     int mn;
@@ -1032,14 +1115,18 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
      * bytes, and it is the time the words were said. */
     const char *tv;
     int tn2;
-    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
     uint32_t ts = 0;
     if (get(p, "ts", &tv, &tn2)) ts = ts_epoch(tv, tn2);
     if (!ts) ts = utc;
     if (!ts) return;                       /* no clock, no message */
     if (utc && utc > ts) {
         uint32_t fresh = direct ? MC_DM_FRESH_S : MC_BCAST_FRESH_S;
-        if (utc - ts > fresh) return;      /* old news after a restart */
+        if (utc - ts > fresh) {            /* old news after a restart */
+            if (m->st.stale++ % 50 == 0)
+                mlog(m, "mc: %s is %lu s old -- not mirrored (%lu so far)", xid,
+                     (unsigned long)(utc - ts), (unsigned long)m->st.stale);
+            return;
+        }
     }
 
     /* What one MeshCore message carries (MC_TEXT_MAX), and for a channel
@@ -1059,10 +1146,15 @@ void mc_mesh_on_xprs(mc_mesh_t *m, const char *wire, int len, int origin)
     text[tl] = 0;
 
     if (!direct) {
+        if (sender_spent(sv, now)) {
+            m->st.sender_capped++;
+            return;
+        }
         if (!bcast_take(m, now)) {
             m->st.bcast_capped++;
             return;
         }
+        sender_note(sv, now);
         int pn = mc_grp_txt_build(mc_public_key, ts, name, text, m->payload,
                                   (int)sizeof m->payload);
         if (!pn) return;
@@ -1125,6 +1217,9 @@ void mc_mesh_work(mc_mesh_t *m, uint32_t now)
         mc_inbox_t *in = &m->inbox[i];
         if (!in->used) continue;
         in->used = false;
+        m->rx_rssi = in->rssi;
+        m->rx_hops = in->hops;
+        memcpy(m->rx_relay, in->relay, sizeof m->rx_relay);
         if (in->type == MC_PT_ADVERT)
             advert_in(m, in->payload, in->len, in->hash, in->snr);
         else if (in->type == MC_PT_TXT_MSG || in->type == MC_PT_PATH)

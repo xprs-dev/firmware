@@ -603,6 +603,70 @@ firmware answers a NodeInfo REQUEST from one node only once in 12 hours.
   old from new. Meshtastic's duplicate filter hides a repeat from its users
   (the ids are derived), but not from the channel.
 
+### What crosses: the Regional room, and a share each
+
+The public channel is one valley's air, shared with everybody on it, so it
+gets the **Regional room and nothing wider** (XPRS.md 9.11.3, 2026-10-24).
+Before this the bridge mirrored global traffic too -- the conversation that
+travels the internet over Reticulum, re-aired on LongFast in one town -- and
+Meshtastic's own channel talk arrived in the Global room whenever its sender
+had ticked "OK to MQTT". Now:
+
+- **Out:** a broadcast crosses only with `scope:regional`; the default
+  (global), a country code and `local` stay off the channel, counted as
+  `not_regional`. The frame is never marked OK-to-MQTT. A direct message to
+  a node this bridge hears crosses whatever its scope but `local`, as before.
+- **In:** everything said on the channel arrives `scope:regional` and lands in
+  the Regional room, whatever the sender's MQTT choice (regional never
+  reaches the internet, so the consent holds either way). A DM to an XPRS
+  callsign travels when its sender allowed the internet, else regional.
+- **A share each:** `MT_SENDER_PER_HOUR` (4) broadcasts an hour per XPRS
+  sender, inside the bridge's `mt_bcast_hr` (12), so one busy person cannot
+  spend the hour; refused ones count as `sender_capped`. Listening before
+  talking is the radio's CAD (`lr_channel_busy`), as for every frame.
+- Nodes are announced on Meshtastic only when their words cross (and then at
+  most every `mt_ni_min`), so a quieter channel also means fewer NodeInfos.
+
+The MeshCore bridge follows the same two rules, with the same share each and
+the same counters (`/api/status` `mc`).
+
+### Time
+
+A Meshtastic frame carries no time: the on-air header is addresses, id, hops
+and channel, and the text `Data` is portnum, bytes and a few ids. Its reader
+sees `rx_time`, the moment the frame reached *their* radio, stamped by *their*
+clock. So the `ts:` of an XPRS message is lost at the bridge, and three things
+follow (2026-10-24, after Meshtastic users read the T-Deck's messages with the
+wrong time):
+
+- **Nothing heard is mirrored without a clock, nor in the first 20 s after
+  boot.** The bearers keep old packets moving (echo carousels, archive
+  replays, BLE digipeats) and a bridge with no clock cannot tell them from
+  news; before this, a station that rebooted or ran off WiFi aired hours-old
+  XPRS traffic onto LongFast, where it was read as said just now. The
+  station's own user's words still go: a person is waiting, and what they
+  just typed is new. Counted as `no_clock` and `settling` in `/api/diag`'s
+  `mt` block, said in the log once in fifty.
+- **Old news is counted and said**, not dropped in silence (`stale`): 30 min
+  for a broadcast, 6 h for a DM, as before.
+- **A text that travelled says its time first.** Older than two minutes when
+  aired -- carried, relayed from far -- it crosses as `[14:26] see you at the
+  quay`, in the station's local time when it knows its zone, `[14:26Z]` when
+  it does not, and with the day when that is not the reader's today
+  (`[10-23 14:26]`). Counted as `dated`. Two minutes, so live chat stays
+  clean and the 220-byte text budget is untouched in the common case.
+
+The MeshCore bridge has the same gate and the same counted stale drops; it
+needs no prefix, because a MeshCore channel message carries the sender's own
+timestamp (the XPRS packet's `ts:`), so its readers already see when the
+words were said.
+
+The station's own clock is NTP's, and until then its owner's (XPRS.md 11.10;
+`xst_clock_set` in xprs_station holds the ladder). Making the T-Deck a time
+source *for* the Meshtastic mesh was looked at and left: Meshtastic nodes take
+network time only from a Position whose `location_source` claims a GPS, and
+a station without one would have to lie to be believed.
+
 ### The repeater
 
 A frame not heard before (dedup on from and id, ten minutes), with hops left,

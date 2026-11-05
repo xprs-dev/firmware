@@ -4,6 +4,7 @@
  */
 
 #include "xprs_api.h"
+#include "xprs_station.h"
 #include "xapi_send.h"
 #include "xprs_auth.h"
 #include "xprs_ota.h"
@@ -94,14 +95,14 @@ static esp_err_t h_status(httpd_req_t *req)
     int n = snprintf(buf, cap,
         "{\"ok\":true,\"app\":\"%s\",\"board\":\"%s\",\"callsign\":\"%s\","
         "\"uptime_s\":%lu,\"heap_free\":%u,"
-        "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\"}",
+        "\"time\":{\"synced\":%s,\"epoch\":%lu,\"tz\":\"%s\",\"source\":\"%s\"}",
         s_cfg->app, s_cfg->board, s_cfg->callsign,
         (unsigned long)(esp_timer_get_time() / 1000000),
         /* Internal: see the note in the diag handler. */
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
         time_synced() ? "true" : "false",
         time_synced() ? (unsigned long)time(NULL) : 0,
-        s_cfg->tz ? s_cfg->tz : "+00:00");
+        s_cfg->tz ? s_cfg->tz : "+00:00", xst_clock_src_name());
     /* snprintf returns what it WOULD have written, so n can run past cap and
      * cap-n then underflows into a huge size_t. Guarded at every step, as
      * the diag handler already guards: the fields below grow with each
@@ -312,6 +313,17 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
     }
     if (httpd_query_key_value(query, "dir", p, sizeof p) == ESP_OK)
         ctx.dir = p[0] == 'i' ? 1 : p[0] == 'o' ? 2 : 0;
+    /* room=local|regional|global: one chat room at a time (spec/API-HTTP.md).
+     * The page asked for the newest 200 messages and filed them itself, and a
+     * bridged Meshtastic channel filled all 200: Local and Global stayed empty
+     * while the station held their conversations. An unknown room asks for
+     * nothing rather than for everything. */
+    if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK) {
+        q.room = !strcmp(p, "local")    ? XPRS_REACH_LOCAL + 1
+                 : !strcmp(p, "regional") ? XPRS_REACH_REGIONAL + 1
+                 : !strcmp(p, "global")   ? XPRS_REACH_GLOBAL + 1
+                                          : 0xFF;   /* matches nothing */
+    }
     char mailcall[48] = {0};
     if (mail_only) {
         if (httpd_query_key_value(query, "call", mailcall,
@@ -621,8 +633,12 @@ static void screen_slice(int x1, int y1, int x2, int y2,
      * out of order, which is the framebuffer this door exists to avoid. */
     if (x1 != 0 || x2 != sc->w - 1) { sc->failed = true; return; }
 
-    static uint8_t row[320 * 3];
-    if ((size_t)sc->w * 3 > sizeof row) { sc->failed = true; return; }
+    /* Lazy off the .bss (RF-bank ceiling on the xwifi boards); a headless
+     * board never captures a framebuffer row and pays only the pointer. */
+    enum { ROW_N = 320 * 3 };
+    static uint8_t *row;
+    if (!row) { row = malloc(ROW_N); if (!row) { sc->failed = true; return; } }
+    if ((size_t)sc->w * 3 > ROW_N) { sc->failed = true; return; }
 
     for (int y = y1; y <= y2; y++) {
         uint8_t *o = row;

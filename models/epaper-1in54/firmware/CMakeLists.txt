@@ -3,6 +3,11 @@ cmake_minimum_required(VERSION 3.16)
 # auto-discover. EXTRA_COMPONENT_DIRS pointing outside the project dir does not
 # work here (see the note in the T-Dongle's and the M5Stack's CMakeLists.txt).
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Built for size (sdkconfig.defaults), GCC follows snprintf into inlined
+# callers and reports display text cut to fit a cell, which is what that
+# code means to do (16 sites in xprs_app.c). They still print as warnings.
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=format-truncation" APPEND)
+idf_build_set_property(COMPILE_OPTIONS "-Wno-error=restrict" APPEND)
 project(epaper_xprs)
 
 # LVGL's pool out of internal .bss and into PSRAM, exactly as on the T-Deck:

@@ -80,7 +80,7 @@ bearers use it. The identifier compared is the section 5 one, which ignores
 `via:` and `sig:`, so a relayed copy is recognisably the same packet.
 
 The delay is uniform, so the station that wins is the random one rather than the
-one whose re-air would reach furthest. [wifi8.md](wifi8.md) sets that against
+one whose re-air would reach furthest. the retired XPRS-WiFi notes once set that against
 Wi-Fi 8's multi-AP coordination and works out what a rank would cost.
 
 ## `scope:local` crosses to it

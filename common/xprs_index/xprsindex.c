@@ -1046,6 +1046,12 @@ static bool xi_matches(const xi_rec_t *r, const xprsidx_query_t *q)
     if (q->until_ts && (r->ts == 0 || r->ts > q->until_ts)) return false;
     if (q->from && *q->from && !xi_ieq(q->from, r->from)) return false;
     if (q->only && *q->only && !xi_mentions(r, q->only)) return false;
+    if (q->room) {
+        if (r->to[0] && r->to[0] != '#') return false;   /* a 1:1 is no room */
+        if (r->flags & XI_F_OUTRANGE) return false;      /* heard too far */
+        if ((int)xprs_scope_reach_wire(r->wire, (int)r->len) != q->room - 1)
+            return false;
+    }
     return xi_may_serve(r, q);
 }
 

@@ -3,6 +3,7 @@
  * the single-board original never needed. */
 #include "xprs_station.h"
 
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,11 +23,13 @@ uint32_t xst_test_now_ms;
 #define ESP_LOGW(...)        ((void)0)
 #define ESP_LOGE(...)        ((void)0)
 #define XPRS_PSRAM_BSS
+#define xprs_big_calloc(n, size) calloc((n), (size))
 #define LOCK()               ((void)0)
 #define UNLOCK()             ((void)0)
 static const char *TAG __attribute__((unused)) = "xst";
 #else
 #include <stdlib.h>
+#include <sys/time.h>
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -45,10 +48,22 @@ static int  s_tz_off;
 static bool s_tz_known;     /* false: nobody has said, and s_tz_off is 0 */
 
 /* ── Who we have heard, by name ─────────────────────────────────────── */
-static XPRS_PSRAM_BSS xst_dev_t s_seen[XST_SEEN_MAX];
+static xst_dev_t *s_seen;        /* [XST_SEEN_MAX], big_calloc'd off the .bss (RF-bank ceiling) */
+
+/* What the neighbours said they hear (xst_far_note): the far leg of a relayed
+ * distance. Same allocation story as s_seen. */
+typedef struct {
+    char     obs[XPRS_CALL_LEN];
+    char     call[XPRS_CALL_LEN];
+    uint8_t  q;
+    uint32_t ms;
+} far_t;
+static far_t *s_far;             /* [XST_FAR_MAX] */
 
 /* ── The chat ring ──────────────────────────────────────────────────── */
-static XPRS_PSRAM_BSS xst_chat_t s_chat[XST_CHAT_MAX];
+/* Was an XPRS_PSRAM_BSS static; xprs_big_calloc'd in xst_init (same PSRAM
+ * preference) so .bss stays clear of the RF sample banks on xwifi boards. */
+static xst_chat_t *s_chat;
 static int s_chat_n;              /* total ever; ring pos = n % MAX */
 static bool s_chat_dirty;         /* something to write to storage */
 static uint32_t s_chat_seq;       /* arrival counter, survives eviction */
@@ -59,10 +74,10 @@ typedef struct {
     uint32_t rx, tx;
     uint16_t dev, pad;
 } sbucket_t;
-static XPRS_PSRAM_BSS sbucket_t s_sb10[XST_SB10_N];
-static uint32_t  s_sb10_id[XST_SB10_N];
-static XPRS_PSRAM_BSS sbucket_t s_sbday[XST_SBDAY_N];
-static uint32_t  s_sbday_id[XST_SBDAY_N];
+static sbucket_t *s_sb10;        /* [XST_SB10_N] */
+static uint32_t  *s_sb10_id;     /* [XST_SB10_N] */
+static sbucket_t *s_sbday;       /* [XST_SBDAY_N] */
+static uint32_t  *s_sbday_id;    /* [XST_SBDAY_N] */
 
 /* Distinct devices in the LIVE 10-minute bucket only. */
 static uint32_t s_cur_devh[STAT_DEVS];
@@ -102,8 +117,34 @@ static sbucket_t *statday(uint32_t ep)
     return &s_sbday[i];
 }
 
+/* The ring is allocated on first touch, not in xst_init: chat.bin loads at
+ * storage mount, which on some boards runs before xst_init. */
+static void chat_ensure(void)
+{
+    if (!s_chat) {
+        s_chat = xprs_big_calloc(XST_CHAT_MAX, sizeof *s_chat);
+        assert(s_chat);   /* a board that cannot afford the ring at boot
+                             could not afford it as a static either */
+    }
+    if (!s_seen) {
+        /* The device table and the signal-bucket rings: were XPRS_PSRAM_BSS
+         * statics, which is inert without PSRAM, so on the C3 they sat in the
+         * .bss the RF sample bank caps. big_calloc keeps the PSRAM-first
+         * placement where there is PSRAM and moves them off the bank where
+         * there is not. */
+        s_seen     = xprs_big_calloc(XST_SEEN_MAX, sizeof *s_seen);
+        s_far      = xprs_big_calloc(XST_FAR_MAX,  sizeof *s_far);
+        s_sb10     = xprs_big_calloc(XST_SB10_N,  sizeof *s_sb10);
+        s_sb10_id  = xprs_big_calloc(XST_SB10_N,  sizeof *s_sb10_id);
+        s_sbday    = xprs_big_calloc(XST_SBDAY_N, sizeof *s_sbday);
+        s_sbday_id = xprs_big_calloc(XST_SBDAY_N, sizeof *s_sbday_id);
+        assert(s_seen && s_far && s_sb10 && s_sb10_id && s_sbday && s_sbday_id);
+    }
+}
+
 void xst_init(const char *own_call, int tz_off_sec)
 {
+    chat_ensure();
     xst_set_call(own_call ? own_call : "");
     s_tz_off = tz_off_sec;
 }
@@ -125,6 +166,87 @@ int xst_tz(bool *known)
     return off;
 }
 
+/* ── The clock ──────────────────────────────────────────────────────── */
+
+#define XST_CLK_MIN 1700000000u   /* 2023-11-14: nothing earlier is a clock */
+#define XST_CLK_MAX 2208988800u   /* 2040-01-01: nothing later is believed */
+static xst_clock_src_t s_clk_src;
+static const char *const k_clk_name[] = { "none", "hint", "owner", "ntp" };
+
+#ifdef XST_HOST_TEST
+uint32_t xst_test_clock;                   /* what settimeofday would have set */
+static void     clock_write(uint32_t e) { xst_test_clock = e; }
+static uint32_t clock_read(void)        { return xst_test_clock; }
+#else
+static void clock_write(uint32_t e)
+{
+    struct timeval tv = { .tv_sec = (time_t)e, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+}
+static uint32_t clock_read(void) { return xst_epoch_now(); }
+#endif
+
+bool xst_clock_set(xst_clock_src_t src, uint32_t epoch, const char *who)
+{
+    (void)who;
+    if (src <= XST_CLK_NONE || src > XST_CLK_NTP ||
+        epoch < XST_CLK_MIN || epoch >= XST_CLK_MAX) {
+        ESP_LOGW(TAG, "clock: %lu from %s refused, out of range",
+                 (unsigned long)epoch, who ? who : "?");
+        return false;
+    }
+    LOCK();
+    xst_clock_src_t cur = s_clk_src;
+    UNLOCK();
+    if (src < cur) {
+        ESP_LOGW(TAG, "clock: %s's %lu from %s refused, %s set it",
+                 k_clk_name[src], (unsigned long)epoch, who ? who : "?",
+                 k_clk_name[cur]);
+        return false;
+    }
+    /* Nothing but NTP turns a valid clock back -- not a better source
+     * either. The chip keeps its clock across a reset, so a station can
+     * hold a good, unattributed time ("kept", below) that an owner's
+     * command must not wind back to its own ts:. */
+    if (src != XST_CLK_NTP && clock_read() && epoch < clock_read()) {
+        ESP_LOGW(TAG, "clock: %s's %lu from %s refused, it is %lu and never "
+                      "goes back", k_clk_name[src], (unsigned long)epoch,
+                 who ? who : "?", (unsigned long)clock_read());
+        return false;
+    }
+    clock_write(epoch);
+    LOCK();
+    s_clk_src = src;
+    UNLOCK();
+    ESP_LOGW(TAG, "clock: %s set %lu UTC (%s)", k_clk_name[src],
+             (unsigned long)epoch, who ? who : "?");
+    return true;
+}
+
+void xst_clock_from_ntp(void)
+{
+    LOCK();
+    s_clk_src = XST_CLK_NTP;
+    UNLOCK();
+}
+
+xst_clock_src_t xst_clock_src(void)
+{
+    LOCK();
+    xst_clock_src_t s = s_clk_src;
+    UNLOCK();
+    return s;
+}
+
+/* "kept": a valid clock nobody set this boot -- the chip carried it across
+ * a reset. As good as it was, and never turned back but by NTP. */
+const char *xst_clock_src_name(void)
+{
+    xst_clock_src_t s = xst_clock_src();
+    if (s == XST_CLK_NONE && clock_read()) return "kept";
+    return k_clk_name[s];
+}
+
 void xst_set_call(const char *own_call)
 {
     snprintf(s_call, sizeof s_call, "%s", own_call ? own_call : "");
@@ -132,9 +254,11 @@ void xst_set_call(const char *own_call)
 
 /* Devices row upsert. Caller holds no lock. */
 static void dev_upsert(const char *call, const char *bearer, int rssi,
-                       uint8_t hops)
+                       uint8_t hops, const char *via)
 {
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (!s_seen) return;         /* a sighting before xst_init (the C3's
+                                  * boot order): nothing to keep it in yet */
     LOCK();
     int slot = -1, oldest = 0;
     bool same = false;
@@ -163,6 +287,7 @@ static void dev_upsert(const char *call, const char *bearer, int rssi,
     snprintf(s_seen[slot].bearer, sizeof s_seen[slot].bearer, "%s", bearer);
     s_seen[slot].rssi = rssi;
     s_seen[slot].hops = hops;
+    snprintf(s_seen[slot].via, sizeof s_seen[slot].via, "%s", via ? via : "");
     s_seen[slot].last_ms = now;
     UNLOCK();
 }
@@ -171,7 +296,52 @@ void xst_dev_note(const char *call, const char *bearer, int rssi)
 {
     if (!call || !call[0]) return;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return;
-    dev_upsert(call, bearer ? bearer : "", rssi, 0);
+    dev_upsert(call, bearer ? bearer : "", rssi, 0, "");
+}
+
+void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
+                       int hops, const char *relay)
+{
+    if (!call || !call[0]) return;
+    if (s_call[0] && strcasecmp(call, s_call) == 0) return;
+    if (hops < 0) hops = 0;
+    dev_upsert(call, bearer ? bearer : "", rssi,
+               hops > 255 ? 255 : (uint8_t)hops,
+               hops && relay ? relay : "");
+}
+
+/* The hops a packet took and who took them, for its devices row.
+ *
+ * Counts the via: entries that are not this station -- a gateway's
+ * translation of a Meshtastic frame names the gateway (XPRS.md 9.11.5), and
+ * on the gateway that node was heard directly -- and writes the chain's tail
+ * into [out] (cap XST_VIA_LEN), oldest first, nearest last, dropping the
+ * farthest entries when the chain is longer than the room. */
+static int via_tail(const xprs_t *p, char *out, int cap)
+{
+    out[0] = 0;
+    char v[128];
+    if (!xprs_get_str(p, "via", v, sizeof v)) return 0;
+    const char *ent[16];
+    int n = 0;
+    for (char *t = v; t && *t && n < 16; ) {
+        char *c = strchr(t, ',');
+        if (c) *c = 0;
+        if (*t && !(s_call[0] && strcasecmp(t, s_call) == 0)) ent[n++] = t;
+        t = c ? c + 1 : NULL;
+    }
+    /* The longest tail that fits. */
+    int first = n, len = 0;
+    while (first > 0) {
+        int l = (int)strlen(ent[first - 1]) + (len ? 1 : 0);
+        if (len + l >= cap) break;
+        len += l;
+        first--;
+    }
+    int w = 0;
+    for (int i = first; i < n; i++)
+        w += snprintf(out + w, (size_t)(cap - w), "%s%s", w ? "," : "", ent[i]);
+    return n;
 }
 
 /* `ts:` (XPRS 4, UTC "YYYY-MM-DD_HH:MM:SS") as seconds since 1970, or 0. */
@@ -202,6 +372,7 @@ static bool chat_newer(const xst_chat_t *a, const xst_chat_t *b)
 
 void xst_chat_note(const xprs_t *p)
 {
+    chat_ensure();
     char from[XPRS_CALL_LEN], text[120];
     char type[16];
     xprs_type(p, type, sizeof type);
@@ -314,6 +485,12 @@ void xst_set_lora_local(bool local)
 
 bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
 {
+    return xst_ingest_parsed_ex(p, bearer, rssi, 0, "");
+}
+
+bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
+                          int hops_more, const char *relay)
+{
     char call[XPRS_CALL_LEN];
     if (!xprs_get_str(p, "f", call, sizeof call)) return false;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return false;
@@ -348,10 +525,16 @@ bool xst_ingest_parsed(const xprs_t *p, const char *bearer, int rssi)
     }
 
     /* How many stations carried this here. A via: chain means the sender
-     * is NOT a neighbour -- it is reachable only through somebody. */
-    int hops = xprs_via_count(p);
+     * is NOT a neighbour -- it is reachable only through somebody; the
+     * chain's tail is kept so the distance can be added up (xst_dev_path). */
+    char via[XST_VIA_LEN];
+    int hops = via_tail(p, via, sizeof via) + (hops_more > 0 ? hops_more : 0);
+    /* A repeater of the other network, named by the bridge, is the relay
+     * the wire could not write. */
+    if (hops_more > 0 && !via[0] && relay && relay[0])
+        snprintf(via, sizeof via, "%s", relay);
     dev_upsert(call, bearer ? bearer : "", rssi,
-               hops > 255 ? 255 : (uint8_t)hops);
+               hops > 255 ? 255 : (uint8_t)hops, via);
     return true;
 }
 
@@ -430,6 +613,12 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
      * station has inside the same window. A blip without a distance because
      * the last packet happened to come over WiFi would be the radar
      * forgetting what it measured a moment ago. */
+    /* Hops and via: are the SHORTEST fresh path, not the latest: a neighbour
+     * whose packet also came back round through a relay on another bearer is
+     * still a neighbour, and "how far" is answered by the nearest path. The
+     * borrowed signal is then the strongest reading on a row of THAT hop
+     * count -- a relayed copy's rssi is the relay's transmission and must
+     * not stand in for a direct reading that happens to be weaker. */
     int m = 0;
     for (int i = 0; i < n; i++) {
         int k = -1;
@@ -440,8 +629,14 @@ int xst_devices(xst_dev_t *out, int max, int in_range_sec)
             rows[m++] = rows[i];              /* m <= i: in place is safe */
             continue;
         }
-        if (rows[i].rssi && (!rows[k].rssi || rows[i].rssi > rows[k].rssi))
+        if (rows[i].hops < rows[k].hops) {
+            rows[k].hops = rows[i].hops;
+            memcpy(rows[k].via, rows[i].via, sizeof rows[k].via);
             rows[k].rssi = rows[i].rssi;
+        } else if (rows[i].hops == rows[k].hops && rows[i].rssi &&
+                   (!rows[k].rssi || rows[i].rssi > rows[k].rssi)) {
+            rows[k].rssi = rows[i].rssi;
+        }
     }
     if (m > max) m = max;
     for (int i = 0; i < m; i++) out[i] = rows[i];
@@ -682,6 +877,7 @@ bool xst_heard(const char *call, int in_range_sec)
 
 int xst_chat(xst_chat_t *out, int max)
 {
+    chat_ensure();
     int n = 0;
     LOCK();
     /* Newest first, by when it was said (chat_newer), not by slot: a full
@@ -720,6 +916,7 @@ bool xst_chat_dirty(void)
 
 void xst_chat_save(const char *path)
 {
+    chat_ensure();
     if (!path || !*path) return;
 
     /* Streamed, one row at a time. A 40-row array is nearly 7 KB whichever
@@ -761,6 +958,11 @@ void xst_chat_save(const char *path)
 
 void xst_chat_load(const char *path)
 {
+    chat_ensure();
+    /* A boot that could not place the ring (seen on a T-Deck after a USB
+     * reset: three StoreProhibited panics in a row, then a clean boot) runs
+     * without the saved conversation rather than falling over here. */
+    if (!s_chat) { ESP_LOGW(TAG, "chat: no ring this boot; %s not loaded", path ? path : "-"); return; }
     if (!path || !*path) return;
     FILE *f = fopen(path, "rb");
     if (!f) return;
@@ -799,6 +1001,7 @@ void xst_chat_load(const char *path)
 
 int xst_chat_find(const char *id, xst_chat_t *out)
 {
+    chat_ensure();
     if (!id || !id[0]) return 0;
     int found = 0;
     LOCK();
@@ -924,6 +1127,114 @@ float xst_est_distance_m(int rssi)
     return powf(10.0f, ((-40.0f - (float)rssi) / 27.0f));
 }
 
+static int est_m(int rssi)
+{
+    return rssi ? (int)(xst_est_distance_m(rssi) + 0.5f) : -1;
+}
+
+void xst_far_note(const char *observer, const char *call, int q)
+{
+    if (!s_far || !observer || !observer[0] || !call || !call[0]) return;
+    if (q < 0) q = 0;
+    if (q > 9) q = 9;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    LOCK();
+    int slot = -1, oldest = 0;
+    for (int i = 0; i < XST_FAR_MAX; i++) {
+        if (s_far[i].obs[0] && strcasecmp(s_far[i].obs, observer) == 0 &&
+            strcasecmp(s_far[i].call, call) == 0) { slot = i; break; }
+        if (!s_far[i].obs[0]) { if (slot < 0) slot = i; }
+        else if (s_far[i].ms < s_far[oldest].ms) oldest = i;
+    }
+    if (slot < 0) slot = oldest;
+    snprintf(s_far[slot].obs, sizeof s_far[slot].obs, "%s", observer);
+    snprintf(s_far[slot].call, sizeof s_far[slot].call, "%s", call);
+    s_far[slot].q = (uint8_t)q;
+    s_far[slot].ms = now ? now : 1;
+    UNLOCK();
+}
+
+int xst_far_rssi(const char *observer, const char *call, int ttl_sec)
+{
+    if (!s_far || !observer || !call) return 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    int r = 0;
+    LOCK();
+    for (int i = 0; i < XST_FAR_MAX; i++) {
+        if (!s_far[i].obs[0] || strcasecmp(s_far[i].obs, observer) != 0 ||
+            strcasecmp(s_far[i].call, call) != 0) continue;
+        if ((now - s_far[i].ms) / 1000 < (uint32_t)ttl_sec)
+            /* The middle of the digit's step: xst_signal_bucket puts
+             * -100 dBm at 0 and 7 dB a step. */
+            r = -97 + 7 * (int)s_far[i].q;
+        break;
+    }
+    UNLOCK();
+    return r;
+}
+
+void xst_dev_path(const xst_dev_t *d, int in_range_sec, xst_path_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->total_m = out->near_m = out->far_m = out->floor_m = -1;
+    if (!d) return;
+    if (d->hops == 0 || !d->via[0]) {
+        /* A neighbour -- or a node behind repeaters of another network
+         * that the bridge could not name: then the signal is the last
+         * repeater's, the near leg is the measured distance to it, and
+         * that is the floor; the rest nobody can say. */
+        out->near_m = est_m(d->rssi);
+        out->far_m = d->hops ? -1 : 0;
+        out->total_m = d->hops ? -1 : out->near_m;
+        out->floor_m = out->near_m;
+        return;
+    }
+    char chain[XST_VIA_LEN];
+    memcpy(chain, d->via, sizeof chain);
+    const char *rel[4];
+    int n = 0;
+    for (char *t = chain; t && *t && n < 4; ) {
+        char *c = strchr(t, ',');
+        if (c) *c = 0;
+        rel[n++] = t;
+        t = c ? c + 1 : NULL;
+    }
+    snprintf(out->relay, sizeof out->relay, "%s", rel[n - 1]);
+
+    /* The near leg: us to the relay that handed the packet over. Its own
+     * fresh direct row is a reading of the same transmitter, usually a
+     * better one than the single packet; failing that, the packet's. */
+    int rssi = 0;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    LOCK();
+    if (s_seen) for (int i = 0; i < XST_SEEN_MAX; i++) {
+        if (!s_seen[i].call[0] || s_seen[i].hops || !s_seen[i].rssi) continue;
+        if (strcasecmp(s_seen[i].call, out->relay) != 0) continue;
+        if ((now - s_seen[i].last_ms) / 1000 >= (uint32_t)in_range_sec) continue;
+        if (!rssi || s_seen[i].rssi > rssi) rssi = s_seen[i].rssi;
+    }
+    UNLOCK();
+    if (!rssi) rssi = d->rssi;
+    out->near_m = est_m(rssi);
+
+    /* The far legs, farthest first: rel[0] heard the sender, rel[1] heard
+     * rel[0], and so on up to the nearest relay. Each is that relay's own
+     * saying; one missing, or a chain longer than the tail kept, and the
+     * total is unknown -- but every leg that IS known still bounds the
+     * distance from below, and that bound is the floor. */
+    bool known = d->hops <= n;
+    int far = 0, floor = out->near_m >= 0 ? out->near_m : -1;
+    for (int i = 0; i < n; i++) {
+        int r = xst_far_rssi(rel[i], i ? rel[i - 1] : d->call, 3 * in_range_sec);
+        if (!r) { known = false; continue; }
+        far += est_m(r);
+        floor = (floor < 0 ? 0 : floor) + est_m(r);
+    }
+    out->far_m = known ? far : -1;
+    out->floor_m = floor;
+    out->total_m = (known && out->near_m >= 0) ? out->near_m + far : -1;
+}
+
 /* ── Persistence: the whole rings, serialised (magic XST1) ──────────── */
 #define STATS_MAGIC 0x31545358u   /* "XST1" */
 typedef struct {
@@ -953,6 +1264,11 @@ static stats_blob_t *blob_borrow(void)
 
 void xst_stats_load(const char *path)
 {
+    /* Same first-touch rule as the chat ring: the storage task loads
+     * stats.bin at mount, and on the C3 that beats xst_init to it (a Store
+     * access fault in idx at boot, every boot once stats.bin existed). */
+    chat_ensure();
+    if (!s_sb10) return;
     FILE *f = fopen(path, "rb");
     if (!f) return;
     stats_blob_t *bl = blob_borrow();
@@ -965,10 +1281,10 @@ void xst_stats_load(const char *path)
     fclose(f);
     if (ok) {
         LOCK();
-        memcpy(s_sb10, bl->sb10, sizeof s_sb10);
-        memcpy(s_sb10_id, bl->sb10_id, sizeof s_sb10_id);
-        memcpy(s_sbday, bl->sbday, sizeof s_sbday);
-        memcpy(s_sbday_id, bl->sbday_id, sizeof s_sbday_id);
+        memcpy(s_sb10, bl->sb10, sizeof bl->sb10);
+        memcpy(s_sb10_id, bl->sb10_id, sizeof bl->sb10_id);
+        memcpy(s_sbday, bl->sbday, sizeof bl->sbday);
+        memcpy(s_sbday_id, bl->sbday_id, sizeof bl->sbday_id);
         UNLOCK();
         ESP_LOGI(TAG, "stats reloaded from %s", path);
     }
@@ -977,6 +1293,7 @@ void xst_stats_load(const char *path)
 
 void xst_stats_save(const char *path)
 {
+    if (!s_sb10) return;              /* nothing gathered yet */
     stats_blob_t *bl = blob_borrow();
     if (!bl) {
         /* Skipped, not lost: the rings are still in RAM and the next round
@@ -1011,7 +1328,9 @@ void xst_stats_save(const char *path)
  * a dozen stations in one process and needs that zero back between them. */
 void xst_test_reset(void)
 {
-    memset(s_seen, 0, sizeof s_seen);
-    memset(s_chat, 0, sizeof s_chat);
+    chat_ensure();
+    memset(s_seen, 0, XST_SEEN_MAX * sizeof *s_seen);
+    memset(s_far, 0, XST_FAR_MAX * sizeof *s_far);
+    memset(s_chat, 0, XST_CHAT_MAX * sizeof *s_chat);
 }
 #endif

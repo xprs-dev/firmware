@@ -10,6 +10,7 @@
 #include "xprsnow.h"
 #include "xprsbearer.h"
 #include "xprs.h"
+#include "xprs_psram.h"   /* xprs_big_calloc: the bearer state off the .bss */
 
 #include <string.h>
 #include <stdio.h>
@@ -38,7 +39,10 @@ typedef struct {
     uint8_t mac[6];
 } nw_frame_t;
 
-static xb_t              s_now;
+/* Was a 3.4 KB static; xprs_big_calloc'd in start so the .bss stays under
+ * the RF-bank ceiling on the xwifi boards (every xb_* entry is NULL-safe,
+ * so before start this bearer behaves exactly as a never-started one). */
+static xb_t             *s_now;
 static QueueHandle_t     s_rxq;
 static SemaphoreHandle_t s_tx_mtx;
 static xprsnow_rx_cb_t   s_rx_cb;
@@ -165,7 +169,7 @@ static void nw_drain(void *ctx)
         }
         uint64_t peer = 0;
         for (int i = 0; i < 6; i++) peer = (peer << 8) | f.mac[i];
-        xb_on_wire(&s_now, f.wire, f.len, peer, f.rssi);
+        xb_on_wire(s_now, f.wire, f.len, peer, f.rssi);
     }
     if (s_trace) {
         /* The frames that never reached the queue at all. Reported as a change,
@@ -206,37 +210,37 @@ static const xb_ops_t k_now_ops = {
 
 /* ── The public bearer ──────────────────────────────────────────────────── */
 
-void xprsnow_offer(const char *wire, int len) { xb_offer(&s_now, wire, len); }
-void xprsnow_digipeat(const char *wire, int len) { xb_digipeat(&s_now, wire, len); }
+void xprsnow_offer(const char *wire, int len) { xb_offer(s_now, wire, len); }
+void xprsnow_digipeat(const char *wire, int len) { xb_digipeat(s_now, wire, len); }
 void xprsnow_echo(const char *wire, int len)
 {
-    xb_echo(&s_now, wire, len);
+    xb_echo(s_now, wire, len);
 }
 
 uint32_t xprsnow_idle_ms(uint32_t now_ms)
 {
-    return xb_idle_ms(&s_now, now_ms);
+    return xb_idle_ms(s_now, now_ms);
 }
 
-bool xprsnow_send(const char *wire, int len)  { return xb_send(&s_now, wire, len); }
-bool xprsnow_is_active(void)                  { return xb_is_active(&s_now); }
+bool xprsnow_send(const char *wire, int len)  { return xb_send(s_now, wire, len); }
+bool xprsnow_is_active(void)                  { return xb_is_active(s_now); }
 
 void xprsnow_set_rx_cb(xprsnow_rx_cb_t cb)
 {
     s_rx_cb = cb;
-    xb_set_rx_cb(&s_now, cb ? nw_rx_shim : NULL);
+    xb_set_rx_cb(s_now, cb ? nw_rx_shim : NULL);
 }
-void xprsnow_set_heard_cb(xprsnow_heard_cb_t cb) { xb_set_heard_cb(&s_now, cb); }
+void xprsnow_set_heard_cb(xprsnow_heard_cb_t cb) { xb_set_heard_cb(s_now, cb); }
 
 void xprsnow_set_beacon(xprsnow_beacon_cb_t cb, uint32_t interval_sec,
                         uint32_t first_delay_sec)
 {
-    xb_set_beacon(&s_now, cb, interval_sec, first_delay_sec);
+    xb_set_beacon(s_now, cb, interval_sec, first_delay_sec);
 }
 
 int xprsnow_peer_count(uint32_t max_age_sec)
 {
-    return xb_peer_count(&s_now, max_age_sec);
+    return xb_peer_count(s_now, max_age_sec);
 }
 
 uint8_t xprsnow_channel(void)
@@ -250,7 +254,7 @@ uint8_t xprsnow_channel(void)
 void xprsnow_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
                    uint32_t *dropped)
 {
-    xb_stats(&s_now, rx, tx, cancelled);
+    xb_stats(s_now, rx, tx, cancelled);
     if (dropped) *dropped = s_dropped;
 }
 
@@ -264,6 +268,9 @@ void xprsnow_tx_stats(uint32_t *issued, uint32_t *done, uint32_t *failed)
 esp_err_t xprsnow_start(const char *callsign)
 {
     if (s_started) return ESP_OK;
+
+    if (!s_now) s_now = xprs_big_calloc(1, sizeof *s_now);
+    if (!s_now) return ESP_ERR_NO_MEM;
 
     s_rxq = xQueueCreate(XPRSNOW_RX_QUEUE, sizeof(nw_frame_t));
     if (!s_rxq) return ESP_ERR_NO_MEM;
@@ -304,8 +311,8 @@ esp_err_t xprsnow_start(const char *callsign)
     esp_wifi_set_ps(WIFI_PS_NONE);
 
     s_started = true;
-    xb_init(&s_now, &k_now_ops, callsign);
-    xb_register_ticked(&s_now);
+    xb_init(s_now, &k_now_ops, callsign);
+    xb_register_ticked(s_now);
 
     /* This bearer does not own a task — it is pumped by whoever does. If nobody
      * has claimed that job, nothing here will ever re-air or beacon, and the
@@ -325,7 +332,7 @@ esp_err_t xprsnow_start(const char *callsign)
 void xprsnow_stop(void)
 {
     if (!s_started) return;
-    xb_stop(&s_now);
+    xb_stop(s_now);
     esp_now_unregister_recv_cb();
     esp_now_unregister_send_cb();
     esp_now_deinit();

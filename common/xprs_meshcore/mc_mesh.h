@@ -63,7 +63,17 @@ typedef struct {
     bool     (*air)(void *ctx, const uint8_t *frame, int len, int prio);
     uint32_t (*now_ms)(void);
     uint32_t (*random)(void);
-    void     (*deliver)(void *ctx, const char *wire, int len, bool sign);
+    /* [rssi] is the frame's as this radio measured it (the node's own
+     * when the path is empty, the last repeater's otherwise); [hops] is
+     * the path's length; [relay] names the last repeater when its path
+     * hash matches exactly one node we know, "" otherwise. 0, 0, "" for a
+     * receipt. As mt_mesh_ops_t.deliver. */
+    void     (*deliver)(void *ctx, const char *wire, int len, bool sign,
+                        int rssi, int hops, const char *relay);
+    /* A node of the other network was heard (its advert), or a repeater
+     * we could name (hops 0). Optional; as mt_mesh_ops_t.heard. */
+    void     (*heard)(void *ctx, const char *call, int rssi, int hops,
+                      const char *relay);
     int      (*stamp)(void *ctx, char *out, int cap, bool to_minute);
     uint32_t (*utc_now)(void *ctx);
     bool     (*nick_of)(void *ctx, const char *call, char *out, int cap);
@@ -125,6 +135,13 @@ typedef struct {
 #define MC_DM_PARK_MS     (24u * 3600u * 1000u)
 #define MC_BCAST_FRESH_S  1800u
 #define MC_DM_FRESH_S     (6u * 3600u)
+/* Heard traffic is not mirrored in the first moments after boot, and never
+ * without a clock (the Meshtastic bridge's rule, docs/lora.md "Time"): the
+ * bearers replay old packets, and without a clock the freshness window
+ * above cannot be judged. */
+#define MC_MIRROR_SETTLE_MS 20000u
+/* One XPRS sender's share of the channel per hour. */
+#define MC_SENDER_PER_HOUR 4
 /* How far a flood packet travels through us. MeshCore's own limit is the
  * path itself (it stops when there is no room for another hash); this is
  * the same manners as Meshtastic's hop limit, on a channel we share. */
@@ -176,6 +193,7 @@ typedef struct {
 typedef struct {
     uint32_t seen_ms;            /* last XPRS packet from it */
     uint32_t advert_ms;          /* last advert we aired for it; 0 = never */
+    uint32_t sent_ms[MC_SENDER_PER_HOUR]; /* its last broadcasts here, for its share */
     bool     advert_due;         /* mc_mesh_work advertises it */
     bool     keep;               /* advertised: saved, evicted last */
     bool     keyed;              /* pub is derived; until then it has none */
@@ -214,6 +232,9 @@ typedef struct {
     uint8_t  len;
     uint32_t hash;
     int8_t   snr;
+    int16_t  rssi;               /* what ops.deliver will say of it */
+    uint8_t  hops;
+    char     relay[12];
     uint8_t  payload[MC_PAYLOAD_MAX];
 } mc_inbox_t;
 
@@ -244,6 +265,10 @@ typedef struct {
     uint32_t adverts_in, adverts_out, bcast_capped, dropped;
     uint32_t inbox_full;       /* packets dropped for want of a slot to work on */
     uint32_t paths_in;         /* PATH returns opened (the ack rides in them) */
+    /* Mirroring XPRS onto the channel: heard traffic refused for want of a
+     * clock, as too soon after boot, as old news, as not the Regional room's,
+     * and as one sender's share of the hour spent. */
+    uint32_t no_clock, settling, stale, not_regional, sender_capped;
 } mc_mesh_stats_t;
 
 typedef struct {
@@ -276,6 +301,12 @@ typedef struct {
      * one delivered, or one of ours acknowledged. Channel chatter is
      * deliberately not counted (see mt_mesh.h). */
     uint32_t        last_dm_ms;
+    /* The packet being handled: what ops.deliver says about its
+     * translation. Set by mc_mesh_on_frame, and again by mc_mesh_work for
+     * a parked packet. */
+    int             rx_rssi;
+    int             rx_hops;
+    char            rx_relay[12];
     uint8_t         bcast_min[60];
     uint32_t        bcast_head_ms;
     uint8_t         bcast_head;

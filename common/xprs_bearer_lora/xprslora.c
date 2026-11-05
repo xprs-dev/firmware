@@ -2233,10 +2233,18 @@ void xprslora_stats(uint32_t *rx, uint32_t *tx, uint32_t *cancelled,
 
 static xprslora_mt_hooks_t s_hooks;
 
-static void mt_deliver(void *ctx, const char *wire, int len, bool sign)
+static void mt_deliver(void *ctx, const char *wire, int len, bool sign,
+                       int rssi, int hops, const char *relay)
 {
     (void)ctx;
-    if (s_hooks.deliver) s_hooks.deliver(wire, len, sign);
+    if (s_hooks.deliver) s_hooks.deliver(wire, len, sign, rssi, hops, relay);
+}
+
+static void mt_heard(void *ctx, const char *call, int rssi, int hops,
+                     const char *relay)
+{
+    (void)ctx;
+    if (s_hooks.heard) s_hooks.heard(call, rssi, hops, relay);
 }
 
 static int mt_stamp(void *ctx, char *out, int cap, bool to_minute)
@@ -2249,6 +2257,14 @@ static bool mt_nick(void *ctx, const char *call, char *out, int cap)
 {
     (void)ctx;
     return s_hooks.nick_of && s_hooks.nick_of(call, out, cap);
+}
+
+static int32_t mt_tz(void *ctx, bool *known)
+{
+    (void)ctx;
+    if (s_hooks.tz_offset) return s_hooks.tz_offset(known);
+    if (known) *known = false;
+    return 0;
 }
 
 static void mt_log(void *ctx, const char *line)
@@ -2330,7 +2346,7 @@ esp_err_t xprslora_mt_start(const xprslora_mt_hooks_t *hooks,
     s_hooks = *hooks;
     mt_mesh_ops_t ops = {
         .air = lr_air_mt, .now_ms = lr_now_ms, .random = lr_random,
-        .deliver = mt_deliver, .stamp = mt_stamp, .nick_of = mt_nick,
+        .deliver = mt_deliver, .heard = mt_heard, .stamp = mt_stamp, .nick_of = mt_nick, .tz_offset = mt_tz,
         .log = mt_log, .keys_load = mt_keys_load, .keys_save = mt_keys_save,
         .vnodes_load = mt_vnodes_load, .vnodes_save = mt_vnodes_save,
         .utc_now = mt_utc,
@@ -2627,7 +2643,7 @@ esp_err_t xprslora_mc_start(const xprslora_mt_hooks_t *hooks,
     s_hooks = *hooks;
     mc_mesh_ops_t ops = {
         .air = lr_air_mc, .now_ms = lr_now_ms, .random = lr_random,
-        .deliver = mt_deliver, .stamp = mt_stamp, .nick_of = mt_nick,
+        .deliver = mt_deliver, .heard = mt_heard, .stamp = mt_stamp, .nick_of = mt_nick,
         .log = mt_log, .keys_load = mc_keys_load, .keys_save = mc_keys_save,
         .vnodes_load = mc_vnodes_load, .vnodes_save = mc_vnodes_save,
         .utc_now = mt_utc,

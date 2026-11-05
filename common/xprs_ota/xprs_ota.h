@@ -110,6 +110,15 @@ xota_code_t xota_request(const char *version, const char *url,
  * Feed it in chunks; a NULL [data] with [len] 0 finishes.
  */
 esp_err_t xota_push_begin(const char *version, size_t size, const char *sig);
+/**
+ * As xota_push_begin, approved by DIGEST: the caller holds a description of
+ * the image signed by the pinned publisher (a `t:file` naming board, version,
+ * size and `file:`, XPRS.md 7.7.1) and has verified it. verify() then
+ * requires the bytes to hash to [sha]. Refused when no key is pinned.
+ */
+esp_err_t xota_push_begin_sha(const char *version, size_t size, const uint8_t sha[32]);
+/** The pinned publisher key (`fwkey`), for whoever verifies its packets. */
+bool xota_publisher_key(uint8_t out[32]);
 esp_err_t xota_push_write(const void *data, size_t len);
 esp_err_t xota_push_finish(void);
 /** finish() in two halves, for a door that must answer before it restarts:

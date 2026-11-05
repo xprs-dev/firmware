@@ -28,14 +28,16 @@ static int g_ndl;
 
 /* What the Meshtastic node N heard: decoded LongFast frames. */
 typedef struct { mt_hdr_t h; uint32_t port; char text[256]; uint32_t request_id,
-                 reply_id, emoji; mt_user_t user; int err; } heard_t;
+                 reply_id, emoji, bitfield; mt_user_t user; int err; } heard_t;
 static heard_t g_heard[64];
 static int g_nheard;
 static int g_aired[NB];
 static bool g_radio_busy;       /* air() refuses while set */
 
-static void t_deliver(void *ctx, const char *wire, int len, bool sign)
+static void t_deliver(void *ctx, const char *wire, int len, bool sign,
+                      int rssi, int hops, const char *relay)
 {
+    (void)rssi; (void)hops; (void)relay;
     int who = (int)(intptr_t)ctx;
     if (g_ndl >= 64) return;
     memcpy(g_dl[g_ndl].wire, wire, (size_t)len);
@@ -86,8 +88,18 @@ static void t_vnodes_save(void *ctx, const void *buf, int len)
     g_vstore_len[who] = len;
 }
 
-static uint32_t g_utc;          /* 0: no clock, the default here */
+/* The clock the tests run under: 2026-09-19_12:04:00, the stamp above. The
+ * case that has no clock sets 0 and puts it back. */
+static uint32_t g_utc = 1789819440u;
 static uint32_t t_utc(void *ctx) { (void)ctx; return g_utc; }
+static bool g_tz_known;
+static int32_t g_tz_off;
+static int32_t t_tz(void *ctx, bool *known)
+{
+    (void)ctx;
+    if (known) *known = g_tz_known;
+    return g_tz_known ? g_tz_off : 0;
+}
 
 static bool t_nick(void *ctx, const char *call, char *out, int cap)
 {
@@ -134,6 +146,7 @@ static void node_hears(const uint8_t *frame, int len)
     e->request_id = d.request_id;
     e->reply_id = d.reply_id;
     e->emoji = d.emoji;
+    e->bitfield = d.has_bitfield ? d.bitfield : 0;
     if (d.portnum == MT_PORT_TEXT) {
         memcpy(e->text, d.payload, (size_t)d.payload_len);
         e->text[d.payload_len] = 0;
@@ -155,6 +168,13 @@ static bool t_air(void *ctx, const uint8_t *frame, int len, int prio)
     for (int i = 0; i < NB; i++)
         if (i != who) mt_mesh_on_frame(&g_b[i], frame, len, -90, 5);
     return true;
+}
+
+/* A case that starts a fresh hour: the bridge's budget and every sender's share. */
+static void budget_reset(mt_mesh_t *b)
+{
+    memset(b->bcast_min, 0, sizeof b->bcast_min);
+    for (int i = 0; i < MT_VNODES; i++) memset(b->vnodes[i].sent_ms, 0, sizeof b->vnodes[i].sent_ms);
 }
 
 static void tick_all(uint32_t ms)
@@ -260,6 +280,7 @@ void test_mesh(void)
                               .deliver = t_deliver, .stamp = t_stamp,
                               .nick_of = t_nick, .keys_load = t_keys_load,
                               .keys_save = t_keys_save, .utc_now = t_utc,
+                              .tz_offset = t_tz,
                               .vnodes_load = t_vnodes_load,
                               .vnodes_save = t_vnodes_save,
                               .ctx = (void *)(intptr_t)i };
@@ -299,7 +320,7 @@ void test_mesh(void)
     CHECK(a >= 0 && b >= 0);
     if (a >= 0 && b >= 0) {
         CHECK(strstr(g_dl[a].wire, "t:message f:MT12345678 ts:2026-09-19_12:04:00") == g_dl[a].wire);
-        CHECK(!strstr(g_dl[a].wire, "scope:"));
+        CHECK(strstr(g_dl[a].wire, " scope:regional "));
         CHECK(strstr(g_dl[a].wire, "via:X3AAAA") && strstr(g_dl[b].wire, "via:X3BBBB"));
         CHECK(!g_dl[a].sign);
         char ia[7], ib[7];
@@ -313,16 +334,18 @@ void test_mesh(void)
     CHECK(g_b[0].st.relay_cancelled + g_b[1].st.relay_cancelled - c0 == 1);
     (void)hid;
 
-    /* 3. Without OK to MQTT the translation stays off the internet. */
+    /* 3. With or without OK to MQTT, the channel's talk is the Regional
+     *    room's: regional never reaches the internet, so the consent is
+     *    honoured either way (9.11.5). */
     g_ndl = 0;
     n_send(MT_BROADCAST, MT_PORT_TEXT, "private", 7, false, 0, 0, 0, false);
-    CHECK(find_dl("scope:local", 0) >= 0);
+    CHECK(find_dl("scope:regional", 0) >= 0 && find_dl("m:private", 0) >= 0);
     tick_all(12000);
 
     /* 4. An XPRS broadcast reaches both bridges; one frame goes out, from
      *    the author's virtual node, preceded by that node's NodeInfo. */
     g_nheard = 0;
-    const char *xb = "t:message f:X1QZ3N ts:2026-09-19_12:05:00 m:hi from xprs";
+    const char *xb = "t:message f:X1QZ3N ts:2026-09-19_12:05:00 scope:regional m:hi from xprs";
     for (int i = 0; i < NB; i++) mt_mesh_on_xprs(&g_b[i], xb, (int)strlen(xb), MT_XPRS_HEARD);
     tick_all(6000);
     int ht = find_heard_text("hi from xprs");
@@ -351,7 +374,7 @@ void test_mesh(void)
     char xid[7];
     xprs_id_of(xb, (int)strlen(xb), xid);
     char want[96];
-    snprintf(want, sizeof want, "t:reaction f:MT12345678 ts:2026-09-19_12:04:00 r:%s", xid);
+    snprintf(want, sizeof want, "t:reaction f:MT12345678 ts:2026-09-19_12:04:00 scope:regional r:%s", xid);
     CHECK(find_dl(want, 0) >= 0);
     CHECK(find_dl("add:like", 0) >= 0);
     tick_all(12000);
@@ -446,9 +469,9 @@ void test_mesh(void)
     tick_all(3000);
     CHECK(find_heard_text("just here") < 0);
     uint32_t capped = g_b[0].st.bcast_capped;
-    const char *c1 = "t:message f:X1QZ3N ts:2026-09-19_12:10:01 m:one";
-    const char *c2 = "t:message f:X1QZ3N ts:2026-09-19_12:10:02 m:two";
-    const char *c3 = "t:message f:X1QZ3N ts:2026-09-19_12:10:03 m:three";
+    const char *c1 = "t:message f:X1QZ3N ts:2026-09-19_12:10:01 scope:regional m:one";
+    const char *c2 = "t:message f:X1QZ3N ts:2026-09-19_12:10:02 scope:regional m:two";
+    const char *c3 = "t:message f:X1QZ3N ts:2026-09-19_12:10:03 scope:regional m:three";
     mt_mesh_on_xprs(&g_b[0], c1, (int)strlen(c1), MT_XPRS_HEARD);
     mt_mesh_on_xprs(&g_b[0], c2, (int)strlen(c2), MT_XPRS_HEARD);
     mt_mesh_on_xprs(&g_b[0], c3, (int)strlen(c3), MT_XPRS_HEARD);
@@ -522,16 +545,98 @@ void test_mesh(void)
      *     one a minute old is. 2026-09-19_12:04:00 is 1789819440. */
     {
         g_utc = 1789819440u + 3600u;
-        memset(g_b[0].bcast_min, 0, sizeof g_b[0].bcast_min);   /* cap: case 10 */
+        budget_reset(&g_b[0]);   /* cap: case 10 */
         g_nheard = 0;
-        const char *old1 = "t:message f:X1QZ3N ts:2026-09-19_12:04:00 m:an hour ago";
-        const char *new1 = "t:message f:X1QZ3N ts:2026-09-19_13:03:00 m:a minute ago";
+        uint32_t stale0 = g_b[0].st.stale;
+        const char *old1 = "t:message f:X1QZ3N ts:2026-09-19_12:04:00 scope:regional m:an hour ago";
+        const char *new1 = "t:message f:X1QZ3N ts:2026-09-19_13:03:00 scope:regional m:a minute ago";
         mt_mesh_on_xprs(&g_b[0], old1, (int)strlen(old1), MT_XPRS_HEARD);
         mt_mesh_on_xprs(&g_b[0], new1, (int)strlen(new1), MT_XPRS_HEARD);
         tick_all(6000);
         CHECK(find_heard_text("an hour ago") < 0);
         CHECK(find_heard_text("a minute ago") >= 0);
+        CHECK(g_b[0].st.stale == stale0 + 1);
+        g_utc = 1789819440u;
+    }
+
+    /* 18. No clock, nothing heard crosses: the bearers replay old packets
+     *     and the bridge could not tell them from news. The station's own
+     *     user's words still go: they are new by definition. */
+    {
         g_utc = 0;
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        uint32_t nc = g_b[0].st.no_clock;
+        const char *h1 = "t:message f:X1QZ3N ts:2026-09-19_13:05:00 scope:regional m:heard without a clock";
+        const char *o1 = "t:message f:X1QZ3N ts:2026-09-19_13:05:30 scope:regional m:typed without a clock";
+        mt_mesh_on_xprs(&g_b[0], h1, (int)strlen(h1), MT_XPRS_HEARD);
+        mt_mesh_on_xprs(&g_b[0], o1, (int)strlen(o1), MT_XPRS_OWN);
+        tick_all(6000);
+        CHECK(find_heard_text("heard without a clock") < 0);
+        CHECK(find_heard_text("typed without a clock") >= 0);
+        CHECK(g_b[0].st.no_clock == nc + 1);
+        g_utc = 1789819440u;
+    }
+
+    /* 19. Just after boot nothing heard crosses either, for the same
+     *     reason; twenty seconds later it does. */
+    {
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        g_b[0].boot_ms = g_now;                  /* as if it had just started */
+        g_utc = 1789819440u + 3660u;             /* 13:05:00 */
+        uint32_t st = g_b[0].st.settling;
+        const char *s1 = "t:message f:X1QZ3N ts:2026-09-19_13:05:00 scope:regional m:too soon";
+        mt_mesh_on_xprs(&g_b[0], s1, (int)strlen(s1), MT_XPRS_HEARD);
+        CHECK(g_b[0].st.settling == st + 1);
+        tick_all(21000);
+        const char *s2 = "t:message f:X1QZ3N ts:2026-09-19_13:05:10 scope:regional m:settled";
+        mt_mesh_on_xprs(&g_b[0], s2, (int)strlen(s2), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("too soon") < 0);
+        CHECK(find_heard_text("settled") >= 0);
+        g_utc = 1789819440u;
+    }
+
+    /* 20. A text that travelled says when it was written, because the
+     *     Meshtastic frame cannot: ten minutes old crosses with its time in
+     *     front -- UTC when the station knows no zone, local when it does,
+     *     and with the day when that is not the reader's today. */
+    {
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        g_utc = 1789819440u + 3600u;             /* 13:04:00 UTC */
+        g_tz_known = false;
+        uint32_t dated0 = g_b[0].st.dated;
+        const char *t1 = "t:message f:X1QZ3N ts:2026-09-19_12:54:00 scope:regional m:ten minutes ago";
+        mt_mesh_on_xprs(&g_b[0], t1, (int)strlen(t1), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("[12:54Z] ten minutes ago") >= 0);
+        g_tz_known = true;
+        g_tz_off = 3600;                         /* +01:00 */
+        budget_reset(&g_b[0]);
+        const char *t2 = "t:message f:X1QZ3N ts:2026-09-19_12:55:00 scope:regional m:nine minutes ago";
+        mt_mesh_on_xprs(&g_b[0], t2, (int)strlen(t2), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("[13:55] nine minutes ago") >= 0);
+        /* 23:10 UTC is ten past midnight in the station's zone: a text
+         * from 22:55 UTC was written yesterday, local time. */
+        g_utc = 1789819440u + 39960u;            /* 23:10:00 UTC */
+        budget_reset(&g_b[0]);
+        const char *t3 = "t:message f:X1QZ3N ts:2026-09-19_22:55:00 scope:regional m:before midnight";
+        mt_mesh_on_xprs(&g_b[0], t3, (int)strlen(t3), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("[09-19 23:55] before midnight") >= 0);
+        CHECK(g_b[0].st.dated == dated0 + 3);
+        /* A minute old carries nothing. */
+        budget_reset(&g_b[0]);
+        const char *t4 = "t:message f:X1QZ3N ts:2026-09-19_23:09:00 scope:regional m:just now";
+        mt_mesh_on_xprs(&g_b[0], t4, (int)strlen(t4), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("just now") >= 0);
+        CHECK(g_b[0].st.dated == dated0 + 3);
+        g_utc = 1789819440u;
+        g_tz_known = false;
     }
 
     /* 14. A DM to a node whose key nobody has heard: asked for, and held. */
@@ -645,6 +750,48 @@ void test_mesh(void)
         tick_all(15000);                    /* behind its NodeInfo */
         CHECK(find_heard_text("to a node we hear") >= 0);
         CHECK(g_b[1].st.dm_not_here == left + 1);
+    }
+
+    /* 21. Only the Regional room goes onto the channel (9.11.3): a global
+     *     broadcast (the default) and a country-scoped one stay off it,
+     *     counted; a regional one crosses, and never marked OK to MQTT. */
+    {
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        uint32_t nr = g_b[0].st.not_regional;
+        const char *gl = "t:message f:X1QZ3N ts:2026-09-19_12:04:30 m:to the whole world";
+        const char *pt = "t:message f:X1QZ3N ts:2026-09-19_12:04:31 scope:PT m:to the country";
+        const char *rg = "t:message f:X1QZ3N ts:2026-09-19_12:04:32 scope:regional m:to the valley";
+        mt_mesh_on_xprs(&g_b[0], gl, (int)strlen(gl), MT_XPRS_HEARD);
+        mt_mesh_on_xprs(&g_b[0], pt, (int)strlen(pt), MT_XPRS_HEARD);
+        mt_mesh_on_xprs(&g_b[0], rg, (int)strlen(rg), MT_XPRS_HEARD);
+        tick_all(6000);
+        CHECK(find_heard_text("to the whole world") < 0);
+        CHECK(find_heard_text("to the country") < 0);
+        int rv = find_heard_text("to the valley");
+        CHECK(rv >= 0);
+        if (rv >= 0) CHECK(!(g_heard[rv].bitfield & MT_BITFIELD_OK_TO_MQTT));
+        CHECK(g_b[0].st.not_regional == nr + 2);
+    }
+
+    /* 22. One sender's share: four an hour, the fifth waits for the hour
+     *     to turn, while the bridge's own budget still has room. */
+    {
+        uint16_t hour = g_b[0].cfg.bcast_per_hour;
+        g_b[0].cfg.bcast_per_hour = 12;
+        budget_reset(&g_b[0]);
+        g_nheard = 0;
+        uint32_t sc0 = g_b[0].st.sender_capped;
+        char w[120];
+        for (int i = 1; i <= 5; i++) {
+            snprintf(w, sizeof w, "t:message f:X1QZ3N ts:2026-09-19_12:04:%02d scope:regional m:share %d", 40 + i, i);
+            mt_mesh_on_xprs(&g_b[0], w, (int)strlen(w), MT_XPRS_HEARD);
+        }
+        tick_all(12000);
+        CHECK(find_heard_text("share 4") >= 0);
+        CHECK(find_heard_text("share 5") < 0);
+        CHECK(g_b[0].st.sender_capped == sc0 + 1);
+        g_b[0].cfg.bcast_per_hour = hour;
     }
 
     printf("mt_mesh: %u frames heard, %u relayed, %u cancelled, %u texts in, %u out\n",

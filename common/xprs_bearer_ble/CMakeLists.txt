@@ -9,5 +9,5 @@ idf_component_register(
     SRCS "xprsble.c"
     INCLUDE_DIRS "."
     REQUIRES bt esp_timer log
-             xprs_bearer xprs_codec
+             xprs_bearer xprs_codec xprs_common
              tinynimble)

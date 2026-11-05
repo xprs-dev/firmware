@@ -30,6 +30,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "rns.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +109,20 @@ bool xprsrns_can_address(const char *callsign);
 /** How many peers we can currently address. */
 int xprsrns_peer_count(void);
 
+/* ── The bulk lane (XPRS.md 11.2): what xprs_fwfetch needs of the uplink ── */
+
+/** Packets for a link this station opened: everything addressed to a link
+ *  id, and every LRPROOF. Called on the uplink's task. */
+void xprsrns_set_link_cb(void (*cb)(const rns_packet_t *p));
+/** One raw Reticulum packet onto the uplink (a link request, link data). */
+bool xprsrns_send_packet(const uint8_t *pkt, size_t len);
+/** A peer's `xprs/files` route: destination, full public key, and the
+ *  transport node to go through when it is not a neighbour. Any output may
+ *  be NULL; false when the peer is unknown. */
+bool xprsrns_peer_route(const char *call, uint8_t dest[RNS_HASH_LEN],
+                        uint8_t pub[RNS_PUB_LEN], uint8_t next_hop[RNS_HASH_LEN],
+                        bool *have_hop);
+
 /** Counters for the addressed lane: packets out, packets in, sends refused
  *  for want of a known destination, and peers currently addressable. */
 void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx, uint32_t *no_peer,
@@ -174,6 +189,13 @@ static inline bool xprsrns_send_to(const char *c, const char *wire, int len)
 { (void)c; (void)wire; (void)len; return false; }
 static inline bool xprsrns_can_address(const char *c) { (void)c; return false; }
 static inline int xprsrns_peer_count(void) { return 0; }
+static inline void xprsrns_set_link_cb(void (*cb)(const rns_packet_t *p)) { (void)cb; }
+static inline bool xprsrns_send_packet(const uint8_t *pkt, size_t len)
+{ (void)pkt; (void)len; return false; }
+static inline bool xprsrns_peer_route(const char *call, uint8_t dest[RNS_HASH_LEN],
+                                      uint8_t pub[RNS_PUB_LEN], uint8_t next_hop[RNS_HASH_LEN],
+                                      bool *have_hop)
+{ (void)call; (void)dest; (void)pub; (void)next_hop; (void)have_hop; return false; }
 static inline void xprsrns_addressed_stats(uint32_t *tx, uint32_t *rx,
                                            uint32_t *np, int *peers)
 { if (tx) *tx = 0; if (rx) *rx = 0; if (np) *np = 0; if (peers) *peers = 0; }

@@ -252,6 +252,25 @@ static bool bcast_take(mt_mesh_t *m, uint32_t now)
     return true;
 }
 
+/* One sender's share of the hour (MT_SENDER_PER_HOUR): has this one spent
+ * it? [note] records a broadcast that is going out. */
+static bool sender_spent(const mt_vnode_t *v, uint32_t now)
+{
+    int recent = 0;
+    for (int i = 0; i < MT_SENDER_PER_HOUR; i++)
+        if (v->sent_ms[i] && since(now, v->sent_ms[i]) < 3600000) recent++;
+    return recent >= MT_SENDER_PER_HOUR;
+}
+static void sender_note(mt_vnode_t *v, uint32_t now)
+{
+    int slot = 0;
+    for (int i = 0; i < MT_SENDER_PER_HOUR; i++) {
+        if (!v->sent_ms[i]) { slot = i; break; }
+        if (since(v->sent_ms[slot], v->sent_ms[i]) > 0) slot = i;   /* oldest */
+    }
+    v->sent_ms[slot] = now ? now : 1;
+}
+
 /* ── The transmit queue ───────────────────────────────────────────────── */
 
 static bool q_push(mt_mesh_t *m, const uint8_t *frame, int len, int prio,
@@ -481,7 +500,11 @@ static int stamp(mt_mesh_t *m, char *out, int cap)
 /* One wire to the station. */
 static void deliver(mt_mesh_t *m, const char *wire, int len, bool sign)
 {
-    if (m->ops.deliver) m->ops.deliver(m->ops.ctx, wire, len, sign);
+    if (!m->ops.deliver) return;
+    /* A receipt is ours; a translation carries the frame's own reading. */
+    m->ops.deliver(m->ops.ctx, wire, len, sign,
+                   sign ? 0 : m->rx_rssi, sign ? 0 : m->rx_hops,
+                   sign ? "" : m->rx_relay);
 }
 
 /* Is [t] one of the two tapbacks XPRS has a word for? (section 28 assigns
@@ -503,9 +526,15 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     mt_call_of_node(h->from, from, sizeof from);
     char ts[40];
     int tn = stamp(m, ts, sizeof ts);
-    /* No consent to the internet without the flag the Meshtastic user set:
-     * scope:local keeps it on the short-range bearers (XPRS.md 9.11.1). */
-    bool local = !(d->has_bitfield && (d->bitfield & MT_BITFIELD_OK_TO_MQTT));
+    /* The public channel is a regional bearer (XPRS.md 9.11.5): what is
+     * said on it lands in the Regional room whatever its sender chose about
+     * the internet -- regional never reaches the internet, so Meshtastic's
+     * "OK to MQTT" consent is honoured either way, and the valley's talk
+     * does not become the conversation that travels. A direct message is for
+     * one callsign wherever it is: it travels when the sender allowed the
+     * internet, and stays on the air when not. */
+    bool consent = d->has_bitfield && (d->bitfield & MT_BITFIELD_OK_TO_MQTT);
+    const char *scope = (dst && consent) ? "" : " scope:regional";
     const char *rx = idmap_xid(m, d->reply_id);
     char env[160];
     int en;
@@ -515,7 +544,7 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
         en = snprintf(env, sizeof env,
                       "t:reaction f:%s%s%s%s%.*s%s r:%s zmid:%08x%08x via:%s add:like",
                       from, dst ? " d:" : "", dst ? dst : "", tn ? " " : "",
-                      tn, ts, local ? " scope:local" : "", rx,
+                      tn, ts, scope, rx,
                       (unsigned)h->from, (unsigned)h->id, m->call);
         if (en > 0 && en <= XPRS_MAX_WIRE) {
             deliver(m, env, en, false);
@@ -540,7 +569,7 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     if (rx) snprintf(rpart, sizeof rpart, " r:%s", rx);
     en = snprintf(env, sizeof env, "t:message f:%s%s%s%s%.*s%s%s zmid:%08x%08x",
                   from, dst ? " d:" : "", dst ? dst : "", tn ? " " : "", tn, ts,
-                  local ? " scope:local" : "", rpart,
+                  scope, rpart,
                   (unsigned)h->from, (unsigned)h->id);
     if (en <= 0 || en >= (int)sizeof env) return;
     char via[24];
@@ -586,6 +615,7 @@ static void text_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
 static void identity_in(mt_mesh_t *m, const mt_hdr_t *h, mt_node_t *nd,
                         const mt_user_t *u, bool ok_to_mqtt)
 {
+    (void)ok_to_mqtt;      /* a name is the channel's: regional either way */
     uint32_t now = m->ops.now_ms();
     bool changed = strcmp(nd->long_name, u->long_name) != 0;
     snprintf(nd->long_name, sizeof nd->long_name, "%s", u->long_name);
@@ -603,7 +633,7 @@ static void identity_in(mt_mesh_t *m, const mt_hdr_t *h, mt_node_t *nd,
     int wl = snprintf(m->wire, sizeof m->wire,
                       "t:identity f:%s%s%.*s%s nick:%s zmid:%08x%08x via:%s",
                       from, tn ? " " : "", tn, ts,
-                      ok_to_mqtt ? "" : " scope:local", nick,
+                      " scope:regional", nick,
                       (unsigned)h->from, (unsigned)h->id, m->call);
     if (wl > 0 && wl <= XPRS_MAX_WIRE) {
         deliver(m, m->wire, wl, false);
@@ -658,6 +688,11 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
         nd->heard_ms = now ? now : 1;
         nd->snr = (int8_t)snr;
         if (nd->xprs) from_ours = true;
+        if (!nd->xprs && m->ops.heard) {
+            char c[12];
+            mt_call_of_node(h->from, c, sizeof c);
+            m->ops.heard(m->ops.ctx, c, m->rx_rssi, m->rx_hops, m->rx_relay);
+        }
     }
 
     switch (d->portnum) {
@@ -753,13 +788,39 @@ static void decoded_in(mt_mesh_t *m, const mt_hdr_t *h, const mt_data_t *d,
     }
 }
 
+/* The repeater that aired a relayed copy, when the header's relay byte
+ * names exactly one node we know. That repeater transmitted and we heard
+ * it: a direct sighting at this signal, said through the heard hook. */
+static void relay_name(mt_mesh_t *m, uint8_t byte, int rssi)
+{
+    if (!byte) return;                       /* older firmware: none */
+    const mt_node_t *hit = NULL;
+    for (int i = 0; i < MT_NODES; i++) {
+        const mt_node_t *nd = &m->nodes[i];
+        if (!nd->heard_ms || nd->xprs || (uint8_t)nd->num != byte) continue;
+        if (hit) return;                     /* two candidates: say nothing */
+        hit = nd;
+    }
+    if (!hit) return;
+    mt_call_of_node(hit->num, m->rx_relay, sizeof m->rx_relay);
+    if (m->ops.heard) m->ops.heard(m->ops.ctx, m->rx_relay, rssi, 0, "");
+}
+
 void mt_mesh_on_frame(mt_mesh_t *m, const uint8_t *frame, int len, int rssi,
                       int snr)
 {
-    (void)rssi;
     mt_hdr_t h;
     if (!m || !mt_hdr_parse(frame, len, &h) || !h.from) return;
     m->st.rx_frames++;
+    /* What a translation of this frame may say about the node's distance.
+     * The signal is what this radio measured: the node's own when nothing
+     * relayed the frame, the last repeater's when something did -- still a
+     * distance, to whoever it was heard from. A frame from firmware too old
+     * to write hop_start reads as direct. */
+    m->rx_hops = h.hop_start > h.hop_limit ? h.hop_start - h.hop_limit : 0;
+    m->rx_rssi = rssi;
+    m->rx_relay[0] = 0;
+    if (m->rx_hops) relay_name(m, h.relay_node, rssi);
     uint32_t now = m->ops.now_ms();
 
     if (seen_has(m, h.from, h.id, now)) {
@@ -906,6 +967,41 @@ static uint32_t ts_epoch(const char *v, int n)
     return (uint32_t)(days * 86400L + f[3] * 3600L + f[4] * 60L + f[5]);
 }
 
+/* Seconds since 1970 to month, day, hour and minute: ts_epoch backwards
+ * (the same civil-from-days algorithm). */
+static void civil(uint32_t e, int *mo, int *d, int *hh, int *mm)
+{
+    uint32_t rem = e % 86400u;
+    *hh = (int)(rem / 3600u);
+    *mm = (int)(rem % 3600u / 60u);
+    long z = (long)(e / 86400u) + 719468;
+    long era = z / 146097;
+    long doe = z - era * 146097;
+    long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    long mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *mo = (int)(mp < 10 ? mp + 3 : mp - 9);
+}
+
+/* "[14:26] " for a text written at [t], in the station's local time when it
+ * knows its zone and "[14:26Z] " in UTC when it does not, with the day in
+ * front when it is not the reader's today: "[10-23 14:26] ". Returns the
+ * length written. */
+static int date_prefix(mt_mesh_t *m, uint32_t t, uint32_t utc, char *out, int cap)
+{
+    bool known = false;
+    int32_t off = m->ops.tz_offset ? m->ops.tz_offset(m->ops.ctx, &known) : 0;
+    if (!known) off = 0;
+    uint32_t lt = t + (uint32_t)off, ln = utc + (uint32_t)off;
+    int mo, d, hh, mm;
+    civil(lt, &mo, &d, &hh, &mm);
+    if (lt / 86400u != ln / 86400u)
+        return snprintf(out, (size_t)cap, "[%02d-%02d %02d:%02d%s] ", mo, d, hh, mm,
+                        known ? "" : "Z");
+    return snprintf(out, (size_t)cap, "[%02d:%02d%s] ", hh, mm, known ? "" : "Z");
+}
+
 void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
 {
     if (!m || !wire || len <= 0 || len > XPRS_MAX_WIRE) return;
@@ -928,6 +1024,26 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
     bool msg = strcmp(type, "message") == 0;
     bool react = strcmp(type, "reaction") == 0;
     if (!msg && !react) return;
+
+    /* Heard traffic crosses only under a clock, and not in the first moments
+     * after boot. The bearers keep old packets moving (echo carousels, the
+     * archive's replays, BLE digipeats), and a bridge with no clock cannot
+     * tell them from news; what it aired would then reach every Meshtastic
+     * reader dated as the moment it arrived. The station's own user's words
+     * go regardless: a person is waiting, and what they just typed is new. */
+    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
+    if (origin != MT_XPRS_OWN) {
+        if (!utc) {
+            if (m->st.no_clock++ % 50 == 0)
+                mlog(m, "mt: no clock -- heard traffic is not mirrored (%lu so far)",
+                     (unsigned long)m->st.no_clock);
+            return;
+        }
+        if (since(now, m->boot_ms) < (int32_t)MT_MIRROR_SETTLE_MS) {
+            m->st.settling++;
+            return;
+        }
+    }
 
     const char *dv;
     int dn = 0;
@@ -954,11 +1070,16 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
     /* Or old news, which after a restart this bridge cannot tell from new. */
     const char *tv;
     int tn2;
-    uint32_t utc = m->ops.utc_now ? m->ops.utc_now(m->ops.ctx) : 0;
-    if (utc && get(p, "ts", &tv, &tn2)) {
-        uint32_t t = ts_epoch(tv, tn2);
+    uint32_t written = 0;             /* the sender's ts:, when it has one */
+    if (get(p, "ts", &tv, &tn2)) written = ts_epoch(tv, tn2);
+    if (utc && written && utc > written) {
         uint32_t fresh = to == MT_BROADCAST ? MT_BCAST_FRESH_S : MT_DM_FRESH_S;
-        if (t && utc > t && utc - t > fresh) return;
+        if (utc - written > fresh) {
+            if (m->st.stale++ % 50 == 0)
+                mlog(m, "mt: %s is %lu s old -- not mirrored (%lu so far)", xid,
+                     (unsigned long)(utc - written), (unsigned long)m->st.stale);
+            return;
+        }
     }
 
     if (xprs_get(p, "x", &vn)) {
@@ -976,19 +1097,32 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
         }
         return;
     }
-    /* XPRS.md 9.11: this network is a radio band, a regional bearer, so a
-     * local packet does not go on it and neither does one whose scope word
-     * this station does not know. Regional and global do. */
-    if (!xprs_reach_admits(xprs_scope_reach(p), XPRS_REACH_REGIONAL)) return;
+    /* XPRS.md 9.11.3/9.11.5: this network's public channel is a regional
+     * bearer that it shares with everybody in the valley, so it gets the
+     * Regional room and nothing wider. A global packet is the conversation
+     * that travels the internet, and does not belong on one valley's air;
+     * a local one does not go on a radio band; a scope word this station
+     * does not know is a reason not to relay. A direct message is for one
+     * node this bridge hears, wherever its author stood: it crosses unless
+     * it was local. */
+    xprs_reach_t reach = xprs_scope_reach(p);
+    if (to == MT_BROADCAST) {
+        if (reach != XPRS_REACH_REGIONAL) {
+            m->st.not_regional++;
+            return;
+        }
+    } else if (!xprs_reach_admits(reach, XPRS_REACH_REGIONAL)) {
+        return;
+    }
 
     mt_data_t d = { 0 };
     d.portnum = MT_PORT_TEXT;
-    const char *sc;
-    int scn;
-    bool global = !get(p, "scope", &sc, &scn) ||
-                  (scn == 6 && memcmp(sc, "global", 6) == 0);
+    /* A broadcast is never marked fit for MQTT: regional never reaches the
+     * internet (9.11.1), and Meshtastic's uplinking nodes honour the bit. A
+     * direct message that was global may go wherever its recipient is. */
     d.has_bitfield = true;
-    d.bitfield = global ? MT_BITFIELD_OK_TO_MQTT : 0;
+    d.bitfield = (to != MT_BROADCAST && reach == XPRS_REACH_GLOBAL)
+                 ? MT_BITFIELD_OK_TO_MQTT : 0;
     const char *rv;
     int rn;
     if (get(p, "r", &rv, &rn)) d.reply_id = idmap_mesh(m, rv, rn);
@@ -1007,16 +1141,37 @@ void mt_mesh_on_xprs(mt_mesh_t *m, const char *wire, int len, int origin)
         const char *mv;
         int mn;
         if (!get(p, "m", &mv, &mn)) return;
-        /* Room for the text in one frame: 239 bytes after the header, less
-         * the Data's own fields (at most 17 here). */
-        if (mn > 220) mn = 220;
-        d.payload = (const uint8_t *)mv;
-        d.payload_len = mn;
+        /* A Meshtastic frame has no field for when a text was written, so
+         * its reader sees the moment it reached their radio. A text that
+         * travelled -- carried, relayed from far -- says its own time
+         * first, so that "see you at the quay" is not read two hours late
+         * as news. */
+        int pl = 0;
+        if (utc && written && utc > written && utc - written > MT_DATE_AGE_S) {
+            pl = date_prefix(m, written, utc, m->payload, sizeof m->payload);
+            m->st.dated++;
+        }
+        if (mn > MT_TEXT_MAX - pl) mn = MT_TEXT_MAX - pl;
+        if (pl > 0) {
+            memcpy(m->payload + pl, mv, (size_t)mn);
+            d.payload = (const uint8_t *)m->payload;
+            d.payload_len = pl + mn;
+        } else {
+            d.payload = (const uint8_t *)mv;
+            d.payload_len = mn;
+        }
     }
 
-    if (to == MT_BROADCAST && !bcast_take(m, now)) {
-        m->st.bcast_capped++;
-        return;
+    if (to == MT_BROADCAST) {
+        if (sender_spent(sv, now)) {
+            m->st.sender_capped++;
+            return;
+        }
+        if (!bcast_take(m, now)) {
+            m->st.bcast_capped++;
+            return;
+        }
+        sender_note(sv, now);
     }
 
     int tl = xprs_signed_text(p, m->text, sizeof m->text);

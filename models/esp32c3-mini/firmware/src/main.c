@@ -1,3 +1,4 @@
+#ifndef XPRS_XWIFI_RELAY   /* the relay build has its own app_main (xwifi_relay.c) */
 /*
  * An XPRS station on an ESP32-C3 mini board.
  *
@@ -101,3 +102,4 @@ void app_main(void)
 {
     xapp_run(&k_board);
 }
+#endif /* !XPRS_XWIFI_RELAY */
