@@ -50,9 +50,9 @@
 "id": "6ad6e3"
 },
 {
-"wire": "t:message f:MTA1B2C3D4 ts:2026-09-19_12:04:00 zmid:a1b2c3d44683c668 via:X3DCK0 m:anyone on the XPRS side?",
-"bytes": 105,
-"id": "7ceae7"
+"wire": "t:message f:MTA1B2C3D4 ts:2026-09-19_12:04:00 scope:regional zmid:a1b2c3d44683c668 via:X3DCK0 m:anyone on the XPRS side?",
+"bytes": 120,
+"id": "f92489"
 },
 {
 "wire": "t:message f:X1QZ3N d:MTA1B2C3D4 ts:2026-09-19_12:05:10 m:yes, on the quay",
@@ -160,11 +160,6 @@
 "id": "399227"
 },
 {
-"wire": "t:message f:X1QZ3N d:LISBOA ts:2026-08-08_14:26:40 sig:QPxg^#t7^xDBU$s1pg.d.u^UZ$B0qYj%c.(I[)FY?%WouV6?)^xS[jf,ftorZ=$fRs>JwXM_GfY&bYO@ m:net starts in ten minutes",
-"bytes": 163,
-"id": "399227"
-},
-{
 "wire": "t:message f:X1QZ3N d:X1RD89 ts:2026-08-08_14:26:40 x:pQ4m9xT2vB8kR sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 131,
 "id": "2ed212"
@@ -185,9 +180,9 @@
 "id": "5c2ef9"
 },
 {
-"wire": "t:identity f:MTA1B2C3D4 ts:2026-09-19_12:04:00 scope:local nick:Maria-boat zmid:a1b2c3d41581bdbe via:X3DCK0",
-"bytes": 107,
-"id": "560357"
+"wire": "t:identity f:MTA1B2C3D4 ts:2026-09-19_12:04:00 scope:regional nick:Maria-boat zmid:a1b2c3d41581bdbe via:X3DCK0",
+"bytes": 110,
+"id": "34399a"
 },
 {
 "wire": "t:identity f:X1QZ3N ts:2026-08-08_14:26:40 nick:joao file:nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:sailing the Algarve coast",
@@ -198,6 +193,11 @@
 "wire": "t:identity f:X1QZ3N ts:2026-08-09_09:00:00 nick:joao file:- sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:-",
 "bytes": null,
 "id": "37f564"
+},
+{
+"wire": "t:identity f:X3PTZM ts:2026-11-05_17:00:00 nick:XPRS-server file:- url:https://178-202-105-29.nip.io/ sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:-",
+"bytes": null,
+"id": "4a7829"
 },
 {
 "wire": "t:identity f:CT1ABC ts:2026-08-08_14:26:40 k:npub1qz3n7fu9j9uenmyva7ha6x9eqwymytv2847ccv4vxdmn45y50q7h7k5f sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
@@ -355,34 +355,14 @@
 "id": "e4e94c"
 },
 {
-"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:12:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meet at six",
-"bytes": 129,
-"id": "3f8923"
+"wire": "t:message f:X1QZ3N d:X1RD89 ts:2026-08-08_14:31:02 edit:766d3e sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:are you still in Athens in October?",
+"bytes": 165,
+"id": "158264"
 },
 {
-"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:20:41 edit:3f8923 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meet at seven",
-"bytes": 143,
-"id": "954dc7"
-},
-{
-"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:31:07 edit:3f8923 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:meet at seven, bring the keys",
-"bytes": 159,
-"id": "03a582"
-},
-{
-"wire": "t:warning f:X1QZ3N pos:38.7071,-9.1355 rad:300m kind:flood sev:watch scope:local ts:2026-08-08_14:26:40 until:2026-08-15_14:26:40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:the lower car park floods at high tide",
-"bytes": 235,
-"id": "b852eb"
-},
-{
-"wire": "t:warning f:X1QZ3N pos:38.7071,-9.1355 rad:400m kind:flood sev:danger scope:local ts:2026-08-08_16:05:00 until:2026-08-15_14:26:40 edit:b852eb sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:the lower car park floods at high tide",
-"bytes": 248,
-"id": "53a8d9"
-},
-{
-"wire": "t:message f:X1ARKL d:X16JK8 ts:2026-10-15_09:40:00 r:3f8923 remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"wire": "t:message f:X1QZ3N d:X1RD89 ts:2026-08-08_14:35:40 r:766d3e remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 139,
-"id": "05119f"
+"id": "270b05"
 },
 {
 "wire": "t:message f:X1QZ3N d:X1RD89 ts:2026-08-08_14:26:40 q:ack,read m:did you get the keys?",
@@ -565,9 +545,9 @@
 "id": "b42027"
 },
 {
-"wire": "t:message f:MTA1B2C3D4 d:X1QZ3N ts:2026-09-19_12:06:00 scope:local r:7108b6 zmid:a1b2c3d4bc4c2495 via:X3DCK0 m:thanks, see you there",
-"bytes": 132,
-"id": "282e61"
+"wire": "t:message f:MTA1B2C3D4 d:X1QZ3N ts:2026-09-19_12:06:00 scope:regional r:7108b6 zmid:a1b2c3d4bc4c2495 via:X3DCK0 m:thanks, see you there",
+"bytes": 135,
+"id": "09f1c8"
 },
 {
 "wire": "t:mailbox f:X1QZ3N ts:2026-08-08_14:26:40 hold:X3RLY7,X32DVA sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
@@ -675,14 +655,49 @@
 "id": "7f83f8"
 },
 {
-"wire": "t:moderate f:X32DVA d:X5A3F2 ts:2026-10-15_10:02:11 edit:49e3cd sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:[number removed by a moderator]",
-"bytes": 162,
-"id": "12faed"
+"wire": "t:moderate f:X32DVA d:X5A3F2 ts:2026-08-08_15:02:11 edit:89a9c8 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:[address removed by a moderator]",
+"bytes": 163,
+"id": "1f802f"
 },
 {
-"wire": "t:moderate f:X32DVA d:X5A3F2 ts:2026-10-15_10:05:30 r:49e3cd remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"wire": "t:moderate f:X32DVA d:X5A3F2 ts:2026-08-08_15:02:40 r:89a9c8 remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 140,
-"id": "fb3d03"
+"id": "2454aa"
+},
+{
+"wire": "t:moderate f:X3PTZM d:X3PTZM ts:2026-11-06_10:00:00 grant:X1RD89 role:mod sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 138,
+"id": "784324"
+},
+{
+"wire": "t:moderate f:X1RD89 d:X3PTZM ts:2026-11-06_10:03:12 r:5c0e1a accept:mod sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 136,
+"id": "b5f8a1"
+},
+{
+"wire": "t:moderate f:X1RD89 d:X3PTZM ts:2026-11-06_11:20:00 r:a41f07 remove:message sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 140,
+"id": "d72dca"
+},
+{
+"wire": "t:moderate f:X1RD89 d:X3PTZM ts:2026-11-06_11:20:30 revoke:X1PZ4Q until:2026-11-07_11:20:30 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 156,
+"id": "9c80fa"
+},
+{
+"wire": "t:moderate f:X3PTZM d:X3PTZM ts:2026-11-06_12:00:00 grant:X1PZ4Q sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 129,
+"id": "9ac516"
+},
+{
+"wire": "t:warning f:X1RD89 kind:outage sev:watch ts:2026-11-06_18:00:00 until:2026-11-06_22:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:power cut in block C",
+"bytes": 177,
+"id": "07961c"
+},
+{
+"wire": "t:warning f:X1RD89 ts:2026-11-06_19:10:00 r:3c7e21 remove:warning sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 130,
+"id": "83132d"
 },
 {
 "wire": "t:command f:X1QZ3N d:X3RLY7 ts:2026-08-08_14:26:40 cmd:door-open arg:north sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
@@ -925,9 +940,9 @@
 "id": "6cbbb6"
 },
 {
-"wire": "t:result f:X3RLY7 d:X1QZ3N ts:2026-08-08_14:30:01 r:6cbbb6 code:200 owner:X1QZ3N use:listed first:X1ABCD,X1EFGH serve:relay,archive alerts:owner sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 209,
-"id": "d0b4bd"
+"wire": "t:result f:X3RLY7 d:X1QZ3N ts:2026-08-08_14:30:01 r:6cbbb6 code:200 owner:X1QZ3N use:listed first:X1ABCD,X1EFGH serve:relay,archive sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 196,
+"id": "69664e"
 },
 {
 "wire": "t:request f:X1MB7K d:X3RLY7 ts:2026-08-08_14:31:00 q:policy",
@@ -1010,26 +1025,6 @@
 "id": "411557"
 },
 {
-"wire": "t:command f:X1QZ3N d:X3M4Q8 ts:2026-08-08_14:35:00 cmd:set call:CT1ABC-9 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 137,
-"id": "9dd468"
-},
-{
-"wire": "t:result f:X3M4Q8 d:X1QZ3N ts:2026-08-08_14:35:01 r:9dd468 code:202 wifi:up ip:192.168.1.40 ap:off nick:roof-north zone:+01:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 191,
-"id": "0bba88"
-},
-{
-"wire": "t:identity f:CT1ABC-9 ts:2026-08-08_14:35:12 k:npub1m4q8ce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvd sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 175,
-"id": "826df8"
-},
-{
-"wire": "t:result f:CT1ABC-9 d:X1QZ3N ts:2026-08-08_14:35:13 r:9dd468 code:200 k:npub1m4q8ce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvd wifi:up ip:192.168.1.40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 224,
-"id": "0920eb"
-},
-{
 "wire": "t:command f:X1QZ3N d:X3IDX1 ts:2026-08-17_14:00:00 cmd:history only:X1BOA3 since:2026-08-17_13:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 165,
 "id": "fed792"
@@ -1070,6 +1065,11 @@
 "id": "387766"
 },
 {
+"wire": "t:command f:X3ARC1 d:X3ARC2 ts:2026-11-06_10:00:00 cmd:history kind:mailbox since:2026-11-05_10:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 166,
+"id": "5d0d73"
+},
+{
 "wire": "t:command f:X3ARC1 d:X3ARC2 ts:2026-08-20_08:30:00 cmd:history since:2026-08-20_06:12:44 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": null,
 "id": "8f4ad0"
@@ -1088,6 +1088,11 @@
 "wire": "t:service f:X3RLY7 pos:38.7810,-9.2043 serve:relay,archive,internet,aprs source:solar ts:2026-08-08_14:26:40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
 "bytes": 173,
 "id": "d691e7"
+},
+{
+"wire": "t:service f:X3ARC1 serve:archive,files count:48211 dial:arc1.example.org room:yes ts:2026-11-06_10:00:00 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
+"bytes": 169,
+"id": "7ad72e"
 },
 {
 "wire": "t:channel f:X1QZ3N freq:145.500MHz mode:fm kind:listen since:2026-08-08_18:00:00 until:2026-08-08_22:00:00 ts:2026-08-08_14:26:40",
@@ -1518,16 +1523,6 @@
 "wire": "t:warning f:X3RLY7 ts:2026-08-08_14:26:40 r:9fd8ea remove:warning",
 "bytes": 65,
 "id": "eb992e"
-},
-{
-"wire": "t:info f:X1QZ3N kind:works scope:local ts:2026-08-08_14:26:40 until:2026-09-08_14:26:40 sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK m:the east gate is closed, use the west one",
-"bytes": 196,
-"id": "8a387b"
-},
-{
-"wire": "t:info f:X1QZ3N scope:local ts:2026-08-09_09:00:00 until:2026-09-08_14:26:40 r:8a387b remove:info sig:KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK",
-"bytes": 162,
-"id": "f4ce69"
 },
 {
 "wire": "t:event f:X3RLY7 pos:38.7223,-9.1393 title:tuesday-net kind:net since:2026-08-11_20:00:00 until:2026-08-11_21:00:00 ts:2026-08-08_14:26:40 m:weekly net, all welcome",
