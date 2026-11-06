@@ -2357,22 +2357,39 @@ compare heap, not `RAM:`.
   and the station announced on Reticulum with a 1970 date: see "A
   Reticulum announce needs a set clock" below. The QEMU build keeps time on
   the high-resolution timer alone (`CONFIG_NEWLIB_TIME_SYSCALL_USE_HRT`).
-- The emulated bignum accelerator. About one run in two of the web chat
-  conformance suite (`tools/qemu_c3.sh conformance`) ended in
-  `assert failed: xQueueGiveFromISR queue.c:1367` with the stack inside a
-  signature verification: `mbedtls_ecp_mul` -> `esp_mpi_disable_hardware_hw_op`
-  -> `esp_crypto_mpi_lock_release`, the MPI interrupt path giving the crypto
-  lock from ISR context. Before that was understood it wore other faces:
-  `getchar()` in the UI task aborting in newlib's lock (the same lock
-  family), and silent `TG0WDT_SYS_RST` resets with no panic printed (a task
-  wedged in the accelerator wait; no run ever printed "Task watchdog got
-  triggered"). The QEMU build verifies in software:
-  `CONFIG_MBEDTLS_HARDWARE_MPI=n`, `CONFIG_MBEDTLS_HARDWARE_ECC=n`. Every
-  real board keeps the accelerator. Two further QEMU-only guards stay
-  because they are cheap and each removed a class of noise while this was
-  chased: `console_getc()` returns EOF under `XPRS_QEMU` (the HTTP API is
-  the emulated board's whole keyboard) and the task watchdog is ten minutes
-  there instead of 90 s (a wedge still reboots, an emulator stall does not).
+- **Two things found by the web chat conformance suite
+  (`tools/qemu_c3.sh conformance`), one of them the emulator's.** About
+  one run in two ended in `assert failed: xQueueGiveFromISR queue.c:1367`,
+  the others wedged or reset silently (`TG0WDT_SYS_RST`, nothing printed)
+  at a session proof or a history read right after something was written.
+  The stack of the assert, read in order: `acts_take` (xwc.c) -> `fclose`
+  -> `f_sync` -> `ff_disk_write` -> `wl_erase_range` -> the flash erase
+  -> the assert. The assert is newlib's `lock_release_generic` choosing
+  `xSemaphoreGiveFromISR` for the file's mutex because `xPortInIsrContext()`
+  said so inside a task: after a flash erase under QEMU the interrupt
+  nesting count is wrong. The `getchar()` abort in the UI task ("lock
+  acquire with the CPU reporting interrupt context") is the same fault
+  from the other side. That is the emulator: every real board writes its
+  acts, its chat and its state the same way all day. Not solved here;
+  ruled out on the way, each with three full runs: the emulated bignum
+  accelerator (off, and in polling mode), the API task's stack (10 KB),
+  the console chardev (file, socket, none), the flash image's host cache
+  (`cache=unsafe` stays, it costs nothing), the task watchdog (ten minutes
+  under `XPRS_QEMU` stays: a wedge still reboots, an emulator stall does
+  not), and heap poisoning (comprehensive stays; it found nothing). The
+  engine itself passed the whole suite, 62 of 62 in 85 s, on the runs the
+  fault did not strike (two of eleven), and passes it on the Dart server
+  and in the host test every time.
+- **The one that was ours, found looking:** `xs_group()` in `xprssig.c`
+  hands every task the same `mbedtls_ecp_group`, and mbedtls caches the
+  comb table in `grp->T` on the first multiplication and frees it on the
+  next load, so a session proof verifying on `httpd` while `idx_task`
+  verifies an identity corrupts the table. A few milliseconds' window on
+  the board. Every public `xprssig_*` operation now runs under one
+  recursive mutex (`xs_lock()`, a no-op in the host test).
+- `console_getc()` returns EOF under `XPRS_QEMU`: the HTTP API is the
+  emulated board's whole keyboard, and the emulated UART's `getchar()`
+  was the first place the interrupt-context fault showed.
 - `CONFIG_HEAP_POISONING_COMPREHENSIVE=y`: an overflow aborts at the next
   allocation with the block named, instead of looking like the above.
 - **A change to `sdkconfig.qemu` (or `sdkconfig.defaults`) does nothing

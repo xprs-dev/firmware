@@ -197,6 +197,15 @@ reuse potential.
   description readers, `<board>-<version>.bin` parsing and a dotted version
   compare (`xfolder_version_cmp`). Reuse the version compare wherever a
   version string is ordered; it is numeric, not lexical.
+- **A shared mbedtls object is a lock, not a static (`xs_lock()` in
+  `common/xprs_sig/xprssig.c`)** -- `mbedtls_ecp_group` caches its comb
+  table in `grp->T` on the first multiplication, so one group used from
+  two tasks (a session proof on `httpd`, an identity on `idx_task`)
+  corrupts it; the same goes for any mbedtls context kept as a static.
+  One recursive mutex around every public operation, a no-op under
+  `XPRSSIG_HOST_TEST`. Reuse the shape (static handle, created under a
+  spinlock on first use, recursive so the entry points may call each
+  other) for the next shared crypto or codec context.
 - **Tables allocated at init, read from other tasks (`chat_ensure()`,
   `peer_find()`, `xst_stats_load()`)** -- on the single-core C3 the archiver
   and the bearers are up before `app_main` reaches `xst_init()` and

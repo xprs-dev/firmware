@@ -415,9 +415,38 @@ static void xs_tagged(const char *tag, const uint8_t *m1, size_t n1,
     xs_sha256(buf, n, out);
 }
 
+/* ── one group, one task at a time ───────────────────────────────────── */
+/* xs_group() is shared: mbedtls caches the comb table in grp->T on the
+ * first multiplication and frees it on the next load, so two tasks in
+ * ecp_mul on the same group corrupt it. The httpd task (a session proof,
+ * an act signed by the station) and idx_task (every identity heard) do
+ * overlap; on the emulated C3, whose crypto is slow, the overlap wedged
+ * the board on the first session proof of the conformance suite
+ * (2026-11-06). One recursive mutex around every public operation. */
+#if defined(ESP_PLATFORM)
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+static SemaphoreHandle_t s_xs_lock;
+static StaticSemaphore_t s_xs_lock_buf;
+static portMUX_TYPE      s_xs_lock_mux = portMUX_INITIALIZER_UNLOCKED;
+static void xs_lock(void)
+{
+    if (!s_xs_lock) {
+        portENTER_CRITICAL(&s_xs_lock_mux);
+        if (!s_xs_lock) s_xs_lock = xSemaphoreCreateRecursiveMutexStatic(&s_xs_lock_buf);
+        portEXIT_CRITICAL(&s_xs_lock_mux);
+    }
+    xSemaphoreTakeRecursive(s_xs_lock, portMAX_DELAY);
+}
+static void xs_unlock(void) { xSemaphoreGiveRecursive(s_xs_lock); }
+#else
+static void xs_lock(void) {}
+static void xs_unlock(void) {}
+#endif
+
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
-bool xprssig_public_key(const uint8_t priv[XPRSSIG_KEY_LEN],
+static bool xs_public_key_unlocked(const uint8_t priv[XPRSSIG_KEY_LEN],
                         uint8_t pub_x[XPRSSIG_KEY_LEN])
 {
     if (!priv || !pub_x || !xs_sc_valid(priv)) return false;
@@ -427,7 +456,7 @@ bool xprssig_public_key(const uint8_t priv[XPRSSIG_KEY_LEN],
     return xs_mul_g_add_p(priv, NULL, NULL, pub_x, &y_odd);
 }
 
-bool xprssig_sign(const uint8_t digest[32], const uint8_t priv[XPRSSIG_KEY_LEN],
+static bool xs_sign_unlocked(const uint8_t digest[32], const uint8_t priv[XPRSSIG_KEY_LEN],
                   uint8_t out[XPRSSIG_LEN])
 {
     if (!digest || !priv || !out || !xs_sc_valid(priv)) return false;
@@ -481,7 +510,7 @@ bool xprssig_sign(const uint8_t digest[32], const uint8_t priv[XPRSSIG_KEY_LEN],
     return true;
 }
 
-bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
+static bool xs_verify_unlocked(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
                     const uint8_t pub_x[XPRSSIG_KEY_LEN])
 {
     if (!digest || !sig || !pub_x) return false;
@@ -508,7 +537,7 @@ bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
     return diff == 0;
 }
 
-bool xprssig_bip340_verify(const uint8_t msg[32],
+static bool xs_bip340_verify_unlocked(const uint8_t msg[32],
                            const uint8_t sig[XPRSSIG_BIP340_LEN],
                            const uint8_t pub_x[XPRSSIG_KEY_LEN])
 {
@@ -554,12 +583,57 @@ bool xprssig_generate(uint8_t priv[XPRSSIG_KEY_LEN])
 /* XPRS.md 6.2: the key a sealed body is under is the X coordinate of our
  * scalar times their point. X is the same for P and -P, so lifting the peer
  * with even y costs nothing, and both ends get the same 32 bytes. */
-bool xprssig_ecdh_x(const uint8_t priv[XPRSSIG_KEY_LEN],
+static bool xs_ecdh_x_unlocked(const uint8_t priv[XPRSSIG_KEY_LEN],
                     const uint8_t peer_x[XPRSSIG_KEY_LEN],
                     uint8_t out_x[XPRSSIG_KEY_LEN])
 {
     if (!xs_sc_valid(priv)) return false;
     return xs_mul_p(priv, peer_x, out_x);
+}
+
+
+/* The public entry points: the same bodies, one at a time. */
+bool xprssig_public_key(const uint8_t priv[XPRSSIG_KEY_LEN],
+                        uint8_t pub_x[XPRSSIG_KEY_LEN])
+{
+    xs_lock();
+    bool ok = xs_public_key_unlocked(priv, pub_x);
+    xs_unlock();
+    return ok;
+}
+bool xprssig_sign(const uint8_t digest[32], const uint8_t priv[XPRSSIG_KEY_LEN],
+                  uint8_t out[XPRSSIG_LEN])
+{
+    xs_lock();
+    bool ok = xs_sign_unlocked(digest, priv, out);
+    xs_unlock();
+    return ok;
+}
+bool xprssig_verify(const uint8_t digest[32], const uint8_t sig[XPRSSIG_LEN],
+                    const uint8_t pub_x[XPRSSIG_KEY_LEN])
+{
+    xs_lock();
+    bool ok = xs_verify_unlocked(digest, sig, pub_x);
+    xs_unlock();
+    return ok;
+}
+bool xprssig_bip340_verify(const uint8_t msg[32],
+                           const uint8_t sig[XPRSSIG_BIP340_LEN],
+                           const uint8_t pub_x[XPRSSIG_KEY_LEN])
+{
+    xs_lock();
+    bool ok = xs_bip340_verify_unlocked(msg, sig, pub_x);
+    xs_unlock();
+    return ok;
+}
+bool xprssig_ecdh_x(const uint8_t priv[XPRSSIG_KEY_LEN],
+                    const uint8_t peer_x[XPRSSIG_KEY_LEN],
+                    uint8_t out_x[XPRSSIG_KEY_LEN])
+{
+    xs_lock();
+    bool ok = xs_ecdh_x_unlocked(priv, peer_x, out_x);
+    xs_unlock();
+    return ok;
 }
 
 /* ── base85 (§4.3) ──────────────────────────────────────────────────────── */

@@ -22,10 +22,3 @@ CONFIG_NEWLIB_TIME_SYSCALL_USE_RTC_HRT=n
 # allocation with the corrupted block named, instead of a silent watchdog
 # reset when the heap's own lock spins. The emulated board has the RAM.
 CONFIG_HEAP_POISONING_COMPREHENSIVE=y
-# The emulated bignum accelerator: its interrupt path gave the crypto lock
-# from ISR context and tripped `xQueueGiveFromISR` (queue.c:1367) inside
-# a signature verification, about one run in two of the web chat
-# conformance suite. The emulated board verifies in software; every real
-# board keeps the accelerator.
-CONFIG_MBEDTLS_HARDWARE_MPI=n
-CONFIG_MBEDTLS_HARDWARE_ECC=n
