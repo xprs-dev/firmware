@@ -206,6 +206,11 @@ reuse potential.
   make every reader answer "nothing yet" while the pointer is NULL
   (`s_peers` in xprsrns.c). A new `xprs_big_calloc`'d table takes one of
   the two; a bare `s_table[i]` from another task is the C3's boot panic.
+  The HTTP API is one of those other tasks: it answers `/api/status` seven
+  seconds before `xst_init()` on the C3, and `xst_devices()` read the
+  device table bare until 2026-11-06 (found by the web chat conformance
+  suite's first request). Every public reader in xprs_station.c now opens
+  with `chat_ensure()`; a new one does too.
 - **`common/xprs_fwfetch` (`xfw.c`)** -- a state machine with every outside
   effect injected (sign, send, route, sink, clock, lock), the same shape the
   Dart core uses for routing. Copy the shape for the next unattended duty.
@@ -224,4 +229,7 @@ reuse potential.
   packet signing rule (sig over the line without `sig:`/`via:`, placed
   before `m:`); reuse those three for any tool that signs packets outside
   the app.
+| `xwc` (`common/xprs_webchat`) | the web chat's station API rules in plain C (XPRS.md 10.10): sessions by a signed nonce, an administrator claimed from the network, a `t:moderate` record replayed into rosters (10.4), hosted `X5` rooms with keys the station holds, the alert policy. Host-tested (`test_xwc_host.sh`; `sh test_xwc_host.sh san` for the sanitizers, or `valgrind /tmp/test_xwc` where ASan cannot map its shadow, as on the Pi -- both clean 2026-11-06); the httpd glue is `xprs_api/xapi_wc.c`. Any board that serves the page gets the whole API by linking it; a station with another server reuses the engine behind its own handlers |
+| `xapi_wc_local()` | whether an httpd request's peer is on the station's own network (private IPv4 and IPv6 ranges, v4-mapped too) |
+| the `xapi_gate_fn` on `xprs_api_send_handler` | a hook between "the wire parses" and "air it": refuse (a status and a reason), handle it here, or let it go. The web chat engine is its first user; an owner policy is the next |
 

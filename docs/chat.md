@@ -34,6 +34,17 @@ buffer for every reply, and four clients may be connected.
 
 ## Endpoints
 
+The page's administration (`/api/admin`), moderators, hosted rooms
+(`/api/rooms`), sessions (`/api/session`) and the alert policy are the web
+chat engine, `common/xprs_webchat` (XPRS.md 10.10): plain C, the counterpart
+of the Dart core's `WebChatApi`, with `common/xprs_api/xapi_wc.c` as the
+httpd glue. Its state (the administrator, settings, rooms and their keys) is
+`/idx/wcstate.txt`; the signed acts it replays are `/idx/wcacts.txt`.
+`common/xprs_webchat/test_xwc_host.sh` runs its rules on the host, and the
+webchat repo's `contract/conformance.py` runs the whole API against a board
+(or the C3 under QEMU, `tools/qemu_c3.sh`), the same suite the Dart engine
+passes.
+
 `spec/API-HTTP.md` documents the interface. Two exist for the panels above
 and are not yet in that document:
 

@@ -44,6 +44,9 @@ typedef struct {
      *  called on the httpd task. Return true when at least one took it. */
     bool (*send_wire)(const char *wire, int len, const char *bearer,
                       char *took, size_t took_cap);
+    /** The x-only key this station holds for a callsign, or NULL: the web
+     *  chat engine checks visitors' signatures with it (xapi_wc.c). */
+    const uint8_t *(*peer_key)(const char *call);
 
     /** JSON fragments the board owns, written into @p buf: the serve list
      *  (e.g. `"index","history","mailbox"` -- no brackets) and the feature

@@ -54,7 +54,7 @@ static bool bearer_known(const char *b)
 }
 
 esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
-                                xapi_send_fn send)
+                                xapi_send_fn send, xapi_gate_fn gate)
 {
     if (!send)
         return xapi_resp_error(req, "404 Not Found", "no transmitter");
@@ -133,6 +133,24 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
     if (!xprs_get_str(&pk, "f", from, sizeof from))
         return xapi_resp_error(req, "400 Bad Request", "no f:");
 
+    /* The web chat's rules first (XPRS.md 10.10): a moderator's act, a
+     * hosted room's message, an alert, somebody sent away. */
+    if (gate) {
+        char gid[7], why[96];
+        int g = gate(req, w, wlen, gid, why, sizeof why);
+        if (g < 0) {
+            const char *st = g == -400 ? "400 Bad Request" : g == -409 ? "409 Conflict"
+                           : g == -404 ? "404 Not Found" : "403 Forbidden";
+            return xapi_resp_error(req, st, why);
+        }
+        if (g > 0) {
+            int n = snprintf(out, OUT, "{\"ok\":true,\"id\":\"%s\",\"wire\":\"", gid);
+            n += xapi_jesc(out + n, OUT - (size_t)n, w, wlen);
+            if (n + 3 < (int)OUT) { out[n++] = '"'; out[n++] = '}'; out[n] = 0; }
+            xapi_resp_json(req);
+            return httpd_resp_send(req, out, n);
+        }
+    }
     if (!send(w, wlen, bearer[0] ? bearer : NULL, took, sizeof took)) {
         if (took[0]) {
             /* Refused by the owner's policy, not lost (see the header). */

@@ -82,6 +82,7 @@ static char s_pass[64];
 #include "xprs_ui.h"
 #include "xprs_config.h"
 #include "xprs_api.h"
+#include "xwc.h"
 #include "xprs_health.h"
 #include "xprs_diag.h"
 
@@ -248,11 +249,15 @@ static const uint8_t *peer_key(const char *call)
  * receive path keeps only the tests that cost nothing: a key we do not
  * already hold, room in the table, the shape of the field.
  */
+/* A few at a time: a hotspot with several phones introducing themselves
+ * in the same second used to keep the first and drop the rest, and a page
+ * then proved a key the station had never learned (409, retried). */
+#define IDENT_SLOTS 4
 static struct {
     char wire[XPRS_MAX_WIRE + 1];
     int  len;
     volatile bool pending;
-} s_ident;
+} s_ident[IDENT_SLOTS];
 
 /* The least stack idx_task has had left, read after a cmd:set and printed
  * on the alive line as idx=. 0 until the first one. */
@@ -265,19 +270,23 @@ static void identity_heard(const xprs_t *p, const char *wire, int len)
     if (!xprs_get_str(p, "k", npub, sizeof npub)) return;
     if (strncmp(npub, "npub1", 5) != 0 || peer_key(call)) return;
     if (s_peers_n >= PEERKEYS_MAX) return;
-    if (s_ident.pending || len <= 0 || len > XPRS_MAX_WIRE) return;
-    memcpy(s_ident.wire, wire, (size_t)len);
-    s_ident.wire[len] = 0;
-    s_ident.len = len;
-    s_ident.pending = true;
+    if (len <= 0 || len > XPRS_MAX_WIRE) return;
+    for (int i = 0; i < IDENT_SLOTS; i++) {
+        if (s_ident[i].pending) continue;
+        memcpy(s_ident[i].wire, wire, (size_t)len);
+        s_ident[i].wire[len] = 0;
+        s_ident[i].len = len;
+        s_ident[i].pending = true;
+        return;
+    }
 }
 
 /* idx_task: the decode, the derivation and the signature. */
-static void identity_apply(void)
+static void identity_apply(int slot)
 {
     xprs_t p;
     char call[XPRS_CALL_LEN], npub[80];
-    if (!xprs_parse(s_ident.wire, s_ident.len, &p)) return;
+    if (!xprs_parse(s_ident[slot].wire, s_ident[slot].len, &p)) return;
     if (!xprs_get_str(&p, "f", call, sizeof call)) return;
     if (!xprs_get_str(&p, "k", npub, sizeof npub)) return;
     if (peer_key(call) || s_peers_n >= PEERKEYS_MAX) return;
@@ -603,9 +612,17 @@ static uint8_t bearer_code(const char *name)
  * it says. Runs on idx_task, never on a radio task. Three answers: 1 checks
  * out, -1 fails against a key we hold, 0 cannot tell. */
 static void clock_hint(const char *from, const xprs_t *p);   /* with the clock, below */
+/* The key for a callsign: a peer's, or a room this station hosts (its
+ * acts are signed by the room's own key, which only the engine holds). */
+static const uint8_t *any_key(const char *call)
+{
+    const uint8_t *k = peer_key(call);
+    return k ? k : xwc_room_pub(call);
+}
+
 static int index_verifier(const char *wire, int len, const char *from)
 {
-    const uint8_t *key = peer_key(from);
+    const uint8_t *key = any_key(from);
     if (!key) return 0;
     xprs_t p;
     if (!xprs_parse(wire, len, &p)) return 0;
@@ -1107,10 +1124,24 @@ static bool s_display_up;   /* the panel and LVGL are alive */
  * is the only evidence that distinguishes a splash from a picture of a
  * finished boot.
  */
+/* The console byte, if one is waiting (the UART is non-blocking). Under
+ * QEMU the emulated UART has no console behind it and a getchar() there
+ * aborted in newlib's lock or wedged the UI task into the task watchdog
+ * mid-run (web chat conformance suite, 2026-11-06): the emulated board
+ * reads no console. The HTTP API is its whole keyboard. */
+static int console_getc(void)
+{
+#ifdef XPRS_QEMU
+    return EOF;
+#else
+    return getchar();
+#endif
+}
+
 static void splash_step(const char *what)
 {
     for (int i = 0; i < 8; i++) {
-        int c = getchar();
+        int c = console_getc();
         if (c <= 0) break;
         if (c == 'S' || c == 's') xui_framedump();
     }
@@ -8756,9 +8787,10 @@ no_announce:
         }
 #endif
         /* A key binding heard on the air, checked here (identity_heard). */
-        if (s_ident.pending) {
-            identity_apply();
-            s_ident.pending = false;
+        for (int i = 0; i < IDENT_SLOTS; i++) {
+            if (!s_ident[i].pending) continue;
+            identity_apply(i);
+            s_ident[i].pending = false;
         }
 
         /* 25.9: a cmd:set carrying policy keys. */
@@ -10102,6 +10134,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .app = "xprs-esp32",
     .board = "?",           /* the board names itself in xapp_run() */
     .send_wire = api_send_wire,
+    .peer_key = any_key,
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,
@@ -10355,7 +10388,7 @@ static void ui_task(void *arg)
          * to a panel (the buttons, but reachable from a script). A board
          * with a real keyboard feeds the same handler, so every one of
          * these works from the device as well as from a script. */
-        int ch = getchar();
+        int ch = console_getc();
 
         /* The cable, on this console too. The single-key commands below
          * are the console's whole vocabulary, so a LINE is gathered only
@@ -10399,7 +10432,7 @@ static void ui_task(void *arg)
                     /* Not a cfg line after all: hand the key back. */
                     if (cfgn <= 3 && strncmp(cfgline, "cfg", cfgn) != 0 &&
                         strncmp(cfgline, "tap", cfgn) != 0) { cfgn = -1; break; }
-                    ch = getchar();            /* consumed; take the next now */
+                    ch = console_getc();       /* consumed; take the next now */
                 } else { cfgn = -1; ch = 0; }
             }
             if (cfgn >= 0 && ch < 0) ch = 0;   /* mid-line, ring empty: wait */
@@ -10711,7 +10744,17 @@ void xapp_run(const xapp_board_t *board)
      * any honest pause (a full history replay feeds it mid-way). */
     {
         esp_task_wdt_config_t wdt = {
+#ifdef XPRS_QEMU
+            /* The emulator: its timer-group watchdog never delivers the
+             * stage-0 interrupt, so a miss is a silent reset with nothing
+             * in the log (no run ever printed "Task watchdog got
+             * triggered"), and under host load the emulated clock lags
+             * enough to miss. Ten minutes: a wedge still reboots, a
+             * stall does not. The board keeps its 90 s. */
+            .timeout_ms = 600000,
+#else
             .timeout_ms = 90000,
+#endif
             .idle_core_mask = 0,
             .trigger_panic = true,
         };

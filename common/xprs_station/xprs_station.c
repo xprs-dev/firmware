@@ -505,6 +505,7 @@ bool xst_ingest_parsed_ex(const xprs_t *p, const char *bearer, int rssi,
     if (xprs_reach_admits(xprs_scope_reach(p), heard)) xst_chat_note(p);
 
     uint32_t ep = xst_epoch_now();
+    chat_ensure();
     if (ep) {
         LOCK();
         sbucket_t *b = stat10(ep);
@@ -547,6 +548,7 @@ bool xst_ingest(const char *wire, int len, const char *bearer, int rssi)
 
 void xst_tx_total(uint32_t tx_total_now)
 {
+    chat_ensure();
     uint32_t ep = xst_epoch_now();
     LOCK();
     if (s_tx_primed && tx_total_now > s_tx_prev && ep) {
@@ -563,6 +565,9 @@ void xst_tx_total(uint32_t tx_total_now)
  * station heard on two bearers is two rows or one. */
 static int fresh_rows(xst_dev_t *rows, int in_range_sec)
 {
+    /* The HTTP API is up before xst_init on the C3; the first /api/status
+     * must not read a table that is not there yet. */
+    chat_ensure();
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     int n = 0;
     LOCK();
@@ -664,6 +669,7 @@ int xst_signal_bucket(int rssi, uint8_t was)
  * sticky against it. Silent when the row has since been evicted. */
 static void dev_set_q(const char *call, uint8_t q)
 {
+    chat_ensure();
     LOCK();
     for (int i = 0; i < XST_SEEN_MAX; i++) {
         if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0) {
@@ -799,6 +805,7 @@ static void xst_base(const char *in, char *out, int cap)
 int xst_chat_peers(const char *self, char out[][XPRS_CALL_LEN], int max)
 {
     if (!out || max <= 0) return 0;
+    chat_ensure();
     char me[XPRS_CALL_LEN];
     xst_base(self, me, sizeof me);
     int n = 0;
@@ -856,6 +863,7 @@ int xst_chat_peers(const char *self, char out[][XPRS_CALL_LEN], int max)
 bool xst_heard(const char *call, int in_range_sec)
 {
     if (!call || !call[0]) return false;
+    chat_ensure();
     char want[XPRS_CALL_LEN];
     xst_base(call, want, sizeof want);
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -1083,6 +1091,7 @@ bool xst_catchup_due(const char *call, int absent_sec)
 {
     if (!call || !call[0]) return false;
     if (s_call[0] && strcasecmp(call, s_call) == 0) return false;
+    chat_ensure();
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
     /* "Back in radio range, or just powered on" (36.10): during the first

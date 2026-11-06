@@ -34,6 +34,9 @@
 #define XPRS_STACK_API 6144
 #endif
 
+#include "xapi_wc.h"
+#include "xwc.h"
+
 static const char *TAG = "xprs_api";
 
 static const xprs_api_cfg_t *s_cfg;
@@ -214,7 +217,10 @@ static esp_err_t h_services(httpd_req_t *req)
         n += snprintf(buf + n, cap - n,
             "},\"api\":[\"status\",\"services\",\"history\",\"mail\","
             "\"peers\",\"devices\",\"stats\",\"diag\","
-            "\"send\",\"log\"]}");
+            "\"send\",\"log\",\"session\",\"admin\",\"rooms\"],");
+    /* The station's name and what the page may offer here (XPRS.md 10.10). */
+    if (n < (int)cap) n += xapi_wc_services(buf + n, cap - n);
+    if (n < (int)cap) n += snprintf(buf + n, cap - n, "}");
     resp_json(req);
     return httpd_resp_send(req, buf, n);
 }
@@ -226,6 +232,10 @@ typedef struct {
     int emitted;
     int dir;              /* 0 any, 1 in, 2 out */
     const char *mail_for; /* non-NULL: only mail held for this callsign */
+    const char *group;    /* the hosted room asked for, or the station */
+    const char *room;     /* non-NULL: only rows addressed to this room */
+    bool local;           /* the asker is on the station's network */
+    bool keep_local;      /* Local rows are served to this asker */
 } hist_ctx_t;
 
 static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
@@ -237,6 +247,27 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     if (c->mail_for) {
         if (!(rec->flags & XI_F_MAIL)) return true;
         if (!call_matches(c->mail_for, rec->to)) return true;
+    }
+    if (c->room && strcasecmp(rec->to, c->room) != 0) return true;
+    /* A hosted room's traffic stays in its room (XPRS.md 10.10.1): the
+     * open listing leaves out what is addressed to one of this station's
+     * X5 groups, as the Dart core's WebChatApi does. */
+    if (!c->room && rec->to[0] && xwc_room_of(rec->to)) return true;
+    /* The web chat's rules (XPRS.md 10.10): removed by a moderator, sent
+     * away, or Local kept from outside the station's network. */
+    {
+        /* `scope:local` in the header, found without a parse: this runs
+         * inside the index's query on the httpd task, where a packet
+         * struct on the stack is what overflowed it. */
+        bool scope_local = false;
+        if (!c->keep_local) {
+            const char *m = strstr(rec->wire, " m:");
+            const char *sc = strstr(rec->wire, " scope:local");
+            scope_local = sc && (!m || sc < m) && (sc[12] == ' ' || sc[12] == 0);
+        }
+        if (xwc_hide_row(c->group, rec->id, rec->from, xprsidx_type_name(rec->type),
+                         scope_local, c->local || c->keep_local))
+            return true;
     }
     const char *sig = !(rec->flags & XI_F_SIGNED)   ? "none"
                       : (rec->flags & XI_F_VERIFIED) ? "verified"
@@ -288,8 +319,11 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
 {
     if (!s_cfg->index) return resp_error(req, "404 Not Found", "no index");
 
-    char query[256] = {0}, p[48], call[48] = {0};
-    hist_ctx_t ctx = { .req = req };
+    char query[256] = {0}, p[48], call[48] = {0}, session[XWC_TOKEN_LEN + 8] = {0};
+    char room[16] = {0};
+    hist_ctx_t ctx = { .req = req, .group = s_cfg->callsign };
+    ctx.local = xapi_wc_local(req);
+    ctx.keep_local = ctx.local || !xwc_local_private();
     xprsidx_query_t q = { .type = -1, .newest_first = true, .limit = 30,
                           .trusted = true };
     httpd_req_get_url_query_str(req, query, sizeof query);
@@ -318,7 +352,19 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
      * bridged Meshtastic channel filled all 200: Local and Global stayed empty
      * while the station held their conversations. An unknown room asks for
      * nothing rather than for everything. */
-    if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK) {
+    httpd_query_key_value(query, "session", session, sizeof session);
+    /* A room this station hosts (XPRS.md 10.10.1): its rows are the ones
+     * addressed to it; a private one is served to its members only. */
+    const char *hosted = httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK
+                         ? xwc_room_of(p) : NULL;
+    if (hosted) {
+        if (!xwc_may_read_room(hosted, session))
+            return resp_error(req, "404 Not Found", "no such room");
+        snprintf(room, sizeof room, "%s", hosted);
+        q.only = room;
+        ctx.room = room;
+        ctx.group = room;
+    } else if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK) {
         q.room = !strcmp(p, "local")    ? XPRS_REACH_LOCAL + 1
                  : !strcmp(p, "regional") ? XPRS_REACH_REGIONAL + 1
                  : !strcmp(p, "global")   ? XPRS_REACH_GLOBAL + 1
@@ -349,8 +395,11 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
     xprsindex_query(s_cfg->index, &q, hist_emit, &ctx);
     xprsindex_pause_writes(s_cfg->index, false);
 
-    char tail[48];
-    n = snprintf(tail, sizeof tail, "],\"count\":%d}", ctx.emitted);
+    char tail[512];
+    n = snprintf(tail, sizeof tail, "],\"count\":%d,", ctx.emitted);
+    n += xwc_moderation_json(tail + n, sizeof tail - (size_t)n, ctx.group);
+    if (n < (int)sizeof tail - 2) tail[n++] = '}';
+    tail[n] = 0;
     httpd_resp_send_chunk(req, tail, n);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
@@ -372,7 +421,7 @@ static esp_err_t h_mail(httpd_req_t *req)
 static esp_err_t h_send(httpd_req_t *req)
 {
     return xprs_api_send_handler(req, s_api_buf, API_BUF_SIZE,
-                                 s_cfg->send_wire);
+                                 s_cfg->send_wire, xapi_wc_gate);
 }
 
 /* ---- /api/log ------------------------------------------------------------ */
@@ -839,7 +888,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
     hc.send_wait_timeout = 30;
     /* 17 here + OTA + 3 from the hotspot + 4 from the config share, and
      * room: a handler past the cap is refused without a word. */
-    hc.max_uri_handlers = 28;
+    hc.max_uri_handlers = 34;   /* + the web chat engine's six (xapi_wc.c) */
     hc.lru_purge_enable = true;
     /* Claimed here, while the heap is still one large block, and never
      * released. A server that cannot answer is worse than one that never
@@ -880,5 +929,6 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         httpd_register_uri_handler(s_httpd, &uris[i]);
     ESP_LOGI(TAG, "HTTP API up on port 80 (spec/API-HTTP.md)");
     xota_http_register(s_httpd, s_cfg->callsign);
+    xapi_wc_start(s_httpd, s_cfg);
     return ESP_OK;
 }

@@ -2357,10 +2357,31 @@ compare heap, not `RAM:`.
   and the station announced on Reticulum with a 1970 date: see "A
   Reticulum announce needs a set clock" below. The QEMU build keeps time on
   the high-resolution timer alone (`CONFIG_NEWLIB_TIME_SYSCALL_USE_HRT`).
-- Seen and not fixed, because it is the emulator's: about one run in four,
-  `getchar()` in the UI task aborts in newlib's lock with the CPU reporting
-  interrupt context. Before and after every change below, only on the UART
-  console path, never logged by a board.
+- The emulated bignum accelerator. About one run in two of the web chat
+  conformance suite (`tools/qemu_c3.sh conformance`) ended in
+  `assert failed: xQueueGiveFromISR queue.c:1367` with the stack inside a
+  signature verification: `mbedtls_ecp_mul` -> `esp_mpi_disable_hardware_hw_op`
+  -> `esp_crypto_mpi_lock_release`, the MPI interrupt path giving the crypto
+  lock from ISR context. Before that was understood it wore other faces:
+  `getchar()` in the UI task aborting in newlib's lock (the same lock
+  family), and silent `TG0WDT_SYS_RST` resets with no panic printed (a task
+  wedged in the accelerator wait; no run ever printed "Task watchdog got
+  triggered"). The QEMU build verifies in software:
+  `CONFIG_MBEDTLS_HARDWARE_MPI=n`, `CONFIG_MBEDTLS_HARDWARE_ECC=n`. Every
+  real board keeps the accelerator. Two further QEMU-only guards stay
+  because they are cheap and each removed a class of noise while this was
+  chased: `console_getc()` returns EOF under `XPRS_QEMU` (the HTTP API is
+  the emulated board's whole keyboard) and the task watchdog is ten minutes
+  there instead of 90 s (a wedge still reboots, an emulator stall does not).
+- `CONFIG_HEAP_POISONING_COMPREHENSIVE=y`: an overflow aborts at the next
+  allocation with the block named, instead of looking like the above.
+- **A change to `sdkconfig.qemu` (or `sdkconfig.defaults`) does nothing
+  until the generated `sdkconfig.c3qemu` is deleted**: PlatformIO
+  regenerates it from the defaults only when it is absent. Three builds
+  ran here with the old configuration before that was noticed; check
+  `.pio/build/c3qemu/config/sdkconfig.h` after the build. On the shared
+  Pi, `xbuild --no-share` as well, or the queue replays the last result
+  for "unchanged sources" (the deleted file is not a source to it).
 - The emulated clock runs at about half speed under load; give runs a wall
   clock limit of minutes, not seconds, or the emulator is killed mid-test
   and the failures look like the station's.

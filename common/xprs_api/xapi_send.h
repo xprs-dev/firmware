@@ -73,5 +73,10 @@ typedef bool (*xapi_send_fn)(const char *wire, int len, const char *bearer,
  * @p buf is the caller's response buffer, at least XAPI_SEND_BUF_MIN bytes;
  * this function allocates nothing and keeps nothing.
  */
+/** The web chat engine's gate on a wire, before it is aired (xwc_gate):
+ *  0 air it, 1 handled, <0 the negated HTTP status with [why]. */
+typedef int (*xapi_gate_fn)(httpd_req_t *req, const char *wire, int len,
+                            char id[7], char *why, size_t why_cap);
+
 esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
-                                xapi_send_fn send);
+                                xapi_send_fn send, xapi_gate_fn gate);
