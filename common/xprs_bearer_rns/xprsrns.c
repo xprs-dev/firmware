@@ -186,7 +186,7 @@ typedef struct {
 /* [XRNS_PEERS], big_calloc'd in init: off the .bss the RF sample bank caps
  * on the boards without PSRAM. NOT only reached once the bearer is up: on
  * the C3 a t:service heard over BLE two seconds into the boot had the
- * indexer asking xprsrns_can_address() before xprsrns_init() ran (a Load
+ * archiver asking xprsrns_can_address() before xprsrns_init() ran (a Load
  * access fault in idx, 2026-10-26), so every reader tolerates the table
  * not being there yet: nobody is addressable before init. */
 static xrns_peer_t *s_peers;

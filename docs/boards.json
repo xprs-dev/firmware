@@ -53,7 +53,7 @@
       "igate": "yes",
       "hotspot": "yes",
       "api": "yes",
-      "indexer": "yes",
+      "archiver": "yes",
       "share": "yes",
       "reticulum": "untested",
       "reticulum_note": "xprs_app brings xprsrns up on every board; not measured here since the rewrite.",
@@ -119,7 +119,9 @@
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdeck/firmware",
       "image": "tdeck_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin",
+      "sha256": "fe9b746a553e8f9a77f43edf2566bd7543a14316815bc3314dd1cd2da7640b41",
+      "size": 1677744
     },
     "docs": [
       {
@@ -208,8 +210,8 @@
       "hotspot": "untested",
       "hotspot_note": "On by default. Verified up with no LAN, the LAN retried once a minute so the AP keeps its channel; not yet joined from a phone.",
       "api": "yes",
-      "indexer": "yes",
-      "indexer_note": "On the microSD card. Without a card there is no archive, because 4 MB of flash leaves less room than one index segment.",
+      "archiver": "yes",
+      "archiver_note": "On the microSD card. Without a card there is no archive, because 4 MB of flash leaves less room than one index segment.",
       "share": "yes",
       "share_note": "Answered a cmd:history from X1ARKL on the first boot: 9 packets replayed over the LAN.",
       "reticulum": "no",
@@ -304,7 +306,9 @@
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/epaper-1in54/firmware",
       "image": "epaper_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/prebuilt/firmware.bin",
+      "sha256": "0de4ea39d089065d44f20f20bf2984cbd31f7521a80b27379900d705e8ea45da",
+      "size": 1543648
     },
     "docs": [
       {
@@ -393,8 +397,8 @@
       "hotspot": "untested",
       "hotspot_note": "On by default; the access point comes up and the chat page is served (loaded over the LAN), but a phone has not joined it yet.",
       "api": "yes",
-      "indexer": "no",
-      "indexer_note": "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept.",
+      "archiver": "no",
+      "archiver_note": "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept.",
       "share": "no",
       "share_note": "No archive to share.",
       "reticulum": "no",
@@ -455,7 +459,9 @@
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/esp32c3-mini/firmware",
       "image": "esp32c3_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/prebuilt/firmware.bin",
+      "sha256": "d190fa4ac113893b76521cf2edb135597d5d9b3706a5b1c05e2deba5a8e9026d",
+      "size": 1414272
     },
     "docs": [
       {
@@ -544,7 +550,7 @@
       "hotspot": "untested",
       "hotspot_note": "Compiled in, seeded OFF (.hotspot = false in main.c): no PSRAM, and the T-Dongle measured the AP at ~9 KB of internal heap on this chip. `cfg set ap_on 1` turns it on.",
       "api": "yes",
-      "indexer": "yes",
+      "archiver": "yes",
       "share": "yes",
       "reticulum": "no",
       "reticulum_note": "CONFIG_XPRS_BEARER_RNS=n. The hub link's socket and task cost 12.7 KB on the T-Dongle, and this board has none to spare.",
@@ -610,7 +616,9 @@
       "flashing": "esptool over the CP2102 USB-serial port at 921600; an S3, so the bootloader goes at 0x0. The stub works here; none of the T-Dongle's --no-stub caveats apply.",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3/firmware",
       "image": "heltec_v3_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt/firmware.bin",
+      "sha256": "28166156541719d339bd179481d6be1b40097c9ffc480d573c945dc4bf0700c6",
+      "size": 1590848
     },
     "docs": [
       {
@@ -652,7 +660,7 @@
     "product_url": "https://www.lilygo.cc/products/t-dongle-s3",
     "manual_url": "https://github.com/Xinyuan-LilyGO/T-Dongle-S3",
     "tagline": "USB stick with a tiny screen. BLE5, WiFi, ESP-NOW; the BLE-to-LAN bridge next to your router.",
-    "summary": "LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross- bearer bridge, APRS-IS iGate, HTTP API, indexer, signed OTA. Meant to be plugged in next to a router as the BLE-to-LAN bridge; the screen cycles three status views on its own since the button is usually under the case.",
+    "summary": "LilyGO USB-A stick: ESP32-S3 (dual-core 240 MHz, 512 KB RAM, no PSRAM, 16 MB flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross- bearer bridge, APRS-IS iGate, HTTP API, archiver, signed OTA. Meant to be plugged in next to a router as the BLE-to-LAN bridge; the screen cycles three status views on its own since the button is usually under the case.",
     "status": "shipping",
     "silicon": {
       "mcu": "ESP32-S3",
@@ -694,7 +702,7 @@
       "hotspot": "untested",
       "hotspot_note": "Compiled in, seeded OFF (.hotspot = false in main.c): the AP costs ~9 KB of internal heap and this board has no PSRAM. `cfg set ap_on 1` turns it on.",
       "api": "yes",
-      "indexer": "yes",
+      "archiver": "yes",
       "share": "yes",
       "reticulum": "untested",
       "reticulum_note": "xprs_app brings xprsrns up on every board; not measured here since the rewrite.",
@@ -753,7 +761,9 @@
       "flashing": "esptool over the by-id USB-JTAG CDC port, --no-stub, 115200 pinned",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdongle-s3/firmware",
       "image": "tdongle_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin",
+      "sha256": "fd812d36b5d3a81e8a0efc5921480fd711f15926b42dfe248d9bc8f82792fea6",
+      "size": 1647824
     },
     "docs": [
       {
@@ -803,7 +813,7 @@
     "product_url": "https://docs.m5stack.com/en/core/basic",
     "manual_url": "https://docs.m5stack.com/en/core/basic",
     "tagline": "Boxed ESP32 with a 320x240 screen and three buttons. WiFi and ESP-NOW station with the full dashboard.",
-    "summary": "M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios: WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer). Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot AP with the chat page, digipeater, iGate, indexer and signed OTA. Used as the second station on the bench: anything the T-Dongle or T-Deck sends has something to hear it.",
+    "summary": "M5Stack Core Basic: original ESP32 (dual-core 240 MHz, 520 KB RAM, 16 MB flash) in a 54 mm stackable case with a 320x240 ILI9342C LCD, three front buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios: WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer). Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot AP with the chat page, digipeater, iGate, archiver and signed OTA. Used as the second station on the bench: anything the T-Dongle or T-Deck sends has something to hear it.",
     "status": "shipping",
     "silicon": {
       "mcu": "ESP32",
@@ -844,7 +854,7 @@
       "igate": "yes",
       "hotspot": "yes",
       "api": "yes",
-      "indexer": "yes",
+      "archiver": "yes",
       "share": "yes",
       "reticulum": "untested",
       "reticulum_note": "xprs_app brings xprsrns up on every board; not measured here since the rewrite.",
@@ -914,7 +924,9 @@
       "flashing": "esptool over the CP210x USB-serial port",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/m5stack-core/firmware",
       "image": "m5stack_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin",
+      "sha256": "f50c48d6bf8b740f04d3913348bc8c86af5499c05a226dbee93c9f1c9f5d0448",
+      "size": 1725760
     },
     "docs": [
       {
@@ -1004,8 +1016,8 @@
       "hotspot_note": "No WiFi radio.",
       "api": "no",
       "api_note": "No IP, no HTTP. The station talks only on the air.",
-      "indexer": "no",
-      "indexer_note": "Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.",
+      "archiver": "no",
+      "archiver_note": "Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.",
       "share": "no",
       "share_note": "Nothing to serve and nothing to serve it over.",
       "reticulum": "no",
@@ -1114,7 +1126,9 @@
       "flash_port": "uf2",
       "flashing": "UF2 over USB-C. The XIAO nRF52840 carries an Adafruit-style bootloader that mounts as a mass-storage volume on a double reset-tap; an image is copied onto it. No esptool, no serial protocol, nothing this tree's tools/ scripts know how to do.",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-p1-pro/firmware",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/prebuilt/firmware.uf2"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-p1-pro/prebuilt/firmware.uf2",
+      "sha256": "0620d03704b3fb4f5c06680047f3472d514610c09f3f0f881c0698acdb6b2333",
+      "size": 291840
     },
     "docs": [
       {
@@ -1229,8 +1243,8 @@
       "hotspot_note": "No WiFi radio.",
       "api": "no",
       "api_note": "No IP. It answers q:policy, q:pos, q:temp, q:batt and q:mail on the air.",
-      "indexer": "no",
-      "indexer_note": "It holds mail, not an archive: 64 records in 24 KB of raw flash, class 3 for callsigns whose t:mailbox names it, class 2 for its contacts of the last 30 days. It cannot answer cmd:history and does not announce archive.",
+      "archiver": "no",
+      "archiver_note": "It holds mail, not an archive: 64 records in 24 KB of raw flash, class 3 for callsigns whose t:mailbox names it, class 2 for its contacts of the last 30 days. It cannot answer cmd:history and does not announce archive.",
       "share": "no",
       "share_note": "Nothing to serve.",
       "reticulum": "no",
@@ -1302,7 +1316,9 @@
       "flash_port": "uf2",
       "flashing": "Serial DFU from the app port (pio run -t upload --upload-port <port>; the 1200-baud touch drops it into the bootloader), or UF2 onto the T1000-E-BOOT volume. The UF2 must be made from the binary at 0x27000: the core's uf2conv.py misplaces an image converted from its hex.",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/sensecap-t1000e/firmware",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-t1000e/prebuilt/firmware.uf2"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/sensecap-t1000e/prebuilt/firmware.uf2",
+      "sha256": "9cde2cd4a8945d667750910eba0f65ff7378fd8a852278f0d1397bb948434369",
+      "size": 438784
     },
     "behaviour": [
       {
@@ -1430,8 +1446,8 @@
       "hotspot_note": "The camera's own AP is the vendor's setup mode, not the XPRS chat hotspot.",
       "api": "no",
       "api_note": "Not the station API: there is no /api/status and no xprs_api, and common/ is ESP-IDF. What reobell does serve on port 8080 is the camera surface of API-HTTP.md, /door/snapshot.jpg and /door/stream.mjpeg with /api/services beside them, proxied from the camera's own api.cgi so no credential is in a URL it hands out.",
-      "indexer": "no",
-      "indexer_note": "Not ported. The microSD is the camera's recording store.",
+      "archiver": "no",
+      "archiver_note": "Not ported. The microSD is the camera's recording store.",
       "share": "no",
       "share_note": "No archive, so nothing to serve.",
       "reticulum": "no",
@@ -1634,8 +1650,8 @@
       "hotspot_note": "On by default, named XPRS- and the callsign; with no network set, it is how a phone reaches the chat page.",
       "api": "untested",
       "api_note": "Not yet run on a bare devkit.",
-      "indexer": "no",
-      "indexer_note": "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept.",
+      "archiver": "no",
+      "archiver_note": "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept.",
       "share": "no",
       "share_note": "No archive to share.",
       "reticulum": "no",
@@ -1690,7 +1706,9 @@
       "flashing": "esptool over the CP210x / CH340 USB-serial port; the BOOT button if the board does not enter the bootloader by itself",
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/generic/firmware",
       "image": "esp32_generic_xprs",
-      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/prebuilt/firmware.bin"
+      "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/prebuilt/firmware.bin",
+      "sha256": "db22058fa63c9e1d54c6442d41ae04160763480d6fdb585c4ade2359ce7e7778",
+      "size": 1418128
     },
     "docs": [
       {
@@ -1776,8 +1794,8 @@
       "hotspot_note": "Legacy SoftAP with the web chat page; not run since the move.",
       "api": "untested",
       "api_note": "Legacy xprs_http station API; not run since the move.",
-      "indexer": "no",
-      "indexer_note": "xprs_index is an xprs_app thing.",
+      "archiver": "no",
+      "archiver_note": "xprs_index is an xprs_app thing.",
       "share": "no",
       "share_note": "xprs_app only.",
       "reticulum": "no",

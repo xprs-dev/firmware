@@ -418,7 +418,7 @@ static long  s_logfile_len;
  * seconds on the flash -- which is the promise this log makes. */
 static void log_drain(bool sync)
 {
-    if (!s_logring) return;        /* no indexer, no ring to drain */
+    if (!s_logring) return;        /* no archiver, no ring to drain */
     char chunk[512];
     for (;;) {
         int n = 0;
@@ -6570,7 +6570,7 @@ static void ui_render(void)
                      "Keep every packet heard, answer cmd:history, hold "
                      "mail. Storage not mounted. %s toggles.", ok_key());
         }
-        SROW("Indexer", xcfg_get_bool("index_on", true) ? "On" : "Off", idet);
+        SROW("Archiver", xcfg_get_bool("index_on", true) ? "On" : "Off", idet);
         char det[160];
         if (xcfg_share_running())
             snprintf(det, sizeof det,
@@ -7059,7 +7059,7 @@ static xapp_key_t touch_events(xapp_key_t key, bool *force)
     return key;
 }
 
-/* ── idx_task: the indexer's writer, announcer and replayer (core 1) ────── */
+/* ── idx_task: the archiver's writer, announcer and replayer (core 1) ────── */
 
 /*
  * 12.12.1's miss path. A station asked us over Reticulum and we cannot
@@ -7740,7 +7740,7 @@ static bool alrt_signed(const xprs_t *p, const char *from, bool open,
  */
 static int alrt_scan(int pick[ALRT_MAX], uint32_t pick_id[ALRT_MAX])
 {
-    if (!s_page) return 0;         /* no indexer, no replay page */
+    if (!s_page) return 0;         /* no archiver, no replay page */
     s_page->n = 0;
     s_page->more = false;
     s_page->reach = XPRS_REACH_LOCAL;
@@ -7863,7 +7863,7 @@ static void alrt_give(const char *call, const char *bearer)
 
 /*
  * A parked ask this station cannot serve -- no index mounted, or the operator
- * switched the indexer off. Say so and free the slot.
+ * switched the archiver off. Say so and free the slot.
  *
  * `pending` used to be set on accept and cleared only inside
  * idx_answer_history(), which is not reached in either of those states. So it
@@ -8459,17 +8459,17 @@ static void idx_task(void *arg)
          * to /idx until the owner turns it back on. */
         s_idx_none = true;
         err = ESP_OK;   /* deliberate, not a mount failure */
-        ESP_LOGW(TAG, "indexer off by config: /idx not mounted, log and "
+        ESP_LOGW(TAG, "archiver off by config: /idx not mounted, log and "
                       "statistics are not persisted");
     } else if (!(s_logring = xprs_big_calloc(1, LOGRING_N)) ||
                !(s_idxq    = xprs_big_calloc(IDXQ_N, sizeof *s_idxq)) ||
                !(s_page    = xprs_big_calloc(1, sizeof *s_page))) {
-        /* The indexer's working memory, only wanted when it mounts. A board
+        /* The archiver's working memory, only wanted when it mounts. A board
          * that cannot afford it runs on without an archive, like index_on=no,
          * rather than aborting a station whose radios are fine. */
         s_idx_none = true;
         err = ESP_OK;
-        ESP_LOGE(TAG, "indexer buffers did not fit: running without /idx");
+        ESP_LOGE(TAG, "archiver buffers did not fit: running without /idx");
     } else if (s_board->storage_mount) {
         s_idx_base = 0;
         err = s_board->storage_mount(&s_idx_base);
@@ -8509,12 +8509,12 @@ static void idx_task(void *arg)
             xprsindex_set_verifier(s_index, index_verifier);
             xprsidx_stats_t st;
             xprsindex_stats(s_index, &st);
-            ESP_LOGI(TAG, "indexer up: %lu packet%s held, epoch %c",
+            ESP_LOGI(TAG, "archiver up: %lu packet%s held, epoch %c",
                      (unsigned long)st.count, st.count == 1 ? "" : "s",
                      st.epoch);
         }
     } else if (err != ESP_OK) {
-        ESP_LOGE(TAG, "indexer storage failed to mount: %s",
+        ESP_LOGE(TAG, "archiver storage failed to mount: %s",
                  esp_err_to_name(err));
     }
 
@@ -9094,7 +9094,7 @@ no_announce:
          * Every ask leaves the queue on EVERY path out, not only the one
          * that answers. This used to be a single slot set on accept and
          * cleared only inside idx_answer_history(), which is not reached
-         * with the index unmounted or the indexer switched off -- so it
+         * with the index unmounted or the archiver switched off -- so it
          * latched, the "one at a time" guard dropped every later ask, and
          * the station went silent for good with no 404, no 429 and nothing
          * in the log. Say so instead: an archiver that cannot serve is over
@@ -9107,7 +9107,7 @@ no_announce:
                                    s_askq[r].bearer);
             } else {
                 idx_refuse_history(s_askq[r].wire, s_askq[r].len,
-                                   s_askq[r].bearer, "indexer unavailable");
+                                   s_askq[r].bearer, "archiver unavailable");
             }
             s_askq_r = (uint8_t)((r + 1) % ASKQ_MAX);
             s_askq_n--;
@@ -9866,7 +9866,7 @@ static int api_lora_json(char *buf, size_t cap)
 static int api_features_json(char *buf, size_t cap)
 {
     return snprintf(buf, cap,
-        "\"digipeater\":%s,\"bridge\":%s,\"igate\":%s,\"indexer\":%s,"
+        "\"digipeater\":%s,\"bridge\":%s,\"igate\":%s,\"archiver\":%s,"
         "\"share\":%s,\"hotspot\":%s",
         xcfg_get_bool("digi_on", true) ? "true" : "false",
         xcfg_get_bool("bridge_on", true) ? "true" : "false",
@@ -10659,8 +10659,8 @@ void xapp_run(const xapp_board_t *board)
     /* The echo buffer, the one big ex-static every build needs (the idle
      * channel echo is a bearer behaviour): allocated instead of .bss so the
      * static data stays clear of the RF sample banks on the xwifi boards.
-     * The log ring, the index queue and the replay page are the indexer's,
-     * and idx_task allocates them only when the indexer actually mounts. */
+     * The log ring, the index queue and the replay page are the archiver's,
+     * and idx_task allocates them only when the archiver actually mounts. */
     s_echo = xprs_big_calloc(ECHO_N, sizeof *s_echo);
     if (!s_echo) {
         ESP_LOGE(TAG, "echo buffer allocation failed at boot");
@@ -10740,7 +10740,7 @@ void xapp_run(const xapp_board_t *board)
     keyres_load();
     life_load();
 
-    /* The indexer's writer/replayer, pinned to core 1 (flash work off the
+    /* The archiver's writer/replayer, pinned to core 1 (flash work off the
      * radio cores) and created HERE, before WiFi and the bearers carve up
      * the heap -- esp32.md: claim big stacks first, check the result, or a
      * silent pdFAIL becomes a station that answers 404 to everything. The
@@ -10748,7 +10748,7 @@ void xapp_run(const xapp_board_t *board)
      * are up. */
     if (xTaskCreatePinnedToCore(idx_task, "idx", 8192, NULL, 3, NULL,
                                 XPRS_WORK_CORE) != pdPASS)
-        ESP_LOGE(TAG, "indexer task failed to start -- nothing will be kept");
+        ESP_LOGE(TAG, "archiver task failed to start -- nothing will be kept");
 
     /* The updater claims no stack of its own: it runs on idx_task, which
      * already has one, already sits on core 1, and already owns the flash

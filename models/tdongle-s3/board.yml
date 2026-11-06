@@ -11,7 +11,7 @@ summary: >-
   flash), 160x80 ST7735 colour LCD, microSD slot, one BOOT button, USB-JTAG
   serial. Radios: WiFi 2.4 GHz and Bluetooth 5 with extended advertising. Runs
   the full xprs_app station: BLE5, LAN and ESP-NOW bearers, digipeater, cross-
-  bearer bridge, APRS-IS iGate, HTTP API, indexer, signed OTA. Meant to be
+  bearer bridge, APRS-IS iGate, HTTP API, archiver, signed OTA. Meant to be
   plugged in next to a router as the BLE-to-LAN bridge; the screen cycles
   three status views on its own since the button is usually under the case.
 status: shipping
@@ -54,7 +54,7 @@ xprs:
     Compiled in, seeded OFF (.hotspot = false in main.c): the AP costs ~9 KB
     of internal heap and this board has no PSRAM. `cfg set ap_on 1` turns it on.
   api: "yes"
-  indexer: "yes"
+  archiver: "yes"
   share: "yes"
   reticulum: "untested"
   reticulum_note: xprs_app brings xprsrns up on every board; not measured here since the rewrite.

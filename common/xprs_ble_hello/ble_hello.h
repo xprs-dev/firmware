@@ -70,7 +70,7 @@ void ble_hello_set_aprs_cb(ble_hello_aprs_cb_t cb);
 void ble_hello_set_msgstore(msgstore_t *st);
 
 /**
- * @brief Attach the XPRS index, making this station an indexer (docs/XPRS.md
+ * @brief Attach the XPRS index, making this station an archiver (docs/XPRS.md
  *        §36): every XPRS packet heard on any receive path is stored, and the
  *        `xprs_query` GATT command answers questions about it.
  *

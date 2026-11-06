@@ -1944,7 +1944,7 @@ char xprsindex_epoch(const xprsidx_t *st) { return st ? st->epoch : '?'; }
  * the writer task, pinned to core 1, for the same reason the writes do.
  *
  * A FORGED record is dropped. It is the one thing on an open bearer that is
- * evidence of a lie, and an indexer that kept it would hand it to somebody
+ * evidence of a lie, and an archiver that kept it would hand it to somebody
  * later under the name of the station it impersonates.
  */
 static bool xi_judge_rec(xprsidx_t *st, xi_rec_t *r)
@@ -2740,7 +2740,7 @@ size_t xprsindex_query(xprsidx_t *st, const xprsidx_query_t *q,
 /* ── The directory (XPRS.md §36.9) ──────────────────────────────────────── */
 
 /* Insertion sort by callsign, keeping the newest ts per station. The list is
- * small — an indexer with more archived callsigns than this has outgrown a
+ * small — an archiver with more archived callsigns than this has outgrown a
  * dongle — and staying sorted as we go is what lets a peer diff two
  * directories by reading them straight through. */
 static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,

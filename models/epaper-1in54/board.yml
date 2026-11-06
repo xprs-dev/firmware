@@ -56,8 +56,8 @@ xprs:
   hotspot: "untested"
   hotspot_note: "On by default. Verified up with no LAN, the LAN retried once a minute so the AP keeps its channel; not yet joined from a phone."
   api: "yes"
-  indexer: "yes"
-  indexer_note: On the microSD card. Without a card there is no archive, because 4 MB of flash leaves less room than one index segment.
+  archiver: "yes"
+  archiver_note: On the microSD card. Without a card there is no archive, because 4 MB of flash leaves less room than one index segment.
   share: "yes"
   share_note: "Answered a cmd:history from X1ARKL on the first boot: 9 packets replayed over the LAN."
   reticulum: "no"

@@ -55,7 +55,7 @@ REPO_URL = f"https://github.com/{REPO}"
 RAW_URL = f"https://raw.githubusercontent.com/{REPO}/main"
 XPRS_ROLES = [("beacon", "Beacon"), ("digipeater", "Digipeater"), ("bridge", "Bridge"),
               ("igate", "iGate"), ("hotspot", "Hotspot"), ("api", "API"),
-              ("indexer", "Indexer"), ("share", "Share"), ("reticulum", "Reticulum"),
+              ("archiver", "Archiver"), ("share", "Share"), ("reticulum", "Reticulum"),
               ("ota", "OTA"), ("gossip", "Gossip"), ("dashboard", "Dashboard"),
               ("chat", "Chat"), ("mesh_session", "Mesh session"), ("vhf", "VHF")]
 HW_TAGS = [("screen", "Screen"), ("lora_radio", "LoRa radio"), ("vhf", "VHF radio"),

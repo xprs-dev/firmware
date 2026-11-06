@@ -33,7 +33,7 @@ BEARERS = ["ble5", "lora", "lan", "espnow"]
 VERDICT = {"yes", "no", "untested"}
 SILICON = ["mcu", "family", "core", "ram_kb", "psram_mb", "flash_mb"]
 RADIOS = ["bluetooth", "wifi", "lora", "other"]
-XPRS = ["beacon", "digipeater", "bridge", "igate", "hotspot", "api", "indexer",
+XPRS = ["beacon", "digipeater", "bridge", "igate", "hotspot", "api", "archiver",
         "share", "reticulum", "ota", "gossip", "dashboard", "chat",
         "mesh_session", "vhf"]
 XPRS_VERDICT = {"yes", "no", "planned", "untested"}

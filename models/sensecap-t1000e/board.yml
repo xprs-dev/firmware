@@ -69,8 +69,8 @@ xprs:
   hotspot_note: No WiFi radio.
   api: "no"
   api_note: No IP. It answers q:policy, q:pos, q:temp, q:batt and q:mail on the air.
-  indexer: "no"
-  indexer_note: >-
+  archiver: "no"
+  archiver_note: >-
     It holds mail, not an archive: 64 records in 24 KB of raw flash, class 3
     for callsigns whose t:mailbox names it, class 2 for its contacts of the
     last 30 days. It cannot answer cmd:history and does not announce archive.

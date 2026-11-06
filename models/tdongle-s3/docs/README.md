@@ -21,7 +21,7 @@ It is meant to be left somewhere with power: it hears, it keeps, and it answers.
 
 ## What it is
 
-**An indexer** ([indexer.md](indexer.md), [XPRS.md](XPRS.md) §36) — every XPRS
+**An archiver** ([archiver.md](archiver.md), [XPRS.md](XPRS.md) §36) — every XPRS
 packet it hears goes to the card verbatim and can be asked about afterwards.
 
 **A bridge** between Bluetooth and the local network — a phone with no internet
@@ -68,13 +68,13 @@ device presence only and is a different protocol.
 | §10.6 own beacon | `t:observation f:<call> link:lan peers:N` on the LAN every 5 minutes |
 | Duplicate suppression | 32-entry identifier ring, plus a 60 s heard-window on the LAN |
 | Query by type, time, author | see the query surface below |
-| §36.9 `serve:archive` announcement | every 10 minutes on BLE5 and the LAN: `t:service f:<call> serve:archive count:<n>` — how a station discovers this indexer exists at all |
+| §36.9 `serve:archive` announcement | every 10 minutes on BLE5 and the LAN: `t:service f:<call> serve:archive count:<n>` — how a station discovers this archiver exists at all |
 | §36.9 XDIR1 directory | who it archives, one `call ts` line per station, sorted; served at `GET /api/xprs/dir` |
-| §36.9 content never crosses | it archives only what it hears on its own bearers; it imports nothing from another indexer |
+| §36.9 content never crosses | it archives only what it hears on its own bearers; it imports nothing from another archiver |
 | §25.2 `cmd:history` | **it answers over the air**, on the bearer the ask arrived on: `t:result code:202`, the stored packets verbatim with the author's own signature, then `code:200` — or `206` when more is held, `404` for an empty window, `429` over budget. Paced one packet per 1.5 s, one replay at a time, and metered per asker (6/hour known, 2/hour stranger, 12/hour globally). `only:` matches a callsign anywhere in a packet, including inside `hears:` (§36.6), which is how "where can X be reached" is asked |
 | §11.6 `ping`/`pong` | answers a `t:ping` addressed to it (or to nobody) with a signed `t:pong` carrying the signal it arrived with. Rate limited: one per caller per minute, one globally per 5 s |
 | §9.1 signatures | **it signs** everything it originates — identity, service announcements, beacons, pongs — with the 48-byte short-Schnorr over secp256k1 that `sig:` carries as 60 base85 characters |
-| §9.1 verifying | **it checks what it keeps.** Every signed packet is verified against the author's key one step before it is written — on the store's writer task, core 1, never where the packet was heard. A record is stored `verified` or `unverified` (no key for that author: not a verdict), and a signature that FAILS against a key it holds is **refused, not stored** — an indexer that kept a forgery would hand it on later under the name it impersonates. `GET /api/xprs` reports the verdict per record; the console heartbeat reports `sig ok=/unverified=/forged=` |
+| §9.1 verifying | **it checks what it keeps.** Every signed packet is verified against the author's key one step before it is written — on the store's writer task, core 1, never where the packet was heard. A record is stored `verified` or `unverified` (no key for that author: not a verdict), and a signature that FAILS against a key it holds is **refused, not stored** — an archiver that kept a forgery would hand it on later under the name it impersonates. `GET /api/xprs` reports the verdict per record; the console heartbeat reports `sig ok=/unverified=/forged=` |
 | callsign→key | learned from the `t:identity` packets it hears (§9.3), first speaker wins, up to 16 stations. Reloaded at boot from the identities already on the card, so a station known for weeks is not unverifiable for the first ten minutes after a restart |
 | §9.3 `t:identity` | announced every 10 minutes: `t:identity f:<call> ts:… k:npub1… sig:…`, self-signed. A receiver stores the callsign→key binding and can then verify everything else this station says |
 | §3 callsign binding | the callsign IS derived from the npub, so a receiver re-derives it and sees that name and key belong together. A station carrying an older auto-derived callsign migrates once |
@@ -97,8 +97,8 @@ index that does not know it.
 | **Only 16 stations** | past that the table is full and everything else reads `unverified`. Old records are never re-judged, so what was stored before a key was known stays unverified |
 | **No decryption** | `x:` sealed bodies pass through and are stored opaque, which is the intended behaviour, but the device cannot read or check them |
 | **No `scope:` enforcement** | `scope:local` is not inspected before re-airing. In practice nothing here gateways XPRS to the internet, so a `local` packet does not escape — but that is the topology, not a check |
-| **It does not push to other indexers** | §36.3 is a publisher choosing indexers and pushing to them with a per-indexer cursor. This device indexes only what it happens to overhear |
-| **No indexer↔indexer sync** | it never gossips its store to a peer |
+| **It does not push to other archivers** | §36.3 is a publisher choosing archivers and pushing to them with a per-archiver cursor. This device indexes only what it happens to overhear |
+| **No archiver↔archiver sync** | it never gossips its store to a peer |
 | **Mail is held, not delivered** | mail is stored and kept private, but the device does not announce it, does not appear in a `hold:` list, and does not release it on a verified receipt |
 | **No eviction** | the store grows until the card is full. At 320 B a record a 32 GB card is a very long time, but nothing deletes anything yet |
 | **The directory is not a content-addressed file** | §36.9 has it named by `file:<ref>.xdir` in the announcement and fetched with `cmd:file`. There is no file transfer here yet, so the same bytes are served over HTTP instead |
@@ -176,7 +176,7 @@ sealed mail is unreadable to the device either way.
 ## See also
 
 - [XPRS.md](XPRS.md) — the format and the rules this device follows
-- [indexer.md](indexer.md) — what an indexer is for, and the Flutter side
+- [archiver.md](archiver.md) — what an archiver is for, and the Flutter side
 - [lan.md](lan.md) — the UDP bearer in detail
 - [ble5.md](ble5.md) — the Bluetooth bearer (extended advertising is `rns_ble5`)
 - [esp32.md](esp32.md) — firmware layout, constraints and traps

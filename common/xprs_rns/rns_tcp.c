@@ -254,7 +254,7 @@ esp_err_t rns_tcp_start(const char *host, uint16_t port)
      * xprsrns verifying an inbound announce, or signing its hello -- blew
      * the stack the moment a connection came up, and the station
      * crash-looped on every connect. */
-    /* Priority 2, BELOW the indexer's 3.
+    /* Priority 2, BELOW the archiver's 3.
      *
      * docs/esp32.md pins the blocking work to core 1; what it does not say,
      * and what cost two T-Decks a reboot every few minutes, is that the task

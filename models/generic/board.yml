@@ -61,8 +61,8 @@ xprs:
   hotspot_note: "On by default, named XPRS- and the callsign; with no network set, it is how a phone reaches the chat page."
   api: "untested"
   api_note: Not yet run on a bare devkit.
-  indexer: "no"
-  indexer_note: "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept."
+  archiver: "no"
+  archiver_note: "4 MB of flash leaves 832 KB for files, less than one 1.3 MB index segment; the log, statistics and conversation are kept."
   share: "no"
   share_note: No archive to share.
   reticulum: "no"

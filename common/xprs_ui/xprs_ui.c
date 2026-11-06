@@ -990,7 +990,7 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
     lv_init();
 
     /* An eighth of the screen: refresh crosses the panel in a few strokes
-     * and the ~11 KB saved is what lets the indexer's writer task start on
+     * and the ~11 KB saved is what lets the archiver's writer task start on
      * a busy station. */
     int buf_rows = s_h / 8;
 #if !defined(CONFIG_SPIRAM)
@@ -1004,7 +1004,7 @@ esp_err_t xui_init(int width, int height, xui_flush_fn flush, void *ctx)
     static lv_color_t *buf1;
     /* Take the biggest slice the heap will actually give, not the biggest
      * we would like. An eighth of the screen is 19 KB in one piece, and on
-     * a board that has already paid for WiFi, an indexer and an HTTP server
+     * a board that has already paid for WiFi, an archiver and an HTTP server
      * that allocation is refused -- which used to mean no draw buffer, no
      * UI task, and a panel that stays black for want of 6 KB. A sixteenth
      * costs one more flush per frame and nothing else. */

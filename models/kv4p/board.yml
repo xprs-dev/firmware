@@ -61,8 +61,8 @@ xprs:
   hotspot_note: Legacy SoftAP with the web chat page; not run since the move.
   api: "untested"
   api_note: Legacy xprs_http station API; not run since the move.
-  indexer: "no"
-  indexer_note: xprs_index is an xprs_app thing.
+  archiver: "no"
+  archiver_note: xprs_index is an xprs_app thing.
   share: "no"
   share_note: xprs_app only.
   reticulum: "no"

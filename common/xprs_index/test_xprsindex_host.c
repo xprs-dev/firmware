@@ -515,7 +515,7 @@ static void test_verifies_what_it_stores(const char *dir)
     xprsindex_close(st);
 }
 
-/* ── the directory an indexer publishes (XPRS.md §36.9) ──────────────────── */
+/* ── the directory an archiver publishes (XPRS.md §36.9) ──────────────────── */
 
 static void test_directory(const char *dir)
 {
@@ -523,7 +523,7 @@ static void test_directory(const char *dir)
     xprsidx_t *st = xprsindex_open(dir);
 
     /* Two stations, one heard twice, plus a piece of mail — whose ADDRESSEE
-     * must not appear. A directory says who this indexer archives; naming the
+     * must not appear. A directory says who this archiver archives; naming the
      * recipient would publish the envelope §36.7 keeps. */
     const char *feed[] = {
         "t:warning f:X3RLY7 kind:fire sev:danger ts:2026-08-10_09:00:00",

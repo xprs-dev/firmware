@@ -5,7 +5,7 @@
  * picture from the same rings.
  *
  * RAM-only and radio-task safe: every call is at most one parse plus
- * small ring writes under a spinlock. Board-specific fan-out (indexer
+ * small ring writes under a spinlock. Board-specific fan-out (archiver
  * enqueue, history asks, digipeat, flow logs) stays in each firmware,
  * called BESIDE xst_ingest, never through it.
  */
@@ -326,7 +326,7 @@ int  xst_far_rssi(const char *observer, const char *call, int ttl_sec);
  * out of any recent-window query. A conversation is small, precious and
  * worth its own few kilobytes.
  *
- * Save from ONE task that may block on flash (the indexer's writer, core
+ * Save from ONE task that may block on flash (the archiver's writer, core
  * 1), never from a bearer callback. xst_chat_dirty() says when it is worth
  * doing; it clears on read. */
 bool xst_chat_dirty(void);

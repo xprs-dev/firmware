@@ -425,7 +425,7 @@ int xcfg_ini_render(char *buf, size_t cap)
         "; Carry ESP-NOW traffic onto the LAN (toward the internet side).\n"
         "enabled = %s\n"
         "\n"
-        "[indexer]\n"
+        "[archiver]\n"
         "; Keep every packet heard, answer cmd:history, hold mail.\n"
         "enabled = %s\n"
         "\n"
@@ -557,11 +557,18 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "digipeater", "enabled", "digi_on" },
     { "bridge",  "enabled",  "bridge_on" },
     { "igate",   "enabled",  "igate_on" },
+    { "archiver", "enabled",  "index_on" },
+    { "archiver", "always_on", "index_always_on" },
+    { "archiver", "archivers", "archivers" },
+    /* The names these two had before 12.9.4's qualities replaced the word
+     * `super`. Kept so an existing xprs.ini keeps working. */
+    { "archiver", "super",    "index_super" },
+    { "archiver", "supers",   "supers" },
+    /* The section was called [indexer] until 2026-11-06. An xprs.ini written
+     * by an older build, or by hand from older docs, still applies. */
     { "indexer", "enabled",  "index_on" },
     { "indexer", "always_on", "index_always_on" },
     { "indexer", "archivers", "archivers" },
-    /* The names these two had before 12.9.4's qualities replaced the word
-     * `super`. Kept so an existing xprs.ini keeps working. */
     { "indexer", "super",    "index_super" },
     { "indexer", "supers",   "supers" },
     /* The hub this station DIALS OUT to. It was in the cache and nowhere in

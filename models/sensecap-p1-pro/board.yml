@@ -89,8 +89,8 @@ xprs:
   hotspot_note: No WiFi radio.
   api: "no"
   api_note: No IP, no HTTP. The station talks only on the air.
-  indexer: "no"
-  indexer_note: Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.
+  archiver: "no"
+  archiver_note: Not ported; the 2 MB QSPI part could hold an archive, nothing writes it yet.
   share: "no"
   share_note: Nothing to serve and nothing to serve it over.
   reticulum: "no"

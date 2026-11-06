@@ -63,7 +63,7 @@ xprs:
     T-Dongle measured the AP at ~9 KB of internal heap on this chip.
     `cfg set ap_on 1` turns it on.
   api: "yes"
-  indexer: "yes"
+  archiver: "yes"
   share: "yes"
   reticulum: "no"
   reticulum_note: CONFIG_XPRS_BEARER_RNS=n. The hub link's socket and task cost 12.7 KB on the T-Dongle, and this board has none to spare.

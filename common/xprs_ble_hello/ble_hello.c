@@ -180,7 +180,7 @@ static msgstore_t *s_msgstore;
 void ble_hello_set_msgstore(msgstore_t *st) { s_msgstore = st; }
 
 /* XPRS index: every XPRS packet this station hears, answerable over the
- * xprs_query GATT path (docs/XPRS.md §36). NULL = not an indexer. */
+ * xprs_query GATT path (docs/XPRS.md §36). NULL = not an archiver. */
 static xprsidx_t *s_xprsidx;
 void ble_hello_set_xprsindex(xprsidx_t *st) { s_xprsidx = st; }
 
@@ -1504,7 +1504,7 @@ static bool aprs_decode(const uint8_t *payload, int len, int rssi)
     if (len <= 0) return false;
 
     /* Every compact frame, GATT parcel and reassembled broadcast reaches this
-     * function, so it is the one place the indexer needs. An XPRS packet has no
+     * function, so it is the one place the archiver needs. An XPRS packet has no
      * 0x1F separators and would be dropped below as "not an XPRS frame"; it
      * is offered here first, before any of that. */
     xprs_ingest(payload, len, rssi);

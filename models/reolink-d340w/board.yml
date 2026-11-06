@@ -85,8 +85,8 @@ xprs:
     API-HTTP.md, /door/snapshot.jpg and /door/stream.mjpeg with /api/services
     beside them, proxied from the camera's own api.cgi so no credential is in a
     URL it hands out.
-  indexer: "no"
-  indexer_note: Not ported. The microSD is the camera's recording store.
+  archiver: "no"
+  archiver_note: Not ported. The microSD is the camera's recording store.
   share: "no"
   share_note: No archive, so nothing to serve.
   reticulum: "no"

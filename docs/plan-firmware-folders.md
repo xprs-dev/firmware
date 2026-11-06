@@ -114,7 +114,7 @@ share that stack. The bench C3 (X3SQS6) was on a 0.1.0 build from before
 the fetcher existed, so it got one more flash over the cable; from there
 it updates itself like the T-Deck. That flash found two boot-order races
 the C3's single core exposes (the statistics loader filling rings
-`xst_init` had not allocated, the indexer looking up a Reticulum peer
+`xst_init` had not allocated, the archiver looking up a Reticulum peer
 before `xprsrns_init`), both fixed, and one cadence hole: the C3's first
 folder ask went to the T-Deck at the very second the T-Deck was rebooting
 into beta.4, and an unanswered ask used to wait six hours. It now retries

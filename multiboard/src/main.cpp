@@ -1337,7 +1337,7 @@ static int tdongle_xprs_lan_beacon(char *out, int cap)
 static esp_err_t tdongle_api_messages_handler(httpd_req_t *req) { return tdongle_archive_query(req, s_msg_store); }
 static esp_err_t tdongle_api_beacons_handler(httpd_req_t *req)  { return tdongle_archive_query(req, s_beacon_store); }
 
-/* ---- GET /api/xprs — the indexer, over HTTP ----------------------------- */
+/* ---- GET /api/xprs — the archiver, over HTTP ----------------------------- */
 
 typedef struct {
     char  *buf;
@@ -1737,7 +1737,7 @@ extern "C" void app_main(void)
                             s_beacon_store = msgstore_open("/sdcard/aprs/beacon");
                             aprsis_set_stores(s_msg_store, s_beacon_store);
                             ble_hello_set_msgstore(s_msg_store);
-                            // Indexer (docs/XPRS.md §36), on by default and
+                            // Archiver (docs/XPRS.md §36), on by default and
                             // alongside store-and-forward: every XPRS packet
                             // heard is kept here and answerable. Its own
                             // directory and epoch — the APRS archives above
@@ -1747,12 +1747,12 @@ extern "C" void app_main(void)
                                 ble_hello_set_xprsindex(s_xprs_index);
                                 xprsidx_stats_t xs;
                                 xprsindex_stats(s_xprs_index, &xs);
-                                ESP_LOGI(TAG, "XPRS indexer ready — %u records, "
+                                ESP_LOGI(TAG, "XPRS archiver ready — %u records, "
                                               "epoch %c, %u segments",
                                          (unsigned)xs.count, xs.epoch,
                                          (unsigned)xs.segments);
                             } else {
-                                ESP_LOGW(TAG, "XPRS indexer unavailable — "
+                                ESP_LOGW(TAG, "XPRS archiver unavailable — "
                                               "packets are relayed, none kept");
                             }
 #ifdef XPRSIDX_BENCH

@@ -1573,7 +1573,7 @@ at priority 4, `idx` at 3, `script` at 2.
 
 Note what that does to the four earlier records, which showed `crash.task` as
 `ui` three times and `idx` once: on the rehearsal's reading those name the
-task that would not yield, which puts the UI and indexer paths in the frame
+task that would not yield, which puts the UI and archiver paths in the frame
 and leaves the classifier and the bridges out of it. That is a direction, not
 a cause, and `starved` is what will settle it. The direction did hold: what
 stopped the reboots was a feed in the UI flush path, and nothing in the

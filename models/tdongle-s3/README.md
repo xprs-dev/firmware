@@ -65,7 +65,7 @@ the new one failed.
 `firmware/src/main.c` is about 190 lines and contains no station logic: it is
 the ST7735 on the pins in `common/xprs_model_tdongle_s3`, the BOOT strap pin
 (the only button there is), and one `xapp_board_t` handed to `xapp_run()`.
-Everything else -- the bearers, the indexer, the HTTP API, the updater, the
+Everything else -- the bearers, the archiver, the HTTP API, the updater, the
 signing, the gossip -- is `common/xprs_app`, shared with the T-Deck and the
 M5Stack.
 
@@ -120,7 +120,7 @@ rather than by the operator's taste:
 ### The archive moved into flash
 
 `partitions.csv` now carries a wear-levelled FAT `storage` partition at the
-same offset and size as the T-Deck's, and the indexer, the log, the stats and
+same offset and size as the T-Deck's, and the archiver, the log, the stats and
 the chat all live there. Before this the archive was on the microSD card, so
 a dongle with an empty slot kept nothing, and the log had a raw partition
 reserved for it that was never written.

@@ -2,7 +2,7 @@
  * @file xprs_app.h
  * @brief The XPRS station, minus the board it runs on.
  *
- * Everything a station does -- the bearers, the indexer, the eight-panel
+ * Everything a station does -- the bearers, the archiver, the eight-panel
  * dashboard, the HTTP API, the walk-up hotspot -- is the same program on
  * every board. What differs is a screen, a handful of pins, and how a
  * person presses something. This component is the program; the board

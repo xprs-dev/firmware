@@ -15,7 +15,7 @@ phy_init, data, phy,      0x11000,  0x1000
 # App partitions must start on a 0x10000 boundary, hence the gap below.
 ota_0,    app,  ota_0,    0x20000,  0x1E0000
 ota_1,    app,  ota_1,    0x200000, 0x1E0000
-# Everything the indexer stores: a wear-levelled FAT. It shrinks from 13.94 MB
+# Everything the archiver stores: a wear-levelled FAT. It shrinks from 13.94 MB
 # to 11.63 MB to pay for the second slot, and it MOVES, so the first boot on
 # this table reformats it once -- the archive, stats and logs are lost that
 # one time. The index cap is 10 MB, which still fits.

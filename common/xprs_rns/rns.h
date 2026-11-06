@@ -1,6 +1,6 @@
 /**
  * @file rns.h
- * @brief Enough Reticulum for a station to reach an indexer.
+ * @brief Enough Reticulum for a station to reach an archiver.
  *
  * Wire-compatible with RNS 1.3.5 and with the `reticulum-dart` sibling package,
  * which is the implementation this one is tested against — the host harness
@@ -16,7 +16,7 @@
  * another station without establishing anything first.
  *
  * Not here: LINK, ratchets, resources, transport/routing. A dongle that talks
- * to an indexer it already knows the address of needs none of them, and each
+ * to an archiver it already knows the address of needs none of them, and each
  * would cost memory this board does not have. If a link is ever needed, this
  * file is the layer it would sit on rather than something to unpick.
  *

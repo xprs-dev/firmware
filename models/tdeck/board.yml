@@ -47,7 +47,7 @@ xprs:
   igate: "yes"
   hotspot: "yes"
   api: "yes"
-  indexer: "yes"
+  archiver: "yes"
   share: "yes"
   reticulum: "untested"
   reticulum_note: xprs_app brings xprsrns up on every board; not measured here since the rewrite.

@@ -43,7 +43,7 @@ ROM bootloader; use `esptool ... --after hard_reset read_mac` to get it back.
 SSD1306 on the pins in `common/xprs_model_heltec_v3`, the SX1262 handed to
 the LoRa bearer as a pin table, the battery divider, the PRG button, and one
 `xapp_board_t` handed to `xapp_run()`. Everything else -- the four bearers,
-the digipeater, the indexer, the HTTP API, the updater, the gossip -- is
+the digipeater, the archiver, the HTTP API, the updater, the gossip -- is
 `common/xprs_app`.
 
 Two things in the tree changed to make room for it:

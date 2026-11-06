@@ -386,7 +386,7 @@ Status is from each `board.yml`: **shipping** (runs its intended firmware),
 ### T-Dongle-S3 — `models/tdongle-s3/` · shipping · own project
 ESP32-S3, 512 KB RAM, no PSRAM, 16 MB flash; 160×80 LCD; **no LoRa**. WiFi +
 BLE5. Runs the full `xprs_app`: **BLE5, LAN and ESP-NOW** bearers, digipeater,
-cross-bearer bridge, APRS-IS iGate, HTTP API, indexer, **signed OTA**. Designed
+cross-bearer bridge, APRS-IS iGate, HTTP API, archiver, **signed OTA**. Designed
 to sit on a USB port next to a router as the **BLE↔LAN bridge**; the screen
 cycles three status views on its own because the button is usually under a case.
 The steadiest choice for the GATT-server role on the bench.
@@ -394,7 +394,7 @@ The steadiest choice for the GATT-server role on the bench.
 ### M5Stack Core — `models/m5stack-core/` · shipping · own project
 Original ESP32 (Bluetooth **4.2**, so **no BLE5 bearer**), 320×240 screen, three
 buttons. **LAN and ESP-NOW** only, with the seven-panel dashboard, a hotspot AP
-with the chat page, digipeater, iGate, indexer and signed OTA. Lives at ~8–15 KB
+with the chat page, digipeater, iGate, archiver and signed OTA. Lives at ~8–15 KB
 free heap, so it **takes an OTA push over its own AP rather than fetching** one
 (the HTTP client would not fit at the moment the signature is checked). The
 "second voice" on the bench: something to hear whatever the S3 boards send.

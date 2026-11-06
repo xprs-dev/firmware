@@ -220,7 +220,7 @@ xTaskCreatePinnedToCore(task, "name", stack, arg, prio, NULL, 1);
 ### It came back, wearing a different hat
 
 Writing this page down did not stop it happening again. `cmd:history` -- an
-indexer answering "what have you heard" -- was written to answer inline, on
+archiver answering "what have you heard" -- was written to answer inline, on
 whatever task heard the ask. That put a FatFs query on the **NimBLE host task**
 (priority 21, core 0) for a Bluetooth ask and on the LAN bearer's task for a UDP
 one, and it put the replay's record reads on `rns_relay`, which was created with
@@ -466,7 +466,7 @@ wakefulness is `uptime:`, and the lane it arrived on says whether it can be
 reached from anywhere but this room (12.9.4). The board reads its peers the
 same way (`ALWAYS_ON_MIN_RECORDS`, `ALWAYS_ON_MIN_UPTIME_S` in `xprs_app.c`),
 and an old station's `archive,super` is heard, correctly, as `archive`.
-Config: `[indexer] always_on` and `archivers` -- `super` and `supers` are still
+Config: `[archiver] always_on` and `archivers` -- `super` and `supers` are still
 read so a configured board keeps its settings.
 
 Eviction follows XPRS.md 12.11 and nothing else: class first (declared mail,
@@ -760,7 +760,7 @@ Note the order in that table. `api_start` and the BLE host now come BEFORE the
 card and the bearers, and that is not tidiness -- see "The boot order is the
 allocator" below.
 
-The whole cycle repeated on the M5Stack Core the day it grew an indexer, and
+The whole cycle repeated on the M5Stack Core the day it grew an archiver, and
 the same medicine worked: `xprsidx_wr`'s 8 KB start became a coin toss at
 ~29 KB free, so the index task moved to the top of `app_main` (heap still one
 172 KB block) with its create checked and logged; LVGL's pool was sized from
@@ -770,7 +770,7 @@ the screen; and `max_files` came back DOWN after being raised "to be safe" --
 each open `FILE` is a 4 KB sector cache, so raising it to 12 had offered the
 heap a 48 KB hole. Steady-state free heap went 29 KB -> 57 KB. A rarely-used
 debug path (the serial frame dump) had also grown a 41 KB `malloc` nobody
-re-measured; it failed silently the day the indexer moved in. Anything that
+re-measured; it failed silently the day the archiver moved in. Anything that
 must not die quietly encodes in small static chunks instead of allocating
 the whole answer.
 

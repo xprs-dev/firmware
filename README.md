@@ -40,7 +40,7 @@ checked for shape by `tools/scripts/check_board_yml.py`, and rendered by
 `tools/scripts/build_catalog.py` into [`index.html`](index.html)
 and [`docs/boards.json`](docs/boards.json) -- every board as JSON, with a
 link to its folder here, its vendor page and manual, what its radios are,
-and which XPRS roles (digipeater, iGate, hotspot, indexer, ...) it fills.
+and which XPRS roles (digipeater, iGate, hotspot, archiver, ...) it fills.
 [`docs/board.template.json`](docs/board.template.json) is the empty shape.
 `tools/scripts/collect_prebuilt.py` copies each built image into
 `models/<board>/prebuilt/` with a web-flasher manifest, and the page offers
@@ -105,7 +105,7 @@ section 23.7), `xprs_id`, `xprs_sig` and `xprs_index`.
 project all run it: the T-Deck, the M5Stack, the T-Dongle and the Heltec V3. A board's
 `main.c` is its screen, its pins and how a person presses something,
 described in one `xapp_board_t` and handed to `xapp_run()` -- 150 to 650
-lines, no station logic at all. A fix to a bearer, a panel or the indexer is
+lines, no station logic at all. A fix to a bearer, a panel or the archiver is
 made once and every board has it.
 
 The screen is the one thing the boards genuinely disagree about, so it is

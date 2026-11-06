@@ -198,7 +198,7 @@ reuse potential.
   compare (`xfolder_version_cmp`). Reuse the version compare wherever a
   version string is ordered; it is numeric, not lexical.
 - **Tables allocated at init, read from other tasks (`chat_ensure()`,
-  `peer_find()`, `xst_stats_load()`)** -- on the single-core C3 the indexer
+  `peer_find()`, `xst_stats_load()`)** -- on the single-core C3 the archiver
   and the bearers are up before `app_main` reaches `xst_init()` and
   `xprsrns_init()`, and a packet heard two seconds into the boot reaches
   their tables first. Two shapes, both already in the tree: allocate on

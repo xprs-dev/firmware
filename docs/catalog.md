@@ -108,7 +108,7 @@ xprs:          what the station on this board does on the network, one key
                  igate         APRS-IS uplink over IP
                  hotspot       its own access point with the chat page on it
                  api           the HTTP API (/api/status, /api/xprs/...)
-                 indexer       the card-backed XPRS index
+                 archiver       the card-backed XPRS index
                  share         serves its archive to other stations
                  reticulum     a Reticulum bearer or hub
                  ota           signed over-the-air updates

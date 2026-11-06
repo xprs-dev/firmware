@@ -116,7 +116,7 @@ static esp_err_t h_status(httpd_req_t *req)
         xprsidx_stats_t st;
         xprsindex_stats(s_cfg->index, &st);
         n += snprintf(buf + n, cap - n,
-                      ",\"indexer\":{\"enabled\":true,\"count\":%lu,"
+                      ",\"archiver\":{\"enabled\":true,\"count\":%lu,"
                       "\"epoch\":\"%c\"}",
                       (unsigned long)st.count, st.epoch);
     }

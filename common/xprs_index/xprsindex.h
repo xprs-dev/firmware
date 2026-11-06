@@ -2,7 +2,7 @@
  * @file xprsindex.h
  * @brief Every XPRS packet this station hears, kept on microSD and answerable.
  *
- * docs/XPRS.md section 36: an indexer is handed the packet itself, verbatim and
+ * docs/XPRS.md section 36: an archiver is handed the packet itself, verbatim and
  * signed, and answers questions about it. This is that store for the T-Dongle.
  *
  * ── Why not msgstore, and why not SQLite ────────────────────────────────────
@@ -419,23 +419,23 @@ void xprsindex_set_gate(xprsidx_t *st, xprsidx_gate_fn gate);
  */
 void xprsindex_pause_writes(xprsidx_t *st, bool paused);
 
-/* ── The directory an indexer publishes (XPRS.md §36.9) ─────────────────── */
+/* ── The directory an archiver publishes (XPRS.md §36.9) ─────────────────── */
 
-/** One archived station: its callsign and when this indexer last heard it. */
+/** One archived station: its callsign and when this archiver last heard it. */
 typedef struct {
     char     call[XPRSIDX_CALL_LEN];
     uint32_t last_ts;                 /* the packet's own ts:, epoch seconds */
 } xprsidx_dir_entry_t;
 
 /**
- * @brief Who this indexer archives, for the XDIR1 listing of §36.9.
+ * @brief Who this archiver archives, for the XDIR1 listing of §36.9.
  *
  * Sorted by callsign, one entry per station, with the most recent time it was
- * heard — which is exactly what a peer indexer needs to decide whether to ask
+ * heard — which is exactly what a peer archiver needs to decide whether to ask
  * us about a callsign, and nothing more. **Content never travels between
- * indexers; only this does.**
+ * archivers; only this does.**
  *
- * Walks the store, so it is not free: an indexer publishes a directory on a
+ * Walks the store, so it is not free: an archiver publishes a directory on a
  * cadence, it does not rebuild one per question.
  *
  * @return entries written (<= @p max).

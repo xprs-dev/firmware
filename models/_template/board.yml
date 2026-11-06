@@ -48,7 +48,7 @@ xprs:
   igate:
   hotspot:
   api:
-  indexer:
+  archiver:
   share:
   reticulum:
   ota:

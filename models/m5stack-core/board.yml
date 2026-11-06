@@ -12,7 +12,7 @@ summary: >-
   buttons, speaker, microSD, Grove port, USB-C and a 110 mAh battery. Radios:
   WiFi 2.4 GHz and Bluetooth 4.2 (legacy advertising only, so no BLE5 bearer).
   Runs xprs_app over LAN and ESP-NOW with the seven-panel dashboard, hotspot
-  AP with the chat page, digipeater, iGate, indexer and signed OTA. Used as
+  AP with the chat page, digipeater, iGate, archiver and signed OTA. Used as
   the second station on the bench: anything the T-Dongle or T-Deck sends has
   something to hear it.
 status: shipping
@@ -51,7 +51,7 @@ xprs:
   igate: "yes"
   hotspot: "yes"
   api: "yes"
-  indexer: "yes"
+  archiver: "yes"
   share: "yes"
   reticulum: "untested"
   reticulum_note: xprs_app brings xprsrns up on every board; not measured here since the rewrite.

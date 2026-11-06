@@ -12,7 +12,7 @@ phy_init, data, phy,     0x11000,  0x1000
 # 2 MB each; the image is about 1.35 MB.
 ota_0,    app,  ota_0,   0x20000,  0x200000
 ota_1,    app,  ota_1,   0x220000, 0x200000
-# The indexer's store: a wear-levelled FAT over the spare flash. It paid for
+# The archiver's store: a wear-levelled FAT over the spare flash. It paid for
 # the second slot -- 13.4 MB down to 11.4 MB, and it MOVED, so the first
 # boot on this table reformats it once. The archive, stats and logs are lost
 # that one time; NVS above is untouched and the station keeps its identity.

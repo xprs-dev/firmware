@@ -94,7 +94,7 @@ carried up with (XPRS.md 25.8). What that needs on the device:
 
 **Not every board can host the pull path, and this is measured.** The
 m5stack-core is an original ESP32 running LVGL beside WiFi, a FAT
-archive, an indexer and a captive portal, and it lives at about 8-15 KB
+archive, an archiver and a captive portal, and it lives at about 8-15 KB
 of free heap. An HTTP client for a 1.4 MB image does not fit in that
 comfortably: the updater's own 8 KB task took the whole margin (ENOMEM in
 the LAN bearer, the index unable to open its files), and buying the

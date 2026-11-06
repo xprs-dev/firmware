@@ -138,7 +138,7 @@ typedef struct {
      * nobody can act on. A station that has just booted would otherwise wait a
      * whole identity period to be invitable. Introduce yourself first. */
     void (*announce_identity)(void);
-    /** Is this station willing to leave the commons at all? An indexer that is
+    /** Is this station willing to leave the commons at all? An archiver that is
      *  somebody's only uplink may reasonably answer no. */
     bool (*may_move)(void);
     /** Block until the bearer has actually transmitted everything handed to it.
