@@ -36,7 +36,10 @@ reuse potential.
   `wifi_up()` tolerates the already-created state. The same rule the big task
   stacks, the echo buffer and httpd already follow. A FreeRTOS task stack
   cannot come from PSRAM, so on an xwifi board (banks reserved) claiming it
-  late fails.
+  late fails. The screen's UI task follows it too (`s_ui_stack`, 8 KB,
+  `xTaskCreateStaticPinnedToCore`): on the T-Dongle the late 8 KB ask found a
+  3.2 KB largest block, the 6 KB fallback overflowed under LVGL and corrupted
+  the heap. A task whose stack size is known at boot gets it at boot.
 
 ## Relay / wire (shared by every bearer — do not reimplement per bearer)
 

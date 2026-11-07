@@ -333,7 +333,14 @@ static int sign_wire(char *wire, int len, int cap)
  * only task allowed near the storage -- drains it to /idx/log/cur.txt and
  * rotates to prev.txt at 64 KB, so a freeze or a crash leaves at most two
  * files and the truth of the last minutes on the flash. */
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
 #define LOGRING_N 6144
+#else
+/* Without PSRAM the ring is internal RAM the radios and the task stacks
+ * need: the T-Dongle booted with 5 KB free. Three KB keeps the last
+ * minute or so of lines, which is what the log page is read for. */
+#define LOGRING_N 3072
+#endif
 /* Allocated at boot (xprs_big_calloc): on the xwifi boards .bss must stay
  * clear of the RF sample banks, so the big buffers moved to the heap, which
  * may use the DRAM above them. NULL until then -- the hook skips the ring
@@ -347,6 +354,7 @@ static volatile uint32_t s_logring_lost;
 static portMUX_TYPE s_logring_mux = portMUX_INITIALIZER_UNLOCKED;
 static vprintf_like_t s_log_orig;
 static StackType_t *s_console_stack;   /* claimed at boot for the headless UI task */
+static StackType_t *s_ui_stack;        /* claimed at boot for the screen's UI task */
 
 static int log_hook(const char *fmt, va_list ap)
 {
@@ -1982,6 +1990,10 @@ static void tasks_report(void);
  * over; every other board keeps this default. */
 #ifndef XPRS_STACK_UI_HEADLESS
 #define XPRS_STACK_UI_HEADLESS 4096
+#endif
+/* With a screen: what LVGL's render needs; 6 KB overflowed on the T-Dongle. */
+#ifndef XPRS_STACK_UI
+#define XPRS_STACK_UI 8192
 #endif
 
 
@@ -10707,6 +10719,15 @@ void xapp_run(const xapp_board_t *board)
         !xcfg_get_bool("screen_on", XPRS_SCREEN_DEFAULT_ON))
         s_console_stack = heap_caps_malloc(XPRS_STACK_UI_HEADLESS,
                                            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    else
+        /* The screen's task too, and for the same reason. On the T-Dongle
+         * (no PSRAM) the 8 KB ask at the end of app_main found a largest
+         * block of 3.2 KB, the task started on the 6 KB fallback, LVGL
+         * overflowed it ("A stack overflow in task ui has been detected",
+         * 2026-11-07), and the overrun corrupted the heap under the status
+         * task's next heap walk. Claimed here, the 8 KB is certain. */
+        s_ui_stack = heap_caps_malloc(XPRS_STACK_UI,
+                                      MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     /* The rotating log first, so everything after this lands in it, and
      * the reset reason first of all -- it is the one fact a freeze leaves
@@ -11281,8 +11302,16 @@ void xapp_run(const xapp_board_t *board)
          * at 4 then 1: 621 then 141 records turned away by the writer, 68
          * then 195 stored). The screen waits for the card; nothing the card
          * serves waits for the screen. */
-        if (xTaskCreatePinnedToCore(ui_task, "ui", 8192, NULL, 1, NULL,
-                                    XPRS_WORK_CORE) != pdPASS) {
+        static StaticTask_t ui_tcb;
+        if (s_ui_stack) {
+            /* On the stack claimed at boot (s_ui_stack): the fallbacks
+             * below are for a boot where even that claim failed. */
+            if (!xTaskCreateStaticPinnedToCore(ui_task, "ui", XPRS_STACK_UI,
+                                               NULL, 1, s_ui_stack, &ui_tcb,
+                                               XPRS_WORK_CORE))
+                ESP_LOGE(TAG, "UI task failed to start");
+        } else if (xTaskCreatePinnedToCore(ui_task, "ui", XPRS_STACK_UI, NULL,
+                                           1, NULL, XPRS_WORK_CORE) != pdPASS) {
             if (xTaskCreatePinnedToCore(ui_task, "ui", 6144, NULL, 1, NULL,
                                         XPRS_WORK_CORE) != pdPASS)
                 ESP_LOGE(TAG, "UI task failed to start");

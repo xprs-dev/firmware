@@ -67,8 +67,11 @@ CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
 
 # WiFi receive/transmit buffers. Static ones are ~1.6 KB each and permanent;
 # dynamic ones are a ceiling on what the driver may take while busy.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
-CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+# Four static and twelve dynamic, as on the C3: this board has no PSRAM and
+# booted with 5 KB of internal heap free (2026-11-07); two static buffers
+# are 3.2 KB of it back, and the board is a BLE5 bridge, not a hotspot.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 
 # Sixteen listening sockets and sixteen raw PCBs are far more than this station
