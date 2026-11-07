@@ -6,4 +6,5 @@ idf_component_register(
     REQUIRES esp_http_server xprs_index xprs_codec esp_timer log
              xprs_auth xprs_ota app_update esp_app_format espcoredump esp_system
              xprs_common xprs_diag xprs_station xprs_webchat xprs_nostr
+             mbedtls fatfs
 )

@@ -17,3 +17,8 @@ cc -Wall -Wextra -Werror -O1 -g -DXPRSSIG_HOST_TEST \
     -o /tmp/test_xwc${SAN:+_san} xwc.c ../xprs_id/xprsid.c ../xprs_sig/xprssig.c \
     ../xprs_codec/xprs.c test_xwc_host.c -lcrypto
 /tmp/test_xwc${SAN:+_san}
+# The file references of /api/xprs/file/<ref> (xwc_file.c).
+cc -Wall -Wextra -Werror -O1 -g \
+    ${SAN:+-fsanitize=address,undefined -fno-omit-frame-pointer} \
+    -I. -o /tmp/test_xwc_file${SAN:+_san} xwc_file.c test_xwc_file_host.c -lcrypto
+/tmp/test_xwc_file${SAN:+_san}

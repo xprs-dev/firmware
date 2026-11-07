@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -12,10 +14,13 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "esp_vfs_fat.h"
+#include "mbedtls/sha256.h"
 #include "nostr_keys.h"
 #include "xapi_send.h"
 #include "xprsindex.h"
 #include "xwc.h"
+#include "xwc_file.h"
 
 static const char *TAG = "xapi_wc";
 static const xprs_api_cfg_t *s_cfg;
@@ -180,6 +185,8 @@ static const char *status_line(int code)
     case 403: return "403 Forbidden";
     case 404: return "404 Not Found";
     case 409: return "409 Conflict";
+    case 413: return "413 Payload Too Large";
+    case 429: return "429 Too Many Requests";
     case 503: return "503 Service Unavailable";
     default:  return "500 Internal Server Error";
     }
@@ -277,11 +284,183 @@ static esp_err_t h_rooms_post(httpd_req_t *req)
     return answer(req, code, s_buf);
 }
 
+/* ---- /api/xprs/file/<ref>: files by reference (XPRS.md 7.7) -----------
+ * The station keeps what a visitor stores under its digest and hands it to
+ * whoever asks for it by reference (spec/API-HTTP.md). Generic: an image in
+ * a post is one user, nothing here knows it. On a card when the board has
+ * one, else a small corner of the board's own storage, which the archive,
+ * the log and the engine's state need first: a file there is small, the
+ * whole store is capped, and the oldest file goes to make room. Bytes are
+ * streamed through the shared buffer and hashed on the way; a file is never
+ * held whole in RAM. Everything here is public: the board keeps no private
+ * file, so there is nothing for a 403 to protect. */
+#define FILE_DIR_SD      "/sdcard/xfiles"
+#define FILE_DIR_IDX     "/idx/xfiles"
+#define FILE_MAX_SD      (2u * 1024u * 1024u)
+#define FILE_BUDGET_SD   (32u * 1024u * 1024u)
+#define FILE_MAX_IDX     (96u * 1024u)
+#define FILE_BUDGET_IDX  (192u * 1024u)
+#define FILE_RESERVE     (128u * 1024u)   /* left free on the volume, always */
+#define FILE_PUTS_MIN    12               /* stores a minute, all visitors */
+#define FILE_CHUNK       1024
+
+static bool s_on_sd(void)
+{
+    struct stat st;
+    return stat("/sdcard", &st) == 0 && S_ISDIR(st.st_mode);
+}
+static const char *file_dir(void) { return s_on_sd() ? FILE_DIR_SD : FILE_DIR_IDX; }
+static uint32_t file_max(void) { return s_on_sd() ? FILE_MAX_SD : FILE_MAX_IDX; }
+static uint32_t file_budget(void) { return s_on_sd() ? FILE_BUDGET_SD : FILE_BUDGET_IDX; }
+
+/* The free bytes on the volume the store is on, or 0 when it cannot say. */
+static uint64_t file_free(void)
+{
+    uint64_t tot = 0, fre = 0;
+    if (esp_vfs_fat_info(s_on_sd() ? "/sdcard" : "/idx", &tot, &fre) != ESP_OK) return 0;
+    return fre;
+}
+
+/* Make room for [need] more bytes: the oldest files go until the store is
+ * under its budget and the volume keeps its reserve. False when it cannot. */
+static bool file_room(uint32_t need)
+{
+    const char *dir = file_dir();
+    for (int round = 0; round < 64; round++) {
+        DIR *d = opendir(dir);
+        if (!d) return false;
+        uint64_t total = 0;
+        time_t oldest_t = 0;
+        char oldest[80] = "", path[96];
+        struct dirent *e;
+        while ((e = readdir(d))) {
+            if (strlen(e->d_name) != 64) continue;     /* a part, or not ours */
+            struct stat st;
+            snprintf(path, sizeof path, "%s/%.64s", dir, e->d_name);
+            if (stat(path, &st) != 0) continue;
+            total += (uint64_t)st.st_size;
+            if (!oldest[0] || st.st_mtime < oldest_t) {
+                oldest_t = st.st_mtime;
+                snprintf(oldest, sizeof oldest, "%.64s", e->d_name);
+            }
+        }
+        closedir(d);
+        uint64_t fre = file_free();
+        if (total + need <= file_budget() && fre >= (uint64_t)need + FILE_RESERVE) return true;
+        if (!oldest[0]) return false;
+        snprintf(path, sizeof path, "%s/%.64s", dir, oldest);
+        ESP_LOGI(TAG, "file store: %s.. goes to make room", oldest);
+        if (remove(path) != 0) return false;
+    }
+    return false;
+}
+
+/* The reference at the end of the request's path, or false. */
+static bool file_ref(httpd_req_t *req, char *ref, size_t cap, uint8_t sha[32], char ext[XWCF_EXT_MAX + 1])
+{
+    const char *p = req->uri + strlen("/api/xprs/file/");
+    size_t n = strcspn(p, "?#");
+    if (n == 0 || n >= cap) return false;
+    memcpy(ref, p, n);
+    ref[n] = 0;
+    return xwcf_parse(ref, sha, ext);
+}
+
+static esp_err_t h_file_get(httpd_req_t *req)
+{
+    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[96];
+    uint8_t sha[32];
+    if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
+    xwcf_hex(sha, hex);
+    snprintf(path, sizeof path, "%s/%s", file_dir(), hex);
+    FILE *f = fopen(path, "rb");
+    if (!f) return answer(req, 404, "{\"ok\":false,\"error\":\"not held\"}");
+    char etag[70];
+    snprintf(etag, sizeof etag, "\"%s\"", hex);
+    httpd_resp_set_type(req, xwcf_type(ext));
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
+    httpd_resp_set_hdr(req, "ETag", etag);
+    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    size_t r;
+    esp_err_t err = ESP_OK;
+    while ((r = fread(s_buf, 1, FILE_CHUNK, f)) > 0)
+        if ((err = httpd_resp_send_chunk(req, s_buf, (ssize_t)r)) != ESP_OK) break;
+    fclose(f);
+    if (err != ESP_OK) return err;
+    return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+static esp_err_t h_file_post(httpd_req_t *req)
+{
+    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[96], part[96];
+    uint8_t sha[32], got[32];
+    if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
+    if (req->content_len == 0) return answer(req, 400, "{\"ok\":false,\"error\":\"no bytes\"}");
+    if (req->content_len > file_max()) return answer(req, 413, "{\"ok\":false,\"error\":\"larger than this station keeps\"}");
+    /* One visitor's limit is the core's; a board has one HTTP worker and a
+     * small flash, so it caps every visitor together. */
+    static int64_t s_win;
+    static int s_puts;
+    int64_t now = esp_timer_get_time() / 1000000;
+    if (now - s_win >= 60) { s_win = now; s_puts = 0; }
+    if (++s_puts > FILE_PUTS_MIN) return answer(req, 429, "{\"ok\":false,\"error\":\"slow down\"}");
+    xwcf_hex(sha, hex);
+    const char *dir = file_dir();
+    struct stat ds;
+    if (stat(dir, &ds) != 0) mkdir(dir, 0775);   /* made at start; a card may come later */
+    snprintf(path, sizeof path, "%s/%s", dir, hex);
+    snprintf(part, sizeof part, "%s/part.tmp", dir);
+    struct stat st;
+    bool held = stat(path, &st) == 0;
+    if (!held && !file_room((uint32_t)req->content_len))
+        return answer(req, 503, "{\"ok\":false,\"error\":\"no room for it here\"}");
+    FILE *f = held ? NULL : fopen(part, "wb");
+    if (!held && !f) return answer(req, 503, "{\"ok\":false,\"error\":\"cannot write\"}");
+    mbedtls_sha256_context c;
+    mbedtls_sha256_init(&c);
+    mbedtls_sha256_starts(&c, 0);
+    size_t total = 0;
+    bool ok = true;
+    while (total < req->content_len) {
+        size_t want = req->content_len - total;
+        int r = httpd_req_recv(req, s_buf, want < FILE_CHUNK ? want : FILE_CHUNK);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        if (r <= 0) { ok = false; break; }
+        mbedtls_sha256_update(&c, (const unsigned char *)s_buf, (size_t)r);
+        if (f && fwrite(s_buf, 1, (size_t)r, f) != (size_t)r) { ok = false; break; }
+        total += (size_t)r;
+    }
+    mbedtls_sha256_finish(&c, got);
+    mbedtls_sha256_free(&c);
+    if (f) fclose(f);
+    if (!ok) {
+        if (f) remove(part);
+        return answer(req, 400, "{\"ok\":false,\"error\":\"short body\"}");
+    }
+    if (memcmp(got, sha, 32) != 0) {
+        if (f) remove(part);
+        return answer(req, 400, "{\"ok\":false,\"error\":\"the bytes do not match the reference\"}");
+    }
+    if (f && rename(part, path) != 0) {
+        remove(part);
+        return answer(req, 503, "{\"ok\":false,\"error\":\"cannot write\"}");
+    }
+    char out[160];
+    snprintf(out, sizeof out, "{\"ok\":true,\"ref\":\"%s\",\"size\":%u}", ref, (unsigned)total);
+    return answer(req, 200, out);
+}
+
 /* ---- the hooks ------------------------------------------------------ */
 int xapi_wc_services(char *buf, size_t cap)
 {
     /* Every panel the board serves: the page hides what is not listed. */
-    return xwc_services_json(buf, cap, "chat,traffic,devices,stats,station,settings,alerts");
+    int n = xwc_services_json(buf, cap, "chat,traffic,devices,stats,station,settings,alerts");
+    /* Files by reference (/api/xprs/file/<ref>), as large as this board keeps. */
+    if (n > 0 && (size_t)n < cap)
+        n += snprintf(buf + n, cap - (size_t)n, ",\"file\":{\"get\":true,\"put\":true,\"max\":%u}",
+                      (unsigned)file_max());
+    return n;
 }
 
 int xapi_wc_gate(httpd_req_t *req, const char *wire, int len,
@@ -299,6 +478,9 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
         return;
     }
     kv_load();
+    /* The file store's directory, once, rather than on a visitor's request. */
+    struct stat ds;
+    if (stat(file_dir(), &ds) != 0) mkdir(file_dir(), 0775);
     static const xwc_cb_t cb = {
         .now = now_cb, .uptime = uptime_cb, .peer_key = peer_key_cb, .random_bytes = random_cb,
         .kv_get = kv_get, .kv_set = kv_set, .air = air_cb, .file = file_cb,
@@ -314,6 +496,8 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
         { .uri = "/api/admin",   .method = HTTP_POST, .handler = h_admin_post },
         { .uri = "/api/rooms",   .method = HTTP_GET,  .handler = h_rooms_get },
         { .uri = "/api/rooms",   .method = HTTP_POST, .handler = h_rooms_post },
+        { .uri = "/api/xprs/file/*", .method = HTTP_GET,  .handler = h_file_get },
+        { .uri = "/api/xprs/file/*", .method = HTTP_POST, .handler = h_file_post },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(h, &uris[i]);

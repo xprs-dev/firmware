@@ -2380,6 +2380,16 @@ compare heap, not `RAM:`.
   engine itself passed the whole suite, 62 of 62 in 85 s, on the runs the
   fault did not strike (two of eleven), and passes it on the Dart server
   and in the host test every time.
+- **Files by reference under QEMU (2026-11-07).** `/api/xprs/file/<ref>`
+  (`xapi_wc.c`) passed the suite's six file checks on every run, five of
+  five: the size it keeps, 404, a wrong hash refused, a non-reference
+  refused, the bytes kept and served back with their type. The runs then
+  ended where the fault above ends them, at the next flash write, with the
+  file checks skipped as often as with them. The first version made the
+  store's directory on the first upload, and that `mkdir` was the erase the
+  assert came out of (`h_file_post` -> `f_mkdir` -> `wl_erase_range`); the
+  directory is now made when the engine starts, so an upload writes only its
+  own file.
 - **The one that was ours, found looking:** `xs_group()` in `xprssig.c`
   hands every task the same `mbedtls_ecp_group`, and mbedtls caches the
   comb table in `grp->T` on the first multiplication and frees it on the
