@@ -2,7 +2,9 @@
 """Capture a screenshot from a running board over serial.
 
 The firmware mirrors one full LVGL refresh onto the UART as base64 when
-asked (m5stack: the 'S' serial key; t-dongle: the 'dump' console command).
+asked: the 'S' serial key on every board running xprs_app (the T-Deck, the
+T-Dongle, the M5Stack). Log lines can be cut off mid-print by the dump, so a
+reader should look for the markers anywhere in a line, not only at its start.
 Wire format, produced by xprs_ui.c / xprs_ui_mini.c:
 
     FRAMEDUMP BEGIN <w> <h>

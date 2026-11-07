@@ -113,7 +113,7 @@ CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
 # WiFi's static receive buffers are claimed at init, 1.6 KB each: 10 by
 # default. Six still carries a station and a softAP; the dynamic pools grow
 # only under load, and are capped where the M5Stack caps them.
-CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 

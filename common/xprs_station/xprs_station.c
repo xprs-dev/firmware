@@ -593,6 +593,10 @@ static int fresh_rows(xst_dev_t *rows, int in_range_sec)
 
 int xst_devices_links(xst_dev_t *out, int max, int in_range_sec)
 {
+    /* A caller with room for the whole table gets it written straight in:
+     * a second copy here was 1.4 KB more on the status task's 6 KB stack,
+     * which overflowed on the T-Deck (2026-11-07). */
+    if (max >= XST_SEEN_MAX) return fresh_rows(out, in_range_sec);
     xst_dev_t rows[XST_SEEN_MAX];
     int n = fresh_rows(rows, in_range_sec);
     if (n > max) n = max;
@@ -708,8 +712,10 @@ int xst_hears_render(const char *bearer, int ttl_sec, int budget,
     int n = xst_devices_links(rows, XST_SEEN_MAX, ttl_sec);
 
     /* Direct, and on this bearer: a claim about one radio proven on another
-     * is the lie 10.6.1 discards a packet for. */
-    xst_dev_t cand[XST_SEEN_MAX];
+     * is the lie 10.6.1 discards a packet for. Compacted in place (a row
+     * only ever moves to its own slot or an earlier one): a second table
+     * here was another 1.4 KB of the status task's stack. */
+    xst_dev_t *cand = rows;
     uint8_t   dig[XST_SEEN_MAX];
     int  m = 0;
     bool all_signal = true;
@@ -717,8 +723,9 @@ int xst_hears_render(const char *bearer, int ttl_sec, int budget,
         if (rows[i].hops != 0) continue;
         if (bearer && bearer[0] && strcmp(rows[i].bearer, bearer) != 0)
             continue;
-        cand[m++] = rows[i];
         if (!rows[i].rssi) all_signal = false;   /* the LAN has none */
+        if (m != i) cand[m] = rows[i];
+        m++;
     }
     if (total) *total = m;      /* 10.6.4: the true count, cut list or not */
     ESP_LOGI(TAG, "hears(%s): %d of %d fresh, signal=%s",

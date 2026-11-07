@@ -12,7 +12,11 @@
 #include "xprssig.h"
 
 /* ---- limits ------------------------------------------------------------ */
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#define ACTS_MAX      96      /* every act, every group this station runs */
+#else
 #define ACTS_MAX      192     /* every act, every group this station runs */
+#endif
 #define MEMBERS_MAX   24      /* roles per group */
 #define AWAY_MAX      12
 #define REMOVED_MAX   48

@@ -11220,7 +11220,14 @@ void xapp_run(const xapp_board_t *board)
      * fitted by luck; on the S3 the frames are bigger and the task died at
      * the first identity, exactly 60 s after every boot. Stack overflow, and
      * it named itself: "A stack overflow in task status has been detected." */
+    /* The beacons, the signed observations and their signature run here.
+     * 6 KB overflowed on the T-Deck while answering a flood of history asks
+     * (2026-11-07); the S3 boards have the RAM for 8 KB, the C3 does not. */
+#if CONFIG_IDF_TARGET_ESP32C3
     xTaskCreate(status_task, "status", 6144, NULL, 1, NULL);
+#else
+    xTaskCreate(status_task, "status", 8192, NULL, 1, NULL);
+#endif
     /* 4 KB, not 3: the time-zone lookup (tz_tick) resolves a name and
      * reads an HTTP answer on this task, and at 3 KB it left 320 bytes
      * (measured on the e-paper board, 2026-09-11). */

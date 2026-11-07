@@ -40,11 +40,15 @@ device it finds and the T-Dongle is one:
 ```sh
 ~/.platformio/penv/bin/pio pkg exec -p tool-openocd-esp32 -- openocd \
   -c "adapter serial DC:DA:0C:3C:24:C8" -f board/esp32s3-builtin.cfg \
-  -c "program_esp .pio/build/tdeck/firmware.bin 0x10000 verify reset exit"
+  -c "program_esp .pio/build/tdeck/firmware.bin 0x20000 verify reset exit"
 ```
 
-Only the app moves; the bootloader and partition table do not change between
-builds. A `USBDEVFS_RESET` on the device node is worth trying first and is
+The app goes to `ota_0` at **0x20000**, the offset in this board's
+`partitions.csv` (the T-Dongle shares the table). Only the app moves between
+builds; a board still on an older table also needs the bootloader at 0x0,
+`partitions.bin` at 0x8000 and `ota_data_initial.bin` at 0xf000, each as its own
+`program_esp`, or it keeps booting the old app from the other slot. OpenOCD
+needs root (or a udev rule) to open the USB device. A `USBDEVFS_RESET` on the device node is worth trying first and is
 often enough.
 
 ## Controls
