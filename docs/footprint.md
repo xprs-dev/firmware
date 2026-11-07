@@ -317,6 +317,15 @@ joined `XPRS-X3WWAJ` at -48 dBm, took 192.168.4.2 and fetched the chat page
 (200, 73,002 bytes), `/api/status` and `/api/services`; the dongle's lowest
 heap through it was 79,876 bytes, 89 KB at rest afterwards.
 
+That pass was not enough. A phone joining the same hotspot saw "Header
+fields are too long": the dongle's `CONFIG_HTTPD_MAX_REQ_HDR_LEN` was the
+512-byte default (so was the Heltec V3's) while every other board carries
+1024, and an Android WebView sends about 760 bytes of headers. The probe
+had passed because it sent 60. Both boards are on 1024 now and the probe
+sends a phone's header set with every request (`PHONE_HDRS` in
+tools/hotspot_probe/src/main.c, `portal=` in its line): against the
+unfixed image it reports `portal=431 page=431/0 status=431`.
+
 Step 3 returned nothing (the controller's report queue is not heap) and was
 reverted. Step 7 (`ESP32S3_DATA_CACHE_16KB`, +16 KB) was not needed.
 
@@ -332,6 +341,10 @@ reverted. Step 7 (`ESP32S3_DATA_CACHE_16KB`, +16 KB) was not needed.
   never used. They are claimed on first use now
   (`common/xprs_rns/rns.c` `rns_scratch`, `xprsrns.c`, `xfw.c`), and every
   board got the same back.
+- **A test rig that is kinder than the user proves nothing.** The probe's
+  bare GET passed a server no phone could open. Test equipment sends what
+  the real client sends: the probe now carries a phone's headers and asks
+  `/generate_204` the way Android does.
 - **Scripting is not a RAM tool.** The Wrench host (common/xprs_script) adds
   21 KB of flash and 12 KB of internal RAM for its task, pools in PSRAM only,
   refuses to start without it, and is not linked here. Code already runs from

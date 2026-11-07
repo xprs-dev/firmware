@@ -199,6 +199,10 @@ CONFIG_ESP_TASK_WDT_PANIC=y
 # everything asked of it (docs/esp32.md). This board is the one with the SD
 # card and the deepest store, and it was the one building without it.
 CONFIG_FATFS_LFN_HEAP=y
+# Phone browsers send >512B of headers (UA + Accept + our nsec cookie);
+# the default answers them 431 'Header fields are too long'. The probe
+# C3 sends 60 bytes and passed; a phone on the dongle's hotspot did not.
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_FATFS_MAX_LFN=255
 
 # XPRS over Reticulum. This board dials a hub in its router role ([ble]

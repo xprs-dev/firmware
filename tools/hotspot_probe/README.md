@@ -7,7 +7,7 @@ DHCP, and fetches from the gateway the chat page, `/api/status` and
 minutes:
 
 ```
-PROBE XPRS-X3UYPS OK rssi=-32 ip=192.168.4.2 gw=192.168.4.1 page=200/48010 status=200 call=X3UYPS services=200/452
+PROBE XPRS-X3UYPS OK rssi=-32 ip=192.168.4.2 gw=192.168.4.1 portal=200 page=200/48010 status=200 call=X3UYPS services=200/452
 PROBE ROUND 20 done 2/2
 ```
 

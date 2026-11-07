@@ -7,7 +7,9 @@
  *   /api/status    the station's callsign
  *   /api/services  what the page may offer
  * and print one line:
- *   PROBE <ssid> rssi=<dBm> ip=<ours> gw=<gw> page=<code>/<bytes> status=<code> call=<X..> services=<code>
+ *   PROBE <ssid> rssi=<dBm> ip=<ours> gw=<gw> portal=<code> page=<code>/<bytes> status=<code> call=<X..> services=<code>
+ * Every request carries the headers an Android WebView sends (PHONE_HDRS),
+ * so a server whose header buffer is too small for a phone fails here too.
  * or PROBE <ssid> FAIL <why>. A round ends with PROBE ROUND <n> done <ok>/<seen>,
  * then the next starts two minutes later.
  */
@@ -49,7 +51,33 @@ static esp_err_t on_http(esp_http_client_event_t *e)
     return ESP_OK;
 }
 
-/* GET http://<gw><path>; the status, and the body's length (and text when buf). */
+/* The headers an Android captive-portal WebView sends, about 760 bytes with
+ * the Host line. A server built with the 512-byte default answers them
+ * 431 "Header fields are too long" while a bare client passes, which is
+ * how the T-Dongle shipped with a hotspot no phone could open. */
+static const char *const PHONE_HDRS[][2] = {
+    { "User-Agent", "Mozilla/5.0 (Linux; Android 14; Pixel 7 Build/UP1A.231005.007; wv) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 "
+                    "Chrome/130.0.6723.86 Mobile Safari/537.36" },
+    { "Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,"
+                "image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7" },
+    { "Accept-Language", "en-US,en;q=0.9,pt-PT;q=0.8,pt;q=0.7" },
+    { "Accept-Encoding", "gzip, deflate" },
+    { "Upgrade-Insecure-Requests", "1" },
+    { "sec-ch-ua", "\"Chromium\";v=\"130\", \"Android WebView\";v=\"130\", \"Not?A_Brand\";v=\"99\"" },
+    { "sec-ch-ua-mobile", "?1" },
+    { "sec-ch-ua-platform", "\"Android\"" },
+    { "Sec-Fetch-Site", "none" },
+    { "Sec-Fetch-Mode", "navigate" },
+    { "Sec-Fetch-User", "?1" },
+    { "Sec-Fetch-Dest", "document" },
+    { "X-Requested-With", "com.android.captiveportallogin" },
+    { "Cookie", "xprs_nsec=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
+    { "Connection", "keep-alive" },
+};
+
+/* GET http://<gw><path> with a phone's headers; the status, and the body's
+ * length (and text when buf). */
 static int get(const char *gw, const char *path, body_t *b)
 {
     char url[64];
@@ -59,6 +87,8 @@ static int get(const char *gw, const char *path, body_t *b)
         .disable_auto_redirect = true,
     };
     esp_http_client_handle_t h = esp_http_client_init(&c);
+    for (size_t i = 0; i < sizeof PHONE_HDRS / sizeof PHONE_HDRS[0]; i++)
+        esp_http_client_set_header(h, PHONE_HDRS[i][0], PHONE_HDRS[i][1]);
     int code = -1;
     if (esp_http_client_perform(h) == ESP_OK) code = esp_http_client_get_status_code(h);
     esp_http_client_cleanup(h);
@@ -100,6 +130,8 @@ static bool probe(const wifi_ap_record_t *ap)
     snprintf(me, sizeof me, IPSTR, IP2STR(&ip.ip));
     snprintf(gw, sizeof gw, IPSTR, IP2STR(&ip.gw));
 
+    body_t portal = { 0 };
+    int cc = get(gw, "/generate_204", &portal);   /* Android's captive check */
     body_t page = { 0 };
     int pc = get(gw, "/", &page);
     static char js[1024];
@@ -110,9 +142,9 @@ static bool probe(const wifi_ap_record_t *ap)
     field(js, "callsign", call, sizeof call);
     body_t sv = { 0 };
     int vc = get(gw, "/api/services", &sv);
-    bool ok = pc == 200 && page.len > 10000 && sc == 200 && strcmp(call, "-") != 0;
-    printf("PROBE %s %s rssi=%d ip=%s gw=%s page=%d/%d status=%d call=%s services=%d/%d\n",
-           ssid, ok ? "OK" : "FAIL", ap->rssi, me, gw, pc, page.len, sc, call, vc, sv.len);
+    bool ok = cc == 200 && pc == 200 && page.len > 10000 && sc == 200 && strcmp(call, "-") != 0;
+    printf("PROBE %s %s rssi=%d ip=%s gw=%s portal=%d page=%d/%d status=%d call=%s services=%d/%d\n",
+           ssid, ok ? "OK" : "FAIL", ap->rssi, me, gw, cc, pc, page.len, sc, call, vc, sv.len);
     esp_wifi_disconnect();
     xEventGroupWaitBits(s_ev, LOST, pdFALSE, pdFALSE, pdMS_TO_TICKS(3000));
     return ok;
