@@ -885,7 +885,16 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
      * request; on the T-Dongle two pushes died mid-transfer with recv=-3
      * before this was raised. Thirty seconds still reaps a dead client. */
     hc.recv_wait_timeout = 30;
-    hc.send_wait_timeout = 30;
+    /* Sending is the other way round. A client that stops reading is gone:
+     * a phone that wandered back to its own network with a page half
+     * served, or a WebView that gave up on a request. The server has one
+     * task, so every second it waits on that socket is a second nobody else
+     * is answered; at thirty seconds a T-Dongle's hotspot logged
+     * "error in send : 11" every half minute and answered nothing for ten
+     * minutes after one phone left. Five seconds, the default, is plenty for
+     * a live reader of the 73 KB page; no handler sends anything long
+     * while flash is being erased. */
+    hc.send_wait_timeout = 5;
     /* 17 here + OTA + 3 from the hotspot + 4 from the config share, and
      * room: a handler past the cap is refused without a word. */
     hc.max_uri_handlers = 36;   /* + the web chat engine's eight (xapi_wc.c) */

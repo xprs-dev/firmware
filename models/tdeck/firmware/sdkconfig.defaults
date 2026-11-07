@@ -42,6 +42,12 @@ CONFIG_FATFS_LFN_HEAP=y
 # Phone browsers send >512B of headers (UA + Accept + our nsec cookie);
 # the default answers them 431 'Header fields are too long'.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# A phone's WebView opens the chat page's first six requests at once; lwIP's
+# table of ten sockets is shared with the captive DNS, the LAN bearer and the
+# rest of the station, and accept() failed with 23 (ENFILE) on the third
+# concurrent client (measured on the T-Dongle, docs/footprint.md). Sixteen
+# is a table of small structs; buffers are only paid for sockets in use.
+CONFIG_LWIP_MAX_SOCKETS=16
 # A TASK WDT freeze reboots the board before the UART panic print can be
 # read; the core dump keeps the culprit's name for the next boot.
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y

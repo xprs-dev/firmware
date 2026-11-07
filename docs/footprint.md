@@ -326,6 +326,44 @@ sends a phone's header set with every request (`PHONE_HDRS` in
 tools/hotspot_probe/src/main.c, `portal=` in its line): against the
 unfixed image it reports `portal=431 page=431/0 status=431`.
 
+With the headers through, the page loaded and sat at "connecting". The
+probe, timing the page's own first requests, found why: the first one,
+200 history rows out of a 26,437-record index on the microSD, takes 5.2 s
+cold on this board (1.9 s once the FAT cache is warm; 40 rows take 0.8 s),
+and the page's timeout on it was 4 s. It gave up, asked again three
+seconds later, and every abandoned request still ran to completion on the
+server's single task, which then spent 30 s (`send_wait_timeout`, raised
+for firmware pushes that are receive-bound) on each socket the phone had
+left behind. Within ten minutes the hotspot answered nothing, and the
+phone, seeing no internet, had moved back to its own network. Three
+changes, each measured with the probe:
+
+- the page asks for 40 rows first, never two reads at once, and deepens
+  to 200 once in the background (webchat `load()`; `render()` already files
+  rows by time and skips repeats);
+- the server waits 5 s on a send, the default, and keeps 30 s on receive;
+- `FATFS_PER_FILE_CACHE=y` was tried and rejected here: it made the 200-row
+  read 1.9 s cold, but each open file's buffer is sized for the 4 KB
+  sectors the flash fallback volume needs, so it cost 20 KB of the heap at
+  boot (86,656 -> 66,168). The index alternating reads across three files
+  through one sector cache is the remaining cost; a read buffer in the
+  index itself would be the next step if 5 s cold matters.
+
+The probe then did what a WebView does and opened six of the page's
+requests at once, from three tasks. Four of the six died in under a
+second and the dongle logged `httpd_accept_conn: error in accept (23)`:
+ENFILE, lwIP's socket table. Every board had `LWIP_MAX_SOCKETS=10`; the
+HTTP server keeps a listener, a control socket and seven clients, the
+captive DNS, the LAN bearer and the rest of the station hold theirs, and
+the third concurrent client found no slot. The table is sixteen on every
+board now (small structs; a socket's buffers are paid only while it is
+open). The phone's page had loaded half of itself every time, and the
+sequential probe could never have seen it: `BURST` lines in the probe's
+output are the check, FAIL past the page's own 8 s. With sixteen, all six
+answer in 0.6 to 1.4 s, two rounds clean; the table cost 160 bytes at
+boot (86,496 free after boot) and the bursts took the heap to 72,868 at
+its lowest.
+
 Step 3 returned nothing (the controller's report queue is not heap) and was
 reverted. Step 7 (`ESP32S3_DATA_CACHE_16KB`, +16 KB) was not needed.
 

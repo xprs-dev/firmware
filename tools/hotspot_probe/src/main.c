@@ -22,16 +22,21 @@
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "nvs_flash.h"
+#include "esp_timer.h"
 
 #define GOT_IP   BIT0
 #define LOST     BIT1
 static EventGroupHandle_t s_ev;
 static esp_netif_t *s_sta;
 
+static int s_reason;   /* of the last disconnect: 201 no AP found, 2 auth expired, 15 handshake, ... */
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) xEventGroupSetBits(s_ev, GOT_IP);
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) xEventGroupSetBits(s_ev, LOST);
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_reason = ((wifi_event_sta_disconnected_t *)data)->reason;
+        xEventGroupSetBits(s_ev, LOST);
+    }
 }
 
 typedef struct { char *buf; int cap; int len; } body_t;
@@ -80,7 +85,7 @@ static const char *const PHONE_HDRS[][2] = {
  * length (and text when buf). */
 static int get(const char *gw, const char *path, body_t *b)
 {
-    char url[64];
+    char url[128];
     snprintf(url, sizeof url, "http://%s%s", gw, path);
     esp_http_client_config_t c = {
         .url = url, .event_handler = on_http, .user_data = b, .timeout_ms = 8000,
@@ -108,6 +113,49 @@ static void field(const char *json, const char *key, char *out, int n)
     out[i] = 0;
 }
 
+/* A WebView opens the page's first requests together, not one after the
+ * other: history, services, alerts, blog, rooms and session in flight at
+ * once against a server with one task and seven sockets. Three tasks fire
+ * two each and the slowest decides; the page's own timeout is 8 s. */
+typedef struct { const char *gw; const char *url[2]; int code[2]; int ms[2]; TaskHandle_t waiter; } burst_t;
+static void burst_task(void *arg)
+{
+    burst_t *b = arg;
+    for (int i = 0; i < 2; i++) {
+        body_t body = { 0 };
+        int64_t t0 = esp_timer_get_time();
+        b->code[i] = get(b->gw, b->url[i], &body);
+        b->ms[i] = (int)((esp_timer_get_time() - t0) / 1000);
+    }
+    xTaskNotifyGive(b->waiter);
+    vTaskDelete(NULL);
+}
+static bool burst(const char *ssid, const char *gw)
+{
+    static burst_t b[3];
+    static const char *const urls[6] = {
+        "/api/xprs/history?kind=message,reaction,status&limit=40", "/api/services",
+        "/api/xprs/history?kind=warning,info&limit=100", "/api/xprs/history?kind=blog&limit=200",
+        "/api/rooms", "/api/session",
+    };
+    for (int t = 0; t < 3; t++) {
+        b[t].gw = gw; b[t].url[0] = urls[2 * t]; b[t].url[1] = urls[2 * t + 1];
+        b[t].waiter = xTaskGetCurrentTaskHandle();
+        xTaskCreate(burst_task, "burst", 4096, &b[t], 5, NULL);
+    }
+    for (int t = 0; t < 3; t++) ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(30000));
+    bool ok = true;
+    int worst = 0;
+    for (int t = 0; t < 3; t++)
+        for (int i = 0; i < 2; i++) {
+            if (b[t].code[i] != 200 || b[t].ms[i] > 8000) ok = false;
+            if (b[t].ms[i] > worst) worst = b[t].ms[i];
+            printf("PROBE %s BURST %s code=%d ms=%d\n", ssid, b[t].url[i], b[t].code[i], b[t].ms[i]);
+        }
+    printf("PROBE %s BURST %s worst=%d ms\n", ssid, ok ? "OK" : "FAIL", worst);
+    return ok;
+}
+
 static bool probe(const wifi_ap_record_t *ap)
 {
     const char *ssid = (const char *)ap->ssid;
@@ -115,12 +163,26 @@ static bool probe(const wifi_ap_record_t *ap)
     memcpy(wc.sta.ssid, ap->ssid, strnlen(ssid, sizeof wc.sta.ssid));
     wc.sta.threshold.authmode = WIFI_AUTH_OPEN;
     wc.sta.channel = ap->primary;
-    xEventGroupClearBits(s_ev, GOT_IP | LOST);
     esp_wifi_set_config(WIFI_IF_STA, &wc);
-    esp_wifi_connect();
-    EventBits_t bits = xEventGroupWaitBits(s_ev, GOT_IP, pdFALSE, pdFALSE, pdMS_TO_TICKS(20000));
+    /* A phone's supplicant tries an association several times before it
+     * reports a network unusable; one try in five failed here at the
+     * auth/assoc step with the AP never seeing a join, so this does too.
+     * The count is printed: a hotspot that needs three tries is news. */
+    int tries = 0;
+    EventBits_t bits = 0;
+    while (tries < 3 && !(bits & GOT_IP)) {
+        xEventGroupClearBits(s_ev, GOT_IP | LOST);
+        esp_wifi_connect();
+        tries++;
+        bits = xEventGroupWaitBits(s_ev, GOT_IP | LOST, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+        if (!(bits & GOT_IP)) {
+            printf("PROBE %s try %d: %s (reason %d)\n", ssid, tries,
+                   (bits & LOST) ? "disconnected" : "no address in 15 s", (bits & LOST) ? s_reason : 0);
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
     if (!(bits & GOT_IP)) {
-        printf("PROBE %s FAIL no address from its DHCP\n", ssid);
+        printf("PROBE %s FAIL no address from its DHCP after %d tries\n", ssid, tries);
         esp_wifi_disconnect();
         return false;
     }
@@ -142,9 +204,27 @@ static bool probe(const wifi_ap_record_t *ap)
     field(js, "callsign", call, sizeof call);
     body_t sv = { 0 };
     int vc = get(gw, "/api/services", &sv);
-    bool ok = cc == 200 && pc == 200 && page.len > 10000 && sc == 200 && strcmp(call, "-") != 0;
-    printf("PROBE %s %s rssi=%d ip=%s gw=%s portal=%d page=%d/%d status=%d call=%s services=%d/%d\n",
-           ssid, ok ? "OK" : "FAIL", ap->rssi, me, gw, cc, pc, page.len, sc, call, vc, sv.len);
+    /* What the chat page itself asks for in its first seconds, timed: the
+     * page shows "connecting" until the first of these answers within 4 s. */
+    static const char *const PAGE_URLS[] = {
+        "/api/xprs/history?kind=message,reaction,status&limit=200",
+        "/api/rooms",
+        "/api/xprs/history?kind=warning,info&limit=100",
+        "/api/xprs/history?kind=blog&limit=200",
+        "/api/session",
+        "/api/xprs/history?kind=message,reaction,status&limit=40",
+    };
+    for (size_t i = 0; i < sizeof PAGE_URLS / sizeof PAGE_URLS[0]; i++) {
+        body_t b = { 0 };
+        int64_t t0 = esp_timer_get_time();
+        int c = get(gw, PAGE_URLS[i], &b);
+        printf("PROBE %s PAGE %s code=%d len=%d ms=%lld\n", ssid, PAGE_URLS[i], c, b.len,
+               (long long)((esp_timer_get_time() - t0) / 1000));
+    }
+    bool bok = burst(ssid, gw);
+    bool ok = bok && cc == 200 && pc == 200 && page.len > 10000 && sc == 200 && strcmp(call, "-") != 0;
+    printf("PROBE %s %s rssi=%d tries=%d ip=%s gw=%s portal=%d page=%d/%d status=%d call=%s services=%d/%d\n",
+           ssid, ok ? "OK" : "FAIL", ap->rssi, tries, me, gw, cc, pc, page.len, sc, call, vc, sv.len);
     esp_wifi_disconnect();
     xEventGroupWaitBits(s_ev, LOST, pdFALSE, pdFALSE, pdMS_TO_TICKS(3000));
     return ok;
