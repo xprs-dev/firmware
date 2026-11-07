@@ -279,3 +279,15 @@ CONFIG_XPRS_BEARER_RNS=n
 # 0.2 s. A board that is on the LAN but cannot answer is worse than one
 # with less free heap, so the trimming happens in LVGL instead (the pool is
 # 6 KB and the draw buffer ten rows).
+
+# The no-PSRAM block measured on the T-Dongle (docs/footprint.md, "A board
+# without PSRAM"): the rest of the code out of IRAM -- on the ESP32-S3 IRAM
+# and DRAM are one SRAM, so this is heap -- the image built for size, one FAT
+# sector cache for the volume, and no IPv6. Compile-checked here; this board
+# was not on the bench for a heap reading.
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_FATFS_PER_FILE_CACHE=n
+CONFIG_LWIP_IPV6=n

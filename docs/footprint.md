@@ -345,10 +345,35 @@ reverted. Step 7 (`ESP32S3_DATA_CACHE_16KB`, +16 KB) was not needed.
   the index writer had 4 KB each unused and run at 6 KB
   (`-DXPRS_STACK_BLERX`, `-DXPRS_STACK_IDXWR` in the dongle's platformio.ini).
 
+## The second pass: the other boards without PSRAM
+
+The allocate-on-use changes reached every board with the code. The config
+block went to each board's `sdkconfig.defaults` (and its generated
+`sdkconfig.<env>`, which a default does not overwrite):
+
+| board | took | compiled | measured |
+|---|---|---|---|
+| ESP32-C3 mini | `-Os`, one FAT cache, no IPv6 (code was already out of IRAM; AMPDU kept, it serves the hotspot page) | static RAM 91,256 -> 73,104; flash 95.9 % -> 85.6 % of its slot | yes, below |
+| Heltec V3 (S3) | FreeRTOS/ringbuf/heap code to flash, `-Os`, one FAT cache, no IPv6 | static RAM 76,112; flash 70.4 % | not on the bench |
+| M5Stack Core (ESP32) | `-Os`, one FAT cache, no IPv6 (the original ESP32 keeps IRAM and DRAM apart, so the IRAM switches stay off) | static RAM 116,820; flash 83.3 % | not on the bench |
+
+The C3, same board (X3SQS6, `AC:27:6E:74:0C:FC`), beta.8 prebuilt then the
+trimmed image, BLE on, hotspot on, one neighbour in range:
+
+| heap mark | beta.8 | trimmed |
+|---|---|---|
+| before BLE | 148,752 | 198,248 |
+| after BLE | 94,284 | 148,560 |
+| after WiFi | 69,016 | 111,532 |
+| after API | 50,924 | 92,812 |
+| after hotspot | **2,800** (largest block 1,536) | **45,568** (largest 28,672) |
+| running, 60 s | 7,180 | 49,844 |
+
+Every C3 hotspot in the field on beta.8 is serving its page from 2.8 KB of
+heap. That is the number to reflash for.
+
 ## Still open here
 
-- The C3, Heltec V3 and M5Stack get the same config block and a
-  measurement of their own next.
 - `libxprs_webchat.a` holds 12.4 KB of tables for the web chat engine from
   boot; on this board the web is wanted from boot, so they stay. A headless
   board could claim them at `xwc_init` instead.

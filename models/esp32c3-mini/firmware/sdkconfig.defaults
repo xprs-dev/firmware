@@ -141,3 +141,13 @@ CONFIG_LWIP_TCP_MSS=536
 # still a full window on a LAN, and less in flight is what this link wants.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2680
 CONFIG_LWIP_TCP_WND_DEFAULT=2680
+
+# Built for size, as the T-Dongle and the e-paper board are (docs/footprint.md,
+# "A board without PSRAM"): -Og was the default, and it sized the code that
+# stays in IRAM and every task's stack. One FAT sector cache for the volume
+# rather than one 4 KB cache per open file, and no IPv6 -- nothing on the
+# hotspot speaks it, and its tables are internal RAM. Measured on the dongle:
+# -Os 6 KB, the two together about 10 KB.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_FATFS_PER_FILE_CACHE=n
+CONFIG_LWIP_IPV6=n

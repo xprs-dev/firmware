@@ -100,3 +100,12 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 CONFIG_LWIP_TCP_WND_DEFAULT=2880
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+
+# From the T-Dongle's run (docs/footprint.md, "A board without PSRAM"): built
+# for size instead of -Og, one FAT sector cache for the volume, no IPv6. The
+# IRAM switches are left alone here: the original ESP32 keeps IRAM and DRAM
+# apart, so code moved to flash would not become ordinary heap. Compile-
+# checked; this board was not on the bench for a heap reading.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_FATFS_PER_FILE_CACHE=n
+CONFIG_LWIP_IPV6=n
