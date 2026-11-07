@@ -399,14 +399,15 @@ static void hello_air(void)
         memcpy(hello + hn, s_hello, (size_t)s_hello_len);
         hn += s_hello_len;
     }
-    static uint8_t pkt[RNS_MTU + 64];
+    static uint8_t *pkt;   /* claimed on first use: no hub, no buffer */
+    if (!pkt && !(pkt = calloc(1, RNS_MTU + 64))) return;
     /* The build's buffers are shared statics: every builder holds the
      * tx lock, this connect-time hello included. */
     if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) return;
     s_hello_due = false;
     int n = rns_announce_build(&s_id, s_wapp_name,
                                (const uint8_t *)hello, (size_t)hn,
-                               (uint64_t)time(NULL), pkt, sizeof pkt);
+                               (uint64_t)time(NULL), pkt, RNS_MTU + 64);
     bool ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
     if (ok) s_last_ann_us = esp_timer_get_time();
     xSemaphoreGive(s_tx_lock);
@@ -479,12 +480,13 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
     if (p.packet_type == RNS_PACKET_DATA &&
         p.dest_type == RNS_DEST_SINGLE &&
         memcmp(p.dest, s_wapp_dest, RNS_HASH_LEN) == 0) {
-        static uint8_t plain[RNS_MTU];
+        static uint8_t *plain;
+        if (!plain && !(plain = calloc(1, RNS_MTU))) return;
         /* Salted with our IDENTITY hash, as reference RNS encrypts
          * (Identity.get_salt()). This passed the destination hash until
          * 2026-10-15, so only another station could write to us. */
         int pn = rns_decrypt_from(s_id.prv, s_id.hash, p.data, p.data_len,
-                                  plain, sizeof plain - 1);
+                                  plain, RNS_MTU - 1);
         if (pn <= 0) { s_other++; s_undecryptable++; return; }
         plain[pn] = 0;
         s_addressed_rx++;
@@ -628,15 +630,16 @@ bool xprsrns_send(const char *wire, int len)
         vTaskDelay(pdMS_TO_TICKS((uint32_t)((gap_us - (now - s_last_tx_us)) / 1000) + 1));
     }
 
-    static uint8_t app[RNS_MTU];
+    static uint8_t *app, *pkt;   /* claimed on the first send */
+    if (!app && !(app = calloc(1, RNS_MTU))) return false;
+    if (!pkt && !(pkt = calloc(1, RNS_MTU + 64))) return false;
     int an = 0;
     app[an++] = 4;
     memcpy(app + an, "xprs", 4); an += 4;
     memcpy(app + an, wire, (size_t)len); an += len;
 
-    static uint8_t pkt[RNS_MTU + 64];
     int n = rns_announce_build(&s_id, s_wapp_name, app, (size_t)an,
-                               (uint64_t)time(NULL), pkt, sizeof pkt);
+                               (uint64_t)time(NULL), pkt, RNS_MTU + 64);
     bool ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
     if (!ok) ESP_LOGW(TAG, "send failed: build=%d up=%d", n, (int)rns_tcp_is_up());
     if (ok) s_tx++;
@@ -671,12 +674,14 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
         return false;
     }
 
-    static uint8_t cipher[RNS_MTU];
+    static uint8_t *cipher, *pkt;   /* claimed on the first addressed send */
+    if (!cipher && !(cipher = calloc(1, RNS_MTU))) return false;
+    if (!pkt && !(pkt = calloc(1, RNS_MTU + 64))) return false;
     /* The salt is the recipient's IDENTITY hash, as reference RNS does
      * (Identity.get_salt()). It was their destination hash until
      * 2026-10-15, which only another station could open. */
     int cn = rns_encrypt_to(pr->xpub, pr->id_hash, (const uint8_t *)wire,
-                            (size_t)len, NULL, NULL, cipher, sizeof cipher);
+                            (size_t)len, NULL, NULL, cipher, RNS_MTU);
     bool ok = false;
     if (cn > 0) {
         rns_packet_t p;
@@ -698,8 +703,7 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
         p.data     = cipher;
         p.data_len = (size_t)cn;
 
-        static uint8_t pkt[RNS_MTU + 64];
-        int n = rns_packet_build(&p, pkt, sizeof pkt);
+        int n = rns_packet_build(&p, pkt, RNS_MTU + 64);
         ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
         if (!ok) ESP_LOGW(TAG, "addressed send failed: build=%d up=%d",
                           n, (int)rns_tcp_is_up());

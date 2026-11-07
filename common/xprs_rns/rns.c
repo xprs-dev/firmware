@@ -11,6 +11,18 @@
 
 #include <string.h>
 #include <stdlib.h>
+/* Scratch for the signing, verifying and sealing paths below. These were
+ * static arrays -- about 8 KB of .bss on every board, including the many
+ * with no rns_hub configured, where none of this code ever runs (the
+ * T-Dongle booted with 9 KB of heap left, 2026-11-07). Claimed on first use
+ * instead and kept: the callers serialise (xprsrns holds its tx lock around
+ * every build; the uplink's rx task is the one reader), so one block per
+ * site is enough. NULL means the heap could not give it, and the caller
+ * fails the way it fails on a malformed packet. */
+static uint8_t *rns_scratch(size_t n)
+{
+    return (uint8_t *)calloc(1, n);
+}
 
 /* X25519 comes from TweetNaCl either way: it is the fiddliest primitive to get
  * two libraries agreeing on, so both sides run the same code.
@@ -586,8 +598,12 @@ int rns_announce_build(const rns_identity_t *id,
      * task from exactly here -- ~2 KB of locals under TweetNaCl's own
      * appetite. Callers must serialise (xprsrns holds its tx lock around
      * every build, the hello included). */
-    static uint8_t signed_data[RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
-                               RNS_RANDOM_HASH_LEN + RNS_MTU];
+    enum { SD_N = RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
+                  RNS_RANDOM_HASH_LEN + RNS_MTU, SM_N = 64 + SD_N };
+    static uint8_t *signed_data, *sm;
+    if (!signed_data) signed_data = rns_scratch(SD_N);
+    if (!sm) sm = rns_scratch(SM_N);
+    if (!signed_data || !sm) return -1;
     size_t sp = 0;
     memcpy(signed_data + sp, dest, RNS_HASH_LEN); sp += RNS_HASH_LEN;
     memcpy(signed_data + sp, id->pub, RNS_PUB_LEN); sp += RNS_PUB_LEN;
@@ -599,7 +615,6 @@ int rns_announce_build(const rns_identity_t *id,
 
     /* TweetNaCl signs into sig||message; the detached signature is the first
      * 64 bytes. The buffer must hold both. */
-    static uint8_t sm[64 + sizeof signed_data];
     unsigned long long smlen = 0;
     /* crypto_sign wants the 64-byte ed25519 secret key: seed || public. */
     uint8_t sk[64];
@@ -617,8 +632,11 @@ int rns_announce_build(const rns_identity_t *id,
         .context       = 0,
     };
     memcpy(p.dest, dest, RNS_HASH_LEN);
-    static uint8_t data[RNS_PUB_LEN + RNS_NAME_HASH_LEN + RNS_RANDOM_HASH_LEN +
-                        RNS_SIG_LEN + RNS_MTU];
+    enum { DATA_N = RNS_PUB_LEN + RNS_NAME_HASH_LEN + RNS_RANDOM_HASH_LEN +
+                    RNS_SIG_LEN + RNS_MTU };
+    static uint8_t *data;
+    if (!data) data = rns_scratch(DATA_N);
+    if (!data) return -1;
     size_t dp = 0;
     memcpy(data + dp, id->pub, RNS_PUB_LEN); dp += RNS_PUB_LEN;
     memcpy(data + dp, name_hash, RNS_NAME_HASH_LEN); dp += RNS_NAME_HASH_LEN;
@@ -677,8 +695,13 @@ bool rns_announce_verify(const rns_packet_t *p, const rns_announce_t *a)
     /* signed = dest + pub + name_hash + random_hash [+ ratchet] + app.
      * Static like build's: one caller (the uplink's rx task), and the
      * Ed25519 verify below wants the stack for itself. */
-    static uint8_t signed_data[RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
-                               RNS_RANDOM_HASH_LEN + 32 + RNS_MTU];
+    enum { SDV_N = RNS_HASH_LEN + RNS_PUB_LEN + RNS_NAME_HASH_LEN +
+                   RNS_RANDOM_HASH_LEN + 32 + RNS_MTU, SMV_N = 64 + SDV_N };
+    static uint8_t *signed_data, *sm, *m;
+    if (!signed_data) signed_data = rns_scratch(SDV_N);
+    if (!sm) sm = rns_scratch(SMV_N);
+    if (!m) m = rns_scratch(SMV_N);
+    if (!signed_data || !sm || !m) return false;
     size_t sp = 0;
     if (a->app_len > RNS_MTU) return false;
     memcpy(signed_data + sp, p->dest, RNS_HASH_LEN); sp += RNS_HASH_LEN;
@@ -691,9 +714,7 @@ bool rns_announce_verify(const rns_packet_t *p, const rns_announce_t *a)
     memcpy(signed_data + sp, a->app_data, a->app_len); sp += a->app_len;
 
     /* TweetNaCl verifies sig||message as one buffer. */
-    static uint8_t sm[64 + sizeof signed_data];
-    static uint8_t m[64 + sizeof signed_data];
-    if (64 + sp > sizeof sm) return false;
+    if (64 + sp > SMV_N) return false;
     memcpy(sm, a->sig, 64);
     memcpy(sm + 64, signed_data, sp);
     unsigned long long mlen = 0;
@@ -717,7 +738,10 @@ bool rns_ed25519_verify(const uint8_t ed_pub[32], const uint8_t sig[64],
                         const uint8_t *msg, size_t len)
 {
     if (len > 1024) return false;
-    static uint8_t sm[64 + 1024], m[64 + 1024];
+    static uint8_t *sm, *m;
+    if (!sm) sm = rns_scratch(64 + 1024);
+    if (!m) m = rns_scratch(64 + 1024);
+    if (!sm || !m) return false;
     memcpy(sm, sig, 64);
     memcpy(sm + 64, msg, len);
     unsigned long long mlen = 0;
@@ -737,8 +761,9 @@ int rns_token_encrypt(const uint8_t key[64], const uint8_t *plain, size_t len,
     if (out_cap < need) return -1;
     uint8_t iv[16];
     rns_random(iv, 16);
-    static uint8_t buf[RNS_MTU + 16];
-    if (padded > sizeof buf) return -1;
+    static uint8_t *buf;
+    if (!buf) buf = rns_scratch(RNS_MTU + 16);
+    if (!buf || padded > RNS_MTU + 16) return -1;
     memcpy(buf, plain, len);
     memset(buf + len, (int)(padded - len), padded - len);
     memcpy(out, iv, 16);

@@ -40,6 +40,19 @@ reuse potential.
   `xTaskCreateStaticPinnedToCore`): on the T-Dongle the late 8 KB ask found a
   3.2 KB largest block, the 6 KB fallback overflowed under LVGL and corrupted
   the heap. A task whose stack size is known at boot gets it at boot.
+- **Feature state is claimed when the feature is configured, not at boot.**
+  A `static` scratch array in a function that only runs when `rns_hub` is set
+  is `.bss` on every board that never sets it. The shape that replaced them
+  (`common/xprs_rns/rns.c` `rns_scratch()`, `xprsrns.c`'s packet buffers,
+  `xfw.c`'s `s_parked`): a `static T *p; if (!p) p = calloc(1, N); if (!p)
+  return <the malformed-input failure>;` at the top of the function, with the
+  size as an `enum` so `sizeof` has a name to become. Same cost when the
+  feature runs, nothing when it does not; 16 KB back on the T-Dongle.
+- **Measure task stacks before sizing them**: build once with
+  `-DXPRS_TASK_REPORT` and `CONFIG_FREERTOS_USE_TRACE_FACILITY=y`
+  (`tasks_report()` in xprs_app.c prints every task's high-water mark every
+  30 s), then set the per-board `-DXPRS_STACK_*` build_flags from the numbers
+  with about 2 KB of headroom. The UI task had 44 bytes left at 8 KB.
 
 ## Relay / wire (shared by every bearer — do not reimplement per bearer)
 

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "lwip/opt.h"   /* LWIP_IPV6: see xapi_wc_local */
 #include <time.h>
 #include <dirent.h>
 #include <sys/stat.h>
@@ -137,6 +138,10 @@ bool xapi_wc_local(httpd_req_t *req)
     uint32_t ip = 0;
     if (sa.ss_family == AF_INET) {
         ip = ntohl(((struct sockaddr_in *)&sa)->sin_addr.s_addr);
+#if LWIP_IPV6
+    /* httpd listens on a v6 socket when lwIP has IPv6; a v4 peer then
+     * arrives v4-mapped. Without IPv6 (the T-Dongle) the socket is plain
+     * v4 and this branch has no type to compile against. */
     } else if (sa.ss_family == AF_INET6) {
         const uint8_t *a = ((struct sockaddr_in6 *)&sa)->sin6_addr.s6_addr;
         static const uint8_t v4map[12] = { 0,0,0,0,0,0,0,0,0,0,0xff,0xff };
@@ -148,6 +153,7 @@ bool xapi_wc_local(httpd_req_t *req)
             static const uint8_t lo[16] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 };
             return memcmp(a, lo, 16) == 0;
         }
+#endif
     } else return false;
     uint8_t o0 = ip >> 24, o1 = (ip >> 16) & 255;
     return o0 == 127 || o0 == 10 || (o0 == 172 && o1 >= 16 && o1 < 32) ||

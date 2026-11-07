@@ -272,3 +272,85 @@ cache is off is not worth 6 KB.
   internal DRAM** (`CONFIG_FATFS_ALLOC_PREFER_EXTRAM=y`) — measured 8,263,228 →
   8,252,152 of PSRAM with `heap after hotspot` unchanged at 71,100. On a board
   without PSRAM each slot is ~4 KB of internal DRAM and the old warning holds.
+
+
+---
+
+# A board without PSRAM: the T-Dongle, 2026-11-07
+
+*Measured on X3WWAJ (T-Dongle-S3, `48:CA:43:4B:B7:C4`), 0.6.0-beta.8 and the
+commits after it. Every row was built, flashed over JTAG and booted with a
+C3 station in BLE5 and ESP-NOW range; the heap marks are the boot log's.*
+
+Nothing above applies here: there is no PSRAM to move anything to. The board
+booted with 9,368 bytes of internal heap and crashed when a neighbour
+appeared (`A stack overflow in task ui`, then a heap walk in the status task
+over the corrupted blocks). The question was where 512 KB of SRAM goes on a
+160x80 dashboard that bridges BLE5 and ESP-NOW. The map answered:
+
+| where the SRAM went | bytes |
+|---|---|
+| code placed in IRAM (freertos 16.8 K, btdm 12 K, spi_flash 11.3 K, hal 10.6 K, pp 9.3 K, heap/tlsf 7.4 K ...) | 103,424 |
+| static `.data` + `.bss` (lvgl pool 16 K, xprs_app 14.3 K, xprs_webchat 12.4 K, xprs_rns 8.2 K, net80211 8 K, espcoredump 6.8 K, xprs_bearer_rns 4.1 K, fwfetch 3 K ...) | 117,688 |
+| instruction cache 16 K + data cache 32 K | 49,152 |
+| heap at boot | 243,000 |
+
+and two facts the build had been carrying: **the image was compiled at `-Og`**
+(`CONFIG_COMPILER_OPTIMIZATION_DEBUG`, the IDF default; only the e-paper board
+had switched), and **IRAM and DRAM are one SRAM on the S3** -- `_iram_end` is
+the alias of `_data_start`, so code pinned in IRAM is heap the board does not
+have, exactly as on the C3 (docs/esp32.md had said the opposite; corrected).
+
+| step | after BLE | after WiFi | after API | after boot | static RAM | flash |
+|---|---|---|---|---|---|---|
+| beta.8 + the UI stack claimed at boot (9609d10) | 112,592 | 56,728 | 38,416 | **9,368** | — | 1,736,512 |
+| 1. code out of IRAM (`ESP_WIFI_IRAM_OPT=n`, `ESP_WIFI_RX_IRAM_OPT=n`, `FREERTOS/RINGBUF/HEAP_PLACE_*_INTO_FLASH`) | 149,544 | 93,672 | 75,356 | 46,304 | 117,600 | 1,736,745 |
+| 2. built for size (`COMPILER_OPTIMIZATION_SIZE`); 16 intended truncations made explicit (`%.11s` and friends) | 155,240 | 99,368 | 81,044 | 52,332 | 116,512 | 1,592,033 |
+| 3. BLE adv report queue 100 -> 30 | — | — | — | 52,352 | — | — |
+| 4-6. LVGL pool 12 KB; one FAT sector cache; AMPDU, IPv6, WPA3/SAE and the mbedTLS tail off | 181,716 | 129,128 | 110,948 | 82,320 | 110,536 | 1,484,517 |
+| B1. Reticulum, firmware-fetch and install buffers claimed on first use | 197,052 | 156,720 | 138,540 | 98,260 | 94,600 | 1,484,877 |
+| B2. stacks from the task report: ui 8 -> 10 KB, BLE rx and index writer 8 -> 6 KB | — | — | — | **100,312** | 94,600 | 1,484,877 |
+| ... and with the hotspot on (`ap_on`), which this board could not run before | | | | 87,216 after the SoftAP | | |
+
+With the hotspot up and BLE5 scanning, the probe C3 (tools/hotspot_probe)
+joined `XPRS-X3WWAJ` at -48 dBm, took 192.168.4.2 and fetched the chat page
+(200, 73,002 bytes), `/api/status` and `/api/services`; the dongle's lowest
+heap through it was 79,876 bytes, 89 KB at rest afterwards.
+
+Step 3 returned nothing (the controller's report queue is not heap) and was
+reverted. Step 7 (`ESP32S3_DATA_CACHE_16KB`, +16 KB) was not needed.
+
+## What this run taught
+
+- **Two switches nobody had flipped were worth 43 KB.** Code out of IRAM
+  (37 KB) and `-Os` (6 KB, and a fifth of the flash) cost one config block and
+  sixteen format strings. Check `CONFIG_COMPILER_OPTIMIZATION_*` and
+  `_iram_end` in the map before touching a line of C.
+- **Static RAM for features that are off is the next 16 KB.** Reticulum's
+  signing scratch (8 KB) and its bearer's packet buffers (4 KB) sat in `.bss`
+  on a board with no `rns_hub`; the firmware fetcher parked wires in 2 KB it
+  never used. They are claimed on first use now
+  (`common/xprs_rns/rns.c` `rns_scratch`, `xprsrns.c`, `xfw.c`), and every
+  board got the same back.
+- **Scripting is not a RAM tool.** The Wrench host (common/xprs_script) adds
+  21 KB of flash and 12 KB of internal RAM for its task, pools in PSRAM only,
+  refuses to start without it, and is not linked here. Code already runs from
+  flash (1.2 MB of `.text` is XIP); the SD card already holds what can live
+  there. What the board was short of is SRAM held by code pinned in IRAM, by
+  debug-sized code and stacks, and by features that were not in use.
+- **Measure stacks before sizing them.** With `XPRS_TASK_REPORT` and
+  `CONFIG_FREERTOS_USE_TRACE_FACILITY` for one build, the UI task had **44
+  bytes** of its 8 KB left at `-Os` -- the overflow at 6 KB was no accident,
+  and 8 KB was one font away from it. It has 10 KB. The BLE receive task and
+  the index writer had 4 KB each unused and run at 6 KB
+  (`-DXPRS_STACK_BLERX`, `-DXPRS_STACK_IDXWR` in the dongle's platformio.ini).
+
+## Still open here
+
+- The C3, Heltec V3 and M5Stack get the same config block and a
+  measurement of their own next.
+- `libxprs_webchat.a` holds 12.4 KB of tables for the web chat engine from
+  boot; on this board the web is wanted from boot, so they stay. A headless
+  board could claim them at `xwc_init` instead.
+- `espcoredump` carries 6.8 KB of `.data`/`.bss`; the over-the-air panic
+  summary (`zc:` in the service beacon) depends on it.

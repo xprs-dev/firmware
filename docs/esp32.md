@@ -2217,8 +2217,14 @@ all come out of it. The first boot:
 ESP-IDF's "minimizing RAM" switches moved 38.5 KB of code from IRAM to flash
 (95,374 to 56,802 bytes): `ESP_WIFI_IRAM_OPT=n`, `ESP_WIFI_RX_IRAM_OPT=n`,
 `FREERTOS_PLACE_FUNCTIONS_INTO_FLASH`, `RINGBUF_...` and
-`HEAP_PLACE_FUNCTION_INTO_FLASH`. On an S3 that would buy nothing; here it is
-all heap.
+`HEAP_PLACE_FUNCTION_INTO_FLASH`. Here it is all heap.
+
+This page said for two months that the same switches "would buy nothing on an
+S3". The T-Dongle's link map says otherwise: on the ESP32-S3 under IDF 5.2
+`_iram_end` (0x4038d400) is the alias of `_data_start` (0x3fc9d400) -- one
+SRAM, split where the IRAM code ends -- so the 36 KB the switches took out of
+IRAM arrived in the heap byte for byte (9,368 free after boot became 46,304,
+2026-11-07). The full run is in docs/footprint.md, "A board without PSRAM".
 
 The other 27 KB was shared code: four 3.5 KB table-row buffers and two 6.5 KB
 chat copies, `static` in `.bss`, used only by a screen's render path. They

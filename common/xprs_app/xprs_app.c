@@ -1780,7 +1780,7 @@ static void acked_load(void)
         for (int i = 0; i < ACKED_MAX; i++) {
             const char *id = blob + i * XPRS_ID_LEN;
             if (!id[0]) continue;
-            snprintf(s_acked[i].id, XPRS_ID_LEN, "%s", id);
+            snprintf(s_acked[i].id, XPRS_ID_LEN, "%.*s", XPRS_ID_LEN - 1, id);
             n++;
         }
         uint8_t pos = 0;
@@ -1991,9 +1991,11 @@ static void tasks_report(void);
 #ifndef XPRS_STACK_UI_HEADLESS
 #define XPRS_STACK_UI_HEADLESS 4096
 #endif
-/* With a screen: what LVGL's render needs; 6 KB overflowed on the T-Dongle. */
+/* With a screen: what LVGL's render needs. 6 KB overflowed on the T-Dongle,
+ * and at 8 KB the task report (-Os, 2026-11-07) showed 44 bytes of headroom
+ * on the 160x80 mini UI -- a font away from the same crash. Ten. */
 #ifndef XPRS_STACK_UI
-#define XPRS_STACK_UI 8192
+#define XPRS_STACK_UI 10240
 #endif
 
 
@@ -2611,7 +2613,7 @@ static int setup_apply(const xsetup_kv_t *kv, int n, bool sealed, bool trusted,
         xcfg_set("nsec", nsecbuf);
         memset(nsecbuf, 0, sizeof nsecbuf);
         keyres_note(from, bearer, id);
-        snprintf(extra, extra_cap, "k:%s", npub);
+        snprintf(extra, extra_cap, "k:%.77s", npub);
         s_rekey_at_ms = now_ms() + 4000;
         s_restart_why = "the new key";
         s_rekey_reboot = true;
@@ -6049,7 +6051,10 @@ static void wui_ok(int row)
             else
                 wui_to(WV_FOUND, 0);
         } else if (row - 2 < w->kn) {
-            snprintf(w->ssid, sizeof w->ssid, "%s", w->known[row - 2]);
+            /* Both live in *w: a plain copy, which the compiler can see
+             * does not overlap (snprintf's restrict contract cannot). */
+            memcpy(w->ssid, w->known[row - 2], sizeof w->ssid);
+            w->ssid[sizeof w->ssid - 1] = 0;
             w->asked = 0;
             wui_to(WV_SAVED, 1);
         } else {
@@ -6156,7 +6161,7 @@ static int wui_render(xui_row_t *tr)
              * column wraps. */
             snprintf(c1, sizeof c1, "%d dBm%s%s", sc->rssi,
                      sc->open ? ", open" : "", kn ? ", saved" : "");
-            WROW(sc->ssid, c1, "%s: %s. %s %s.", sc->ssid,
+            WROW(sc->ssid, c1, "%.32s: %s. %s %s.", sc->ssid,
                  sc->open ? "open, no password" : "needs a password",
                  ok_key(), kn ? "joins with the password it worked with"
                          : sc->open ? "joins" : "asks for the password");
@@ -6342,7 +6347,7 @@ static void ui_render(void)
         xui_blip_t blips[XUI_BLIP_MAX];
         int nblip = nb > XUI_BLIP_MAX ? XUI_BLIP_MAX : nb;
         for (int i = 0; i < nblip; i++) {
-            snprintf(blips[i].label, sizeof blips[i].label, "%s",
+            snprintf(blips[i].label, sizeof blips[i].label, "%.11s",
                      devs[i].call);
             xst_path_t pt;
             xst_dev_path(&devs[i], UI_INRANGE_SEC, &pt);
@@ -6392,7 +6397,7 @@ static void ui_render(void)
         for (int i = 0; i < nr; i++) {
             uint32_t age = (now - devs[i].last_ms) / 1000;
             xui_row_t *r = &tr[i];
-            snprintf(r->cell[0], sizeof r->cell[0], "%s", devs[i].call);
+            snprintf(r->cell[0], sizeof r->cell[0], "%.11s", devs[i].call);
             snprintf(r->cell[1], sizeof r->cell[1], "%s", devs[i].bearer);
             xst_path_t pt;
             xst_dev_path(&devs[i], UI_INRANGE_SEC, &pt);
@@ -6410,13 +6415,13 @@ static void ui_render(void)
                     snprintf(r->cell[2], sizeof r->cell[2], "-");
                 if (pt.total_m >= 0)
                     snprintf(r->detail, sizeof r->detail,
-                             "%s through %s: about %d m to %s and %d m "
+                             "%.11s through %s: about %d m to %s and %d m "
                              "beyond it, %d m in all. Heard %lu s ago.",
                              devs[i].call, who, pt.near_m, who,
                              pt.far_m, pt.total_m, (unsigned long)age);
                 else if (pt.floor_m >= 0)
                     snprintf(r->detail, sizeof r->detail,
-                             "%s heard through %s about %d m away, %u hop%s; "
+                             "%.11s heard through %s about %d m away, %u hop%s; "
                              "how far it is beyond that nobody has said. "
                              "Heard %lu s ago.",
                              devs[i].call, who, pt.floor_m,
@@ -6424,7 +6429,7 @@ static void ui_render(void)
                              (unsigned long)age);
                 else
                     snprintf(r->detail, sizeof r->detail,
-                             "%s through %s, %u hop%s away; no signal on "
+                             "%.11s through %s, %u hop%s away; no signal on "
                              "this path. Heard %lu s ago.",
                              devs[i].call, who, (unsigned)devs[i].hops,
                              devs[i].hops > 1 ? "s" : "", (unsigned long)age);
@@ -6432,14 +6437,14 @@ static void ui_render(void)
                 int m = pt.total_m;
                 snprintf(r->cell[2], sizeof r->cell[2], "~%dm", m);
                 snprintf(r->detail, sizeof r->detail,
-                         "%s via %s: %d dBm, about %d m away. "
+                         "%.11s via %.6s: %d dBm, about %d m away. "
                          "Heard %lu s ago.",
                          devs[i].call, devs[i].bearer,
                          devs[i].rssi, m, (unsigned long)age);
             } else {
                 snprintf(r->cell[2], sizeof r->cell[2], "-");
                 snprintf(r->detail, sizeof r->detail,
-                         "%s via %s: distance unknown on this link. "
+                         "%.11s via %.6s: distance unknown on this link. "
                          "Heard %lu s ago.",
                          devs[i].call, devs[i].bearer,
                          (unsigned long)age);
@@ -6792,7 +6797,7 @@ static void ui_render(void)
             rr[rn].heading = true; rr[rn].unread = s_people_unread; rn++;
         }
         for (int i = 0; i < s_peer_n && rn < XUI_CHAT_ROOMS; i++) {
-            snprintf(rr[rn].name, sizeof rr[rn].name, "%s", s_peer[i]);
+            snprintf(rr[rn].name, sizeof rr[rn].name, "%.11s", s_peer[i]);
             rr[rn].heading = false;
             rr[rn].unread = s_room_unread[RM_FIXED + i];
             /* Green when this station has been heard on any bearer inside the
@@ -6897,7 +6902,7 @@ static void ui_render(void)
         for (int i = 0; i < nr; i++) {
             xst_chat_t *c = &rows[i];
             xui_row_t *r = &tr[i];
-            snprintf(r->cell[0], sizeof r->cell[0], "%s", c->from);
+            snprintf(r->cell[0], sizeof r->cell[0], "%.11s", c->from);
             /* The room at a glance (XPRS.md 9.11): a house for scope:local,
              * the air for scope:regional, a pin for the global default, an
              * envelope for a 1:1. */
@@ -6931,14 +6936,14 @@ static void ui_render(void)
                 const char *ptext = have ? parent.text : NULL;
                 if (ptext)
                     snprintf(r->detail, sizeof r->detail,
-                             "%s replying to %s (\"%.30s\"): %.86s",
+                             "%.11s replying to %.11s (\"%.30s\"): %.86s",
                              c->from, pfrom, ptext, c->text);
                 else
                     snprintf(r->detail, sizeof r->detail,
-                             "%s replying to %s: %.120s",
+                             "%.11s replying to %.11s: %.120s",
                              c->from, pfrom, c->text);
             } else {
-                snprintf(r->detail, sizeof r->detail, "%s: %s",
+                snprintf(r->detail, sizeof r->detail, "%.11s: %.119s",
                          c->from, c->text);
             }
         }
@@ -8365,17 +8370,21 @@ static bool fw_file_digest(const char *path, uint8_t out[32], size_t *len)
 {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
-    static uint8_t buf[2048];
+    /* Borrowed for the read, not held: an install is rare and 2 KB of
+     * .bss was waiting for it on every board. */
+    uint8_t *buf = malloc(2048);
+    if (!buf) { fclose(f); return false; }
     mbedtls_sha256_context c;
     mbedtls_sha256_init(&c);
     mbedtls_sha256_starts(&c, 0);
     size_t n, total = 0;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+    while ((n = fread(buf, 1, 2048, f)) > 0) {
         mbedtls_sha256_update(&c, buf, n);
         total += n;
         if ((total & 0xFFFF) < n) vTaskDelay(1);
     }
     fclose(f);
+    free(buf);
     mbedtls_sha256_finish(&c, out);
     mbedtls_sha256_free(&c);
     *len = total;
@@ -8430,12 +8439,14 @@ static bool fw_sink_finish(void)
     if (xota_push_begin_sha(s_fw_ver, s_fw_size, s_fw_sha) != ESP_OK) return false;
     FILE *f = fopen(final, "rb");
     if (!f) { xota_push_abort(); return false; }
-    static uint8_t buf[2048];
+    uint8_t *buf = malloc(2048);          /* borrowed, as in fw_file_digest */
+    if (!buf) { fclose(f); xota_push_abort(); return false; }
     size_t n;
     bool ok = true;
-    while (ok && (n = fread(buf, 1, sizeof buf, f)) > 0)
+    while (ok && (n = fread(buf, 1, 2048, f)) > 0)
         ok = xota_push_write(buf, n) == ESP_OK;
     fclose(f);
+    free(buf);
     if (!ok) { xota_push_abort(); return false; }
     return xota_push_finish() == ESP_OK;
 }
@@ -8552,6 +8563,7 @@ static void idx_task(void *arg)
             xprsindex_set_verifier(s_index, index_verifier);
             xprsidx_stats_t st;
             xprsindex_stats(s_index, &st);
+            heap_mark("after index");
             ESP_LOGI(TAG, "archiver up: %lu packet%s held, epoch %c",
                      (unsigned long)st.count, st.count == 1 ? "" : "s",
                      st.epoch);
@@ -11089,6 +11101,7 @@ void xapp_run(const xapp_board_t *board)
          * a minute between beacons is a long time to watch a serial console. */
         xprsnow_set_beacon(espnow_beacon, 60, 5);
         xprschan_init(s_call, &k_chan_ops);
+    heap_mark("after mesh bearers");
     splash_step("identity");
         air_identity();
     }
@@ -11394,4 +11407,5 @@ void xapp_run(const xapp_board_t *board)
     xh_set(XH_INDEX, s_index != NULL || s_idx_none ||
                !xcfg_get_bool("index_on", true));
     xh_heap_floor(heap_floor());
+    heap_mark("after boot");
 }

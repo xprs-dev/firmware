@@ -51,7 +51,9 @@ static struct { uint8_t sha[32]; uint32_t at_s; } s_failed[3];
 static int s_failed_n;
 
 /* Wires parked by xfw_on_wire for xfw_poll (the verify is a curve op). */
-static struct { char w[XPRS_MAX_WIRE + 1]; int len; bool used; } s_parked[PARKED_MAX];
+/* [PARKED_MAX], claimed at the first park: 2 KB that a board with no
+ * archiver publishing firmware never needs. */
+static struct { char w[XPRS_MAX_WIRE + 1]; int len; bool used; } *s_parked;
 
 /* The fetch under way. */
 static struct {
@@ -173,7 +175,8 @@ void xfw_on_wire(const char *wire, int len)
         return;
     }
     lock();
-    for (int i = 0; i < PARKED_MAX; i++) {
+    if (!s_parked) s_parked = calloc(PARKED_MAX, sizeof *s_parked);
+    for (int i = 0; s_parked && i < PARKED_MAX; i++) {
         if (s_parked[i].used) continue;
         memcpy(s_parked[i].w, wire, (size_t)len);
         s_parked[i].w[len] = 0;
@@ -521,7 +524,7 @@ void xfw_poll(void)
     uint32_t now = s_cfg.now_s();
 
     /* Parked wires: descriptions and the answer to our ask. */
-    for (int i = 0; i < PARKED_MAX; i++) {
+    for (int i = 0; s_parked && i < PARKED_MAX; i++) {
         if (!s_parked[i].used) continue;
         s_parked[i].used = false;
         xprs_t p;

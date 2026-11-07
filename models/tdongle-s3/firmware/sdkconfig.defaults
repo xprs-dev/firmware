@@ -118,7 +118,7 @@ CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 # has a 320x240 dashboard using ~20 KB and a 32->24 KB trim there starved
 # the renderer into a 70-second reboot loop. The number is per board and
 # per screen, and it is measured every time.
-CONFIG_LV_MEM_SIZE_KILOBYTES=16
+CONFIG_LV_MEM_SIZE_KILOBYTES=12
 
 # The NimBLE reclaim, restored. docs/esp32.md measured this table ON THIS
 # BOARD and recorded the result: free heap after BLE init 11,432 -> 29,408,
@@ -206,3 +206,52 @@ CONFIG_FATFS_MAX_LFN=255
 # its dashboard and dropped every XPRS packet -- so the deepest archive in the
 # fleet was announcing itself to the room it stood in and nowhere else.
 CONFIG_XPRS_BEARER_RNS=y
+
+# Code out of IRAM. On the ESP32-S3 instruction RAM and data RAM are one SRAM:
+# in the link map _iram_end (0x4038d400) is the alias of _data_start
+# (0x3fc9d400), so every byte of code kept in IRAM is a byte the heap does not
+# get. This image carried 103 KB of it with 9 KB of heap left after boot
+# (2026-11-07). The same block the C3 runs; the cost is WiFi and FreeRTOS code
+# fetched through the flash cache, which a BLE5 bridge does not notice.
+CONFIG_ESP_WIFI_IRAM_OPT=n
+CONFIG_ESP_WIFI_RX_IRAM_OPT=n
+CONFIG_FREERTOS_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_RINGBUF_PLACE_FUNCTIONS_INTO_FLASH=y
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+
+# Built for size, as the e-paper board is. -Og was the default here: code
+# that stays in IRAM, and every task's stack, were debug-sized on a board with
+# no PSRAM. The -Wformat-truncation sites that -Os finds are fixed in the
+# sources, not silenced.
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# One FAT sector cache for the volume, not one per open file: the index
+# keeps three files open and each cache is 4 KB of internal RAM
+# (docs/esp32.md, "a file handle is not free"). The store appends and reads
+# back by offset, so the shared cache costs it little.
+CONFIG_FATFS_PER_FILE_CACHE=n
+
+# WiFi a BLE5 bridge does not use: block-ack aggregation (window buffers),
+# IPv6 (tables and neighbour discovery; nothing here speaks it), WPA3/SAE
+# and the mbedTLS tail it drags in, and ten curves of the eleven that
+# nothing uses -- the same block the T-Deck carries, same reasoning there.
+# WPA2 is unaffected. To get WPA3 back, delete the SAE lines.
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
+CONFIG_LWIP_IPV6=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_SAE=n
+CONFIG_ESP_WIFI_ENABLE_SAE_PK=n
+CONFIG_ESP_WIFI_SOFTAP_SAE_SUPPORT=n
+CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_STA=n
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
+CONFIG_MBEDTLS_PKCS7_C=n
+CONFIG_MBEDTLS_ECP_DP_SECP192R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP521R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP192K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_SECP224K1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP256R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP384R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_BP512R1_ENABLED=n
+CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n

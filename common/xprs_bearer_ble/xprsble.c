@@ -102,6 +102,15 @@ int xprsble_silent_for(void) { return -1; }
 #include "host/util/util.h"
 #endif
 
+/* The receive task's stack. 8 KB by default; a board may size it from the
+ * task report (-DXPRS_STACK_BLERX in its build_flags): the T-Dongle measured
+ * 3,924 bytes unused of 8,192 at -Os with a neighbour in range, and runs
+ * it at 6 KB. */
+#ifndef XPRS_STACK_BLERX
+#define XPRS_STACK_BLERX 8192
+#endif
+
+
 static const char *TAG = "xprsble";
 
 /* docs/ble5.md §2: company 0xFFFF, marker 0x3E, then the subtype. */
@@ -274,7 +283,7 @@ static esp_err_t rx_task_start(void)
     if (s_ad_q) return ESP_OK;
     s_ad_q = xQueueCreate(AD_Q_DEPTH, sizeof(ad_item_t));
     if (!s_ad_q) return ESP_ERR_NO_MEM;
-    if (xTaskCreate(xb_rx_task, "xprsble_rx", 8192, NULL, 5, NULL) != pdPASS) {
+    if (xTaskCreate(xb_rx_task, "xprsble_rx", XPRS_STACK_BLERX, NULL, 5, NULL) != pdPASS) {
         vQueueDelete(s_ad_q);
         s_ad_q = NULL;
         return ESP_ERR_NO_MEM;
