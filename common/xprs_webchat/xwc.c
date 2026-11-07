@@ -12,7 +12,7 @@
 #include "xprssig.h"
 
 /* ---- limits ------------------------------------------------------------ */
-#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#if defined(ESP_PLATFORM) && !(defined(CONFIG_SPIRAM) && CONFIG_SPIRAM)
 #define ACTS_MAX      96      /* every act, every group this station runs */
 #else
 #define ACTS_MAX      192     /* every act, every group this station runs */

@@ -11222,11 +11222,13 @@ void xapp_run(const xapp_board_t *board)
      * it named itself: "A stack overflow in task status has been detected." */
     /* The beacons, the signed observations and their signature run here.
      * 6 KB overflowed on the T-Deck while answering a flood of history asks
-     * (2026-11-07); the S3 boards have the RAM for 8 KB, the C3 does not. */
-#if CONFIG_IDF_TARGET_ESP32C3
-    xTaskCreate(status_task, "status", 6144, NULL, 1, NULL);
-#else
+     * (2026-11-07), and the station table's copies on it are gone since.
+     * A board with PSRAM gives it 8 KB of headroom; one without (the C3,
+     * the T-Dongle) keeps 6 KB, which it needs for its screen task. */
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
     xTaskCreate(status_task, "status", 8192, NULL, 1, NULL);
+#else
+    xTaskCreate(status_task, "status", 6144, NULL, 1, NULL);
 #endif
     /* 4 KB, not 3: the time-zone lookup (tz_tick) resolves a name and
      * reads an HTTP answer on this task, and at 3 KB it left 320 bytes

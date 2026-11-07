@@ -35,12 +35,13 @@ extern "C" {
 #define XWC_ID_LEN       7
 #define XWC_TOKEN_LEN    33      /* 32 hex + NUL */
 #define XWC_NONCE_LEN    17      /* 16 hex + NUL */
-/* On an ESP32-C3 (400 KB of SRAM, no PSRAM) the store is a third the size:
- * at 8 rooms it held 21 KB, and the hotspot no longer fit (2026-11-07). */
+/* On a board without PSRAM (the C3, the T-Dongle) the store is a third the
+ * size: at 8 rooms it held 21 KB, and the C3's hotspot and the T-Dongle's
+ * screen with Bluetooth on no longer fit (2026-11-07). */
 #if defined(ESP_PLATFORM) && __has_include("sdkconfig.h")
 #include "sdkconfig.h"
 #endif
-#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#if defined(ESP_PLATFORM) && !(defined(CONFIG_SPIRAM) && CONFIG_SPIRAM)
 #define XWC_ROOMS        3
 #else
 #define XWC_ROOMS        8
