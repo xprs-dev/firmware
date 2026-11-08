@@ -2651,6 +2651,67 @@ an hour is `429`; the same signed wire twice re-airs the first code. A
 zhang` is the interrupt-watchdog shape: if a board does not come back from
 it, the panic path itself is the bug, and that is what to chase.
 
+## A browser visitor is a station (2026-11-08)
+
+A person chatting through the hotspot page used to be invisible to the
+archiver: `api_send_wire()` aired their packets and filed them, and nothing
+else happened. Nobody could leave them a private message for later, and no
+other archiver could route to them. What changed, and where the RAM went:
+
+- **Heard on `lan`, through the API.** `api_heard()` runs on the httpd task
+  with RAM-only work: the devices row (`xst_dev_mark_api`: the freshest
+  hearing came through the API, a local flag, never a wire word), the
+  receipt park, and a one-slot park `s_apih` that idx_task turns into the
+  gossip note (our LAN is its own witness, 12.9.4) and a touch of the served
+  table. `/api/session` proving a key is the same hearing
+  (`xprs_api_cfg_t.visitor_heard`). The `link:lan` observation deposited with
+  the archivers lists the visitor in `hears:`. The held-mail release trigger
+  (`s_rel`) skips a callsign whose freshest `lan` row is the API: the page
+  pulls, a LAN re-air would reach every station but them.
+- **Mail over HTTP belongs to its two parties.** `history_common()` sets
+  `asker` from the session and `trusted` only for the owner (`owner` policy
+  key) or the web chat's administrator; `/api/xprs/mail` wants a session for
+  that callsign. The old "whoever reaches the API owns the station" was
+  written for the operator's LAN, not for a hotspot full of strangers.
+- **The honest `mail:`.** `xprsindex_mail_count()` counts mail TO a callsign
+  (`xprsidx_query_t.to`), never the author's own words or a `hears:` mention,
+  minus what `acked_has` says was acknowledged. A T-Deck used to beacon
+  `mail:99`.
+- **Whom the station serves.** `/api/session` answers `holders`, `offer` and
+  `mail` (`api_session_extra`); offering records the visitor in the index's
+  served table (`served.txt`, 16 rows without PSRAM, 64 with, LRU) so their
+  mail is class 3 from that moment while the page signs the `t:mailbox`
+  that other archivers learn from. `xprsindex_holders_for()` answers "who
+  holds for X" from the verified declarations (narrowest active window,
+  9.12.1) with this station first when it serves X.
+- **Declarations after the verifier.** `xi_decl_note_rec()` runs on the task
+  that judged the record and only when the signature held; it keeps the
+  identifier (for `remove:mailbox r:`), the `hold:` list, this station's
+  place in it and the window. `decl.txt` is v2 (`from id pos since until ts
+  hold`); v1 lines (a bare declarer) still load as naming us.
+- **The deposit.** A served visitor's directed message, receipt or file
+  description sits in `s_vdep` (four slots, ~1 KB, claimed with the archive
+  buffers) and goes verbatim to the configured `archivers` over Reticulum
+  after 30 s unacknowledged (12.8.3 step 1): the browser is the station that
+  leaves.
+- **`via:` on a re-aired visitor packet.** The station's own radios transmit
+  somebody else's packet: that is custody, and `xprs_append_via()` adds the
+  station's callsign (the page leaves the room). Without it every neighbour
+  wrote the visitor into its gossip as directly heard. A packet with no room
+  goes out bare and `s_via_nofit` counts it.
+- **Federation.** `GET /api/xprs/dir` renders the XDIR1 listing (the
+  announcement carries no `file:`: no `cmd:file` on the radio, 12.9.4). Every
+  six hours a deep catch-up peer is asked `cmd:history kind:mailbox` for the
+  day's declarations (12.9.5), outside the watermark chain. A miss names
+  holders before hearers in `m:try`.
+- **Peer keys.** `s_peers` is 64 with PSRAM, 32 without, and when full the
+  key least recently asked about goes (not an archiver we lean on, a served
+  visitor, or the owner): the 33rd hotspot visitor used to get a 409 for as
+  long as the station stayed up.
+
+Cost on the T-Dongle: about 4 KB of heap (the two index tables and the
+deposit ring), nothing new on a radio task's stack.
+
 ## Known gaps / next steps
 
 - Legacy T-Dongle firmware (`xprs_ble_hello`) knows nothing of `am:`/`?ACK`/

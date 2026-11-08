@@ -199,6 +199,24 @@ static esp_err_t h_peers(httpd_req_t *req)
     return httpd_resp_send(req, buf, n);
 }
 
+/* GET /api/xprs/dir: the XDIR1 directory (XPRS.md 12.9) -- which callsigns
+ * this archiver holds packets from and when it last heard each, one line a
+ * station. A T-Dongle cannot answer cmd:file on the radio, so its t:service
+ * carries no file: reference (12.9.4 allows it) and the ask-form carries the
+ * load; this is the same listing over HTTP for a peer on the LAN and for the
+ * bench. Text, not JSON: the format is the spec's. */
+static esp_err_t h_dir(httpd_req_t *req)
+{
+    if (!s_cfg->index) return resp_error(req, "404 Not Found", "no index");
+    xprsidx_dir_entry_t ent[32];
+    int n = xprsindex_directory(s_cfg->index, ent, 32);
+    int len = xprsindex_dir_render(ent, n, s_api_buf, API_BUF_SIZE);
+    if (len < 0) return resp_error(req, "500 Internal Server Error", "directory too large");
+    httpd_resp_set_type(req, "text/plain; charset=utf-8");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, s_api_buf, len);
+}
+
 static esp_err_t h_services(httpd_req_t *req)
 {
     /* The board writes its two fragments straight into the answer where
@@ -907,9 +925,9 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
      * a live reader of the 73 KB page; no handler sends anything long
      * while flash is being erased. */
     hc.send_wait_timeout = 5;
-    /* 17 here + OTA + 3 from the hotspot + 4 from the config share, and
+    /* 18 here + OTA + 3 from the hotspot + 4 from the config share, and
      * room: a handler past the cap is refused without a word. */
-    hc.max_uri_handlers = 36;   /* + the web chat engine's eight (xapi_wc.c) */
+    hc.max_uri_handlers = 38;   /* + the web chat engine's eight (xapi_wc.c) */
     /* A file by its reference ends its URI in a wildcard (xapi_wc.c);
      * every other URI is written out whole and matches exactly as before. */
     hc.uri_match_fn = httpd_uri_match_wildcard;
@@ -938,6 +956,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
         { .uri = "/api/xprs/devices", .method = HTTP_GET, .handler = h_devices },
         { .uri = "/api/stats", .method = HTTP_GET, .handler = h_stats },
         { .uri = "/api/xprs/mail", .method = HTTP_GET, .handler = h_mail },
+        { .uri = "/api/xprs/dir", .method = HTTP_GET, .handler = h_dir },
         { .uri = "/api/xprs/send", .method = HTTP_POST, .handler = h_send },
         { .uri = "/api/xprs/send", .method = HTTP_GET, .handler = h_send },
         { .uri = "/api/log", .method = HTTP_GET, .handler = h_log },

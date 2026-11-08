@@ -227,14 +227,26 @@ static bool is_self(const char *call)
  * 36.9.4 asks an always-on archiver to be budgeted for being leaned on;
  * that starts with
  * being able to remember who is asking. 42 bytes an entry. */
+#ifdef CONFIG_SPIRAM
+#define PEERKEYS_MAX 64
+#else
 #define PEERKEYS_MAX 32
-static struct peerkey_s { char call[XPRS_CALL_LEN]; uint8_t pub[32]; } *s_peers;  /* [PEERKEYS_MAX] */
+#endif
+/* used_s: uptime of the last lookup, so a full table lets the key nobody
+ * has asked about for longest go (peerkey_slot_for) instead of refusing
+ * every newcomer -- which is what the 33rd hotspot visitor used to get: a
+ * 409 on /api/session for as long as the station stayed up. */
+static struct peerkey_s { char call[XPRS_CALL_LEN]; uint8_t pub[32]; uint32_t used_s; } *s_peers;  /* [PEERKEYS_MAX] */
+static int peerkey_slot_for(const char *call);      /* with api_is_owner, below */
 static int s_peers_n;
 
 static const uint8_t *peer_key(const char *call)
 {
     for (int i = 0; i < s_peers_n; i++) {
-        if (strcasecmp(s_peers[i].call, call) == 0) return s_peers[i].pub;
+        if (strcasecmp(s_peers[i].call, call) == 0) {
+            s_peers[i].used_s = (uint32_t)(esp_timer_get_time() / 1000000);
+            return s_peers[i].pub;
+        }
     }
     return NULL;
 }
@@ -269,7 +281,6 @@ static void identity_heard(const xprs_t *p, const char *wire, int len)
     if (!xprs_get_str(p, "f", call, sizeof call)) return;
     if (!xprs_get_str(p, "k", npub, sizeof npub)) return;
     if (strncmp(npub, "npub1", 5) != 0 || peer_key(call)) return;
-    if (s_peers_n >= PEERKEYS_MAX) return;
     if (len <= 0 || len > XPRS_MAX_WIRE) return;
     for (int i = 0; i < IDENT_SLOTS; i++) {
         if (s_ident[i].pending) continue;
@@ -289,7 +300,7 @@ static void identity_apply(int slot)
     if (!xprs_parse(s_ident[slot].wire, s_ident[slot].len, &p)) return;
     if (!xprs_get_str(&p, "f", call, sizeof call)) return;
     if (!xprs_get_str(&p, "k", npub, sizeof npub)) return;
-    if (peer_key(call) || s_peers_n >= PEERKEYS_MAX) return;
+    if (peer_key(call)) return;
 
     char hrp[8];
     uint8_t data[64];
@@ -308,9 +319,11 @@ static void identity_apply(int slot)
         ESP_LOGW(TAG, "%s does not sign for the key it published", call);
         return;
     }
-    snprintf(s_peers[s_peers_n].call, sizeof s_peers[0].call, "%s", call);
-    memcpy(s_peers[s_peers_n].pub, data, 32);
-    s_peers_n++;
+    int row = peerkey_slot_for(call);
+    if (row < 0) return;                  /* full of keys worth more than this one */
+    snprintf(s_peers[row].call, sizeof s_peers[0].call, "%s", call);
+    memcpy(s_peers[row].pub, data, 32);
+    s_peers[row].used_s = (uint32_t)(esp_timer_get_time() / 1000000);
     ESP_LOGI(TAG, "learned %s signs with %02x%02x%02x%02x...", call,
              data[0], data[1], data[2], data[3]);
 }
@@ -1725,6 +1738,58 @@ static struct {
     volatile bool pending;
 } s_apih;
 static uint32_t s_via_nofit;     /* visitors' packets aired without via: for want of room */
+
+/* 12.8.3 step 1: a directed packet a served visitor wrote is copied to
+ * this station's archivers once nothing has acknowledged it for half a
+ * minute -- the browser is the station that leaves, and a retry ladder on
+ * a page that was closed cannot help. The copy is the author's bytes,
+ * unchanged, no via: (a deposit is not a relay). Four slots, ~1 KB,
+ * claimed with the archive's buffers; a fifth before the first is due
+ * takes the oldest's place. */
+#define VDEP_N 4
+#define VDEP_WAIT_S 30
+typedef struct {
+    char     wire[XPRS_MAX_WIRE + 1];
+    int16_t  len;
+    char     id[XPRS_ID_LEN];
+    uint32_t due_s;                  /* 0: free */
+} vdep_t;
+static vdep_t *s_vdep;
+
+static void vdep_park(const char *wire, int len)
+{
+    if (!s_vdep || len <= 0 || len > XPRS_MAX_WIRE) return;
+    uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    int slot = -1;
+    for (int i = 0; i < VDEP_N; i++) {
+        if (!s_vdep[i].due_s) { slot = i; break; }
+        if (slot < 0 || s_vdep[i].due_s < s_vdep[slot].due_s) slot = i;
+    }
+    memcpy(s_vdep[slot].wire, wire, (size_t)len);
+    s_vdep[slot].wire[len] = 0;
+    s_vdep[slot].len = (int16_t)len;
+    if (!xprs_id_of(wire, len, s_vdep[slot].id)) s_vdep[slot].id[0] = 0;
+    s_vdep[slot].due_s = now_s + VDEP_WAIT_S;
+}
+
+static bool acked_has(const char *id);            /* 13.7, below */
+
+/* idx_task: deposit what is due and still unacknowledged. */
+static void vdep_tick(void)
+{
+    if (!s_vdep) return;
+    uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    for (int i = 0; i < VDEP_N; i++) {
+        if (!s_vdep[i].due_s || now_s < s_vdep[i].due_s) continue;
+        if (!xprsrns_is_up()) continue;          /* keep it until there is a path */
+        if (!(s_vdep[i].id[0] && acked_has(s_vdep[i].id))) {
+            xprsrns_deposit(s_vdep[i].wire, s_vdep[i].len);
+            ESP_LOGI(TAG, "deposited a visitor's %dB packet with the archivers (12.8.3)",
+                     s_vdep[i].len);
+        }
+        s_vdep[i].due_s = 0;
+    }
+}
 
 /* ── 13.7: receipts ─────────────────────────────────────────────────────
  *
@@ -8574,7 +8639,8 @@ static void idx_task(void *arg)
                       "statistics are not persisted");
     } else if (!(s_logring = xprs_big_calloc(1, LOGRING_N)) ||
                !(s_idxq    = xprs_big_calloc(IDXQ_N, sizeof *s_idxq)) ||
-               !(s_page    = xprs_big_calloc(1, sizeof *s_page))) {
+               !(s_page    = xprs_big_calloc(1, sizeof *s_page)) ||
+               !(s_vdep    = xprs_big_calloc(VDEP_N, sizeof *s_vdep))) {
         /* The archiver's working memory, only wanted when it mounts. A board
          * that cannot afford it runs on without an archive, like index_on=no,
          * rather than aborting a station whose radios are fine. */
@@ -9084,6 +9150,7 @@ no_announce:
                                 (uint32_t)(esp_timer_get_time() / 1000000));
             if (s_index) xprsindex_serve_touch(s_index, acall, xst_epoch_now());
         }
+        vdep_tick();
 
         if (s_rel.pending && s_index && xcfg_get_bool("index_on", true)) {
             char rcall[XPRS_CALL_LEN], rbearer[8];
@@ -9793,6 +9860,25 @@ static int api_session_extra(const char *call, char *buf, size_t cap)
     return (n > 0 && n < (int)cap) ? n : 0;
 }
 
+/* Where a newly learned key goes: the next free row, or, when the table is
+ * full, the row least recently asked about that is not an archiver this
+ * station leans on, a visitor it serves, or its owner/administrator. -1
+ * when every row is one of those. */
+static int peerkey_slot_for(const char *call)
+{
+    if (s_peers_n < PEERKEYS_MAX) return s_peers_n++;
+    int slot = -1;
+    for (int i = 0; i < s_peers_n; i++) {
+        if (cu_find(s_peers[i].call, false)) continue;
+        if (s_index && xprsindex_serves(s_index, s_peers[i].call)) continue;
+        if (api_is_owner(s_peers[i].call)) continue;
+        if (slot < 0 || s_peers[i].used_s < s_peers[slot].used_s) slot = i;
+    }
+    if (slot >= 0)
+        ESP_LOGI(TAG, "peer keys full: forgetting %s's for %s", s_peers[slot].call, call);
+    return slot;
+}
+
 /* /api/session proved a key: the same hearing, with no packet to file. */
 static void web_visitor_heard(const char *call)
 {
@@ -9830,6 +9916,18 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         }
         api_heard(&p, wire, len);   /* heard on lan, through the API; the
                                      * chat ring (the LCD) is part of it */
+        /* 12.8.3 step 1 for a visitor this station serves: a message, a
+         * receipt or a file description to one station (not a group) is
+         * parked for the deposit (vdep_tick); presence and live
+         * negotiation are not (step 2). */
+        char from[XPRS_CALL_LEN] = "", dst[XPRS_CALL_LEN] = "";
+        if ((strcmp(type, "message") == 0 || strcmp(type, "receipt") == 0 ||
+             strcmp(type, "file") == 0) &&
+            xprs_get_str(&p, "d", dst, sizeof dst) && dst[0] && dst[0] != '#' &&
+            !(dst[0] == 'X' && dst[1] == '5') &&
+            xprs_get_str(&p, "f", from, sizeof from) && !is_self(from) &&
+            s_index && xprsindex_serves(s_index, from))
+            vdep_park(wire, len);
     }
 
     /*
