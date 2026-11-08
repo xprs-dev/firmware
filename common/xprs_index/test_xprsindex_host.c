@@ -453,6 +453,15 @@ static int fake_verify(const char *wire, int len, const char *from)
     return 0;
 }
 
+/* 9.12: a declaration is acted on only once its signature held. The
+ * retention tests are about what a declaration does, not about keys, so
+ * they trust every signed packet. */
+static int trust_all_verify(const char *wire, int len, const char *from)
+{
+    (void)wire; (void)len; (void)from;
+    return 1;
+}
+
 static bool collect_flags(const xprsidx_rec_t *rec, void *ctx)
 {
     uint8_t *out = (uint8_t *)ctx;
@@ -801,6 +810,101 @@ static void test_served(const char *dir)
     xprsindex_close(st);
 }
 
+/*
+ * XPRS.md 9.12, 9.12.1, 9.12.2, 12.8.1: a t:mailbox is consumed once its
+ * signature held (never before), windows pick the narrowest declaration
+ * that contains the moment, a cancellation names one, and "who holds for
+ * X" comes back in hold: order with this station first when it serves X.
+ */
+static void test_declarations(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+    xprsindex_set_verifier(st, fake_verify);      /* X1GOOD verifies, X1WHO cannot */
+    char w[300], hold[64];
+
+    /* Unverifiable: X1WHO's key is unknown, so its declaration is nothing. */
+    snprintf(w, sizeof w, "t:mailbox f:X1WHO ts:" TS_2026 " hold:X3ARC1 sig:aaa");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    CHECK(xprsindex_holders_for(st, "X1WHO", 1800000000u, hold, sizeof hold) == 0,
+          "an unverifiable declaration was consumed (%s)", hold);
+    /* Unsigned, from a station whose key we know: still nothing. */
+    snprintf(w, sizeof w, "t:mailbox f:X1GOOD ts:" TS_2026 " hold:X3ARC1");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    CHECK(xprsindex_holders_for(st, "X1GOOD", 1800000000u, hold, sizeof hold) == 0,
+          "an unsigned declaration was consumed (%s)", hold);
+
+    /* Verified and open-ended: home stations all year. */
+    snprintf(w, sizeof w, "t:mailbox f:X1GOOD ts:2026-08-08_14:26:40 hold:X3RLY7,X3ARC1 sig:aaa");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "declaration refused");
+    CHECK(xprsindex_holders_for(st, "X1GOOD", 1800000000u, hold, sizeof hold) == 2 &&
+          strcmp(hold, "X3RLY7,X3ARC1") == 0, "holders: %s", hold);
+    /* A marina through September (2026-09-01 .. 2026-09-30): the narrower
+     * window wins inside it, the open-ended one outside. */
+    snprintf(w, sizeof w, "t:mailbox f:X1GOOD ts:2026-08-08_14:26:41 hold:CT1MAR "
+             "since:2026-09-01_00:00:00 until:2026-09-30_23:59:59 sig:aaa");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "windowed declaration refused");
+    uint32_t sept = 1789000000u;    /* 2026-09-10 */
+    CHECK(xprsindex_holders_for(st, "X1GOOD", sept, hold, sizeof hold) == 1 &&
+          strcmp(hold, "CT1MAR") == 0, "in September the marina should hold (%s)", hold);
+    CHECK(xprsindex_holders_for(st, "X1GOOD", 1800000000u, hold, sizeof hold) == 2 &&
+          strcmp(hold, "X3RLY7,X3ARC1") == 0, "outside it, the home stations (%s)", hold);
+
+    /* Cancelling the marina by its identifier (9.12.2), signed. */
+    char mid[XPRSIDX_ID_LEN] = "";
+    {
+        xprsidx_query_t q = { .type = -1, .trusted = true, .limit = 10,
+                              .types = xprsidx_type_mask("mailbox") };
+        struct { char *out; } ctx = { mid };
+        bool grab(const xprsidx_rec_t *rec, void *c) {
+            if (strstr(rec->wire, "hold:CT1MAR")) { snprintf(((typeof(ctx) *)c)->out, XPRSIDX_ID_LEN, "%s", rec->id); return false; }
+            return true;
+        }
+        xprsindex_query(st, &q, grab, &ctx);
+    }
+    CHECK(mid[0], "the marina declaration was not stored");
+    snprintf(w, sizeof w, "t:mailbox f:X1GOOD ts:2026-08-20_09:00:00 r:%s remove:mailbox sig:aaa", mid);
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "cancellation refused");
+    CHECK(xprsindex_holders_for(st, "X1GOOD", sept, hold, sizeof hold) == 2 &&
+          strcmp(hold, "X3RLY7,X3ARC1") == 0, "the cancelled marina still holds (%s)", hold);
+
+    /* A visitor this station serves with no declaration: itself. Once the
+     * visitor declares elsewhere, the station stands first, the rest after. */
+    xprsindex_serve_note(st, "X1GOOD", 1800000000u);
+    CHECK(xprsindex_holders_for(st, "X1GOOD", 1800000000u, hold, sizeof hold) == 2 &&
+          strcmp(hold, "X3RLY7,X3ARC1") == 0, "serving adds nothing when already named (%s)", hold);
+    xprsindex_serve_note(st, "X1VIS", 1800000000u);
+    CHECK(xprsindex_holders_for(st, "X1VIS", 1800000000u, hold, sizeof hold) == 1 &&
+          strcmp(hold, "X3ARC1") == 0, "a served visitor's holder is this station (%s)", hold);
+
+    /* decl.txt survives a restart, windows included. */
+    xprsindex_close(st);
+    st = xprsindex_open(dir);
+    xprsindex_set_own(st, "X3ARC1");
+    CHECK(xprsindex_holders_for(st, "X1GOOD", 1800000000u, hold, sizeof hold) == 2,
+          "declarations did not survive a restart (%s)", hold);
+    xprsindex_close(st);
+
+    /* A v1 decl.txt (one bare callsign a line) is read as naming us. */
+    rm_rf(dir);
+    st = xprsindex_open(dir);
+    xprsindex_close(st);
+    {
+        char path[300];
+        snprintf(path, sizeof path, "%s/decl.txt", dir);
+        FILE *f = fopen(path, "w");
+        CHECK(f != NULL, "could not write a v1 decl.txt");
+        if (f) { fputs("X1OLD\n", f); fclose(f); }
+    }
+    st = xprsindex_open(dir);
+    xprsindex_set_own(st, "X3ARC1");
+    CHECK(xprsindex_holders_for(st, "X1OLD", 1800000000u, hold, sizeof hold) == 1 &&
+          strcmp(hold, "X3ARC1") == 0, "a v1 declaration was not upgraded (%s)", hold);
+    xprsindex_close(st);
+}
+
 static void test_mail_count(const char *dir)
 {
     rm_rf(dir);
@@ -884,6 +988,7 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
     xprsidx_t *st = xprsindex_open(dir);
     CHECK(xprsindex_ready(st), "store did not open");
     xprsindex_set_own(st, "X3ARC1");
+    xprsindex_set_verifier(st, trust_all_verify);
 
     char w[300];
     const uint32_t day0 = 1787000000u;
@@ -896,7 +1001,7 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
     }
     /* X1DECL names this station as where to leave its mail (13.12). */
     snprintf(w, sizeof w,
-             "t:mailbox f:X1DECL ts:" TS_2026 " hold:X3ARC1,X32DVA");
+             "t:mailbox f:X1DECL ts:" TS_2026 " hold:X3ARC1,X32DVA sig:aaa");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "declaration");
 
     /* Mail for each, then fill past the cap so eviction has to choose. */
@@ -1118,10 +1223,11 @@ static void test_retention_priorities(const char *dir)
     xprsidx_t *st = xprsindex_open(dir);
     CHECK(xprsindex_ready(st), "store did not open");
     xprsindex_set_own(st, "X3ARC1");
+    xprsindex_set_verifier(st, trust_all_verify);
 
     /* X1FAV declares this station its mailbox (class 3 for its mail). */
     const char *decl =
-        "t:mailbox f:X1FAV ts:" TS_2026 " hold:X3ARC1,X3OTHER";
+        "t:mailbox f:X1FAV ts:" TS_2026 " hold:X3ARC1,X3OTHER sig:aaa";
     CHECK(xprsindex_add(st, decl, (int)strlen(decl), 0, false, 0),
           "declaration not stored");
 
@@ -1515,8 +1621,9 @@ static void test_rescue_keeps_the_mail(const char *dir)
     rm_rf(dir);
     xprsidx_t *st = xprsindex_open(dir);
     xprsindex_set_own(st, "X3ARC1");
+    xprsindex_set_verifier(st, trust_all_verify);
     char w[300];
-    snprintf(w, sizeof w, "t:mailbox f:X1DECL ts:" TS_2026 " hold:X3ARC1");
+    snprintf(w, sizeof w, "t:mailbox f:X1DECL ts:" TS_2026 " hold:X3ARC1 sig:aaa");
     xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
     snprintf(w, sizeof w, "t:message f:X1QZ3N d:X1HERE ts:" TS_2025 " m:for the regular");
     xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
@@ -1725,6 +1832,7 @@ int main(void)
     test_standing_alerts_are_carried(dir);
     test_mail_count(dir);
     test_served(dir);
+    test_declarations(dir);
     test_epoch_is_anchored(dir);
     test_only_is_a_callsign(dir);
     test_kind_takes_a_list(dir);

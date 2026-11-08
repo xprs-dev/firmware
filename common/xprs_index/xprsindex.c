@@ -319,7 +319,19 @@ struct xprsidx_s {
     } anchor[XI_ANCHOR_MAX];
 
     char     own[XPRSIDX_CALL_LEN];
-    char     decl[XPRSIDX_DECL_MAX][XPRSIDX_CALL_LEN];
+    /* Verified t:mailbox declarations (9.12, 9.12.1, 9.12.2): who declared,
+     * the packet's identifier (a cancellation names it), where this station
+     * stands in the hold: list (-1: not named -- kept for routing, 12.8.1),
+     * the list itself, and the window. Recorded only after the signature
+     * held: an unverifiable declaration is a request to misroute somebody's
+     * mail, and the old table took it on the add path, before the verifier. */
+    struct {
+        char     from[XPRSIDX_CALL_LEN];
+        char     id[XPRSIDX_ID_LEN];
+        int8_t   pos;
+        char     hold[40];
+        uint32_t since, until, ts;
+    } decl[XPRSIDX_DECL_MAX];
     int      decl_n;
     bool     decl_dirty;            /* persisted by the writer task */
     /* The visitors served (12.8.3 step zero): callsign, first and last seen. */
@@ -1344,11 +1356,29 @@ static void xi_decl_load(xprsidx_t *st)
     xi_decl_path(st, path, sizeof path);
     FILE *f = fopen(path, "r");
     if (!f) return;
-    char line[XPRSIDX_CALL_LEN + 2];
+    char line[128];
     while (st->decl_n < XPRSIDX_DECL_MAX && fgets(line, sizeof line, f)) {
         char *nl = strchr(line, '\n');
         if (nl) *nl = 0;
-        if (line[0]) xi_copy(st->decl[st->decl_n++], XPRSIDX_CALL_LEN, line, -1);
+        if (!line[0]) continue;
+        char from[XPRSIDX_CALL_LEN] = "", id[XPRSIDX_ID_LEN] = "", hold[40] = "";
+        int pos = 0;
+        unsigned long since = 0, until = 0, ts = 0;
+        int n = sscanf(line, "%15s %6s %d %lu %lu %lu %39s", from, id, &pos,
+                       &since, &until, &ts, hold);
+        if (n < 1) continue;
+        if (n < 7) {                /* a v1 line: the declarer alone, naming us */
+            id[0] = 0; pos = 0; since = until = ts = 0;
+            xi_copy(hold, sizeof hold, st->own, -1);
+        }
+        int i = st->decl_n++;
+        xi_copy(st->decl[i].from, XPRSIDX_CALL_LEN, from, -1);
+        xi_copy(st->decl[i].id, XPRSIDX_ID_LEN, id, -1);
+        st->decl[i].pos = (int8_t)pos;
+        xi_copy(st->decl[i].hold, sizeof st->decl[i].hold, hold, -1);
+        st->decl[i].since = (uint32_t)since;
+        st->decl[i].until = (uint32_t)until;
+        st->decl[i].ts = (uint32_t)ts;
     }
     fclose(f);
 }
@@ -1362,7 +1392,11 @@ static void xi_decl_save(xprsidx_t *st)
         XI_LOGE("declared mailboxes %s not written: %s", path, strerror(errno));
         return;
     }
-    for (int i = 0; i < st->decl_n; i++) fprintf(f, "%s\n", st->decl[i]);
+    for (int i = 0; i < st->decl_n; i++)
+        fprintf(f, "%s %s %d %lu %lu %lu %s\n", st->decl[i].from,
+                st->decl[i].id[0] ? st->decl[i].id : "-", (int)st->decl[i].pos,
+                (unsigned long)st->decl[i].since, (unsigned long)st->decl[i].until,
+                (unsigned long)st->decl[i].ts, st->decl[i].hold);
     fclose(f);
     st->decl_dirty = false;
 }
@@ -1648,10 +1682,29 @@ static bool xi_epoch_of(const xprs_t *p, uint32_t *boot, uint32_t *secs)
     return true;
 }
 
+/* The wall clock, or 0 when nothing has set it (a window cannot be judged
+ * then, and 9.12.1's declarations are read as applying). */
+static uint32_t xi_wall(void)
+{
+    uint32_t now = (uint32_t)time(NULL);
+    return now > 1600000000u ? now : 0;
+}
+
+/* Does declaration i apply at [now] (0: unknown clock, everything applies)? */
+static bool xi_decl_active(const xprsidx_t *st, int i, uint32_t now)
+{
+    if (!now) return true;
+    if (st->decl[i].since && now < st->decl[i].since) return false;
+    if (st->decl[i].until && now > st->decl[i].until) return false;
+    return true;
+}
+
 static bool xi_declared(const xprsidx_t *st, const char *call)
 {
+    uint32_t now = xi_wall();
     for (int i = 0; i < st->decl_n; i++)
-        if (xi_base_eq(st->decl[i], call)) return true;
+        if (st->decl[i].pos >= 0 && xi_base_eq(st->decl[i].from, call) &&
+            xi_decl_active(st, i, now)) return true;
     return false;
 }
 
@@ -1685,16 +1738,46 @@ static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
 
 /* A t:mailbox whose hold: names this station: remember the declarer.
  * Called from the add path (RAM only; the writer task persists). */
-static void xi_decl_note(xprsidx_t *st, const xprs_t *p, const char *from)
+/* A field's timestamp on a parsed packet, or 0. */
+static uint32_t xi_field_ts(const xprs_t *p, const char *key)
 {
-    if (!st->own[0]) return;
     int vlen = 0;
-    const char *v = xprs_get(p, "hold", &vlen);
-    if (!v) return;
-    /* Does the comma-separated hold: list contain our base callsign? */
+    const char *v = xprs_get(p, key, &vlen);
+    return v ? xi_ts_to_epoch(v, vlen) : 0;
+}
+
+/* A verified t:mailbox (9.12): remembered with its window and its hold:
+ * list, this station's place in it (-1 when not named: still worth keeping,
+ * because 12.8.1 routes held mail by exactly this answer), or, carrying
+ * `remove:mailbox r:<id>`, the withdrawal of one by the same author
+ * (9.12.2). Called only for a record whose signature held, on the task
+ * that judged it. */
+static void xi_decl_note_rec(xprsidx_t *st, const xi_rec_t *r)
+{
+    xprs_t p;
+    if (!xprs_parse(r->wire, r->len, &p)) return;
+    int vlen = 0;
+    const char *rm = xprs_get(&p, "remove", &vlen);
+    if (rm && vlen == 7 && strncmp(rm, "mailbox", 7) == 0) {
+        const char *rid = xprs_get(&p, "r", &vlen);
+        if (!rid || vlen <= 0) return;
+        for (int i = 0; i < st->decl_n; i++) {
+            if (!xi_base_eq(st->decl[i].from, r->from)) continue;
+            if ((int)strlen(st->decl[i].id) != vlen ||
+                strncmp(st->decl[i].id, rid, (size_t)vlen) != 0) continue;
+            XI_LOGI("mailbox declaration %s by %s withdrawn", st->decl[i].id, r->from);
+            st->decl[i] = st->decl[--st->decl_n];
+            st->decl_dirty = true;
+            return;
+        }
+        return;
+    }
+    const char *v = xprs_get(&p, "hold", &vlen);
+    if (!v || vlen <= 0 || vlen >= (int)sizeof st->decl[0].hold) return;
+    /* Where this station stands in the comma-separated list, if anywhere. */
+    int pos = -1, k = 0;
     const char *q = v, *end = v + vlen;
-    bool named = false;
-    while (q < end && !named) {
+    while (q < end) {
         const char *c = q;
         while (q < end && *q != ',') q++;
         char one[XPRSIDX_CALL_LEN];
@@ -1702,18 +1785,86 @@ static void xi_decl_note(xprsidx_t *st, const xprs_t *p, const char *from)
         if (n > 0 && n < (int)sizeof one) {
             memcpy(one, c, (size_t)n);
             one[n] = 0;
-            if (xi_base_eq(one, st->own)) named = true;
+            if (st->own[0] && xi_base_eq(one, st->own) && pos < 0) pos = k;
         }
+        k++;
         if (q < end) q++;
     }
-    if (!named) return;
-    if (xi_declared(st, from)) return;
-    if (st->decl_n >= XPRSIDX_DECL_MAX) return;      /* full: first come */
-    xi_copy(st->decl[st->decl_n++], XPRSIDX_CALL_LEN, from, -1);
+    /* The same packet again (a relay's copy, a catch-up replay): nothing new. */
+    for (int i = 0; i < st->decl_n; i++)
+        if (strcmp(st->decl[i].id, r->id) == 0) return;
+    int slot = -1;
+    if (st->decl_n < XPRSIDX_DECL_MAX) {
+        slot = st->decl_n++;
+    } else {
+        /* Full: an expired one goes first, then the oldest that does not
+         * name us, then the oldest that does. */
+        uint32_t now = xi_wall();
+        for (int i = 0; i < st->decl_n && slot < 0; i++)
+            if (now && st->decl[i].until && now > st->decl[i].until) slot = i;
+        for (int want = -1; want <= 0 && slot < 0; want++)
+            for (int i = 0; i < st->decl_n; i++)
+                if ((want < 0 ? st->decl[i].pos < 0 : st->decl[i].pos >= 0) &&
+                    (slot < 0 || st->decl[i].ts < st->decl[slot].ts)) slot = i;
+        if (slot < 0) return;
+        XI_LOGW("declarations full: %s's makes room for %s's", st->decl[slot].from, r->from);
+    }
+    xi_copy(st->decl[slot].from, XPRSIDX_CALL_LEN, r->from, -1);
+    xi_copy(st->decl[slot].id, XPRSIDX_ID_LEN, r->id, -1);
+    st->decl[slot].pos = (int8_t)pos;
+    memcpy(st->decl[slot].hold, v, (size_t)vlen);
+    st->decl[slot].hold[vlen] = 0;
+    st->decl[slot].since = xi_field_ts(&p, "since");
+    st->decl[slot].until = xi_field_ts(&p, "until");
+    st->decl[slot].ts = r->ts;
     st->decl_dirty = true;
-    XI_LOGI("mailbox declaration: holding for %s", from);
+    XI_LOGI("mailbox declaration: %s holds at %s%s", r->from, st->decl[slot].hold,
+            pos >= 0 ? " (us among them)" : "");
 }
 
+int xprsindex_holders_for(xprsidx_t *st, const char *call, uint32_t now,
+                          char *out, size_t cap)
+{
+    if (!st || !call || !*call || !out || !cap) return 0;
+    out[0] = 0;
+    if (!now) now = xi_wall();
+    XI_LOCK(st);
+    /* The narrowest active window wins (9.12.1); open-ended is widest. */
+    int best = -1;
+    uint64_t bestw = UINT64_MAX;
+    for (int i = 0; i < st->decl_n; i++) {
+        if (!xi_base_eq(st->decl[i].from, call) || !xi_decl_active(st, i, now)) continue;
+        uint64_t w = (st->decl[i].since || st->decl[i].until)
+                   ? (uint64_t)(st->decl[i].until ? st->decl[i].until : UINT32_MAX)
+                     - st->decl[i].since
+                   : UINT64_MAX - 1;
+        if (w < bestw || (w == bestw && best >= 0 && st->decl[i].ts > st->decl[best].ts)) {
+            best = i; bestw = w;
+        }
+    }
+    int n = 0;
+    size_t used = 0;
+    bool served = xi_served_slot(st, call) >= 0;
+    bool own_in = false;
+    if (best >= 0) {
+        char tmp[40];
+        xi_copy(tmp, sizeof tmp, st->decl[best].hold, -1);
+        for (char *t = strtok(tmp, ","); t; t = strtok(NULL, ","))
+            if (st->own[0] && xi_base_eq(t, st->own)) own_in = true;
+    }
+    if (served && st->own[0] && !own_in) {
+        used = (size_t)snprintf(out, cap, "%s", st->own);
+        n = 1;
+    }
+    if (best >= 0 && used < cap) {
+        used += (size_t)snprintf(out + used, cap - used, "%s%s", n ? "," : "", st->decl[best].hold);
+        for (const char *c = st->decl[best].hold; *c; c++) if (*c == ',') n++;
+        n++;
+    }
+    if (used >= cap) out[cap - 1] = 0;
+    XI_UNLOCK(st);
+    return n;
+}
 
 /* The record's own until:, or 0. Parsed from the stored wire. */
 static uint32_t xi_rec_until(const xi_rec_t *r)
@@ -1949,6 +2100,11 @@ void xprsindex_set_own(xprsidx_t *st, const char *call)
 {
     if (!st || !call) return;
     xi_copy(st->own, sizeof st->own, call, -1);
+    /* A v1 decl.txt line (the declarer alone) was loaded before the callsign
+     * was known: it named this station, so it holds here. */
+    for (int i = 0; i < st->decl_n; i++)
+        if (!st->decl[i].hold[0] && st->decl[i].pos >= 0)
+            xi_copy(st->decl[i].hold, sizeof st->decl[i].hold, st->own, -1);
 }
 
 uint32_t xprsindex_seg_records(uint64_t budget)
@@ -2114,6 +2270,8 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
      * same call, one thread earlier. */
     xi_rec_t judged = *r;
     if (!xi_judge_rec(st, &judged)) return false;
+    if (judged.type == XI_T_MAILBOX && (judged.flags & XI_F_VERIFIED))
+        xi_decl_note_rec(st, &judged);
     bool ok = xi_write_rec_fwd(st, &judged);
     /* No writer task on the host: retention housekeeping runs inline. */
     while (xi_evict_locked(st)) {}
@@ -2228,7 +2386,6 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     memcpy(r.wire, wire, (size_t)len);
 
     if (r.ts > st->newest_ts) st->newest_ts = r.ts;
-    if (code == XI_T_MAILBOX) xi_decl_note(st, &p, r.from);
     /* Who is actually here. Counted from the AUTHOR of anything stored, so
      * presence is observed rather than declared -- see xi_reg_note. */
     xi_reg_note(st, r.from, ts_now);
@@ -2770,6 +2927,8 @@ static void xi_writer_task(void *arg)
              * packet; judging authorship is more of the same work, and the
              * record is about to be written by this task anyway. */
             if (xi_judge_rec(st, &rec)) {
+                if (rec.type == XI_T_MAILBOX && (rec.flags & XI_F_VERIFIED))
+                    xi_decl_note_rec(st, &rec);
                 xi_write_rec(st, &rec);
                 n++;
             } else {
@@ -3083,10 +3242,11 @@ size_t xprsindex_rescue_mail(xprsidx_t *st, uint8_t *buf, size_t cap,
     size_t at = 0;
     XI_LOCK(st);
     for (int i = 0; i < st->decl_n; i++) {
-        uint8_t hdr[2] = { 'D', (uint8_t)strnlen(st->decl[i], XPRSIDX_CALL_LEN) };
+        if (st->decl[i].pos < 0) continue;      /* not ours to hold for */
+        uint8_t hdr[2] = { 'D', (uint8_t)strnlen(st->decl[i].from, XPRSIDX_CALL_LEN) };
         size_t mark = at;
         if (!xi_rescue_put(buf, cap, &at, hdr, 2) ||
-            !xi_rescue_put(buf, cap, &at, st->decl[i], hdr[1])) {
+            !xi_rescue_put(buf, cap, &at, st->decl[i].from, hdr[1])) {
             at = mark;
             break;
         }
@@ -3149,7 +3309,12 @@ uint32_t xprsindex_restore_mail(xprsidx_t *st, const uint8_t *buf, size_t len)
             char call[XPRSIDX_CALL_LEN];
             xi_copy(call, sizeof call, (const char *)buf + at + 2, cl);
             if (call[0] && !xi_declared(st, call) && st->decl_n < XPRSIDX_DECL_MAX) {
-                xi_copy(st->decl[st->decl_n++], XPRSIDX_CALL_LEN, call, -1);
+                /* Across a format the declarer is kept the v1 way: naming
+                 * us, open-ended; the packet itself re-files the window. */
+                int i = st->decl_n++;
+                memset(&st->decl[i], 0, sizeof st->decl[i]);
+                xi_copy(st->decl[i].from, XPRSIDX_CALL_LEN, call, -1);
+                xi_copy(st->decl[i].hold, sizeof st->decl[i].hold, st->own, -1);
                 st->decl_dirty = true;
             }
             at += 2u + cl;

@@ -366,6 +366,16 @@ void xprsindex_stats(xprsidx_t *st, xprsidx_stats_t *out);
  * declarer to reach class 3. Set it before traffic flows. */
 void xprsindex_set_own(xprsidx_t *st, const char *call);
 
+/**
+ * Who holds mail for @p call (XPRS.md 9.12.1, 12.8.1): the `hold:` list of
+ * the verified declaration whose window contains now (the narrowest one
+ * when several do; open-ended applies always), in its order of preference,
+ * with this station first when it serves the visitor (xprsindex_serve_note)
+ * and is not already named. Comma-joined into @p out. @return the count.
+ */
+int xprsindex_holders_for(xprsidx_t *st, const char *call, uint32_t now,
+                          char *out, size_t cap);
+
 /* ── The visitors this station serves (XPRS.md 12.8.3 step zero) ────────
  *
  * A browser user who chats through this station's page and has no mailbox

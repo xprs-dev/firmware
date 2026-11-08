@@ -1724,6 +1724,7 @@ static struct {
     char call[XPRS_CALL_LEN];
     volatile bool pending;
 } s_apih;
+static uint32_t s_via_nofit;     /* visitors' packets aired without via: for want of room */
 
 /* ── 13.7: receipts ─────────────────────────────────────────────────────
  *
@@ -8057,11 +8058,30 @@ static void idx_answer_history(const char *ask_wire, int ask_len,
 
     if (s_page->n == 0) {
         ESP_LOGI(TAG, "history for %s - nothing in that window (404)", from);
-        char tries[40] = "";
+        /* 12.9: the peers whose directories list it -- first who HOLDS for
+         * it (its verified declarations, 9.12), then who heard it (gossip);
+         * never this station or the asker, at most three names. */
+        char tries[48] = "";
         if (only[0]) {
-            char list[32];
-            if (goss_try(only, s_call, list, sizeof list) > 0)
-                snprintf(tries, sizeof tries, "try %s", list);
+            char list[64] = "", hold[40] = "";
+            int n = 0;
+            if (xprsindex_holders_for(s_index, only, 0, hold, sizeof hold) > 0) {
+                for (char *t = strtok(hold, ","); t && n < 3; t = strtok(NULL, ",")) {
+                    if (same_base(t, s_call) || same_base(t, from)) continue;
+                    n += snprintf(list + strlen(list), sizeof list - strlen(list),
+                                  "%s%s", list[0] ? "," : "", t) > 0 ? 1 : 0;
+                }
+            }
+            char goss[32] = "";
+            if (n < 3 && goss_try(only, s_call, goss, sizeof goss) > 0) {
+                for (char *t = strtok(goss, ","); t && n < 3; t = strtok(NULL, ",")) {
+                    if (same_base(t, from) || strstr(list, t)) continue;
+                    snprintf(list + strlen(list), sizeof list - strlen(list),
+                             "%s%s", list[0] ? "," : "", t);
+                    n++;
+                }
+            }
+            if (list[0]) snprintf(tries, sizeof tries, "try %.40s", list);
         }
         idx_result_m(bearer, from, cmdid, 404, tries[0] ? tries : NULL);
         return;
@@ -9818,14 +9838,15 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
      * given. Our own sayings are not somebody else's traffic, and safety
      * traffic is aired for anybody -- both exemptions are in the section.
      */
+    char sender[16] = "", stype[16] = "";
+    bool ours = false;
     {
-        char sender[16] = "", stype[16] = "";
         xprs_t up;
         if (xprs_parse(wire, len, &up)) {
             xprs_type(&up, stype, sizeof stype);
             xprs_get_str(&up, "f", sender, sizeof sender);
         }
-        bool ours = sender[0] && is_self(sender);
+        ours = sender[0] && is_self(sender);
         bool safety = strcmp(stype, "sos") == 0 || strcmp(stype, "warning") == 0;
         if (sender[0] && !ours && !safety && !pol_may_use(sender)) {
             ESP_LOGW(TAG, "refused to air for %s: use:%s (25.9)",
@@ -9838,6 +9859,26 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         }
     }
 
+    /* Somebody else's packet, handed to us over HTTP, going out on our
+     * radios: that is a relay (XPRS.md 9, 12.8.3 step 4), and a relay's
+     * transmission carries its own callsign in via:. Without it every
+     * neighbour took the browser visitor for a station in the room -- wrote
+     * them into its own gossip as directly heard, listed them in hears:,
+     * and later tried to hand their mail to a radio nobody was listening
+     * on. The identifier and the signature are computed with via: removed
+     * (9.1), so nothing the author signed changes; the index keeps the
+     * author's bytes (idx_enqueue_own below). A packet with no room left
+     * for the field goes out as it came, counted. */
+    static char rel[XPRS_MAX_WIRE + 1];     /* the httpd task's stack is small */
+    const char *air = wire;
+    int alen = len;
+    if (sender[0] && !ours && s_call[0]) {
+        int rn = xprs_append_via(wire, len, s_call, rel, sizeof rel);
+        if (rn > 0 && rn <= XPRS_MAX_WIRE) { air = rel; alen = rn; }
+        else { s_via_nofit++; ESP_LOGW(TAG, "no room for via: on %s's %dB packet (%u so far)",
+                                       sender, len, (unsigned)s_via_nofit); }
+    }
+
     /* Every bearer, or exactly the one that was named (xapi_send.h): the
      * bench needs to put a packet on LoRa and NOWHERE ELSE to prove that
      * what reaches the LAN got there through two other stations. */
@@ -9848,11 +9889,11 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
     bool near = xprs_reach_admits(scope, XPRS_REACH_LOCAL);
     bool local = !xprs_reach_admits(scope, XPRS_REACH_GLOBAL);
     bool lora_ok = xprs_reach_admits(scope, lora_reach());
-    bool lan = WANT("lan")    && near && xprslan_send(wire, len);
+    bool lan = WANT("lan")    && near && xprslan_send(air, alen);
     bool now = WANT("espnow") && near && xcfg_get_bool("espnow_on", XPRS_ESPNOW_DEFAULT_ON) &&
-               xprsnow_send(wire, len);
+               xprsnow_send(air, alen);
     bool lra = WANT("lora")   && lora_ok && xprslora_is_active() &&
-               xprslora_send(wire, len);
+               xprslora_send(air, alen);
     /* A message of ours, or one a phone handed us, reaches the other
      * network's users too; a sealed one addressed to one is refused out
      * loud (mt_mesh, mc_mesh). */
@@ -9860,9 +9901,9 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         xprslora_mt_offer(wire, len, MT_XPRS_OWN);
         xprslora_mc_offer(wire, len, MC_XPRS_OWN);
     }
-    bool ble = WANT("ble")    && near && xprsble_is_active() && xprsble_send(wire, len);
+    bool ble = WANT("ble")    && near && xprsble_is_active() && xprsble_send(air, alen);
     bool rns = WANT("rns")    && !local && xprsrns_is_up() &&
-               xprsrns_send(wire, len);
+               xprsrns_send(air, alen);
     #undef WANT
     if (took && took_cap) {
         int n = 0;
