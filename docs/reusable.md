@@ -259,3 +259,17 @@ reuse potential.
 | the `xapi_gate_fn` on `xprs_api_send_handler` | a hook between "the wire parses" and "air it": refuse (a status and a reason), handle it here, or let it go. The web chat engine is its first user; an owner policy is the next |
 | `xwcf_parse()` / `xwcf_hex()` / `xwcf_type()` (`common/xprs_webchat/xwc_file.c`) | a content reference (XPRS.md 7.7: 43 base64url or 64 hex, a dot, the type) read into its digest and type, refusing anything else (a path above all); the hex name a store keeps a file under; the Content-Type for a type. Host-tested in `test_xwc_host.sh`. Anything on a board that names a file by hash (a `cmd:file` server, a firmware member) should parse with it |
 | the file store in `xprs_api/xapi_wc.c` (`h_file_get`/`h_file_post`, `file_room`) | `/api/xprs/file/<ref>`: streamed through one 1 kB chunk and hashed on the way (mbedTLS), kept as `<dir>/<hex>`, on `/sdcard/xfiles` when there is a card (2 MB a file, 32 MB in all) and `/idx/xfiles` otherwise (96 kB, 192 kB, 128 kB of the volume always left free), the oldest file evicted to make room. A board-side `cmd:file` server would read the same directory |
+
+## Logging on a hot path
+
+- **Feeding the task watchdog from code that may run on any task**: check
+  first, `if (esp_task_wdt_status(NULL) == ESP_OK) esp_task_wdt_reset();`.
+  On IDF 5.2.1 a reset from an unsubscribed task logs
+  `esp_task_wdt_reset(713): task not found` every call; `esp_task_wdt_status`
+  answers the same question silently (`common/xprs_ui/xprs_ui.c`, the flush
+  callback that runs before the UI task subscribes).
+- **A log line per received advert**: an advertising set repeats its data
+  every few hundred ms, so log a frame once per window, not per reception.
+  `ble_log_fresh()` in `common/xprs_app/xprs_app.c` (FNV-1a over the frame,
+  8 slots, 30 s) is the pattern; reuse it for LoRa/ESP-NOW lines if they get
+  the same noise.

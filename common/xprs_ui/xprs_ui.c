@@ -294,13 +294,15 @@ static void lcd_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area,
      * feeds mid-flush for the e-paper board, whose refresh is slower still.
      * The T-Deck's path is this file and it had no such call.
      *
-     * esp_task_wdt_reset() on a task that is not subscribed takes the
-     * ESP_GOTO_ON_FALSE_ISR path, which returns ESP_ERR_NOT_FOUND WITHOUT
-     * logging. That matters: thirty calls a frame down a logging path would
-     * be worse than the stall. Only the "never initialized" branch logs, and
-     * xprs_app configures the watchdog at boot on every board.
+     * Only from a subscribed task. esp_task_wdt_reset() on one that is not
+     * subscribed LOGS "task not found" (IDF 5.2.1 task_wdt.c:713,
+     * ESP_GOTO_ON_FALSE_ISR) -- an earlier note here said it did not -- and
+     * this flush also runs before the UI task subscribes, so a board booted
+     * into a screen of `E task_wdt: esp_task_wdt_reset(713): task not found`
+     * lines (seen on an S3 station, 2026-11-08). esp_task_wdt_status() asks
+     * the same question without logging.
      */
-    esp_task_wdt_reset();
+    if (esp_task_wdt_status(NULL) == ESP_OK) esp_task_wdt_reset();
     uint32_t size = (area->x2 - area->x1 + 1) * (area->y2 - area->y1 + 1);
     uint16_t *px = (uint16_t *)color_p;
 

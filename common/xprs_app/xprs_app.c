@@ -3963,6 +3963,28 @@ static void on_lan(const char *wire, int len, uint32_t ip)
  * cheap in any case -- xb_offer() dedups, appends via: and copies into a
  * preallocated slot; the transmit happens later on the owning bearer's tick.
  */
+/* Whether this BLE frame is worth a log line: once per 30 s per frame. An
+ * advertising set repeats its data every few hundred milliseconds until the
+ * sender rotates it, so one digipeated observation was logged three times a
+ * second for as long as the neighbour kept it up -- most of the console on a
+ * bench of two stations (2026-11-08). The frame is still offered, counted and
+ * bridged every time; only the line is spared. */
+#define BLE_LOG_SLOTS 8
+static bool ble_log_fresh(const char *wire, int len)
+{
+    static uint32_t hash[BLE_LOG_SLOTS], when[BLE_LOG_SLOTS];
+    static uint8_t next;
+    uint32_t h = 2166136261u;                       /* FNV-1a */
+    for (int i = 0; i < len; i++) { h ^= (uint8_t)wire[i]; h *= 16777619u; }
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000);
+    for (int i = 0; i < BLE_LOG_SLOTS; i++)
+        if (hash[i] == h && now - when[i] < 30) return false;
+    hash[next] = h;
+    when[next] = now;
+    next = (uint8_t)((next + 1) % BLE_LOG_SLOTS);
+    return true;
+}
+
 static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
 {
     if (subtype != XPRSBLE_SUB_XPRS || len <= 0 || len > XPRS_MAX_WIRE) return;
@@ -3978,7 +4000,8 @@ static void on_ble(uint8_t subtype, const uint8_t *payload, int len, int rssi)
         xprs_type(&p, type, sizeof type);
         if (strcmp(type, "identity") == 0) identity_heard(&p, wire, len);
     }
-    ESP_LOGI(TAG, "ble    %19d dBm %3dB  %s", rssi, len, wire);
+    if (ble_log_fresh(wire, len))
+        ESP_LOGI(TAG, "ble    %19d dBm %3dB  %s", rssi, len, wire);
     /* iGate: what arrived on the BLE air goes toward the LAN and whatever
      * internet sits behind it -- the same rule ESP-NOW and LoRa already
      * follow. Whether it may be relayed at all is xprs_append_via's call
