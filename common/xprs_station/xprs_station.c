@@ -289,7 +289,37 @@ static void dev_upsert(const char *call, const char *bearer, int rssi,
     s_seen[slot].hops = hops;
     snprintf(s_seen[slot].via, sizeof s_seen[slot].via, "%s", via ? via : "");
     s_seen[slot].last_ms = now;
+    s_seen[slot].api = false;    /* the freshest hearing is this one, off the
+                                  * bearer; xst_dev_mark_api says otherwise */
     UNLOCK();
+}
+
+void xst_dev_mark_api(const char *call, const char *bearer)
+{
+    if (!s_seen || !call || !call[0] || !bearer) return;
+    LOCK();
+    for (int i = 0; i < XST_SEEN_MAX; i++)
+        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0 &&
+            strcasecmp(s_seen[i].bearer, bearer) == 0) {
+            s_seen[i].api = true;
+            break;
+        }
+    UNLOCK();
+}
+
+bool xst_dev_is_api(const char *call, const char *bearer)
+{
+    if (!s_seen || !call || !call[0] || !bearer) return false;
+    bool api = false;
+    LOCK();
+    for (int i = 0; i < XST_SEEN_MAX; i++)
+        if (s_seen[i].call[0] && strcasecmp(s_seen[i].call, call) == 0 &&
+            strcasecmp(s_seen[i].bearer, bearer) == 0) {
+            api = s_seen[i].api;
+            break;
+        }
+    UNLOCK();
+    return api;
 }
 
 void xst_dev_note(const char *call, const char *bearer, int rssi)

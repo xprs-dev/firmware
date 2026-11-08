@@ -1715,6 +1715,16 @@ static struct {
     volatile bool pending;
 } s_rel;
 
+/* A visitor heard through the HTTP API (a message posted, or a key proved
+ * on /api/session). The httpd task has 5-6 KB of stack and the gossip
+ * component may touch the card, so it parks the callsign and idx_task
+ * writes the gossip (36.9.4: our own LAN is its own witness) and touches
+ * the served table. One slot: the next post from the same visitor retries. */
+static struct {
+    char call[XPRS_CALL_LEN];
+    volatile bool pending;
+} s_apih;
+
 /* ── 13.7: receipts ─────────────────────────────────────────────────────
  *
  * Until this existed the station heard its peers' `t:receipt s:ack` and threw
@@ -3188,6 +3198,10 @@ static void seen_note_ex(const char *wire, int len, const char *bearer,
          * at all. Debounced inside the component -- every beacon from every
          * neighbour arrives here. */
         xgossip_note_direct(s_goss, from, s_call, bearer, now_s);
+        /* A browser visitor's packet echoed back off the LAN socket: their
+         * mail is handed over through the page (api_heard), and a re-air on
+         * the LAN would reach every station but them. */
+        if (xst_dev_is_api(from, bearer)) break;
         int free_slot = 0;
         bool throttled = false;
         for (int i = 0; i < 16; i++) {
@@ -8718,7 +8732,7 @@ static void idx_task(void *arg)
              * station in earshot learns mail exists without asking. Bounded
              * count: the field is a hint, and 99 is as much as a hint needs
              * to carry. Omitted when there is nothing, as the section says. */
-            int held = xprsindex_mail_count(s_index, NULL, 99);
+            int held = xprsindex_mail_count(s_index, NULL, 99, acked_has);
             s_mail_held = held;             /* for the beacons, read here only */
             /* 25.9: the owner may say what this station announces it does.
              * Unset is the default, and `none` is a station that announces
@@ -8962,7 +8976,7 @@ no_announce:
             snprintf(bearer, sizeof bearer, "%s", (const char *)s_qmail.bearer);
             s_qmail.pending = false;
             int held = (s_index && xcfg_get_bool("index_on", true))
-                     ? xprsindex_mail_count(s_index, call, 99) : 0;
+                     ? xprsindex_mail_count(s_index, call, 99, acked_has) : 0;
             char w[XPRSIDX_WIRE_MAX + 1];
             char ts[32];
             time_field(ts, sizeof ts);   /* ts:, or epoch: with no clock */
@@ -9038,6 +9052,18 @@ no_announce:
          * a 23.7 channel move. It hears the receipts its Flutter peers send
          * and does nothing with them. Until that is built, held mail stops
          * being re-aired because time passed, not because it arrived. */
+        /* A visitor heard through the API (api_heard): our own LAN is its
+         * own witness (36.9.4), so the gossip gets a direct sighting on
+         * lan -- L2 and L3, this station the gateway -- which is what lets
+         * another archiver's `cmd:history only:<visitor>` find us. */
+        if (s_apih.pending) {
+            char acall[XPRS_CALL_LEN];
+            snprintf(acall, sizeof acall, "%s", (const char *)s_apih.call);
+            s_apih.pending = false;
+            xgossip_note_direct(s_goss, acall, s_call, "lan",
+                                (uint32_t)(esp_timer_get_time() / 1000000));
+        }
+
         if (s_rel.pending && s_index && xcfg_get_bool("index_on", true)) {
             char rcall[XPRS_CALL_LEN], rbearer[8];
             snprintf(rcall, sizeof rcall, "%s", (const char *)s_rel.call);
@@ -9670,6 +9696,63 @@ static void settings_ok(int row)
 /* Air one already-validated wire on both bearers, and spool it as our own
  * outgoing traffic (section 36.5: the author must be able to replay the
  * author). Cheap: a UDP send and an ESP-NOW enqueue; no flash here. */
+/* A packet a browser handed us is a HEARING (12.8.1, 15.6.3): the visitor
+ * is on our hotspot or LAN, one hop away, as surely as a station whose
+ * frame reached the LAN socket. Until this existed a web user was invisible
+ * to the devices table, to hears:, to gossip and to the held-mail trigger,
+ * so nobody could route a message to them and this station never said it
+ * had met them. RAM-only here (the httpd task's stack is small): the device
+ * row on lan, marked api so delivery goes through the page and not by a
+ * LAN re-air; a receipt parked for idx_task exactly as a heard one is; and
+ * the gossip note parked too. Nothing is enqueued to the index twice --
+ * api_send_wire files the wire itself. */
+static void api_heard(const xprs_t *p, const char *wire, int len)
+{
+    char from[XPRS_CALL_LEN];
+    if (!xprs_get_str(p, "f", from, sizeof from) || !from[0]) return;
+    if (is_self(from)) return;
+    if (xst_ingest_parsed_ex(p, "lan", 0, 0, "")) xst_dev_mark_api(from, "lan");
+    if (!s_apih.pending) {
+        snprintf(s_apih.call, sizeof s_apih.call, "%s", from);
+        s_apih.pending = true;                  /* published last */
+    }
+    /* 13.7: the page acknowledges the mail it displayed; the signature
+     * decides whether that releases anything, on idx_task. */
+    char type[16], r[XPRS_ID_LEN];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "receipt") == 0 && xprs_get_str(p, "r", r, sizeof r) && r[0] &&
+        !s_rcpt_in.pending && len <= XPRS_MAX_WIRE) {
+        memcpy(s_rcpt_in.wire, wire, (size_t)len);
+        s_rcpt_in.wire[len] = 0;
+        s_rcpt_in.len = len;
+        snprintf(s_rcpt_in.bearer, sizeof s_rcpt_in.bearer, "lan");
+        s_rcpt_in.pending = true;
+    }
+}
+
+/* The one session that reads everybody's mail over HTTP: the station's
+ * owner (11.9, the `owner` policy key) or the web chat's administrator. */
+static bool api_is_owner(const char *call)
+{
+    if (!call || !call[0]) return false;
+    const char *adm = xwc_admin_call();
+    const char *own = xcfg_get("owner", "");
+    return (adm && adm[0] && same_base(adm, call)) ||
+           (own && own[0] && same_base(own, call));
+}
+
+/* /api/session proved a key: the same hearing, with no packet to file. */
+static void web_visitor_heard(const char *call)
+{
+    if (!call || !call[0] || is_self(call)) return;
+    xst_dev_note(call, "lan", 0);
+    xst_dev_mark_api(call, "lan");
+    if (!s_apih.pending) {
+        snprintf(s_apih.call, sizeof s_apih.call, "%s", call);
+        s_apih.pending = true;
+    }
+}
+
 static bool api_send_wire(const char *wire, int len, const char *bearer,
                           char *took, size_t took_cap)
 {
@@ -9693,7 +9776,8 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
                 exchanged_note(dst);
             }
         }
-        xst_chat_note(&p);   /* our hotspot users' messages show on the LCD too */
+        api_heard(&p, wire, len);   /* heard on lan, through the API; the
+                                     * chat ring (the LCD) is part of it */
     }
 
     /*
@@ -10037,6 +10121,10 @@ static int api_devices_json(char *buf, size_t cap)
                           ",\"via\":\"%s\",\"near_m\":%d,\"far_m\":%d,"
                           "\"floor_m\":%d",
                           pt.relay, pt.near_m, pt.far_m, pt.floor_m);
+        /* Heard through the web page, not off the LAN socket: the same
+         * neighbour to hears: and gossip, reached through the page. */
+        if (d->api && m > 0 && m < (int)sizeof row)
+            m += snprintf(row + m, sizeof row - (size_t)m, ",\"api\":true");
         if (m > 0 && m < (int)sizeof row)
             m += snprintf(row + m, sizeof row - (size_t)m, "}");
         /* The reply buffer is one 2 KB page: a list that outgrows it ends
@@ -10182,6 +10270,8 @@ static xprs_api_cfg_t s_api_cfg = {
     .board = "?",           /* the board names itself in xapp_run() */
     .send_wire = api_send_wire,
     .peer_key = any_key,
+    .visitor_heard = web_visitor_heard,
+    .is_owner = api_is_owner,
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,

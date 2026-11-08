@@ -324,8 +324,7 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
     hist_ctx_t ctx = { .req = req, .group = s_cfg->callsign };
     ctx.local = xapi_wc_local(req);
     ctx.keep_local = ctx.local || !xwc_local_private();
-    xprsidx_query_t q = { .type = -1, .newest_first = true, .limit = 30,
-                          .trusted = true };
+    xprsidx_query_t q = { .type = -1, .newest_first = true, .limit = 30 };
     httpd_req_get_url_query_str(req, query, sizeof query);
     if (httpd_query_key_value(query, "since", p, sizeof p) == ESP_OK)
         q.since_ts = parse_when(p);
@@ -353,6 +352,16 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
      * while the station held their conversations. An unknown room asks for
      * nothing rather than for everything. */
     httpd_query_key_value(query, "session", session, sizeof session);
+    /* Mail belongs to its two parties (XPRS.md 12.7, 36). This API used to
+     * hand every held message to whoever reached it, on the reasoning that
+     * the operator's LAN is the operator's; a hotspot full of strangers is
+     * not. A session (/api/session) proves a key: the visitor reads their
+     * own mail both ways, the owner or administrator reads all of it, and
+     * everybody else gets the public rows. */
+    const char *who = session[0] ? xwc_session_call(session) : NULL;
+    bool owner = who && s_cfg->is_owner && s_cfg->is_owner(who);
+    q.asker = who;
+    q.trusted = owner;
     /* A room this station hosts (XPRS.md 10.10.1): its rows are the ones
      * addressed to it; a private one is served to its members only. */
     const char *hosted = httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK
@@ -375,6 +384,9 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
         if (httpd_query_key_value(query, "call", mailcall,
                                   sizeof mailcall) != ESP_OK || !mailcall[0])
             return resp_error(req, "400 Bad Request", "mail needs call=");
+        if (!owner && !(who && call_matches(mailcall, who)))
+            return resp_error(req, "403 Forbidden",
+                              "mail needs a session for that callsign");
         ctx.mail_for = mailcall;
         q.from = NULL;               /* call names the RECIPIENT here */
     }

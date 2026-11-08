@@ -739,6 +739,23 @@ static void test_epoch_is_anchored(const char *dir)
  * names whose. One packet answers a question whose usual answer is nothing,
  * where the alternative -- cmd:history only:X -- replays the mail itself.
  */
+/* The receipt the recipient sent for "waiting 0": its identifier, found the
+ * way a station finds it, by querying the record back. */
+static char s_acked_id[XPRSIDX_ID_LEN];
+static bool find_waiting0(const xprsidx_rec_t *rec, void *ctx)
+{
+    (void)ctx;
+    if (strstr(rec->wire, "m:waiting 0")) {
+        snprintf(s_acked_id, sizeof s_acked_id, "%s", rec->id);
+        return false;
+    }
+    return true;
+}
+static bool skip_waiting0(const char *id)
+{
+    return s_acked_id[0] && strcmp(id, s_acked_id) == 0;
+}
+
 static void test_mail_count(const char *dir)
 {
     rm_rf(dir);
@@ -751,6 +768,11 @@ static void test_mail_count(const char *dir)
                  "t:message f:X1QZ3N d:X1BOA3 ts:" TS_2026 " m:waiting %d", i);
         CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, 0), "mail %d", i);
     }
+    {
+        xprsidx_query_t fq = { .type = -1, .trusted = true, .limit = 10 };
+        xprsindex_query(st, &fq, find_waiting0, NULL);
+        CHECK(s_acked_id[0], "could not find the record to acknowledge");
+    }
     snprintf(w, sizeof w,
              "t:message f:X1QZ3N d:X1OTHR ts:" TS_2026 " m:for somebody else");
     xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
@@ -758,18 +780,45 @@ static void test_mail_count(const char *dir)
     snprintf(w, sizeof w, "t:status f:X1QZ3N ts:" TS_2026 " m:just talking");
     xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
 
-    CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 3,
-          "wanted 3 for X1BOA3, got %d", xprsindex_mail_count(st, "X1BOA3", 99));
-    CHECK(xprsindex_mail_count(st, "X1NONE", 99) == 0,
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99, NULL) == 3,
+          "wanted 3 for X1BOA3, got %d", xprsindex_mail_count(st, "X1BOA3", 99, NULL));
+    CHECK(xprsindex_mail_count(st, "X1NONE", 99, NULL) == 0,
           "a callsign with no mail was told there is some");
-    CHECK(xprsindex_mail_count(st, NULL, 99) == 4,
+    CHECK(xprsindex_mail_count(st, NULL, 99, NULL) == 4,
           "the station's own total is wrong (%d)",
-          xprsindex_mail_count(st, NULL, 99));
+          xprsindex_mail_count(st, NULL, 99, NULL));
     /* The cap is a cap: the question is whether there is any. */
-    CHECK(xprsindex_mail_count(st, "X1BOA3", 2) == 2, "cap not honoured");
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 2, NULL) == 2, "cap not honoured");
     /* A suffixed device of the same operator is the same recipient (3.1). */
-    CHECK(xprsindex_mail_count(st, "X1BOA3-7", 99) == 3,
+    CHECK(xprsindex_mail_count(st, "X1BOA3-7", 99, NULL) == 3,
           "a suffixed callsign did not find its own mail");
+
+    /* What is NOT mail for X1BOA3, and once was counted as such: a message
+     * X1BOA3 wrote (only: matched the author), an observation that merely
+     * lists X1BOA3 in hears: (only: matched the list field), and this
+     * station's own words to X1BOA3 (a station carries mail for other
+     * people, 15.6.5, not its own sayings). */
+    snprintf(w, sizeof w, "t:message f:X1BOA3 d:X1QZ3N ts:" TS_2026 " m:a reply");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    snprintf(w, sizeof w,
+             "t:observation f:X3RLY7 link:lan peers:1 hears:X1BOA3 ts:" TS_2026);
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    xprsindex_set_own(st, "X3ARC1");
+    snprintf(w, sizeof w, "t:message f:X3ARC1 d:X1BOA3 ts:" TS_2026 " m:from the station");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99, NULL) == 3,
+          "the author's own words, a hears: mention or the station's message "
+          "were counted as mail for X1BOA3 (%d)",
+          xprsindex_mail_count(st, "X1BOA3", 99, NULL));
+    /* The total the beacon's mail: carries: mail for others, not ours. */
+    CHECK(xprsindex_mail_count(st, NULL, 99, NULL) == 5,
+          "the station's total counts its own message (%d)",
+          xprsindex_mail_count(st, NULL, 99, NULL));
+    /* A receipt releases held mail (12.8.2): an acknowledged record is not
+     * waiting, and a count that ignored the receipt said "3" for ever. */
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99, skip_waiting0) == 2,
+          "an acknowledged message is still counted (%d)",
+          xprsindex_mail_count(st, "X1BOA3", 99, skip_waiting0));
     xprsindex_close(st);
 }
 
@@ -1451,8 +1500,8 @@ static void test_rescue_keeps_the_mail(const char *dir)
     st = xprsindex_open(dir);
     xprsindex_set_own(st, "X3ARC1");
     CHECK(xprsindex_restore_mail(st, buf, used) == 2, "restore wrote too few");
-    CHECK(xprsindex_mail_count(st, "X1DECL", 99) == 1, "declared mail lost");
-    CHECK(xprsindex_mail_count(st, "X1HERE", 99) == 1,
+    CHECK(xprsindex_mail_count(st, "X1DECL", 99, NULL) == 1, "declared mail lost");
+    CHECK(xprsindex_mail_count(st, "X1HERE", 99, NULL) == 1,
           "other mail lost, or the expired one came back");
     xprsidx_stats_t ss;
     xprsindex_stats(st, &ss);
@@ -1466,8 +1515,8 @@ static void test_rescue_keeps_the_mail(const char *dir)
     st = xprsindex_open(dir);
     CHECK(nsmall == 1 && xprsindex_restore_mail(st, small, used_small) == 1,
           "a small buffer kept %u records", (unsigned)nsmall);
-    CHECK(xprsindex_mail_count(st, "X1DECL", 99) == 1 &&
-          xprsindex_mail_count(st, "X1HERE", 99) == 0,
+    CHECK(xprsindex_mail_count(st, "X1DECL", 99, NULL) == 1 &&
+          xprsindex_mail_count(st, "X1HERE", 99, NULL) == 0,
           "a small buffer kept the wrong mail");
     CHECK(again == 1, "after a restore the declaration was gone");
     xprsindex_close(st);
@@ -1493,8 +1542,8 @@ static void test_restore_across_segments(const char *dir)
     rm_rf(dir);
     st = xprsindex_open2(dir, 256);
     CHECK(xprsindex_restore_mail(st, buf, used) == 600, "restore fell short");
-    CHECK(xprsindex_mail_count(st, NULL, 1000) == 600, "mail count after restore: %d",
-          xprsindex_mail_count(st, NULL, 1000));
+    CHECK(xprsindex_mail_count(st, NULL, 1000, NULL) == 600, "mail count after restore: %d",
+          xprsindex_mail_count(st, NULL, 1000, NULL));
     xprsidx_rec_t r;
     CHECK(xprsindex_get(st, 255, &r) && xprsindex_get(st, 256, &r) &&
           xprsindex_get(st, 599, &r) && strstr(r.wire, "mail 599"),
@@ -1522,8 +1571,8 @@ static void test_mail_is_kept_once(const char *dir)
             xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
         }
     }
-    CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 1,
-          "the same mail was kept %d times", xprsindex_mail_count(st, "X1BOA3", 99));
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99, NULL) == 1,
+          "the same mail was kept %d times", xprsindex_mail_count(st, "X1BOA3", 99, NULL));
     xprsindex_close(st);
     /* And after a restart, when the relays are still airing it. */
     st = xprsindex_open(dir);
@@ -1534,7 +1583,7 @@ static void test_mail_is_kept_once(const char *dir)
     const char *again = "t:message f:X1QZ3N ts:" TS_2025 " scope:local via:X1RLY1 m:room chat";
     CHECK(!xprsindex_add(st, again, (int)strlen(again), 0, false, 0),
           "a relayed copy was stored again after a restart");
-    CHECK(xprsindex_mail_count(st, "X1BOA3", 99) == 1, "mail kept twice after a restart");
+    CHECK(xprsindex_mail_count(st, "X1BOA3", 99, NULL) == 1, "mail kept twice after a restart");
     xprsindex_close(st);
 }
 

@@ -47,6 +47,14 @@ typedef struct {
     /** The x-only key this station holds for a callsign, or NULL: the web
      *  chat engine checks visitors' signatures with it (xapi_wc.c). */
     const uint8_t *(*peer_key)(const char *call);
+    /* A visitor just proved their key on /api/session: the station has
+     * heard them, through the API, as surely as a packet on the LAN would
+     * say (the page sends nothing else on a quiet return). Optional. */
+    void (*visitor_heard)(const char *call);
+    /* Whether @p call is this station's owner or administrator: the one
+     * session that reads everybody's mail over HTTP (spec/API-HTTP.md).
+     * Optional; without it only a message's two parties see it. */
+    bool (*is_owner)(const char *call);
 
     /** JSON fragments the board owns, written into @p buf: the serve list
      *  (e.g. `"index","history","mailbox"` -- no brackets) and the feature

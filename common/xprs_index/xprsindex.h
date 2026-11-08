@@ -184,6 +184,14 @@ typedef struct {
     uint32_t types;
     const char *from;       /* NULL/"" = any author */
     /**
+     * The addressee: NULL/"" = any; else a record whose `d:` names this
+     * callsign (base form; X1BOA3-7's mail is X1BOA3's). What `q:mail` and
+     * the beacon's `mail:` count by: `only` also matched the author and the
+     * list fields, so a station's own `mail:` once counted every message
+     * it had ever heard mention anybody.
+     */
+    const char *to;
+    /**
      * XPRS.md 36.6 `only:` -- a CALLSIGN, matched as author or addressee.
      * NULL/"" = any. This is not a type filter: `kind:` names a type and maps
      * to @ref type above. Reading `only:` as a type made `only:message` appear
@@ -285,7 +293,13 @@ size_t xprsindex_rescue_mail(xprsidx_t *st, uint8_t *buf, size_t cap,
 uint32_t xprsindex_restore_mail(xprsidx_t *st, const uint8_t *buf, size_t len);
 
 /**
- * @brief How much mail this station holds for @p call (XPRS.md 13.12.3).
+ * @brief How much mail this station holds for @p call (XPRS.md 9.12.3).
+ *
+ * Mail only (a record with `d:`), addressed TO @p call (or, with NULL, to
+ * anybody but this station: the beacon's `mail:`, 15.6.5), never written by
+ * this station itself, and not a record @p skip says was acknowledged (a
+ * receipt is what releases held mail, 12.8.2; a count that ignored them
+ * said "3 waiting" for ever). @p skip may be NULL.
  *
  * The answer to `q:mail`: how many `t:message` records carry `d:` naming
  * that callsign and would be handed over if asked. Counting stops at
@@ -298,7 +312,8 @@ uint32_t xprsindex_restore_mail(xprsidx_t *st, const uint8_t *buf, size_t len);
  * @param call  the recipient; NULL or empty counts mail for everybody.
  * @return records found, at most @p cap.
  */
-int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap);
+int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap,
+                         bool (*skip)(const char *id));
 
 
 /**

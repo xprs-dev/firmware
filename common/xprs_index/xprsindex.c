@@ -397,6 +397,7 @@ static void xi_copy(char *dst, size_t cap, const char *src, int len)
     dst[n] = '\0';
 }
 
+static bool xi_base_eq(const char *a, const char *b);   /* below, with the declarations */
 static bool xi_ieq(const char *a, const char *b)
 {
     if (!a || !b) return false;
@@ -1045,6 +1046,7 @@ static bool xi_matches(const xi_rec_t *r, const xprsidx_query_t *q)
     if (q->since_ts && (r->ts == 0 || r->ts < q->since_ts)) return false;
     if (q->until_ts && (r->ts == 0 || r->ts > q->until_ts)) return false;
     if (q->from && *q->from && !xi_ieq(q->from, r->from)) return false;
+    if (q->to && *q->to && !xi_base_eq(q->to, r->to)) return false;
     if (q->only && *q->only && !xi_mentions(r, q->only)) return false;
     if (q->room) {
         if (r->to[0] && r->to[0] != '#') return false;   /* a 1:1 is no room */
@@ -2684,14 +2686,24 @@ const char *xprsidx_bearer_name(int code)
     }
 }
 
+typedef struct {
+    int n;
+    const char *own;
+    bool (*skip)(const char *id);
+} xi_tally_t;
+
 static bool xi_mail_tally(const xprsidx_rec_t *rec, void *ctx)
 {
-    (void)rec;
-    (*(int *)ctx)++;
+    xi_tally_t *t = (xi_tally_t *)ctx;
+    if (!rec->to[0] || rec->to[0] == '#') return true;      /* not mail */
+    if (t->own && t->own[0] && xi_base_eq(rec->from, t->own)) return true;
+    if (t->skip && t->skip(rec->id)) return true;           /* acknowledged */
+    t->n++;
     return true;
 }
 
-int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap)
+int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap,
+                         bool (*skip)(const char *id))
 {
     if (!st || cap <= 0) return 0;
     /* On the BASE callsign: section 3.1 says a station answers to its bare
@@ -2708,23 +2720,26 @@ int xprsindex_mail_count(xprsidx_t *st, const char *call, int cap)
         base[i] = 0;
     }
     call = base[0] ? base : NULL;
-    int n = 0;
+    xi_tally_t t = { .n = 0, .own = st->own, .skip = skip };
     xprsidx_query_t q = {
         .type = -1,
         .types = xprsidx_type_mask("message"),
-        .only = call,
+        .to = call,
         /* The asker is the recipient, so 36's mail rule lets their own mail
          * be counted; with no callsign this is the station's own total and
-         * is trusted for the same reason /api/xprs/mail is. */
+         * is trusted for the same reason /api/xprs/mail is. The tally
+         * itself keeps only mail, from somebody else, not yet acknowledged;
+         * the limit bounds the records LOOKED AT, so a station with a long
+         * spool still answers in one page's worth of reading. */
         .asker = call,
         .trusted = (call == NULL),
-        .limit = (uint32_t)cap,
+        .limit = (uint32_t)cap * 4,
         .newest_first = true,
     };
     XI_LOCK(st);
-    xi_query_locked(st, &q, xi_mail_tally, &n);
+    xi_query_locked(st, &q, xi_mail_tally, &t);
     XI_UNLOCK(st);
-    return n;
+    return t.n > cap ? cap : t.n;
 }
 
 size_t xprsindex_query(xprsidx_t *st, const xprsidx_query_t *q,

@@ -65,6 +65,13 @@ typedef struct {
                                   * answer there is nothing to be sticky
                                   * against. 0xff before the first reading. */
     uint32_t last_ms;            /* esp_timer ms when last heard */
+    bool     api;                /* the freshest hearing came through the
+                                  * HTTP API (a browser on the hotspot or
+                                  * LAN), not off the bearer's socket. Local
+                                  * bookkeeping, never a wire word: such a
+                                  * row is in hears: like any neighbour, but
+                                  * mail for it goes out through the page,
+                                  * not by re-airing on the LAN. */
 } xst_dev_t;
 
 typedef struct {
@@ -162,6 +169,12 @@ void xst_dev_note(const char *call, const char *bearer, int rssi);
  * "" or NULL otherwise. */
 void xst_dev_note_hops(const char *call, const char *bearer, int rssi,
                        int hops, const char *relay);
+/* Mark the (call, bearer) row's latest hearing as one that came through the
+ * HTTP API (see xst_dev_t.api); a later hearing off the bearer's own socket
+ * clears it. Call right after the ingest or note that made the row. */
+void xst_dev_mark_api(const char *call, const char *bearer);
+/* Whether the (call, bearer) row's freshest hearing came through the API. */
+bool xst_dev_is_api(const char *call, const char *bearer);
 
 /* Bank transmitted-packet totals into the stats rings. Call once per UI
  * tick with the CUMULATIVE total across the board's bearers; the primed

@@ -250,6 +250,9 @@ static esp_err_t h_session_post(httpd_req_t *req)
     ESP_LOGI(TAG, "session: %s -> %d %s (up %lus)", call, code, code == 200 ? token : why,
              (unsigned long)uptime_cb());
     if (code != 200) return xapi_resp_error(req, status_line(code), why);
+    /* A proven key is a hearing: the station's devices, hears: and gossip
+     * learn the visitor is here even when they only came back to read. */
+    if (s_cfg && s_cfg->visitor_heard) s_cfg->visitor_heard(call);
     char out[128];
     snprintf(out, sizeof out, "{\"ok\":true,\"session\":\"%s\",\"call\":\"%s\"}", token, call);
     return answer(req, 200, out);
