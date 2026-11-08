@@ -9062,6 +9062,7 @@ no_announce:
             s_apih.pending = false;
             xgossip_note_direct(s_goss, acall, s_call, "lan",
                                 (uint32_t)(esp_timer_get_time() / 1000000));
+            if (s_index) xprsindex_serve_touch(s_index, acall, xst_epoch_now());
         }
 
         if (s_rel.pending && s_index && xcfg_get_bool("index_on", true)) {
@@ -9741,6 +9742,37 @@ static bool api_is_owner(const char *call)
            (own && own[0] && same_base(own, call));
 }
 
+/* The rest of the /api/session reply (xprs_api.h session_extra): whose
+ * mailbox this visitor has, whether this station offers to be it, and how
+ * much it holds for them. 12.8.3 step zero: a station with no archiver of
+ * its own has nowhere to leave anything, so a visitor with no holder is
+ * offered this one and is served from this moment; the PAGE then signs the
+ * t:mailbox that tells every other archiver (9.12), because only the
+ * visitor's key may say where the visitor's mail goes. `holders` lists the
+ * declarations this station verified (step 7 of the plan) and itself when
+ * it serves the visitor; until declarations are read here, itself. */
+static int api_session_extra(const char *call, char *buf, size_t cap)
+{
+    if (!s_index || !xcfg_get_bool("index_on", true) || !s_call[0]) return 0;
+    uint32_t now = xst_epoch_now();
+    int n = 0;
+    if (xprsindex_serves(s_index, call)) {
+        xprsindex_serve_touch(s_index, call, now);
+        n += snprintf(buf + n, cap - (size_t)n, ",\"holders\":[\"%s\"]", s_call);
+    } else if (xprsindex_served_count(s_index) < xprsindex_served_max()) {
+        xprsindex_serve_note(s_index, call, now);
+        n += snprintf(buf + n, cap - (size_t)n, ",\"holders\":[],\"offer\":\"%s\"", s_call);
+        ESP_LOGI(TAG, "mailbox offered to %s (%d served)", call,
+                 xprsindex_served_count(s_index));
+    } else {
+        n += snprintf(buf + n, cap - (size_t)n, ",\"holders\":[]");   /* room:no */
+    }
+    if (n > 0 && n < (int)cap)
+        n += snprintf(buf + n, cap - (size_t)n, ",\"mail\":%d",
+                      xprsindex_mail_count(s_index, call, 99, acked_has));
+    return (n > 0 && n < (int)cap) ? n : 0;
+}
+
 /* /api/session proved a key: the same hearing, with no packet to file. */
 static void web_visitor_heard(const char *call)
 {
@@ -10272,6 +10304,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .peer_key = any_key,
     .visitor_heard = web_visitor_heard,
     .is_owner = api_is_owner,
+    .session_extra = api_session_extra,
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,

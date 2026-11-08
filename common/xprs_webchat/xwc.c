@@ -1218,7 +1218,7 @@ int xwc_services_json(char *buf, size_t cap, const char *tabs_csv)
     char *save = NULL;
     int k = 0;
     for (char *t = strtok_r(tabs, ",", &save); t; t = strtok_r(NULL, ",", &save)) jb(&j, "%s\"%s\"", k++ ? "," : "", t);
-    jb(&j, "],\"session\":true,\"admin\":true,\"moderation\":%s,\"rooms\":%s,\"alerts\":\"%s\"}",
+    jb(&j, "],\"session\":true,\"mailbox\":true,\"admin\":true,\"moderation\":%s,\"rooms\":%s,\"alerts\":\"%s\"}",
        s_priv ? "true" : "false", s_priv ? "true" : "false", xwc_who_may_alert());
     return (int)j.n;
 }

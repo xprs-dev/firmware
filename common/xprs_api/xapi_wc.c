@@ -253,8 +253,13 @@ static esp_err_t h_session_post(httpd_req_t *req)
     /* A proven key is a hearing: the station's devices, hears: and gossip
      * learn the visitor is here even when they only came back to read. */
     if (s_cfg && s_cfg->visitor_heard) s_cfg->visitor_heard(call);
-    char out[128];
-    snprintf(out, sizeof out, "{\"ok\":true,\"session\":\"%s\",\"call\":\"%s\"}", token, call);
+    char out[384];
+    int on = snprintf(out, sizeof out, "{\"ok\":true,\"session\":\"%s\",\"call\":\"%s\"", token, call);
+    if (s_cfg && s_cfg->session_extra && on > 0 && on < (int)sizeof out - 2)
+        on += s_cfg->session_extra(call, out + on, sizeof out - (size_t)on - 2);
+    if (on < 0 || on > (int)sizeof out - 2) on = (int)strlen(out);
+    out[on++] = '}';
+    out[on] = 0;
     return answer(req, 200, out);
 }
 

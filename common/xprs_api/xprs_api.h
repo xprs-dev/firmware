@@ -55,6 +55,11 @@ typedef struct {
      * session that reads everybody's mail over HTTP (spec/API-HTTP.md).
      * Optional; without it only a message's two parties see it. */
     bool (*is_owner)(const char *call);
+    /* More for the /api/session reply, after `call`: a JSON fragment that
+     * starts with a comma (`,"holders":[...],"offer":"X3..","mail":2`), or
+     * nothing. The engine knows the keys; the station knows whose mailbox
+     * it is and what it holds (spec/API-HTTP.md). Optional. */
+    int (*session_extra)(const char *call, char *buf, size_t cap);
 
     /** JSON fragments the board owns, written into @p buf: the serve list
      *  (e.g. `"index","history","mailbox"` -- no brackets) and the feature

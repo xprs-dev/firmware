@@ -366,6 +366,28 @@ void xprsindex_stats(xprsidx_t *st, xprsidx_stats_t *out);
  * declarer to reach class 3. Set it before traffic flows. */
 void xprsindex_set_own(xprsidx_t *st, const char *call);
 
+/* ── The visitors this station serves (XPRS.md 12.8.3 step zero) ────────
+ *
+ * A browser user who chats through this station's page and has no mailbox
+ * of their own is offered this station as one; the station remembers that
+ * it serves them from the moment it offers, so their mail is class 3 (kept
+ * longest, 12.11) before the visitor's signed declaration is filed, and
+ * `holders` on /api/session can name it. A small table: the page nominates
+ * the station in a signed t:mailbox, which is what other archivers learn
+ * from; this is only the station's own memory of whom it took in.
+ */
+/** Remember that this station serves @p call (now = epoch seconds, 0 when
+ * the clock is unknown). When the table is full the visitor seen longest
+ * ago is let go. @return false only when the store is not open. */
+bool xprsindex_serve_note(xprsidx_t *st, const char *call, uint32_t now);
+/** Refresh "last seen" for a served visitor; nothing for a stranger. */
+void xprsindex_serve_touch(xprsidx_t *st, const char *call, uint32_t now);
+/** Whether this station serves @p call (base callsign). */
+bool xprsindex_serves(xprsidx_t *st, const char *call);
+/** How many visitors are served, and the table's capacity: `room:` (13.0.2). */
+int  xprsindex_served_count(xprsidx_t *st);
+int  xprsindex_served_max(void);
+
 /** Storage budget in bytes; 0 (the default) = no cap. Over it, the writer
  * deletes the oldest segment, carrying mail forward: class 3 (declared)
  * and class 2 (custody) survive, the spool goes first, and nothing

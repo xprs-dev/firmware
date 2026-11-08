@@ -77,6 +77,14 @@ static uint64_t xi_card_free(const char *d);
  * caller asks for; an ask for more than this is served by a full walk. */
 #define XI_DIR_MAX        32
 #define XPRSIDX_DECL_MAX  16
+/* Visitors this station took in as their mailbox (xprsindex_serve_note):
+ * 24 bytes a row. A board without PSRAM keeps sixteen, a hotspot's worth of
+ * regulars; one with it keeps sixty-four. */
+#ifdef CONFIG_SPIRAM
+#define XPRSIDX_SERVED_MAX 64
+#else
+#define XPRSIDX_SERVED_MAX 16
+#endif
 /*
  * REGULARS: callsigns this station has heard on many distinct days. Mail for
  * one is kept as long as mail for a station that explicitly declared this one
@@ -314,6 +322,13 @@ struct xprsidx_s {
     char     decl[XPRSIDX_DECL_MAX][XPRSIDX_CALL_LEN];
     int      decl_n;
     bool     decl_dirty;            /* persisted by the writer task */
+    /* The visitors served (12.8.3 step zero): callsign, first and last seen. */
+    struct {
+        char     call[XPRSIDX_CALL_LEN];
+        uint32_t since, last;
+    } served[XPRSIDX_SERVED_MAX];
+    int      served_n;
+    bool     served_dirty;
     /* Regulars: callsign, distinct days heard, and the last day counted, so a
      * station heard twice in one afternoon scores one day and not two. */
     struct {
@@ -398,6 +413,7 @@ static void xi_copy(char *dst, size_t cap, const char *src, int len)
 }
 
 static bool xi_base_eq(const char *a, const char *b);   /* below, with the declarations */
+static int xi_served_slot(const xprsidx_t *st, const char *call);
 static bool xi_ieq(const char *a, const char *b)
 {
     if (!a || !b) return false;
@@ -715,6 +731,8 @@ static uint32_t xi_type_tail(const xprsidx_t *st, int type, uint32_t skip_end,
 static bool xi_write_rec(xprsidx_t *st, const xi_rec_t *rec);
 static void xi_decl_load(xprsidx_t *st);
 static void xi_decl_save(xprsidx_t *st);
+static void xi_served_load(xprsidx_t *st);
+static void xi_served_save(xprsidx_t *st);
 static void xi_reg_load(xprsidx_t *st);
 static void xi_reg_save(xprsidx_t *st);
 static bool xi_evict_locked(xprsidx_t *st);
@@ -1264,6 +1282,7 @@ xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
     st->boot_newest_ts = st->newest_ts;
     xi_decl_load(st);
     xi_reg_load(st);
+    xi_served_load(st);
     /* The long dedup ring is RAM, and a restart emptied it: every chat
      * message the mesh was still relaying came in again as a new record
      * (a T-Deck, 2026-10-12: one message stored three times, once per relay
@@ -1346,6 +1365,118 @@ static void xi_decl_save(xprsidx_t *st)
     for (int i = 0; i < st->decl_n; i++) fprintf(f, "%s\n", st->decl[i]);
     fclose(f);
     st->decl_dirty = false;
+}
+
+/* served.txt: one visitor a line, `call since last`, epoch seconds. */
+static void xi_served_path(const xprsidx_t *st, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/served.txt", st->dir);
+}
+
+static void xi_served_load(xprsidx_t *st)
+{
+    char path[96];
+    xi_served_path(st, path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[64];
+    while (st->served_n < XPRSIDX_SERVED_MAX && fgets(line, sizeof line, f)) {
+        char call[XPRSIDX_CALL_LEN];
+        unsigned long since = 0, last = 0;
+        if (sscanf(line, "%15s %lu %lu", call, &since, &last) < 1 || !call[0]) continue;
+        xi_copy(st->served[st->served_n].call, XPRSIDX_CALL_LEN, call, -1);
+        st->served[st->served_n].since = (uint32_t)since;
+        st->served[st->served_n].last = (uint32_t)last;
+        st->served_n++;
+    }
+    fclose(f);
+}
+
+static void xi_served_save(xprsidx_t *st)
+{
+    char path[96];
+    xi_served_path(st, path, sizeof path);
+    FILE *f = xi_fopen_pressed(st, path, "w");
+    if (!f) {
+        XI_LOGE("served visitors %s not written: %s", path, strerror(errno));
+        return;
+    }
+    for (int i = 0; i < st->served_n; i++)
+        fprintf(f, "%s %lu %lu\n", st->served[i].call,
+                (unsigned long)st->served[i].since, (unsigned long)st->served[i].last);
+    fclose(f);
+    st->served_dirty = false;
+}
+
+/* Lock held. -1 when @p call is not served. */
+static int xi_served_slot(const xprsidx_t *st, const char *call)
+{
+    for (int i = 0; i < st->served_n; i++)
+        if (xi_base_eq(st->served[i].call, call)) return i;
+    return -1;
+}
+
+bool xprsindex_serve_note(xprsidx_t *st, const char *call, uint32_t now)
+{
+    if (!st || !call || !*call) return false;
+    XI_LOCK(st);
+    int i = xi_served_slot(st, call);
+    if (i < 0) {
+        if (st->served_n < XPRSIDX_SERVED_MAX) {
+            i = st->served_n++;
+        } else {
+            /* Full: the visitor seen longest ago makes room (LRU). Their
+             * mail stays in the store at class 2 until its until:. */
+            i = 0;
+            for (int k = 1; k < st->served_n; k++)
+                if (st->served[k].last < st->served[i].last) i = k;
+            XI_LOGW("served table full: letting %s go for %s", st->served[i].call, call);
+        }
+        xi_copy(st->served[i].call, XPRSIDX_CALL_LEN, call, -1);
+        /* The base callsign: X1BOA3-7's mailbox is X1BOA3's (3.1). */
+        char *dash = strchr(st->served[i].call, '-');
+        if (dash) *dash = 0;
+        st->served[i].since = now;
+    }
+    st->served[i].last = now;
+    st->served_dirty = true;
+    XI_UNLOCK(st);
+    return true;
+}
+
+void xprsindex_serve_touch(xprsidx_t *st, const char *call, uint32_t now)
+{
+    if (!st || !call || !*call) return;
+    XI_LOCK(st);
+    int i = xi_served_slot(st, call);
+    if (i >= 0 && now > st->served[i].last) {
+        st->served[i].last = now;
+        st->served_dirty = true;
+    }
+    XI_UNLOCK(st);
+}
+
+bool xprsindex_serves(xprsidx_t *st, const char *call)
+{
+    if (!st || !call || !*call) return false;
+    XI_LOCK(st);
+    bool yes = xi_served_slot(st, call) >= 0;
+    XI_UNLOCK(st);
+    return yes;
+}
+
+int xprsindex_served_count(xprsidx_t *st)
+{
+    if (!st) return 0;
+    XI_LOCK(st);
+    int n = st->served_n;
+    XI_UNLOCK(st);
+    return n;
+}
+
+int xprsindex_served_max(void)
+{
+    return XPRSIDX_SERVED_MAX;
 }
 
 /* Base-callsign compare: X1QZ3N-7 declares for X1QZ3N (section 3.1). */
@@ -1547,7 +1678,9 @@ static bool xi_is_alert(const xi_rec_t *r);
 static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
 {
     if (!(r->flags & XI_F_MAIL)) return xi_is_alert(r) ? 2 : 1;
-    return xi_declared(st, r->to) ? 3 : 2;
+    /* A visitor this station took in as their mailbox (12.8.3 step zero)
+     * is a declarer whose declaration may not have been filed yet. */
+    return (xi_declared(st, r->to) || xi_served_slot(st, r->to) >= 0) ? 3 : 2;
 }
 
 /* A t:mailbox whose hold: names this station: remember the declarer.
@@ -1918,6 +2051,12 @@ void xprsindex_close(xprsidx_t *st)
         vTaskDelay(pdMS_TO_TICKS(50));
 #endif
     XI_LOCK(st);
+    /* What the writer persists on its tick, persisted once more here: a
+     * store closed right after a visitor was taken in (or on the host,
+     * where there is no writer) must not forget them. */
+    if (st->decl_dirty) xi_decl_save(st);
+    if (st->reg_dirty) xi_reg_save(st);
+    if (st->served_dirty) xi_served_save(st);
     xi_zone_flush(st);
     xi_tail_close(st);
     xi_read_close(st);
@@ -1980,6 +2119,7 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
     while (xi_evict_locked(st)) {}
     if (st->decl_dirty) xi_decl_save(st);
     if (st->reg_dirty) xi_reg_save(st);
+    if (st->served_dirty) xi_served_save(st);
     return ok;
 #else
     if (st->q_count >= XI_QUEUE_LEN) {
@@ -2648,7 +2788,9 @@ static void xi_writer_task(void *arg)
              * (36.11: mail carries forward, the spool goes first). */
             xi_evict_locked(st);
             if (st->decl_dirty) xi_decl_save(st);
+    if (st->served_dirty) xi_served_save(st);
             if (st->reg_dirty) xi_reg_save(st);
+            if (st->served_dirty) xi_served_save(st);
             XI_UNLOCK(st);
         }
     }
@@ -3049,6 +3191,7 @@ uint32_t xprsindex_restore_mail(xprsidx_t *st, const uint8_t *buf, size_t len)
     free(st->pend);
     st->pend = NULL;
     if (st->decl_dirty) xi_decl_save(st);
+    if (st->served_dirty) xi_served_save(st);
     xi_count_held(st);
     xi_sync_card(st);
     XI_UNLOCK(st);

@@ -756,6 +756,51 @@ static bool skip_waiting0(const char *id)
     return s_acked_id[0] && strcmp(id, s_acked_id) == 0;
 }
 
+/*
+ * XPRS.md 12.8.3 step zero: the visitors this station took in as their
+ * mailbox. Remembered across a restart, refreshed when seen, the one seen
+ * longest ago let go when the table is full, and their mail class 3.
+ */
+static void test_served(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+    CHECK(!xprsindex_serves(st, "X1VIS"), "a stranger is served before anything happened");
+    CHECK(xprsindex_serve_note(st, "X1VIS", 1000), "serve_note refused");
+    CHECK(xprsindex_serves(st, "X1VIS") && xprsindex_serves(st, "X1VIS-7"),
+          "the visitor (and their suffixed device, 3.1) is not served");
+    CHECK(xprsindex_served_count(st) == 1, "served count %d", xprsindex_served_count(st));
+    xprsindex_serve_note(st, "X1VIS", 2000);               /* again: no second row */
+    CHECK(xprsindex_served_count(st) == 1, "a visitor was taken in twice");
+
+    /* Full: the one seen longest ago goes, not the newest. */
+    int max = xprsindex_served_max();
+    char c[16];
+    for (int i = 1; i < max; i++) {
+        snprintf(c, sizeof c, "X1V%03d", i);
+        xprsindex_serve_note(st, c, 3000 + (uint32_t)i);
+    }
+    CHECK(xprsindex_served_count(st) == max, "table not full (%d of %d)",
+          xprsindex_served_count(st), max);
+    xprsindex_serve_touch(st, "X1VIS", 9000);            /* seen just now */
+    xprsindex_serve_note(st, "X1NEW", 9500);
+    CHECK(xprsindex_serves(st, "X1NEW") && xprsindex_serves(st, "X1VIS") &&
+          !xprsindex_serves(st, "X1V001"),
+          "the wrong visitor was let go when the table filled");
+    CHECK(xprsindex_served_count(st) == max, "the table grew past its size");
+
+    /* Persisted: the writer saves served.txt; a reopened store knows them. */
+    xprsindex_close(st);
+    st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not reopen");
+    CHECK(xprsindex_serves(st, "X1VIS") && xprsindex_serves(st, "X1NEW") &&
+          xprsindex_served_count(st) == max,
+          "served visitors did not survive a restart (%d)", xprsindex_served_count(st));
+    xprsindex_close(st);
+}
+
 static void test_mail_count(const char *dir)
 {
     rm_rf(dir);
@@ -1679,6 +1724,7 @@ int main(void)
     test_declared_mail_is_the_last_to_go(dir);
     test_standing_alerts_are_carried(dir);
     test_mail_count(dir);
+    test_served(dir);
     test_epoch_is_anchored(dir);
     test_only_is_a_callsign(dir);
     test_kind_takes_a_list(dir);
