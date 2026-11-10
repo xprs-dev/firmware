@@ -947,7 +947,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
     hc.send_wait_timeout = 5;
     /* 18 here + OTA + 3 from the hotspot + 4 from the config share, and
      * room: a handler past the cap is refused without a word. */
-    hc.max_uri_handlers = 38;   /* + the web chat engine's eight (xapi_wc.c) */
+    hc.max_uri_handlers = 39;   /* + the web chat engine's nine (xapi_wc.c) */
     /* A file by its reference ends its URI in a wildcard (xapi_wc.c);
      * every other URI is written out whole and matches exactly as before. */
     hc.uri_match_fn = httpd_uri_match_wildcard;

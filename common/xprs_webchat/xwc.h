@@ -109,6 +109,11 @@ bool xwc_may_read_room(const char *room, const char *token);
 int  xwc_rooms_json(char *buf, size_t cap, const char *token);
 int  xwc_rooms_post(const char *body, char *buf, size_t cap);
 bool xwc_has_rooms(void);
+/** Whether [token] proves the station's staff: its administrator, a
+ *  station moderator, or a moderator (or the admin) of any hosted room.
+ *  What they store over /api/xprs/file is the station's own (no cap but the
+ *  card, never evicted). */
+bool xwc_is_uploader(const char *token);
 
 /* ---- the index of a forum or gallery room (/api/rooms?topics=) ----------
  * The room's newest topics (a gallery's events) by last activity, folded

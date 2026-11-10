@@ -4,5 +4,5 @@
 idf_component_register(
     SRCS "xwc.c" "xwc_file.c"
     INCLUDE_DIRS "."
-    REQUIRES xprs_codec xprs_id xprs_sig
+    REQUIRES xprs_codec xprs_id xprs_sig mbedtls
 )

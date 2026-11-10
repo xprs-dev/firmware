@@ -17,12 +17,15 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_vfs_fat.h"
-#include "mbedtls/sha256.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 #include "nostr_keys.h"
 #include "xapi_send.h"
 #include "xprsindex.h"
 #include "xwc.h"
 #include "xwc_file.h"
+#include "xprs_core.h"
 
 static const char *TAG = "xapi_wc";
 static const xprs_api_cfg_t *s_cfg;
@@ -348,9 +351,11 @@ static esp_err_t h_rooms_post(httpd_req_t *req)
  * file, so there is nothing for a 403 to protect.
  *
  * With a memory card (on /sdcard, or the archive's own card on /idx) the
- * store has a card's room, and a picture's preview (`?preview=1`, XPRS.md
- * 7.7.7) is kept in `.thumbnails/` beside the originals; a GET finds a file
- * in either. */
+ * store has a card's room, a picture's preview (`?preview=1`, XPRS.md
+ * 7.7.7) is kept in `.thumbnails/` beside the originals, and what the
+ * station's staff store is its own, in `own/`: photographs and films of any
+ * size the card holds, never evicted. Where each goes is xwc_file.c's
+ * (xwcf_put_*, xwcf_room, xwcf_open), host-tested; this is the socket. */
 #define FILE_DIR_SD      "/sdcard/xfiles"
 #define FILE_DIR_IDX     "/idx/xfiles"
 #define FILE_MAX_SD      (2u * 1024u * 1024u)
@@ -359,7 +364,6 @@ static esp_err_t h_rooms_post(httpd_req_t *req)
 #define FILE_BUDGET_IDX  (192u * 1024u)
 #define FILE_RESERVE     (128u * 1024u)   /* left free on the volume, always */
 #define FILE_PUTS_MIN    12               /* stores a minute, all visitors */
-#define FILE_CHUNK       1024
 
 static bool s_on_sd(void)
 {
@@ -373,53 +377,21 @@ static bool s_card(void)
 }
 static const char *file_dir(void) { return s_on_sd() ? FILE_DIR_SD : FILE_DIR_IDX; }
 static uint32_t file_max(void) { return s_card() ? FILE_MAX_SD : FILE_MAX_IDX; }
-static uint32_t file_budget(void) { return s_card() ? FILE_BUDGET_SD : FILE_BUDGET_IDX; }
-#define THUMBS "/.thumbnails"
 
-/* The free bytes on the volume the store is on, or 0 when it cannot say. */
-static uint64_t file_free(void)
+/* The volume the store is on. */
+static bool file_space(uint64_t *fre, uint64_t *tot)
 {
-    uint64_t tot = 0, fre = 0;
-    if (esp_vfs_fat_info(s_on_sd() ? "/sdcard" : "/idx", &tot, &fre) != ESP_OK) return 0;
-    return fre;
+    return esp_vfs_fat_info(s_on_sd() ? "/sdcard" : "/idx", tot, fre) == ESP_OK;
 }
 
-/* Make room for [need] more bytes: the oldest files go until the store is
- * under its budget and the volume keeps its reserve. False when it cannot. */
-static bool file_room(uint32_t need)
+/* The store as it stands now: a card may come or go between two asks. */
+static void file_store(xwcf_store_t *st)
 {
-    char dirs[2][40];
-    snprintf(dirs[0], sizeof dirs[0], "%s", file_dir());
-    snprintf(dirs[1], sizeof dirs[1], "%s" THUMBS, file_dir());
-    for (int round = 0; round < 64; round++) {
-        uint64_t total = 0;
-        time_t oldest_t = 0;
-        char oldest[160] = "", path[160];
-        /* The originals and their previews share the budget. */
-        for (int k = 0; k < 2; k++) {
-            DIR *d = opendir(dirs[k]);
-            if (!d) { if (k == 0) return false; continue; }
-            struct dirent *e;
-            while ((e = readdir(d))) {
-                if (strlen(e->d_name) != 64) continue;     /* a part, or not ours */
-                struct stat st;
-                snprintf(path, sizeof path, "%s/%.64s", dirs[k], e->d_name);
-                if (stat(path, &st) != 0) continue;
-                total += (uint64_t)st.st_size;
-                if (!oldest[0] || st.st_mtime < oldest_t) {
-                    oldest_t = st.st_mtime;
-                    snprintf(oldest, sizeof oldest, "%s", path);
-                }
-            }
-            closedir(d);
-        }
-        uint64_t fre = file_free();
-        if (total + need <= file_budget() && fre >= (uint64_t)need + FILE_RESERVE) return true;
-        if (!oldest[0]) return false;
-        ESP_LOGI(TAG, "file store: %s goes to make room", oldest);
-        if (remove(oldest) != 0) return false;
-    }
-    return false;
+    *st = (xwcf_store_t){
+        .dir = file_dir(), .visitor_max = file_max(),
+        .budget = s_card() ? FILE_BUDGET_SD : FILE_BUDGET_IDX,
+        .reserve = FILE_RESERVE, .own = s_card(), .space = file_space,
+    };
 }
 
 /* The reference at the end of the request's path, or false. */
@@ -433,98 +405,307 @@ static bool file_ref(httpd_req_t *req, char *ref, size_t cap, uint8_t sha[32], c
     return xwcf_parse(ref, sha, ext);
 }
 
-static esp_err_t h_file_get(httpd_req_t *req)
+/* Everything of [n] bytes onto the socket, or false: a reader that takes
+ * nothing for the server's send timeout (five seconds) is gone. */
+static bool send_all(httpd_req_t *req, const char *b, size_t n)
 {
-    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[112];
-    uint8_t sha[32];
-    if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
-    xwcf_hex(sha, hex);
-    snprintf(path, sizeof path, "%s/%s", file_dir(), hex);
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        snprintf(path, sizeof path, "%s" THUMBS "/%s", file_dir(), hex);
-        f = fopen(path, "rb");
+    while (n) {
+        int w = httpd_send(req, b, n);
+        if (w <= 0) return false;
+        b += w;
+        n -= (size_t)w;
     }
-    if (!f) return answer(req, 404, "{\"ok\":false,\"error\":\"not held\"}");
-    char etag[70];
-    snprintf(etag, sizeof etag, "\"%s\"", hex);
-    httpd_resp_set_type(req, xwcf_type(ext));
-    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000, immutable");
-    httpd_resp_set_hdr(req, "ETag", etag);
-    httpd_resp_set_hdr(req, "X-Content-Type-Options", "nosniff");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    size_t r;
-    esp_err_t err = ESP_OK;
-    while ((r = fread(s_buf, 1, FILE_CHUNK, f)) > 0)
-        if ((err = httpd_resp_send_chunk(req, s_buf, (ssize_t)r)) != ESP_OK) break;
-    fclose(f);
-    if (err != ESP_OK) return err;
-    return httpd_resp_send_chunk(req, NULL, 0);
+    return true;
 }
 
+/* ---- long file transfers, off the httpd worker ------------------------
+ * The API server has one worker task; a film streamed from it holds every
+ * other visitor (the page, the chat, the map) for the minutes it takes. A
+ * file answer longer than XFER_INLINE is handed to a task of its own with
+ * httpd's async request copy, and the worker goes back to the others.
+ *
+ * Only answers, not uploads. In the pinned IDF (5.2.1) the worker still
+ * selects on a socket it lent out, and after the handler returns it drains
+ * the request's unread body itself (httpd_req_delete): an upload handed
+ * over would be read by two tasks at once. A POST stays on the worker,
+ * streamed as before; a GET's request has no body, and the client says
+ * nothing while it is being answered.
+ *
+ * What the worker still does on a lent socket is notice the client leave
+ * (a player that seeks closes the old connection and opens another): it
+ * closes the session, and lwIP hands the same descriptor number to the
+ * next connection. So the transfer marks the session (its ctx, freed by
+ * httpd when the session closes), and stops the moment it is gone instead
+ * of writing the rest of a film into somebody else's answer. */
+#define XFER_INLINE   (64u * 1024u)   /* longer answers go to the task */
+#define XFER_DEPTH    2               /* transfers waiting; past that, 503 */
+#define XFER_CHUNK    4096
+/* The loop is fread (FatFs and the card driver beneath it: the SPI or
+ * SDMMC transaction and the FAT sector walk, about 1.5 KB at their
+ * deepest), httpd_send into lwIP's tcp_write (under 1 KB), a log line on
+ * the way out (vprintf, about 1 KB) and this frame (under 200 bytes; the
+ * chunk buffer and the head live in the heap). 4 KB leaves a margin over
+ * that sum; the high-water mark is logged after the first transfer so a
+ * board on a bench says what it really took. */
+#define XFER_STACK    4096
+
+typedef struct {
+    uint32_t magic;
+    volatile bool busy;      /* a transfer is writing to this session */
+    volatile bool gone;      /* httpd closed the session */
+} xfer_mark_t;
+#define XFER_MAGIC 0x58464552u   /* "XFER" */
+static portMUX_TYPE s_xmux = portMUX_INITIALIZER_UNLOCKED;
+
+/* httpd closes a session: a transfer still on it stops at its next write. */
+static void xfer_mark_free(void *p)
+{
+    xfer_mark_t *m = p;
+    bool free_it;
+    taskENTER_CRITICAL(&s_xmux);
+    m->gone = true;
+    free_it = !m->busy;
+    taskEXIT_CRITICAL(&s_xmux);
+    if (free_it) free(m);
+}
+
+typedef struct {
+    httpd_req_t *req;         /* the async copy: owns the socket until complete */
+    xfer_mark_t *mark;
+    FILE        *f;
+    uint64_t     at, len;
+    int          head_len;
+    char         head[512];
+} xfer_job_t;
+
+static QueueHandle_t s_xq;
+static char *s_xbuf;
+
+static bool xfer_send(xfer_job_t *j, const char *b, size_t n)
+{
+    while (n) {
+        if (j->mark->gone) return false;
+        int w = httpd_send(j->req, b, n);
+        if (w <= 0) return false;
+        b += w;
+        n -= (size_t)w;
+    }
+    return true;
+}
+
+static void xfer_task(void *arg)
+{
+    (void)arg;
+    bool measured = false;
+    for (;;) {
+        xfer_job_t *j;
+        if (xQueueReceive(s_xq, &j, portMAX_DELAY) != pdTRUE) continue;
+        bool ok = xfer_send(j, j->head, (size_t)j->head_len);
+        if (ok && (j->at > 0x7fffffffu || fseek(j->f, (long)j->at, SEEK_SET) != 0)) ok = false;
+        uint64_t len = ok ? j->len : 0;
+        while (len) {
+            size_t want = len < XFER_CHUNK ? (size_t)len : XFER_CHUNK;
+            size_t r = fread(s_xbuf, 1, want, j->f);
+            if (r == 0 || !xfer_send(j, s_xbuf, r)) { ok = false; break; }
+            len -= r;
+        }
+        fclose(j->f);
+        bool gone;
+        taskENTER_CRITICAL(&s_xmux);
+        gone = j->mark->gone;
+        j->mark->busy = false;
+        taskEXIT_CRITICAL(&s_xmux);
+        if (gone) free(j->mark);
+        /* A reader that stopped reading: close it, as a failed handler
+         * would. Never once httpd closed it: the number may be another's. */
+        else if (!ok) httpd_sess_trigger_close(j->req->handle, httpd_req_to_sockfd(j->req));
+        httpd_req_async_handler_complete(j->req);
+        free(j);
+        if (!measured) {
+            measured = true;
+            ESP_LOGI(TAG, "file transfer task: %u bytes of its %u-byte stack never used",
+                     (unsigned)uxTaskGetStackHighWaterMark(NULL), (unsigned)XFER_STACK);
+        }
+    }
+}
+
+/* Claimed at start, while the heap is whole: a task stack must be
+ * internal memory, and on a board without PSRAM a late one may not fit. */
+static void xfer_start(void)
+{
+    if (s_xq) return;
+    s_xbuf = malloc(XFER_CHUNK);
+    s_xq = s_xbuf ? xQueueCreate(XFER_DEPTH, sizeof(xfer_job_t *)) : NULL;
+    if (!s_xq || xTaskCreatePinnedToCore(xfer_task, "xfer", XFER_STACK, NULL, 5, NULL,
+                                         XPRS_WORK_CORE) != pdPASS) {
+        ESP_LOGW(TAG, "no file transfer task: long files are served by the worker");
+        if (s_xq) vQueueDelete(s_xq);
+        free(s_xbuf);
+        s_xq = NULL;
+        s_xbuf = NULL;
+    }
+}
+
+/* Hand [f] (open, owned from here) and the head to the transfer task.
+ *   1 handed over: the worker returns at once
+ *   0 not possible here (no task, no memory): serve it inline
+ *  -1 the queue is full: 503 answered, [f] closed */
+static int xfer_offer(httpd_req_t *req, FILE *f, const char *head, int head_len,
+                      uint64_t at, uint64_t len)
+{
+    if (!s_xq) return 0;
+    /* The session's mark: ours from an earlier transfer on this keep-alive
+     * connection, or a new one; a session carrying somebody else's ctx is
+     * served inline. */
+    xfer_mark_t *m = req->sess_ctx;
+    if (m && (req->free_ctx != xfer_mark_free || m->magic != XFER_MAGIC)) return 0;
+    if (uxQueueSpacesAvailable(s_xq) == 0) {
+        fclose(f);
+        httpd_resp_set_hdr(req, "Retry-After", "2");
+        answer(req, 503, "{\"ok\":false,\"error\":\"busy, try again\"}");
+        return -1;
+    }
+    xfer_job_t *j = calloc(1, sizeof *j);
+    if (!j) return 0;
+    if (!m) {
+        m = calloc(1, sizeof *m);
+        if (!m) { free(j); return 0; }
+        m->magic = XFER_MAGIC;
+        req->sess_ctx = m;
+        req->free_ctx = xfer_mark_free;
+    }
+    if (httpd_req_async_handler_begin(req, &j->req) != ESP_OK) { free(j); return 0; }
+    m->busy = true;
+    j->mark = m;
+    j->f = f;
+    j->at = at;
+    j->len = len;
+    j->head_len = head_len < (int)sizeof j->head ? head_len : (int)sizeof j->head - 1;
+    memcpy(j->head, head, (size_t)j->head_len);
+    if (xQueueSend(s_xq, &j, 0) != pdTRUE) {
+        /* Filled between the look and the send: only this task sends, so
+         * this does not happen; undone all the same. */
+        m->busy = false;
+        httpd_req_async_handler_complete(j->req);
+        free(j);
+        return 0;
+    }
+    return 1;
+}
+
+/* GET (and HEAD) /api/xprs/file/<ref>: the whole file, or the part a
+ * `Range:` asks for (206), so a film plays from where the viewer seeks to.
+ * The answer is written by hand: httpd's own sends a body it holds whole
+ * (with its Content-Length) or chunks without one, and a player wants the
+ * length of a part it never holds. Streamed from the file a chunk at a time;
+ * a long one by the transfer task (above), a short one here. */
+static esp_err_t h_file_get(httpd_req_t *req)
+{
+    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65];
+    uint8_t sha[32];
+    if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
+    xwcf_store_t st;
+    file_store(&st);
+    uint64_t size = 0, a = 0, b = 0;
+    FILE *f = xwcf_open(&st, sha, &size);
+    if (!f) return answer(req, 404, "{\"ok\":false,\"error\":\"not held\"}");
+    xwcf_hex(sha, hex);
+    char range[64] = "";
+    if (httpd_req_get_hdr_value_len(req, "Range") > 0)
+        httpd_req_get_hdr_value_str(req, "Range", range, sizeof range);
+    int part = xwcf_range(range[0] ? range : NULL, size, &a, &b);
+    if (part == 0) { a = 0; b = size ? size - 1 : 0; }
+    uint64_t len = part < 0 || size == 0 ? 0 : b - a + 1;
+    char head[512];
+    int n = snprintf(head, sizeof head,
+        "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\n"
+        "Cache-Control: public, max-age=31536000, immutable\r\nETag: \"%s\"\r\n"
+        "X-Content-Type-Options: nosniff\r\nAccess-Control-Allow-Origin: *\r\n",
+        part > 0 ? "206 Partial Content" : part < 0 ? "416 Range Not Satisfiable" : "200 OK",
+        xwcf_type(ext), (unsigned long long)len, hex);
+    if (part > 0)
+        n += snprintf(head + n, sizeof head - (size_t)n, "Content-Range: bytes %llu-%llu/%llu\r\n",
+                      (unsigned long long)a, (unsigned long long)b, (unsigned long long)size);
+    else if (part < 0)
+        n += snprintf(head + n, sizeof head - (size_t)n, "Content-Range: bytes */%llu\r\n",
+                      (unsigned long long)size);
+    n += snprintf(head + n, sizeof head - (size_t)n, "\r\n");
+    if (len > XFER_INLINE && req->method != HTTP_HEAD) {
+        int handed = xfer_offer(req, f, head, n, a, len);
+        if (handed) return ESP_OK;      /* on its way, or 503 answered */
+    }
+    bool ok = send_all(req, head, (size_t)n);
+    /* FAT and newlib's long seek to 2 GB: past that a part cannot be
+     * reached, and the connection is closed rather than lied to. */
+    if (ok && len && req->method != HTTP_HEAD) {
+        if (a > 0x7fffffffu || fseek(f, (long)a, SEEK_SET) != 0) len = 0, ok = false;
+        while (len) {
+            size_t want = len < WC_BUF ? (size_t)len : WC_BUF;
+            size_t r = fread(s_buf, 1, want, f);
+            if (r == 0 || !send_all(req, s_buf, r)) { ok = false; break; }
+            len -= r;
+        }
+    }
+    fclose(f);
+    return ok ? ESP_OK : ESP_FAIL;
+}
+
+/* POST /api/xprs/file/<ref>[?preview=1][&session=<token>]: the body is
+ * streamed to the store as it arrives and hashed on the way (xwcf_put_*);
+ * a file is never held in RAM, whatever its size. A session that proves
+ * the station's staff (xwc_is_uploader) stores the station's own: on a
+ * card, no cap but the card's free space, and never evicted. On the worker,
+ * however long: see the transfer task's note on why an upload cannot be
+ * handed over in this IDF. */
 static esp_err_t h_file_post(httpd_req_t *req)
 {
-    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[112], part[112], dir[40], other[112];
-    uint8_t sha[32], got[32];
+    char ref[80], ext[XWCF_EXT_MAX + 1], token[XWC_TOKEN_LEN + 8], pv[4];
+    uint8_t sha[32];
     if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
-    if (req->content_len == 0) return answer(req, 400, "{\"ok\":false,\"error\":\"no bytes\"}");
-    if (req->content_len > file_max()) return answer(req, 413, "{\"ok\":false,\"error\":\"larger than this station keeps\"}");
-    /* One visitor's limit is the core's; a board has one HTTP worker and a
-     * small flash, so it caps every visitor together. */
-    static int64_t s_win;
-    static int s_puts;
-    int64_t now = esp_timer_get_time() / 1000000;
-    if (now - s_win >= 60) { s_win = now; s_puts = 0; }
-    if (++s_puts > FILE_PUTS_MIN) return answer(req, 429, "{\"ok\":false,\"error\":\"slow down\"}");
-    xwcf_hex(sha, hex);
-    /* A picture's preview goes in .thumbnails/ where there is a card to
-     * keep folders on; elsewhere it is a file like any other. */
-    char pv[4];
+    query_val(req, "session", token, sizeof token);
     query_val(req, "preview", pv, sizeof pv);
-    bool thumb = pv[0] == '1' && s_card();
-    struct stat ds;
-    if (stat(file_dir(), &ds) != 0) mkdir(file_dir(), 0775);   /* made at start; a card may come later */
-    snprintf(dir, sizeof dir, "%s%s", file_dir(), thumb ? THUMBS : "");
-    if (thumb && stat(dir, &ds) != 0) mkdir(dir, 0775);
-    snprintf(path, sizeof path, "%s/%s", dir, hex);
-    snprintf(other, sizeof other, thumb ? "%s/%s" : "%s" THUMBS "/%s", file_dir(), hex);
-    snprintf(part, sizeof part, "%s/part.tmp", dir);
-    struct stat st;
-    bool held = stat(path, &st) == 0 || stat(other, &st) == 0;
-    if (!held && !file_room((uint32_t)req->content_len))
-        return answer(req, 503, "{\"ok\":false,\"error\":\"no room for it here\"}");
-    FILE *f = held ? NULL : fopen(part, "wb");
-    if (!held && !f) return answer(req, 503, "{\"ok\":false,\"error\":\"cannot write\"}");
-    mbedtls_sha256_context c;
-    mbedtls_sha256_init(&c);
-    mbedtls_sha256_starts(&c, 0);
+    bool staff = token[0] && xwc_is_uploader(token);
+    /* One visitor's limit is the core's; a board has one HTTP worker and a
+     * small flash, so it caps every visitor together. The staff are not
+     * counted: an event's pictures arrive in a burst. */
+    if (!staff) {
+        static int64_t s_win;
+        static int s_puts;
+        int64_t now = esp_timer_get_time() / 1000000;
+        if (now - s_win >= 60) { s_win = now; s_puts = 0; }
+        if (++s_puts > FILE_PUTS_MIN) return answer(req, 429, "{\"ok\":false,\"error\":\"slow down\"}");
+    }
+    xwcf_store_t st;
+    file_store(&st);
+    static xwcf_put_t put;      /* 800 bytes of paths: off the httpd stack, one worker */
+    const char *why = "";
+    char out[200];
+    int code = xwcf_put_begin(&st, &put, sha, req->content_len, staff, pv[0] == '1', &why);
+    if (code) {
+        snprintf(out, sizeof out, "{\"ok\":false,\"error\":\"%s\"}", why);
+        return answer(req, code, out);
+    }
     size_t total = 0;
-    bool ok = true;
+    bool ok = true, wrote = true;
+    int idle = 0;
     while (total < req->content_len) {
         size_t want = req->content_len - total;
-        int r = httpd_req_recv(req, s_buf, want < FILE_CHUNK ? want : FILE_CHUNK);
-        if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+        int r = httpd_req_recv(req, s_buf, want < WC_BUF ? want : WC_BUF);
+        /* A slow phone on the hotspot pauses; three silent waits (ninety
+         * seconds) and it has gone. */
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++idle < 3) continue;
         if (r <= 0) { ok = false; break; }
-        mbedtls_sha256_update(&c, (const unsigned char *)s_buf, (size_t)r);
-        if (f && fwrite(s_buf, 1, (size_t)r, f) != (size_t)r) { ok = false; break; }
+        idle = 0;
+        if (!xwcf_put_add(&put, s_buf, (size_t)r)) { ok = wrote = false; break; }
         total += (size_t)r;
     }
-    mbedtls_sha256_finish(&c, got);
-    mbedtls_sha256_free(&c);
-    if (f) fclose(f);
-    if (!ok) {
-        if (f) remove(part);
-        return answer(req, 400, "{\"ok\":false,\"error\":\"short body\"}");
+    code = xwcf_put_end(&put, ok, &why);
+    if (!wrote) { code = 503; why = "cannot write"; }
+    if (code != 200) {
+        snprintf(out, sizeof out, "{\"ok\":false,\"error\":\"%s\"}", why);
+        return answer(req, code, out);
     }
-    if (memcmp(got, sha, 32) != 0) {
-        if (f) remove(part);
-        return answer(req, 400, "{\"ok\":false,\"error\":\"the bytes do not match the reference\"}");
-    }
-    if (f && rename(part, path) != 0) {
-        remove(part);
-        return answer(req, 503, "{\"ok\":false,\"error\":\"cannot write\"}");
-    }
-    char out[160];
+    if (staff) ESP_LOGI(TAG, "file store: %s kept as the station's own, %u bytes", ref, (unsigned)total);
     snprintf(out, sizeof out, "{\"ok\":true,\"ref\":\"%s\",\"size\":%u}", ref, (unsigned)total);
     return answer(req, 200, out);
 }
@@ -556,6 +737,7 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
         return;
     }
     kv_load();
+    xfer_start();
     /* The file store's directory, once, rather than on a visitor's request. */
     struct stat ds;
     if (stat(file_dir(), &ds) != 0) mkdir(file_dir(), 0775);
@@ -576,6 +758,7 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
         { .uri = "/api/rooms",   .method = HTTP_POST, .handler = h_rooms_post },
         { .uri = "/api/xprs/file/*", .method = HTTP_GET,  .handler = h_file_get },
         { .uri = "/api/xprs/file/*", .method = HTTP_POST, .handler = h_file_post },
+        { .uri = "/api/xprs/file/*", .method = HTTP_HEAD, .handler = h_file_get },
     };
     for (size_t i = 0; i < sizeof uris / sizeof uris[0]; i++)
         httpd_register_uri_handler(h, &uris[i]);

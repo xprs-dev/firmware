@@ -1131,6 +1131,19 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
     return refuse(buf, cap, 400, "action must be create, update, close, add, appoint or remove");
 }
 
+bool xwc_is_uploader(const char *token)
+{
+    if (admin_of(token)) return true;
+    const char *c = xwc_session_call(token);
+    if (!c) return false;
+    if (is_staff(c)) return true;
+    for (int i = 0; i < s_nrooms; i++) {
+        int role = role_in(s_rooms[i].call, c);
+        if (role == R_MOD || role == R_ADMIN) return true;
+    }
+    return false;
+}
+
 /* ---- the index of a forum or gallery room ------------------------------- */
 /* Claimed for one answer and let go: the fold's tables are the size of the
  * window, and a board has no RAM to keep them between asks. */
