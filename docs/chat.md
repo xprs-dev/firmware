@@ -4,7 +4,7 @@ The board runs an open access point and serves one page on it. A visitor
 joins the AP, the captive portal opens the page, and they can talk to the
 mesh without installing anything and without an account.
 
-The page is shared with the Android app and lives in its own repo, `webchat`
+The page is shared with the Android app and lives in its own repo, `portal`
 (checked out next to this one): `page/chat_page.html`, `page/xprs_crypto.js`.
 `common/xprs_hotspot/tool/embed_page.py` asks webchat's `tool/build.py` for the
 gzipped page as `chat_page.c`; edit there, run the tool, rebuild. It is served
@@ -41,7 +41,7 @@ of the Dart core's `WebChatApi`, with `common/xprs_api/xapi_wc.c` as the
 httpd glue. Its state (the administrator, settings, rooms and their keys) is
 `/idx/wcstate.txt`; the signed acts it replays are `/idx/wcacts.txt`.
 `common/xprs_webchat/test_xwc_host.sh` runs its rules on the host, and the
-webchat repo's `contract/conformance.py` runs the whole API against a board
+portal repo's `contract/conformance.py` runs the whole API against a board
 (or the C3 under QEMU, `tools/qemu_c3.sh`), the same suite the Dart engine
 passes.
 

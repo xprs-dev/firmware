@@ -6,7 +6,7 @@
  * The web chat page is one page for every platform; a board, a phone or a
  * server is the engine behind the same API. This is that engine for the
  * ESP32 boards, the C counterpart of the Dart core's WebChatApi, and the
- * webchat repo's conformance suite (contract/conformance.py) is what says
+ * portal repo's conformance suite (contract/conformance.py) is what says
  * the two agree.
  *
  * Plain C, no IDF: time, storage, the peer-key table and the transmitter

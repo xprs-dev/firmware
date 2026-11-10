@@ -2,12 +2,12 @@
 
 ## The web chat page is one page
 
-The page is developed only in `webchat` (`page/chat_page.html`, built by
+The page is developed only in `portal` (`page/chat_page.html`, built by
 `tool/build.py`) and every station serves the identical build: the firmware
 (`common/xprs_hotspot/chat_page.c`, `build.py --c`), the server
 (`web/chat_page.html` and `lib/web/embedded_page.dart`, `tool/sync_web_chat.sh`)
 and the app (`assets/web_chat/chat_page.html`). Never edit a copy. After a
-webchat change, regenerate every copy in the same change and check they match.
+portal change, regenerate every copy in the same change and check they match.
 
 The only part that differs per implementation is the API engine behind the
 page (`/api/...`). Keep it generic and XPRS-compliant: what a station can or

@@ -1,4 +1,4 @@
-/* GENERATED from webchat/page by webchat/tool/build.py -- edit those, not this.
+/* GENERATED from portal/page by portal/tool/build.py -- edit those, not this.
  *
  * Stored gzipped and served with Content-Encoding: gzip.
  * 224962 bytes of page -> 76160 bytes of flash. */

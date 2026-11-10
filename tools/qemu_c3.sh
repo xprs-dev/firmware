@@ -9,7 +9,7 @@
 #                                     (type `cfg ...` lines into it)
 #   tools/qemu_c3.sh update           put a new build into the image, keeping
 #                                     its NVS (owner, rns_hub, ...)
-#   tools/qemu_c3.sh conformance      boot it and run the webchat repo's
+#   tools/qemu_c3.sh conformance      boot it and run the portal repo's
 #                                     contract/conformance.py against it: the
 #                                     station API every engine must answer
 #                                     (XPRS.md 10.10). Slow: an emulated C3
@@ -63,7 +63,7 @@ conformance)
         curl -s -m2 http://127.0.0.1:18080/api/services >/dev/null 2>&1 && break
         sleep 2
     done
-    (cd "$ROOT/../webchat" && python3 contract/conformance.py http://127.0.0.1:18080); RC=$?
+    (cd "$ROOT/../portal" && python3 contract/conformance.py http://127.0.0.1:18080); RC=$?
     kill $QPID 2>/dev/null; wait $QPID 2>/dev/null
     exit $RC
     ;;
