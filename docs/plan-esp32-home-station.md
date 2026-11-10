@@ -1,5 +1,8 @@
 # Plan: the ESP32 as the house's always-on station
 
+*HTTPS and the xprs.dev name for the boards have their own, newer plan:
+`plan-firmware-https.md` (2026-11-10).*
+
 Status 2026-11-09: **a plan for later, nothing implemented.** The goal: an ESP32
 station that does what the Linux server station does, reachable from the
 internet and Reticulum with the same functions, that claims its own
