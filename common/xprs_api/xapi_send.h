@@ -52,11 +52,18 @@ int xapi_jesc(char *out, size_t cap, const char *in, int inlen);
  * says why, e.g. "use:listed". The door answers that 403, out loud, as 11.9
  * asks, instead of the 503 that tells a visitor the radio is broken.
  *
+ * False with @p took exactly XAPI_SEND_BUSY: the station must keep this
+ * packet before it may air it (a visitor's mailbox declaration or receipt,
+ * which it acts on) and its archive could not take it now. Nothing was
+ * aired; the door answers 503 with Retry-After.
+ *
  * The single-bearer form exists for the bench: proving that a packet which
  * left on LoRa reached the LAN by way of two other stations is only possible
  * if it did not also leave on the LAN. Reaching for the config to switch
  * radios off, or for a rebuild, is what this replaces.
  */
+#define XAPI_SEND_BUSY "busy"
+
 typedef bool (*xapi_send_fn)(const char *wire, int len, const char *bearer,
                              char *took, size_t took_cap);
 

@@ -126,10 +126,17 @@ static bool air_cb(const char *wire, int len)
     return s_cfg && s_cfg->send_wire && s_cfg->send_wire(wire, len, NULL, NULL, 0);
 }
 
-static bool file_cb(const char *wire, int len)
+/* A hosted room's wire into the archive, and what came of it: kept, kept
+ * already, or not kept now (a full write queue, no archive yet), which the
+ * gate answers 503 rather than claim it filed. */
+static int file_cb(const char *wire, int len)
 {
-    if (!s_cfg || !s_cfg->index) return false;
-    return xprsindex_add2(s_cfg->index, wire, len, 0, false, now_cb(), XI_B_LAN);
+    if (!s_cfg || !s_cfg->index) return XWC_FILE_BUSY;
+    switch (xprsindex_add3(s_cfg->index, wire, len, 0, false, now_cb(), XI_B_LAN)) {
+    case XI_ADD_STORED:    return XWC_FILED;
+    case XI_ADD_DUPLICATE: return XWC_FILE_HELD;
+    default:               return XWC_FILE_BUSY;
+    }
 }
 
 /* ---- the peer's network --------------------------------------------- */

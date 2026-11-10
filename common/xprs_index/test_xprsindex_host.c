@@ -1805,6 +1805,30 @@ static void test_out_of_range_is_marked(const char *dir)
     xprsindex_close(st);
 }
 
+/* What became of a record (xprsindex_add3): a caller that answers somebody
+ * "kept" must tell a duplicate (kept) from a full queue (not kept). */
+extern bool xprsindex_host_queue_full;
+static void test_says_what_became_of_it(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    const char *w = "t:file f:X1SCV9 d:X5FSNH ts:" TS_2026 " r:123456 file:nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg size:3KB";
+    const char *w2 = "t:message f:X1SCV9 d:X5FSNH ts:" TS_2026 " r:123456 m:another";
+    CHECK(xprsindex_add3(st, w, (int)strlen(w), 0, false, 0, XI_B_LAN) == XI_ADD_STORED, "a new record is stored");
+    CHECK(xprsindex_add3(st, w, (int)strlen(w), 0, false, 0, XI_B_LAN) == XI_ADD_DUPLICATE, "the same again is a duplicate, kept");
+    xprsindex_host_queue_full = true;
+    CHECK(xprsindex_add3(st, w2, (int)strlen(w2), 0, false, 0, XI_B_LAN) == XI_ADD_DROPPED, "a full queue drops it, and says so");
+    xprsindex_host_queue_full = false;
+    xprsidx_stats_t sx;
+    xprsindex_stats(st, &sx);
+    CHECK(sx.count == 1, "nothing of the dropped one was counted (%u)", (unsigned)sx.count);
+    CHECK(xprsindex_add3(st, w2, (int)strlen(w2), 0, false, 0, XI_B_LAN) == XI_ADD_STORED,
+          "asked again once the queue has room, it is stored (not taken for a duplicate)");
+    CHECK(xprsindex_add2(st, w2, (int)strlen(w2), 0, false, 0, XI_B_LAN) == false, "add2 keeps its old answer");
+    CHECK(xprsindex_add3(st, "hello", 5, 0, false, 0, XI_B_LAN) == XI_ADD_REFUSED, "not a packet: refused");
+    xprsindex_close(st);
+}
+
 int main(void)
 {
     const char *dir = "/tmp/xprsidx_test";
@@ -1836,6 +1860,7 @@ int main(void)
     test_epoch_is_anchored(dir);
     test_only_is_a_callsign(dir);
     test_kind_takes_a_list(dir);
+    test_says_what_became_of_it(dir);
     test_records_take_only_their_bytes(dir);
     test_segment_size_is_the_stores(dir);
     test_small_volume_keeps_a_thousand(dir);

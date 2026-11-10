@@ -2263,13 +2263,20 @@ static bool xi_judge_rec(xprsidx_t *st, xi_rec_t *r)
 }
 
 /* Hand a finished record to the writer. Called with the lock held. */
-static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
+#ifdef XPRSIDX_HOST_TEST
+bool xprsindex_host_queue_full;     /* the test's stand-in for a slow card */
+#endif
+
+/* XI_ADD_STORED when the record is on its way to the card, else why not:
+ * XI_ADD_DROPPED (the queue is full), XI_ADD_REFUSED (judged, on the host). */
+static int xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
 {
 #ifdef XPRSIDX_HOST_TEST
+    if (xprsindex_host_queue_full) { st->q_dropped++; return XI_ADD_DROPPED; }
     /* The host has no writer task, so the judgement happens here instead — the
      * same call, one thread earlier. */
     xi_rec_t judged = *r;
-    if (!xi_judge_rec(st, &judged)) return false;
+    if (!xi_judge_rec(st, &judged)) return XI_ADD_REFUSED;
     if (judged.type == XI_T_MAILBOX && (judged.flags & XI_F_VERIFIED))
         xi_decl_note_rec(st, &judged);
     bool ok = xi_write_rec_fwd(st, &judged);
@@ -2278,7 +2285,7 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
     if (st->decl_dirty) xi_decl_save(st);
     if (st->reg_dirty) xi_reg_save(st);
     if (st->served_dirty) xi_served_save(st);
-    return ok;
+    return ok ? XI_ADD_STORED : XI_ADD_REFUSED;
 #else
     if (st->q_count >= XI_QUEUE_LEN) {
         /* The card is slower than the air. Losing the newest is better than
@@ -2288,7 +2295,7 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
             XI_LOGW("write queue full — %u records dropped (card too slow)",
                     (unsigned)st->q_dropped);
         }
-        return false;
+        return XI_ADD_DROPPED;
     }
     st->queue[(st->q_head + st->q_count) % XI_QUEUE_LEN] = *r;
     st->q_count++;
@@ -2304,26 +2311,26 @@ static bool xi_queue_rec(xprsidx_t *st, const xi_rec_t *r)
     if (st->writer && st->q_count * 2 >= XI_QUEUE_LEN) {
         xTaskNotifyGive(st->writer);
     }
-    return true;
+    return XI_ADD_STORED;
 #endif
 }
 
-static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
+static int xi_add_locked(xprsidx_t *st, const char *wire, int len,
                           int rssi, bool outgoing, uint32_t ts_now,
                           int bearer)
 {
-    if (!st || !st->ready || !wire || len <= 0) return false;
-    if (len > XPRSIDX_WIRE_MAX) return false;
-    if (!xprs_looks_like((const uint8_t *)wire, len)) return false;
+    if (!st || !st->ready || !wire || len <= 0) return XI_ADD_REFUSED;
+    if (len > XPRSIDX_WIRE_MAX) return XI_ADD_REFUSED;
+    if (!xprs_looks_like((const uint8_t *)wire, len)) return XI_ADD_REFUSED;
 
     xprs_t p;
-    if (!xprs_parse(wire, len, &p)) return false;
+    if (!xprs_parse(wire, len, &p)) return XI_ADD_REFUSED;
 
     char type[16];
     xprs_type(&p, type, sizeof type);
     int code = xprsidx_type_code(type);
     /* A liveness probe is meaningless once it is old (see the header). */
-    if (code == XI_T_PING || code == XI_T_PONG) return false;
+    if (code == XI_T_PING || code == XI_T_PONG) return XI_ADD_REFUSED;
 
     xi_rec_t r;
     memset(&r, 0, sizeof r);
@@ -2331,7 +2338,7 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
 
     uint32_t h = xi_id_hash(r.id);
     for (int i = 0; i < XI_DEDUP_RING; i++) {
-        if (st->dedup[i] == h) return false;      /* heard again, already kept */
+        if (st->dedup[i] == h) return XI_ADD_DUPLICATE;   /* heard again, already kept */
     }
     /* The same announcement with a new clock on it: keep the first, drop the
      * repeats, so an archive fills with what was said rather than with who
@@ -2340,7 +2347,7 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     if (xi_is_presence(code)) {
         ph = xi_presence_hash(wire, len);
         for (int i = 0; i < XI_PRESENCE_RING; i++) {
-            if (st->pres[i] == ph) return false;
+            if (st->pres[i] == ph) return XI_ADD_DUPLICATE;
         }
     }
 
@@ -2373,7 +2380,7 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     bool talk = r.to[0] || code == XI_T_MESSAGE;
     if (talk)
         for (int i = 0; i < XI_MAIL_RING; i++)
-            if (st->mail_seen[i] == h) return false;    /* already kept */
+            if (st->mail_seen[i] == h) return XI_ADD_DUPLICATE;    /* already kept */
     if (outgoing) r.flags |= XI_F_OUTGOING;
     /* 9.11: a scope binds the bearer a packet was heard on too. What came
      * from wider than its scope, or with a scope word nobody here knows, is
@@ -2400,7 +2407,8 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
      * A record the writer task later refuses (a forged signature, judged off
      * this task) still leaves its slot empty. That hole is the reader's to
      * survive, and xi_rec_is() is how. */
-    if (!xi_queue_rec(st, &r)) return false;
+    int queued = xi_queue_rec(st, &r);
+    if (queued != XI_ADD_STORED) return queued;
 
     /* Decided, and accepted. */
     st->dedup[st->dedup_pos] = h;
@@ -2415,7 +2423,7 @@ static bool xi_add_locked(xprsidx_t *st, const char *wire, int len,
     }
     st->next_index++;
     st->count++;
-    return true;
+    return XI_ADD_STORED;
 }
 
 /* The half that touches the card. Runs on the writer task (or, on the host,
@@ -2967,11 +2975,17 @@ bool xprsindex_add(xprsidx_t *st, const char *wire, int len,
 bool xprsindex_add2(xprsidx_t *st, const char *wire, int len,
                     int rssi, bool outgoing, uint32_t ts_now, int bearer)
 {
-    if (!st) return false;
+    return xprsindex_add3(st, wire, len, rssi, outgoing, ts_now, bearer) == XI_ADD_STORED;
+}
+
+int xprsindex_add3(xprsidx_t *st, const char *wire, int len,
+                   int rssi, bool outgoing, uint32_t ts_now, int bearer)
+{
+    if (!st) return XI_ADD_REFUSED;
     XI_LOCK(st);
-    bool ok = xi_add_locked(st, wire, len, rssi, outgoing, ts_now, bearer);
+    int r = xi_add_locked(st, wire, len, rssi, outgoing, ts_now, bearer);
     XI_UNLOCK(st);
-    return ok;
+    return r;
 }
 
 const char *xprsidx_bearer_name(int code)

@@ -351,6 +351,21 @@ bool xprsindex_add(xprsidx_t *st, const char *wire, int len,
 bool xprsindex_add2(xprsidx_t *st, const char *wire, int len,
                     int rssi, bool outgoing, uint32_t ts_now, int bearer);
 
+/** What became of a record handed to the index (xprsindex_add3). A caller
+ *  that answers somebody "kept" needs to tell these apart: a duplicate IS
+ *  kept (heard before), a dropped one is not, and only the second is worth
+ *  asking again. */
+enum {
+    XI_ADD_STORED = 0,      /* on its way to the card */
+    XI_ADD_DUPLICATE,       /* already kept: heard again */
+    XI_ADD_DROPPED,         /* the write queue is full (the card is slower than the air) */
+    XI_ADD_REFUSED,         /* not a packet the index keeps, or no store */
+};
+
+/** xprsindex_add2, saying which of the above happened. */
+int xprsindex_add3(xprsidx_t *st, const char *wire, int len,
+                   int rssi, bool outgoing, uint32_t ts_now, int bearer);
+
 /**
  * Stream matching records. Ascending index unless @p q asks for newest_first.
  * @return how many were emitted.

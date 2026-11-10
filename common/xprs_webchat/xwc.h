@@ -49,6 +49,9 @@ extern "C" {
 #define XWC_ROOM_NAME    33
 #define XWC_ROOM_ABOUT   81
 
+/* What filing a wire came to (xwc_cb_t.file). */
+enum { XWC_FILED = 0, XWC_FILE_HELD, XWC_FILE_BUSY };
+
 /* What the host supplies. Every pointer must outlive xwc. */
 typedef struct {
     uint32_t (*now)(void);                              /* epoch seconds, 0 if unknown */
@@ -63,8 +66,10 @@ typedef struct {
     /* Put a wire on the air (the station's own acts, and what the rules
      * let through) -- the API's ordinary send path. */
     bool (*air)(const char *wire, int len);
-    /* File a wire without airing it (a hosted room's traffic and acts). */
-    bool (*file)(const char *wire, int len);
+    /* File a wire without airing it (a hosted room's traffic and acts):
+     * XWC_FILED, XWC_FILE_HELD (kept already: heard before) or
+     * XWC_FILE_BUSY (not kept: the archive could not take it now). */
+    int (*file)(const char *wire, int len);
     /* Where the acts are kept, one wire per line. NULL: memory only. */
     const char *acts_path;
 } xwc_cb_t;
@@ -150,7 +155,8 @@ int  xwc_moderation_json(char *buf, size_t cap, const char *group);
 /** The gate on POST /api/xprs/send, before the ordinary send path.
  *   0   let the ordinary path air it
  *   1   handled here (filed, or aired as an act); [id] is set
- *  <0   refuse: the negated HTTP status, [why] says why */
+ *  <0   refuse: the negated HTTP status, [why] says why (-503: the
+ *       archive is busy, nothing was kept: ask again) */
 int xwc_gate(const char *wire, int len, bool local_peer,
              char id[XWC_ID_LEN], char *why, size_t why_cap);
 

@@ -54,7 +54,14 @@ static bool kv_set_cb(const char *k, const char *v)
 static char s_aired[32][256]; static int s_naired;
 static char s_filed[32][256]; static int s_nfiled;
 static bool air_cb(const char *w, int n) { snprintf(s_aired[s_naired++ % 32], 256, "%.*s", n, w); return true; }
-static bool file_cb(const char *w, int n) { snprintf(s_filed[s_nfiled++ % 32], 256, "%.*s", n, w); return true; }
+/* What the archive answers: filed, held already, or busy (a full queue). */
+static int s_file_result = XWC_FILED;
+static int file_cb(const char *w, int n)
+{
+    if (s_file_result == XWC_FILE_BUSY) return XWC_FILE_BUSY;   /* not kept */
+    snprintf(s_filed[s_nfiled++ % 32], 256, "%.*s", n, w);
+    return s_file_result;
+}
 static bool aired_has(const char *s) { for (int i = 0; i < s_naired && i < 32; i++) if (strstr(s_aired[i], s)) return true; return false; }
 static bool filed_has(const char *s) { for (int i = 0; i < s_nfiled && i < 32; i++) if (strstr(s_filed[i], s)) return true; return false; }
 
@@ -376,6 +383,42 @@ int main(void)
         CHECK(session(alice, tok), "alice proves her key again");
         xwc_rooms_json(s_buf, sizeof s_buf, tok);
         CHECK(jfind("\"kind\":\"gallery\""), "still a gallery");
+    }
+
+    printf("an archive that cannot take it\n");
+    {
+        /* Still the gallery room from above (the last room made). */
+        snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, eid);
+        s_file_result = XWC_FILE_BUSY;
+        int before = s_nfiled;
+        CHECK(gate(alice, fmt, 6) == -503 && !strcmp(s_why, "busy, try again") && s_nfiled == before,
+              "a full write queue: 503, and nothing claimed filed");
+        s_file_result = XWC_FILE_HELD;
+        CHECK(gate(alice, fmt, 6) == 1, "kept already (heard before): still 200");
+        s_file_result = XWC_FILED;
+        CHECK(gate(alice, fmt, 6) == 1, "and kept: 200");
+    }
+
+    printf("mailbox declarations and receipts (9.12, 9.7.1)\n");
+    fresh();
+    {
+        person_t *dave = person("X1DAVE", 0x44), *eve = person("X1EVEE", 0x55);
+        char w[300], t[20];
+        ts(t, 0);
+        int n = snprintf(w, sizeof w, "t:mailbox f:X1DAVE ts:%s hold:X3STAT", t);
+        n = xprsid_sign(w, n, sizeof w, eve->priv);
+        CHECK(xwc_gate(w, n, true, s_id, s_why, sizeof s_why) == -400 && !strcmp(s_why, "forged"),
+              "a declaration another key signed in his name is refused (the conformance case)");
+        CHECK(gate(dave, "t:mailbox f:%s ts:%s hold:X3STAT", 0) == 0, "his own goes the ordinary way");
+        n = snprintf(w, sizeof w, "t:mailbox f:X1DAVE ts:%s hold:X3STAT", t);
+        CHECK(xwc_gate(w, n, true, s_id, s_why, sizeof s_why) == -400, "an unsigned one is refused");
+        n = snprintf(w, sizeof w, "t:mailbox f:X1NOBO ts:%s hold:X3STAT", t);
+        n = xprsid_sign(w, n, sizeof w, eve->priv);
+        CHECK(xwc_gate(w, n, true, s_id, s_why, sizeof s_why) == -409, "one for a callsign with no known key: send the identity first");
+        n = snprintf(w, sizeof w, "t:receipt f:X1DAVE d:X1EVEE ts:%s r:abcdef", t);
+        n = xprsid_sign(w, n, sizeof w, eve->priv);
+        CHECK(xwc_gate(w, n, true, s_id, s_why, sizeof s_why) == -400, "a receipt in his name by another key too");
+        CHECK(gate(dave, "t:receipt f:%s d:X1EVEE ts:%s r:abcdef", 0) == 0, "his own receipt goes through");
     }
 
     printf("music and library rooms\n");

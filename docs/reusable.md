@@ -264,6 +264,7 @@ reuse potential.
 | `xprsindex_serve_note()` / `serves()` / `serve_touch()` / `served_count()` / `served_max()` (`common/xprs_index`) | the visitors a station took in as their mailbox (XPRS.md 12.8.3 step zero): a small LRU table persisted as `served.txt`, class 3 for their mail (12.11), `room:` from its fill. The shape for any per-callsign table the writer task persists: load at open, dirty flag, saved on the writer's tick and at close |
 | `xprs_api_cfg_t.session_extra` / `is_owner` | the engine knows the JSON keys of `/api/session` (`holders`, `offer`, `mail`) and the mail rule; the station answers whose mailbox it is and who owns it. Add station facts to an engine reply this way rather than teaching the engine the station |
 | `xprsidx_query_t.to` and `xprsindex_mail_count(st, call, cap, skip)` | mail TO a callsign (base form), never the author's own words or a `hears:` mention, minus what a `skip` callback says was acknowledged: the one honest `mail:` |
+| `xprsindex_add3()` (`common/xprs_index`) | what became of a record handed to the index: `XI_ADD_STORED`, `XI_ADD_DUPLICATE` (kept already), `XI_ADD_DROPPED` (write queue full), `XI_ADD_REFUSED`. Any door that answers somebody "kept" uses it: the room gate (`file_cb` -> `XWC_FILE_BUSY` -> 503 with `Retry-After`) and a visitor's mailbox declaration or receipt (kept before it is aired, `XAPI_SEND_BUSY`). Host-tested (`test_says_what_became_of_it`, `xprsindex_host_queue_full` stands in for a slow card) |
 
 ## Logging on a hot path
 

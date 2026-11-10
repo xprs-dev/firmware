@@ -139,6 +139,12 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
         char gid[7], why[96];
         int g = gate(req, w, wlen, gid, why, sizeof why);
         if (g < 0) {
+            /* 503: nothing was kept (the archive's queue is full); the page
+             * may ask again, and is told when. */
+            if (g == -503) {
+                httpd_resp_set_hdr(req, "Retry-After", "2");
+                return xapi_resp_error(req, "503 Service Unavailable", why);
+            }
             const char *st = g == -400 ? "400 Bad Request" : g == -409 ? "409 Conflict"
                            : g == -404 ? "404 Not Found" : "403 Forbidden";
             return xapi_resp_error(req, st, why);
@@ -152,6 +158,12 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
         }
     }
     if (!send(w, wlen, bearer[0] ? bearer : NULL, took, sizeof took)) {
+        /* The station could not keep what it must keep (a mailbox
+         * declaration, a receipt): nothing aired, nothing claimed. */
+        if (strcmp(took, XAPI_SEND_BUSY) == 0) {
+            httpd_resp_set_hdr(req, "Retry-After", "2");
+            return xapi_resp_error(req, "503 Service Unavailable", "busy, try again");
+        }
         if (took[0]) {
             /* Refused by the owner's policy, not lost (see the header). */
             char why[64];

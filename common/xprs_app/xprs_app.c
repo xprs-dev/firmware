@@ -9982,6 +9982,43 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         }
     }
 
+    /* What this station holds or acts on from its archive is kept BEFORE
+     * it is aired, on this task, and the visitor is told when it could not
+     * be: a mailbox declaration or a receipt (acted on, 9.12, 9.7.1) and
+     * mail -- a message or a file to one callsign, which this station holds
+     * for its recipient (12.7). A full write queue is a 503 with nothing
+     * aired, not a 200 for something never recorded. Kept already (heard
+     * before) is kept. A message to everybody is only aired; it stays on the
+     * ring below, as before. */
+    bool kept_first = false;
+    char kdst[XPRS_CALL_LEN] = "";
+    bool mail = false;
+    if (strcmp(stype, "message") == 0 || strcmp(stype, "file") == 0) {
+        /* d: found in the header without a second parse on this stack (two
+         * are on it already): a field before m:, which is always last. */
+        for (int i = 0; i + 3 < len; i++) {
+            if (wire[i] != ' ') continue;
+            if (wire[i + 1] == 'm' && wire[i + 2] == ':') break;
+            if (wire[i + 1] != 'd' || wire[i + 2] != ':') continue;
+            size_t k = 0;
+            for (int c = i + 3; c < len && wire[c] != ' ' && k < sizeof kdst - 1; c++)
+                kdst[k++] = wire[c];
+            kdst[k] = 0;
+            break;
+        }
+        mail = kdst[0] && kdst[0] != '#';
+    }
+    if (sender[0] && !ours && s_index && xcfg_get_bool("index_on", true) &&
+        (strcmp(stype, "mailbox") == 0 || strcmp(stype, "receipt") == 0 || mail)) {
+        int r = xprsindex_add3(s_index, wire, len, 0, true, (uint32_t)time(NULL), XI_B_LAN);
+        if (r == XI_ADD_DROPPED) {
+            ESP_LOGW(TAG, "%s's %s not kept: the archive is busy", sender, stype);
+            if (took && took_cap) snprintf(took, took_cap, "%s", XAPI_SEND_BUSY);
+            return false;
+        }
+        kept_first = r == XI_ADD_STORED || r == XI_ADD_DUPLICATE;
+    }
+
     /* Somebody else's packet, handed to us over HTTP, going out on our
      * radios: that is a relay (XPRS.md 9, 12.8.3 step 4), and a relay's
      * transmission carries its own callsign in via:. Without it every
@@ -10035,7 +10072,7 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         #undef TOOK
         if (!n) took[0] = 0;
     }
-    if (lan || now || lra || ble)
+    if ((lan || now || lra || ble) && !kept_first)
         idx_enqueue_own(wire, len,
                         lan ? XI_B_LAN : now ? XI_B_ESPNOW : lra ? XI_B_LORA : XI_B_BLE);
     return lan || now || lra || ble || rns;

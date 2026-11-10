@@ -1414,8 +1414,26 @@ int xwc_gate(const char *wire, int len, bool local_peer,
             snprintf(why, why_cap, "only members post in this room");
             return -403;
         }
-        if (s_cb.file) s_cb.file(wire, len);
+        /* Filed, or answered so: a post the archive could not take (its
+         * write queue full, the card slower than the air) is not claimed
+         * kept. Already kept (heard before) is kept. */
+        if (s_cb.file && s_cb.file(wire, len) == XWC_FILE_BUSY) {
+            snprintf(why, why_cap, "busy, try again");
+            return -503;
+        }
         return 1;
+    }
+
+    /* A mailbox declaration or a receipt is ACTED on, not only relayed: a
+     * forged declaration collects somebody else's mail (9.12), a forged
+     * receipt deletes a message from every holder (9.7.1). It must verify
+     * against the key this station holds for the callsign in f:, as the
+     * Dart core asks: send the identity first (409), or sign with the key
+     * that callsign is bound to (400). */
+    if (strcmp(type, "mailbox") == 0 || strcmp(type, "receipt") == 0) {
+        if (!xprs_get(&p, "sig", NULL)) { snprintf(why, why_cap, "unsigned"); return -400; }
+        if (!key_of(from)) { snprintf(why, why_cap, "identity unknown"); return -409; }
+        if (!verified(&p, from)) { snprintf(why, why_cap, "forged"); return -400; }
     }
 
     /* Somebody sent away may not post, except a call for help (10.7). */
