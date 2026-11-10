@@ -146,9 +146,12 @@ int main(void)
 
     printf("services\n");
     fresh();
-    xwc_services_json(s_buf, sizeof s_buf, "chat,traffic");
+    xwc_services_json(s_buf, sizeof s_buf, "chat,traffic", false);
     CHECK(jfind("\"station\":\"X3STAT\"") && jfind("\"rooms\":true") && jfind("\"alerts\":\"moderators\""),
           "names the station, offers sessions, admin, moderation, rooms, the alert policy");
+    CHECK(!jfind("gallery"), "a board on its own flash offers no gallery");
+    xwc_services_json(s_buf, sizeof s_buf, "chat,traffic", true);
+    CHECK(jfind("\"gallery\":true}"), "with a memory card it does (page.gallery)");
 
     printf("sessions\n");
     fresh();
@@ -296,6 +299,84 @@ int main(void)
     CHECK(gate(bob, fmt, 4) == -403, "bob cannot post there now");
     snprintf(body, sizeof body, "{\"action\":\"close\",\"session\":\"%s\",\"call\":\"%s\"}", tok, room);
     CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && !jfind(room), "closed");
+
+    printf("forum rooms\n");
+    fresh();
+    CHECK(claim(alice, tok), "alice claims");
+    snprintf(body, sizeof body, "{\"action\":\"create\",\"session\":\"%s\",\"name\":\"Talk\",\"posting\":\"anyone\"}", tok);
+    CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && jfind("\"kind\":\"chat\""), "a room is a chat room by default");
+    jval("room", room, sizeof room);
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:hello m:x", room);
+    CHECK(gate(bob, fmt, 0) == -403, "posts go in a forum room");
+    CHECK(xwc_topics_begin(room, tok, s_buf, sizeof s_buf) == 400, "and a chat room has no index");
+    snprintf(body, sizeof body, "{\"action\":\"update\",\"session\":\"%s\",\"call\":\"%s\",\"kind\":\"forum\"}", tok, room);
+    CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && jfind("\"kind\":\"forum\""), "made a forum");
+    snprintf(body, sizeof body, "{\"action\":\"update\",\"session\":\"%s\",\"call\":\"%s\",\"kind\":\"wiki\"}", tok, room);
+    CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 400, "an unknown kind is refused");
+    s_nfiled = 0;
+    CHECK(gate(bob, fmt, 0) == 1, "bob opens a topic");
+    char topic[8]; snprintf(topic, sizeof topic, "%s", s_id);
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:Hello m:x", room);
+    CHECK(gate(bob, fmt, 1) == -400, "a title is a label");
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s m:x", room);
+    CHECK(gate(bob, fmt, 1) == -400, "a post with neither title nor r: is refused");
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s r:%s m:agreed", room, topic);
+    CHECK(gate(carol, fmt, 2) == 1, "carol comments");
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:hello m:x again", room);
+    CHECK(gate(bob, fmt, 3) == 1, "bob edits his topic");
+    CHECK(xwc_topics_begin(room, NULL, s_buf, sizeof s_buf) == 200, "a public forum's index is anybody's");
+    for (int i = s_nfiled - 1; i >= 0; i--) xwc_topics_row(s_filed[i], (int)strlen(s_filed[i]), s_now + (uint32_t)i * 60);
+    CHECK(xwc_topics_end(s_buf, sizeof s_buf) == 200 && jfind("\"title\":\"hello\"") &&
+          jfind("\"replies\":1") && jfind("\"edited\":true") && strstr(s_buf, "},{") == NULL,
+          "one topic, two editions, one comment");
+
+    printf("gallery rooms\n");
+    fresh();
+    CHECK(claim(alice, tok), "alice claims");
+    CHECK(session(bob, bt), "bob has a session");
+    snprintf(body, sizeof body, "{\"action\":\"create\",\"session\":\"%s\",\"name\":\"Photos\",\"kind\":\"gallery\"}", tok);
+    CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && jfind("\"kind\":\"gallery\""), "the administrator creates a gallery");
+    jval("room", room, sizeof room);
+    s_nfiled = 0;
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:field-day-2026 m:On the hill", room);
+    CHECK(gate(alice, fmt, 0) == 1, "the administrator opens an event");
+    char eid[8]; snprintf(eid, sizeof eid, "%s", s_id);
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s r:%s m:no title", room, eid);
+    CHECK(gate(alice, fmt, 1) == -400, "an event has a title; a gallery takes no comment");
+    snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s r:%s file:nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg m:the mast", room, eid);
+    CHECK(gate(alice, fmt, 2) == 1, "a picture: the preview on a message");
+    char pid[8]; snprintf(pid, sizeof pid, "%s", s_id);
+    snprintf(fmt, sizeof fmt, "t:file f:%%s d:%s ts:%%s r:%s file:Uc3nRw8kFa5xPd1qGz7mYb0tJe6vHs2iLoA9XfCqK4E.jpg size:2.1MB name:mast.jpg", room, pid);
+    CHECK(gate(alice, fmt, 2) == 1, "the original on its t:file companion");
+    snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s r:%s file:nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg", room, eid);
+    CHECK(gate(bob, fmt, 3) == -403, "a visitor adds no picture");
+    snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:mine m:x", room);
+    CHECK(gate(bob, fmt, 3) == -403 && strstr(s_why, "moderators"), "nor an event");
+    snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, pid);
+    CHECK(gate(bob, fmt, 3) == 1, "a visitor likes a picture");
+    snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, eid);
+    CHECK(gate(bob, fmt, 3) == 1, "and an event");
+    snprintf(fmt, sizeof fmt, "t:status f:%%s d:%s ts:%%s m:x", room);
+    CHECK(gate(alice, fmt, 4) == -403 && strstr(s_why, "events, pictures and likes"), "a gallery takes nothing else");
+    CHECK(!aired_has(room) && filed_has("t:file"), "filed, never aired");
+    CHECK(xwc_topics_begin(room, bt, s_buf, sizeof s_buf) == 200, "the events are the room's index");
+    for (int i = s_nfiled - 1; i >= 0; i--) xwc_topics_row(s_filed[i], (int)strlen(s_filed[i]), s_now + (uint32_t)i * 60);
+    CHECK(xwc_topics_end(s_buf, sizeof s_buf) == 200 && jfind("\"title\":\"field-day-2026\"") && strstr(s_buf, "},{") == NULL,
+          "one event, listed");
+    snprintf(body, sizeof body, "{\"action\":\"update\",\"session\":\"%s\",\"call\":\"%s\",\"visibility\":\"private\"}", tok, room);
+    CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200, "made private");
+    snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, eid);
+    CHECK(gate(carol, fmt, 5) == -403, "a private gallery is liked by its members only");
+    {
+        xwc_cb_t cb = s_cb;
+        xwc_reset();
+        xwc_init(&cb, "X3STAT", s_station->priv);
+        xwc_load();
+        CHECK(xwc_room_of(room) != NULL, "the room survives a restart");
+        CHECK(session(alice, tok), "alice proves her key again");
+        xwc_rooms_json(s_buf, sizeof s_buf, tok);
+        CHECK(jfind("\"kind\":\"gallery\""), "still a gallery");
+    }
 
     printf("alerts\n");
     fresh();

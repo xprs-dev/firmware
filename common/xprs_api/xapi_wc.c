@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "lwip/opt.h"   /* LWIP_IPV6: see xapi_wc_local */
 #include <time.h>
 #include <dirent.h>
@@ -282,10 +283,47 @@ static esp_err_t h_admin_post(httpd_req_t *req)
 }
 
 /* ---- /api/rooms ----------------------------------------------------- */
+/* One `t:blog` row of the room into the index's fold (xwc_topics_row). */
+static bool topics_emit(const xprsidx_rec_t *rec, void *arg)
+{
+    if (strcasecmp(rec->to, (const char *)arg) == 0)
+        xwc_topics_row(rec->wire, rec->len <= XPRSIDX_WIRE_MAX ? rec->len : XPRSIDX_WIRE_MAX, rec->ts);
+    return true;
+}
+
+/* ?topics=<call>: a forum's topics, a gallery's events (spec/API-HTTP.md),
+ * folded from the room's newest posts: a window, never the whole room. */
+static esp_err_t rooms_topics(httpd_req_t *req, const char *call, const char *token)
+{
+    int code = xwc_topics_begin(call, token, s_buf, WC_BUF);
+    if (code != 200) return answer(req, code, s_buf);
+    const char *room = xwc_room_of(call);
+    if (s_cfg && s_cfg->index && room) {
+        /* The room was judged readable above; its rows are the room's
+         * mail, so the index's section 36 rule is satisfied here. */
+        xprsidx_query_t q = { .type = XI_T_BLOG, .only = room, .newest_first = true,
+                              .limit = XWC_TOPICS_WINDOW, .trusted = true };
+        xprsindex_pause_writes(s_cfg->index, true);
+        xprsindex_query(s_cfg->index, &q, topics_emit, (void *)room);
+        xprsindex_pause_writes(s_cfg->index, false);
+    }
+    /* A hundred topics outgrow the shared buffer on a board with PSRAM;
+     * without the room, the newest that fit. */
+    size_t cap = (size_t)XWC_TOPICS_MAX * 160 + 64;
+    char *out = cap > WC_BUF ? malloc(cap) : NULL;
+    if (!out) { out = s_buf; cap = WC_BUF; }
+    code = xwc_topics_end(out, cap);
+    esp_err_t err = answer(req, code, out);
+    if (out != s_buf) free(out);
+    return err;
+}
+
 static esp_err_t h_rooms_get(httpd_req_t *req)
 {
-    char token[XWC_TOKEN_LEN + 8];
+    char token[XWC_TOKEN_LEN + 8], topics[XWC_CALL_LEN + 4];
     query_val(req, "session", token, sizeof token);
+    query_val(req, "topics", topics, sizeof topics);
+    if (topics[0]) return rooms_topics(req, topics, token);
     int code = xwc_rooms_json(s_buf, WC_BUF, token);
     return answer(req, code, s_buf);
 }
@@ -307,7 +345,12 @@ static esp_err_t h_rooms_post(httpd_req_t *req)
  * whole store is capped, and the oldest file goes to make room. Bytes are
  * streamed through the shared buffer and hashed on the way; a file is never
  * held whole in RAM. Everything here is public: the board keeps no private
- * file, so there is nothing for a 403 to protect. */
+ * file, so there is nothing for a 403 to protect.
+ *
+ * With a memory card (on /sdcard, or the archive's own card on /idx) the
+ * store has a card's room, and a picture's preview (`?preview=1`, XPRS.md
+ * 7.7.7) is kept in `.thumbnails/` beside the originals; a GET finds a file
+ * in either. */
 #define FILE_DIR_SD      "/sdcard/xfiles"
 #define FILE_DIR_IDX     "/idx/xfiles"
 #define FILE_MAX_SD      (2u * 1024u * 1024u)
@@ -323,9 +366,15 @@ static bool s_on_sd(void)
     struct stat st;
     return stat("/sdcard", &st) == 0 && S_ISDIR(st.st_mode);
 }
+/* A card, wherever it is mounted: room for photographs. */
+static bool s_card(void)
+{
+    return s_on_sd() || (s_cfg && s_cfg->on_card && s_cfg->on_card());
+}
 static const char *file_dir(void) { return s_on_sd() ? FILE_DIR_SD : FILE_DIR_IDX; }
-static uint32_t file_max(void) { return s_on_sd() ? FILE_MAX_SD : FILE_MAX_IDX; }
-static uint32_t file_budget(void) { return s_on_sd() ? FILE_BUDGET_SD : FILE_BUDGET_IDX; }
+static uint32_t file_max(void) { return s_card() ? FILE_MAX_SD : FILE_MAX_IDX; }
+static uint32_t file_budget(void) { return s_card() ? FILE_BUDGET_SD : FILE_BUDGET_IDX; }
+#define THUMBS "/.thumbnails"
 
 /* The free bytes on the volume the store is on, or 0 when it cannot say. */
 static uint64_t file_free(void)
@@ -339,32 +388,36 @@ static uint64_t file_free(void)
  * under its budget and the volume keeps its reserve. False when it cannot. */
 static bool file_room(uint32_t need)
 {
-    const char *dir = file_dir();
+    char dirs[2][40];
+    snprintf(dirs[0], sizeof dirs[0], "%s", file_dir());
+    snprintf(dirs[1], sizeof dirs[1], "%s" THUMBS, file_dir());
     for (int round = 0; round < 64; round++) {
-        DIR *d = opendir(dir);
-        if (!d) return false;
         uint64_t total = 0;
         time_t oldest_t = 0;
-        char oldest[80] = "", path[96];
-        struct dirent *e;
-        while ((e = readdir(d))) {
-            if (strlen(e->d_name) != 64) continue;     /* a part, or not ours */
-            struct stat st;
-            snprintf(path, sizeof path, "%s/%.64s", dir, e->d_name);
-            if (stat(path, &st) != 0) continue;
-            total += (uint64_t)st.st_size;
-            if (!oldest[0] || st.st_mtime < oldest_t) {
-                oldest_t = st.st_mtime;
-                snprintf(oldest, sizeof oldest, "%.64s", e->d_name);
+        char oldest[160] = "", path[160];
+        /* The originals and their previews share the budget. */
+        for (int k = 0; k < 2; k++) {
+            DIR *d = opendir(dirs[k]);
+            if (!d) { if (k == 0) return false; continue; }
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                if (strlen(e->d_name) != 64) continue;     /* a part, or not ours */
+                struct stat st;
+                snprintf(path, sizeof path, "%s/%.64s", dirs[k], e->d_name);
+                if (stat(path, &st) != 0) continue;
+                total += (uint64_t)st.st_size;
+                if (!oldest[0] || st.st_mtime < oldest_t) {
+                    oldest_t = st.st_mtime;
+                    snprintf(oldest, sizeof oldest, "%s", path);
+                }
             }
+            closedir(d);
         }
-        closedir(d);
         uint64_t fre = file_free();
         if (total + need <= file_budget() && fre >= (uint64_t)need + FILE_RESERVE) return true;
         if (!oldest[0]) return false;
-        snprintf(path, sizeof path, "%s/%.64s", dir, oldest);
-        ESP_LOGI(TAG, "file store: %s.. goes to make room", oldest);
-        if (remove(path) != 0) return false;
+        ESP_LOGI(TAG, "file store: %s goes to make room", oldest);
+        if (remove(oldest) != 0) return false;
     }
     return false;
 }
@@ -382,12 +435,16 @@ static bool file_ref(httpd_req_t *req, char *ref, size_t cap, uint8_t sha[32], c
 
 static esp_err_t h_file_get(httpd_req_t *req)
 {
-    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[96];
+    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[112];
     uint8_t sha[32];
     if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
     xwcf_hex(sha, hex);
     snprintf(path, sizeof path, "%s/%s", file_dir(), hex);
     FILE *f = fopen(path, "rb");
+    if (!f) {
+        snprintf(path, sizeof path, "%s" THUMBS "/%s", file_dir(), hex);
+        f = fopen(path, "rb");
+    }
     if (!f) return answer(req, 404, "{\"ok\":false,\"error\":\"not held\"}");
     char etag[70];
     snprintf(etag, sizeof etag, "\"%s\"", hex);
@@ -407,7 +464,7 @@ static esp_err_t h_file_get(httpd_req_t *req)
 
 static esp_err_t h_file_post(httpd_req_t *req)
 {
-    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[96], part[96];
+    char ref[80], ext[XWCF_EXT_MAX + 1], hex[65], path[112], part[112], dir[40], other[112];
     uint8_t sha[32], got[32];
     if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
     if (req->content_len == 0) return answer(req, 400, "{\"ok\":false,\"error\":\"no bytes\"}");
@@ -420,13 +477,20 @@ static esp_err_t h_file_post(httpd_req_t *req)
     if (now - s_win >= 60) { s_win = now; s_puts = 0; }
     if (++s_puts > FILE_PUTS_MIN) return answer(req, 429, "{\"ok\":false,\"error\":\"slow down\"}");
     xwcf_hex(sha, hex);
-    const char *dir = file_dir();
+    /* A picture's preview goes in .thumbnails/ where there is a card to
+     * keep folders on; elsewhere it is a file like any other. */
+    char pv[4];
+    query_val(req, "preview", pv, sizeof pv);
+    bool thumb = pv[0] == '1' && s_card();
     struct stat ds;
-    if (stat(dir, &ds) != 0) mkdir(dir, 0775);   /* made at start; a card may come later */
+    if (stat(file_dir(), &ds) != 0) mkdir(file_dir(), 0775);   /* made at start; a card may come later */
+    snprintf(dir, sizeof dir, "%s%s", file_dir(), thumb ? THUMBS : "");
+    if (thumb && stat(dir, &ds) != 0) mkdir(dir, 0775);
     snprintf(path, sizeof path, "%s/%s", dir, hex);
+    snprintf(other, sizeof other, thumb ? "%s/%s" : "%s" THUMBS "/%s", file_dir(), hex);
     snprintf(part, sizeof part, "%s/part.tmp", dir);
     struct stat st;
-    bool held = stat(path, &st) == 0;
+    bool held = stat(path, &st) == 0 || stat(other, &st) == 0;
     if (!held && !file_room((uint32_t)req->content_len))
         return answer(req, 503, "{\"ok\":false,\"error\":\"no room for it here\"}");
     FILE *f = held ? NULL : fopen(part, "wb");
@@ -469,7 +533,7 @@ static esp_err_t h_file_post(httpd_req_t *req)
 int xapi_wc_services(char *buf, size_t cap)
 {
     /* Every panel the board serves: the page hides what is not listed. */
-    int n = xwc_services_json(buf, cap, "chat,traffic,devices,stats,station,settings,alerts");
+    int n = xwc_services_json(buf, cap, "chat,traffic,devices,stats,station,settings,alerts", s_card());
     /* Files by reference (/api/xprs/file/<ref>), as large as this board keeps. */
     if (n > 0 && (size_t)n < cap)
         n += snprintf(buf + n, cap - (size_t)n, ",\"file\":{\"get\":true,\"put\":true,\"max\":%u}",

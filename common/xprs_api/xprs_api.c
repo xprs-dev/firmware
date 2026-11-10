@@ -389,6 +389,10 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
         if (!xwc_may_read_room(hosted, session))
             return resp_error(req, "404 Not Found", "no such room");
         snprintf(room, sizeof room, "%s", hosted);
+        /* Readable, judged just above: the room's rows are mail to the
+         * room, which the index's section 36 rule would otherwise serve
+         * only to their authors. */
+        q.trusted = true;
         q.only = room;
         ctx.room = room;
         ctx.group = room;

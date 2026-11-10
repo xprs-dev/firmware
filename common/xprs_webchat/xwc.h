@@ -110,6 +110,29 @@ int  xwc_rooms_json(char *buf, size_t cap, const char *token);
 int  xwc_rooms_post(const char *body, char *buf, size_t cap);
 bool xwc_has_rooms(void);
 
+/* ---- the index of a forum or gallery room (/api/rooms?topics=) ----------
+ * The room's newest topics (a gallery's events) by last activity, folded
+ * from its `t:blog` rows (XPRS.md 18.1, 18.5): a titled post is a topic, a
+ * later one of the same title from the same author its new edition, an
+ * untitled one with `r:` (and `root:`) a comment on it. The host owns the
+ * archive, so the fold is fed: begin, every row, end.
+ *
+ * xwc_topics_begin answers 200 when [call] is a forum or gallery room the
+ * session may read (else the status, with the answer in [buf]); the host
+ * then hands it the room's `t:blog` rows, newest first, at most
+ * XWC_TOPICS_WINDOW, and xwc_topics_end writes the answer and lets go. A
+ * split post's parts (7.6) are not joined here: this engine holds none. */
+#if defined(ESP_PLATFORM) && !(defined(CONFIG_SPIRAM) && CONFIG_SPIRAM)
+#define XWC_TOPICS_MAX    24
+#define XWC_TOPICS_WINDOW 160
+#else
+#define XWC_TOPICS_MAX    100
+#define XWC_TOPICS_WINDOW 500
+#endif
+int  xwc_topics_begin(const char *call, const char *token, char *buf, size_t cap);
+void xwc_topics_row(const char *wire, int len, uint32_t ts);
+int  xwc_topics_end(char *buf, size_t cap);
+
 /* ---- the rules on what visitors read and send -------------------------- */
 
 /** True when a history row must be left out: removed by a moderator, by an
@@ -126,8 +149,10 @@ int  xwc_moderation_json(char *buf, size_t cap, const char *group);
 int xwc_gate(const char *wire, int len, bool local_peer,
              char id[XWC_ID_LEN], char *why, size_t why_cap);
 
-/** The fragment /api/services adds: `"station":..,"page":{..}` (no braces). */
-int xwc_services_json(char *buf, size_t cap, const char *tabs_csv);
+/** The fragment /api/services adds: `"station":..,"page":{..}` (no braces).
+ *  [storage]: the station has room for photographs (a memory card), so it
+ *  offers gallery rooms (`page.gallery`, spec/API-HTTP.md). */
+int xwc_services_json(char *buf, size_t cap, const char *tabs_csv, bool storage);
 
 /* ---- for the host test ----------------------------------------------- */
 void xwc_reset(void);

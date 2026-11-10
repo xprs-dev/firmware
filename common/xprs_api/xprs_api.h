@@ -60,6 +60,11 @@ typedef struct {
      * nothing. The engine knows the keys; the station knows whose mailbox
      * it is and what it holds (spec/API-HTTP.md). Optional. */
     int (*session_extra)(const char *call, char *buf, size_t cap);
+    /* Whether the station's storage is a memory card (its archive on the
+     * card, `storage: card`): files by reference get a card's room, and the
+     * page is offered gallery rooms (`page.gallery`). Optional; NULL is
+     * the board's own flash. */
+    bool (*on_card)(void);
 
     /** JSON fragments the board owns, written into @p buf: the serve list
      *  (e.g. `"index","history","mailbox"` -- no brackets) and the feature

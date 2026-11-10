@@ -10461,6 +10461,8 @@ static int api_peers_json(char *buf, size_t cap)
     return n;
 }
 
+static bool api_on_card(void) { return s_card_mounted; }
+
 static xprs_api_cfg_t s_api_cfg = {
     .app = "xprs-esp32",
     .board = "?",           /* the board names itself in xapp_run() */
@@ -10469,6 +10471,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .visitor_heard = web_visitor_heard,
     .is_owner = api_is_owner,
     .session_extra = api_session_extra,
+    .on_card = api_on_card,
     .serve_json = api_serve_json,
     .features_json = api_features_json,
     .status_json = api_status_json,

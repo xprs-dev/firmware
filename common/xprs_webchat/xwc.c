@@ -75,9 +75,14 @@ typedef struct {
     char    about[XWC_ROOM_ABOUT];
     bool    priv_room;              /* visibility: private */
     bool    anyone;                 /* posting: anyone */
+    uint8_t kind;                   /* RK_CHAT, RK_FORUM, RK_GALLERY */
     uint8_t priv[32], pub[32];
     bool    have_key;
 } room_t;
+/* What a room is (spec/API-HTTP.md `kind`): a conversation, topics and
+ * comments beside it, or a category of photographs. */
+enum { RK_CHAT = 0, RK_FORUM, RK_GALLERY };
+static const char *const k_kinds[] = { "chat", "forum", "gallery" };
 static room_t s_rooms[XWC_ROOMS];
 static int    s_nrooms;
 
@@ -293,16 +298,17 @@ static void rooms_load(void)
     s_nrooms = 0;
     const char *v = s_cb.kv_get ? s_cb.kv_get("wc_rooms") : NULL;
     if (!v) return;
-    /* CALL\x1fname\x1fabout\x1fV\x1fP\x1e ... */
+    /* CALL\x1fname\x1fabout\x1fV\x1fP\x1fK\x1e ... (K, the kind, came
+     * later: a record without it is a chat room) */
     const char *p = v;
     while (*p && s_nrooms < XWC_ROOMS) {
         room_t *r = &s_rooms[s_nrooms];
         memset(r, 0, sizeof *r);
-        char *f[5] = { r->call, r->name, r->about, NULL, NULL };
-        size_t caps[5] = { sizeof r->call, sizeof r->name, sizeof r->about, 0, 0 };
-        char flag[2][4] = { "", "" };
-        f[3] = flag[0]; caps[3] = 4; f[4] = flag[1]; caps[4] = 4;
-        for (int i = 0; i < 5; i++) {
+        char *f[6] = { r->call, r->name, r->about, NULL, NULL, NULL };
+        size_t caps[6] = { sizeof r->call, sizeof r->name, sizeof r->about, 4, 4, 4 };
+        char flag[3][4] = { "", "", "" };
+        f[3] = flag[0]; f[4] = flag[1]; f[5] = flag[2];
+        for (int i = 0; i < 6; i++) {
             size_t o = 0;
             while (*p && *p != 0x1f && *p != 0x1e) { if (o < caps[i] - 1) f[i][o++] = *p; p++; }
             f[i][o] = 0;
@@ -312,6 +318,7 @@ static void rooms_load(void)
         if (!r->call[0]) continue;
         r->priv_room = flag[0][0] == 'p';
         r->anyone = flag[1][0] == 'a';
+        r->kind = flag[2][0] == 'f' ? RK_FORUM : flag[2][0] == 'g' ? RK_GALLERY : RK_CHAT;
         char key[24], hex[80];
         snprintf(key, sizeof key, "wc_rk_%s", r->call);
         const char *h = s_cb.kv_get(key);
@@ -324,13 +331,13 @@ static void rooms_load(void)
 
 static bool rooms_save(void)
 {
-    static char buf[XWC_ROOMS * (XWC_CALL_LEN + XWC_ROOM_NAME + XWC_ROOM_ABOUT + 8) + 1];
+    static char buf[XWC_ROOMS * (XWC_CALL_LEN + XWC_ROOM_NAME + XWC_ROOM_ABOUT + 10) + 1];
     size_t n = 0;
     for (int i = 0; i < s_nrooms; i++) {
         room_t *r = &s_rooms[i];
-        int w = snprintf(buf + n, sizeof buf - n, "%s\x1f%s\x1f%s\x1f%c\x1f%c\x1e",
+        int w = snprintf(buf + n, sizeof buf - n, "%s\x1f%s\x1f%s\x1f%c\x1f%c\x1f%c\x1e",
                          r->call, r->name, r->about, r->priv_room ? 'p' : 'u',
-                         r->anyone ? 'a' : 'm');
+                         r->anyone ? 'a' : 'm', k_kinds[r->kind][0]);
         if (w < 0 || (size_t)w >= sizeof buf - n) return false;
         n += (size_t)w;
     }
@@ -979,8 +986,8 @@ static void room_json(jb_t *j, room_t *r, const char *who, bool admin)
     jb_str(j, r->name);
     jb(j, ",\"about\":");
     jb_str(j, r->about);
-    jb(j, ",\"visibility\":\"%s\",\"posting\":\"%s\",\"role\":\"%s\"",
-       r->priv_room ? "private" : "public", r->anyone ? "anyone" : "members", role_name(role));
+    jb(j, ",\"kind\":\"%s\",\"visibility\":\"%s\",\"posting\":\"%s\",\"role\":\"%s\"",
+       k_kinds[r->kind], r->priv_room ? "private" : "public", r->anyone ? "anyone" : "members", role_name(role));
     if (role == R_INVITED && who) {
         member_t *m = member_find(ro, who);
         if (m && m->offer[0]) jb(j, ",\"offer\":\"%s\",\"offer_role\":\"%s\"", m->offer,
@@ -1034,11 +1041,18 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
     if (!jget(body, "action", action, sizeof action)) return refuse(buf, cap, 400, "malformed");
     jget(body, "session", token, sizeof token);
     if (!admin_of(token)) return refuse(buf, cap, 403, "only the station's administrator manages rooms");
-    char vis[12] = "", post[12] = "";
+    static const char *const shape = "visibility is public or private; posting members or anyone; kind chat, forum or gallery";
+    char vis[12] = "", post[12] = "", kind[12] = "";
+    int rk = -1;
     if (jget(body, "visibility", vis, sizeof vis) && strcmp(vis, "public") && strcmp(vis, "private"))
-        return refuse(buf, cap, 400, "visibility is public or private; posting members or anyone");
+        return refuse(buf, cap, 400, shape);
     if (jget(body, "posting", post, sizeof post) && strcmp(post, "members") && strcmp(post, "anyone"))
-        return refuse(buf, cap, 400, "visibility is public or private; posting members or anyone");
+        return refuse(buf, cap, 400, shape);
+    if (jget(body, "kind", kind, sizeof kind)) {
+        for (int k = 0; k < (int)(sizeof k_kinds / sizeof k_kinds[0]); k++)
+            if (strcmp(kind, k_kinds[k]) == 0) rk = k;
+        if (rk < 0) return refuse(buf, cap, 400, shape);
+    }
 
     if (strcmp(action, "create") == 0) {
         if (s_nrooms >= XWC_ROOMS) return refuse(buf, cap, 409, "this station holds as many rooms as it can");
@@ -1051,6 +1065,7 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
         if (jget(body, "about", v, sizeof v)) clean_text(v, r->about, sizeof r->about);
         r->priv_room = strcmp(vis, "private") == 0;
         r->anyone = !r->priv_room && (!post[0] || strcmp(post, "anyone") == 0);
+        r->kind = rk < 0 ? RK_CHAT : (uint8_t)rk;
         /* The room's key, and the callsign it derives (10.1), unique here. */
         for (int tries = 0; tries < 8; tries++) {
             s_cb.random_bytes(r->priv, 32);
@@ -1087,6 +1102,7 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
         if (jhas(body, "about")) { v[0] = 0; jget(body, "about", v, sizeof v); clean_text(v, r->about, sizeof r->about); }
         if (vis[0]) r->priv_room = strcmp(vis, "private") == 0;
         if (post[0]) r->anyone = strcmp(post, "anyone") == 0;
+        if (rk >= 0) r->kind = (uint8_t)rk;
         if (r->priv_room) r->anyone = false;
         rooms_save();
         jb_t j; jb_init(&j, buf, cap);
@@ -1113,6 +1129,129 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
         return rooms_list(&j, token, r->call);
     }
     return refuse(buf, cap, 400, "action must be create, update, close, add, appoint or remove");
+}
+
+/* ---- the index of a forum or gallery room ------------------------------- */
+/* Claimed for one answer and let go: the fold's tables are the size of the
+ * window, and a board has no RAM to keep them between asks. */
+typedef struct {
+    char     id[XWC_ID_LEN];        /* the edition shown, the newest */
+    char     title[41];
+    char     from[XWC_CALL_LEN];
+    char     tags[32];
+    uint32_t ts, last;
+    uint16_t replies, editions;
+} topic_t;
+typedef struct { char id[XWC_ID_LEN]; uint8_t topic; } edition_t;
+typedef struct { char thread[XWC_ID_LEN]; uint32_t ts; } comment_t;
+typedef struct {
+    char      room[XWC_CALL_LEN];
+    xprs_t    p;                    /* here, not on the caller's stack: the
+                                       rows arrive inside the index's query */
+    topic_t   t[XWC_TOPICS_MAX];   int nt;
+    edition_t e[XWC_TOPICS_MAX * 2]; int ne;
+    comment_t c[XWC_TOPICS_WINDOW]; int nc;
+} topics_t;
+static topics_t *s_tp;
+
+int xwc_topics_begin(const char *call, const char *token, char *buf, size_t cap)
+{
+    room_t *r = call ? room_find(call) : NULL;
+    if (!r || !xwc_may_read_room(r->call, token)) return refuse(buf, cap, 404, "no such room");
+    if (r->kind != RK_FORUM && r->kind != RK_GALLERY)
+        return refuse(buf, cap, 400, "not a forum or gallery room");
+    free(s_tp);
+    s_tp = calloc(1, sizeof *s_tp);
+    if (!s_tp) return refuse(buf, cap, 503, "no room for the index now; try again");
+    snprintf(s_tp->room, sizeof s_tp->room, "%s", r->call);
+    return 200;
+}
+
+void xwc_topics_row(const char *wire, int len, uint32_t ts)
+{
+    topics_t *T = s_tp;
+    if (!T || !xprs_parse(wire, len, &T->p)) return;
+    const xprs_t *p = &T->p;
+    char type[8], v[48], from[XWC_CALL_LEN], id[XPRS_ID_LEN], title[41];
+    xprs_type(p, type, sizeof type);
+    if (strcmp(type, "blog") != 0) return;
+    /* A part alone is never the post (7.6); this engine holds no sets. */
+    if (xprs_get(p, "n", NULL) || xprs_get(p, "remove", NULL)) return;
+    if (!xprs_get_str(p, "f", v, sizeof v)) return;
+    base_call(v, from);
+    if (away_now(roster(T->room), from, now_s())) return;
+    xprs_id(p, id);
+    if (removed_in(T->room, id)) return;
+    if (xprs_get_str(p, "title", title, sizeof title)) {
+        /* Editions of one topic: the same author, the same title (18.1). */
+        int k = 0;
+        while (k < T->nt && (strcmp(T->t[k].from, from) || strcmp(T->t[k].title, title))) k++;
+        if (k == T->nt) {
+            if (T->nt >= XWC_TOPICS_MAX) return;
+            topic_t *t = &T->t[T->nt++];
+            snprintf(t->title, sizeof t->title, "%s", title);
+            snprintf(t->from, sizeof t->from, "%s", from);
+        }
+        topic_t *t = &T->t[k];
+        if (!t->editions++ || ts >= t->ts) {
+            snprintf(t->id, sizeof t->id, "%s", id);
+            t->ts = ts;
+            if (!xprs_get_str(p, "tag", t->tags, sizeof t->tags)) t->tags[0] = 0;
+        }
+        if (T->ne < XWC_TOPICS_MAX * 2) {
+            snprintf(T->e[T->ne].id, XWC_ID_LEN, "%s", id);
+            T->e[T->ne++].topic = (uint8_t)k;
+        }
+    } else if (xprs_get(p, "r", NULL) && T->nc < XWC_TOPICS_WINDOW) {
+        /* A comment's topic: root: when it says, else the post it answers. */
+        if (!xprs_get_str(p, "root", v, sizeof v)) xprs_get_str(p, "r", v, sizeof v);
+        snprintf(T->c[T->nc].thread, XWC_ID_LEN, "%.6s", v);
+        T->c[T->nc++].ts = ts;
+    }
+}
+
+static int topic_cmp(const void *a, const void *b)
+{
+    const topic_t *x = a, *y = b;
+    return x->last == y->last ? 0 : x->last > y->last ? -1 : 1;
+}
+
+int xwc_topics_end(char *buf, size_t cap)
+{
+    topics_t *T = s_tp;
+    if (!T) return refuse(buf, cap, 500, "no index begun");
+    for (int i = 0; i < T->nc; i++)
+        for (int k = 0; k < T->ne; k++) {
+            if (strcmp(T->e[k].id, T->c[i].thread) != 0) continue;
+            topic_t *t = &T->t[T->e[k].topic];
+            t->replies++;
+            if (T->c[i].ts > t->last) t->last = T->c[i].ts;
+            break;
+        }
+    for (int k = 0; k < T->nt; k++) if (T->t[k].ts > T->t[k].last) T->t[k].last = T->t[k].ts;
+    qsort(T->t, (size_t)T->nt, sizeof T->t[0], topic_cmp);
+    jb_t j; jb_init(&j, buf, cap);
+    jb(&j, "{\"ok\":true,\"room\":\"%s\",\"topics\":[", T->room);
+    /* A topic whole or not at all: the answer stays JSON when the buffer is
+     * short, and what falls off is the oldest. */
+    char one[200];
+    for (int k = 0; k < T->nt; k++) {
+        topic_t *t = &T->t[k];
+        jb_t o; jb_init(&o, one, sizeof one);
+        jb(&o, "%s{\"id\":\"%s\",\"title\":", k ? "," : "", t->id);
+        jb_str(&o, t->title);
+        jb(&o, ",\"from\":\"%s\",\"ts\":%lu,\"replies\":%u,\"last\":%lu,\"edited\":%s",
+           t->from, (unsigned long)t->ts, (unsigned)t->replies, (unsigned long)t->last,
+           t->editions > 1 ? "true" : "false");
+        if (t->tags[0]) { jb(&o, ",\"tags\":"); jb_str(&o, t->tags); }
+        jb(&o, "}");
+        if (o.n + 1 >= sizeof one || j.n + o.n + 3 >= cap) break;
+        jb(&j, "%s", one);
+    }
+    jb(&j, "]}");
+    free(T);
+    s_tp = NULL;
+    return 200;
 }
 
 /* ---- the rules on reading and sending ---------------------------------- */
@@ -1148,6 +1287,28 @@ int xwc_moderation_json(char *buf, size_t cap, const char *group)
         if (!r->away[i].until || r->away[i].until > now) jb(&j, "%s\"%s\"", k++ ? "," : "", r->away[i].call);
     jb(&j, "]}");
     return (int)j.n;
+}
+
+/* `title:` is a label (XPRS.md 18.1): lowercase letters, digits and `-`,
+ * forty at most, a letter or digit first. */
+static bool label_ok(const char *v, int n)
+{
+    if (n < 1 || n > 40 || v[0] == '-') return false;
+    for (int i = 0; i < n; i++)
+        if (!((v[i] >= 'a' && v[i] <= 'z') || (v[i] >= '0' && v[i] <= '9') || v[i] == '-')) return false;
+    return true;
+}
+
+/* What a `t:blog` in a forum (or gallery) room must be (18, 18.5): a topic
+ * has a title; a comment has none and names its post; a correction or a
+ * withdrawal names what it acts on. NULL when it is one of those. */
+static const char *forum_shape(const xprs_t *p)
+{
+    int n = 0;
+    const char *t = xprs_get(p, "title", &n);
+    if (t) return label_ok(t, n) ? NULL : "title: is a label: lowercase letters, digits and -";
+    if (xprs_get(p, "r", NULL) || xprs_get(p, "edit", NULL)) return NULL;
+    return "a post needs a title: to open a topic, or r: to comment on one";
 }
 
 int xwc_gate(const char *wire, int len, bool local_peer,
@@ -1187,10 +1348,45 @@ int xwc_gate(const char *wire, int len, bool local_peer,
 
     if (room) {
         room_t *r = room_find(room);
-        if (strcmp(type, "message") && strcmp(type, "reaction")) { snprintf(why, why_cap, "only messages and reactions in a room"); return -403; }
+        bool blog = strcmp(type, "blog") == 0, like = strcmp(type, "reaction") == 0;
+        const char *bad;
+        if (r->kind == RK_GALLERY) {
+            /* A category of photographs (spec/API-HTTP.md): events are titled
+             * posts, pictures are messages with a preview and their t:file
+             * companions, likes are reactions. Only the room's staff posts;
+             * readers like. */
+            if (blog) {
+                if ((bad = forum_shape(&p))) { snprintf(why, why_cap, "%s", bad); return -400; }
+                if (!xprs_get(&p, "title", NULL) && !xprs_get(&p, "n", NULL)) {
+                    snprintf(why, why_cap, "an event is a post with a title");
+                    return -400;
+                }
+            } else if (strcmp(type, "message") && strcmp(type, "file") && !like) {
+                snprintf(why, why_cap, "a gallery takes events, pictures and likes");
+                return -403;
+            }
+        } else if (blog) {
+            if (r->kind != RK_FORUM) { snprintf(why, why_cap, "posts go in a forum room"); return -403; }
+            if ((bad = forum_shape(&p))) { snprintf(why, why_cap, "%s", bad); return -400; }
+        } else if (strcmp(type, "message") && !like) {
+            snprintf(why, why_cap, "only messages and reactions in a room");
+            return -403;
+        }
         if (!verified(&p, from)) { snprintf(why, why_cap, "identity unknown"); return -409; }
         if (away_now(roster(room), from, now_s())) { snprintf(why, why_cap, "you were sent away from this room"); return -403; }
-        if ((r->priv_room || !r->anyone) && !room_member(r, from)) { snprintf(why, why_cap, "only members post in this room"); return -403; }
+        if (r->kind == RK_GALLERY) {
+            int role = role_in(r->call, from);
+            bool staff = role == R_MOD || role == R_ADMIN || is_staff(from);
+            if (!like && !staff) { snprintf(why, why_cap, "only the moderators add events and pictures here"); return -403; }
+            /* A like from anyone who may read the room. */
+            if (like && r->priv_room && !room_member(r, from) && !staff) {
+                snprintf(why, why_cap, "only members like in this room");
+                return -403;
+            }
+        } else if ((r->priv_room || !r->anyone) && !room_member(r, from)) {
+            snprintf(why, why_cap, "only members post in this room");
+            return -403;
+        }
         if (s_cb.file) s_cb.file(wire, len);
         return 1;
     }
@@ -1209,7 +1405,7 @@ int xwc_gate(const char *wire, int len, bool local_peer,
     return 0;
 }
 
-int xwc_services_json(char *buf, size_t cap, const char *tabs_csv)
+int xwc_services_json(char *buf, size_t cap, const char *tabs_csv, bool storage)
 {
     jb_t j; jb_init(&j, buf, cap);
     jb(&j, "\"station\":\"%s\",\"page\":{\"tabs\":[", s_station);
@@ -1218,7 +1414,10 @@ int xwc_services_json(char *buf, size_t cap, const char *tabs_csv)
     char *save = NULL;
     int k = 0;
     for (char *t = strtok_r(tabs, ",", &save); t; t = strtok_r(NULL, ",", &save)) jb(&j, "%s\"%s\"", k++ ? "," : "", t);
-    jb(&j, "],\"session\":true,\"mailbox\":true,\"admin\":true,\"moderation\":%s,\"rooms\":%s,\"alerts\":\"%s\"}",
+    jb(&j, "],\"session\":true,\"mailbox\":true,\"admin\":true,\"moderation\":%s,\"rooms\":%s,\"alerts\":\"%s\"",
        s_priv ? "true" : "false", s_priv ? "true" : "false", xwc_who_may_alert());
+    /* And keeps photographs: gallery rooms, where a card gives it the room. */
+    if (s_priv && storage) jb(&j, ",\"gallery\":true");
+    jb(&j, "}");
     return (int)j.n;
 }
