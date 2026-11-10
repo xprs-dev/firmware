@@ -1,5 +1,9 @@
 # Plan: HTTPS and an xprs.dev name on the boards
 
+*Set aside on 2026-11-10 for `portal/docs/plan-browser-reticulum.md`: the
+boards are reached through Reticulum from a page on xprs.dev, not over HTTPS.
+The C3 measurements below remain valid.*
+
 Status 2026-11-10: **a plan, not started.** The goal: a board installed at a
 place with its own public IP address answers as `https://<callsign>.xprs.dev`,
 with its own certificate, exactly as the Linux server station does. Each
