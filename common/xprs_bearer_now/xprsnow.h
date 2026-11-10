@@ -21,16 +21,15 @@
  * ESP-NOW device on the channel through the ordinary receive path, and the RSSI
  * that sniffing would have been for arrives with them (`rx_ctrl`).
  *
- * ── The one real constraint ─────────────────────────────────────────────────
+ * ── Its own channel, on the long-range PHY ─────────────────────────────────
  *
- * **ESP-NOW rides the channel the WiFi station is already on.** Two devices on
- * different channels do not hear each other and nothing reports an error —
- * `esp_now_send` succeeds, and the only symptom is a peer count that stays at
- * zero. When the station is associated to an access point, that is the AP's
- * channel; when it is not, it is whatever channel was last set.
- *
- * Moving a pair to a channel of their own, and to the long-range PHY, is
- * §23.7's `t:channel` invitation, and is not this file's job.
+ * ESP-NOW has a home channel (13 by default, `espnow_ch`; 11 where the WiFi
+ * country has no 13) and sends on Espressif's long-range PHY, 250 kbps
+ * (`espnow_lr`). A station on no router sits on the home channel. A station
+ * on a router keeps the router's channel for WiFi and visits the home
+ * channel for `espnow_win` ms (80) at the start of every second of the wall
+ * clock; every station that knows the time sends inside that window, and one
+ * without a clock learns it from the frames it hears. docs/espnow.md.
  *
  * ── Where the work happens ──────────────────────────────────────────────────
  *
@@ -56,6 +55,21 @@ typedef int esp_err_t;
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * The home channel, the long-range PHY and the window (docs/espnow.md).
+ * Call before wifi_up(): home channel 1..14 (13 by default), LR on or off,
+ * the window each second a station on a router spends on the home channel.
+ */
+void    xprsnow_configure(uint8_t home_channel, bool long_range, uint32_t window_ms);
+/** Between esp_wifi_init() and esp_wifi_start(); returns the home channel. */
+uint8_t xprsnow_wifi_prepare(const char *country);
+uint8_t xprsnow_home_channel(void);
+bool    xprsnow_long_range(void);
+/** Visits to the home channel, refused switches, frames sent in a window,
+ *  frames dropped from a full window queue. */
+void    xprsnow_window_stats(uint32_t *visits, uint32_t *switch_fail,
+                             uint32_t *sent, uint32_t *dropped);
 
 /** Longest XPRS packet, and exactly one ESP-NOW frame. */
 #define XPRSNOW_WIRE_MAX   250

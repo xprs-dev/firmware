@@ -114,6 +114,12 @@ typedef struct {
      *  at once: 0 when taken, else the HTTP status with @p why filled. */
     int (*wifi_join)(const char *ssid, const char *pass, char *why, size_t why_cap);
 
+    /** Whether the station reaches the internet now. While it does, only the
+     *  administrator (or an owner) may change its network over POST
+     *  /api/wifi; while it does not, any visitor may add one so the station
+     *  gets back online. NULL: anyone may, always. */
+    bool (*internet_up)(void);
+
     /** POST /api/wifi/scan starts a search for networks in range (0, or the
      *  HTTP status with @p why); GET /api/wifi/scan reports it. Both run on
      *  the HTTP task and only ask or read; the board scans elsewhere. */

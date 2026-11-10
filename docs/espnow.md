@@ -43,26 +43,57 @@ Unencrypted, because broadcast always is. Authorship is `sig:` (section 9.1),
 which is the answer to "who sent this" on every bearer and does not become the
 transport's job here.
 
-## Same channel, or nothing at all
+## Its own channel, on the long-range PHY
 
-**ESP-NOW rides whatever channel the WiFi station is already on.** When the
-station is associated to an access point, that is the AP's channel; when it is
-not, it is whatever was last set.
+*Since 2026-11-10. Older stations (1 Mbps, on the router's channel) and these
+do not meet over ESP-NOW; that was accepted.*
 
-Two devices on different channels **hear nothing from each other, and nothing
-reports an error**. `esp_now_send` succeeds -- it has no idea who is listening.
-The only symptom is a `peers:` count that stays at zero, so that is the number
-to look at first when a link that should exist does not.
+**Long range.** Every frame goes out on Espressif's long-range PHY at
+250 kbps (`esp_now_set_peer_rate_config`, `WIFI_PHY_MODE_LR`), and the station
+interface lists LR among its protocols so the radio receives it. Four times
+the airtime of 1 Mbps (about 9 ms for a 250-byte packet) for up to 6 dB more
+link budget; Espressif quotes a few dB in practice. A radio with LR among its
+protocols still hears 1 Mbps frames and still joins an ordinary router. A radio
+without it hears no LR frame at all.
 
-The practical consequence: stations that share an access point share a channel
-and find each other with no configuration. Stations on different access points
-do not, and no amount of restarting will change it.
+**The home channel.** ESP-NOW lives on channel 13 (`espnow_ch`), the least
+used 2.4 GHz channel in Europe: routers choose 1, 6 and 11. The chip's default
+country is "world safe" (channels 1 to 11), so the station sets `wifi_country`
+(default `DE`); where the country has no 13 the home channel is 11. A
+standalone hotspot opens on the home channel too.
 
-Moving a pair to a channel of their own -- and to the long-range PHY, which is
-where ESP-NOW's range actually lives -- is section 23.7's `t:channel` invitation:
-one station proposes, the other accepts on the commons, both tune away, and both
-come back. That is deliberately not part of this bearer; it is a thing a pair
-does *with* it.
+**A station on a router** cannot stay on 13 unless the router is on 13: one
+radio, one channel, and in 802.11 the access point chooses it. Asking for 13
+when joining (`sta.channel`) was tried: the FRITZ!Box on 11 kept 11. A router
+set to channel 13 by hand puts everything on one channel and no visit is
+needed. Otherwise the station keeps the router's channel for WiFi and **visits the
+home channel for 80 ms (`espnow_win`) at the start of every second** of the
+wall clock (SNTP). Every station that knows the time queues its ESP-NOW frames
+and sends them inside that window, 25 to 35 ms in, so the visitors are there
+to hear them; the radio's own carrier sense spreads them further. The
+driver refuses `esp_wifi_set_channel()` while associated, so the visit is a
+remain-on-channel request (`esp_wifi_remain_on_channel`, the driver's private
+API in IDF 5.2, as DPP uses), which returns to the router's channel by itself. 8 % of the
+time off the router's channel; TCP recovers what arrives meanwhile.
+
+**A station without a clock** (no router, no internet) learns the window from
+what it hears: a frame arrives about 25 ms into its sender's window. Until it
+has heard anything it sends at once, which reaches every station sitting on the
+home channel.
+
+| setting | default | |
+|---|---|---|
+| `espnow_ch` | 13 | the home channel |
+| `espnow_lr` | yes | send and receive the long-range PHY |
+| `espnow_win` | 80 | ms each second a station on a router spends on the home channel |
+| `wifi_country` | DE | the WiFi country (channel 13 needs one that has it) |
+
+The station's 15-second line carries the window's counters:
+`espnow home=13 lr window visits=.. switch_fail=.. sent=.. dropped=..`.
+
+Moving a pair to a working channel of their own is section 14.7's `t:channel`
+invitation; with a home channel already off the routers' ones it is wanted
+less, and it is not built.
 
 ## Not everybody at once
 

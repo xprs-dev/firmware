@@ -4798,6 +4798,14 @@ static void status_task(void *arg)
                  (unsigned)xprsble_scan_results(), (unsigned)xprsble_ad_dropped(),
                  (unsigned)xprsble_chained(), (unsigned)xprsble_chain_lost(),
                  xprsble_silent_for(), (unsigned)s_idx_stack_free);
+        {
+            uint32_t v = 0, sf = 0, ws = 0, wd = 0;
+            xprsnow_window_stats(&v, &sf, &ws, &wd);
+            ESP_LOGW(TAG, "espnow home=%u %s window visits=%u switch_fail=%u "
+                          "sent=%u dropped=%u",
+                     xprsnow_home_channel(), xprsnow_long_range() ? "lr" : "1m",
+                     (unsigned)v, (unsigned)sf, (unsigned)ws, (unsigned)wd);
+        }
     }
 }
 
@@ -5151,6 +5159,13 @@ static int wifi_park(uint8_t op, const char *ssid, const char *pass,
     return 0;
 }
 
+/* Online for POST /api/wifi's rule: an address, and the internet not known
+ * to be down (unknown counts as up: a visitor does not get the benefit). */
+static bool api_internet_up(void)
+{
+    return s_ip_str[0] && !(s_inet_known && !s_inet_up);
+}
+
 static int api_wifi_join(const char *ssid, const char *pass, char *why, size_t cap)
 {
     return wifi_park(WREQ_JOIN, ssid, pass, why, cap);
@@ -5488,6 +5503,18 @@ static void wifi_up(void)
         IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
+    /* ESP-NOW's own channel and the long-range PHY (docs/espnow.md):
+     * espnow_ch (13), espnow_lr (yes), espnow_win (80 ms a second on the
+     * home channel while on a router), wifi_country (DE; 13 needs it). */
+    {
+        const char *ch = xcfg_get("espnow_ch", "13");
+        const char *win = xcfg_get("espnow_win", "80");
+        xprsnow_configure((uint8_t)atoi(ch ? ch : "13"),
+                          xcfg_get_bool("espnow_lr", true),
+                          (uint32_t)atoi(win ? win : "80"));
+        xprsnow_wifi_prepare(xcfg_get("wifi_country", "DE"));
+    }
+
     if (s_ssid[0]) {
         wifi_config_t wc = {0};
         /* memcpy: a 32-byte SSID fills the field and has no room for a NUL,
@@ -5498,19 +5525,17 @@ static void wifi_up(void)
         ESP_LOGI(TAG, "associating to \"%s\" — this is what puts us on the "
                       "other station's channel", s_ssid);
     } else {
-        ESP_LOGW(TAG, "no WiFi credentials: staying unassociated on channel %d. "
-                      "That only meets another unassociated board — an "
-                      "associated station is on its access point's channel.",
-                 s_board->espnow_channel);
+        ESP_LOGW(TAG, "no WiFi credentials: staying on ESP-NOW's home "
+                      "channel %u", xprsnow_home_channel());
     }
     ESP_ERROR_CHECK(esp_wifi_start());
     if (!s_ssid[0]) {
         /* Not ESP_ERROR_CHECK: a channel that did not take is a station on
          * another channel, not a reason to restart. */
-        esp_err_t ce = esp_wifi_set_channel(s_board->espnow_channel,
+        esp_err_t ce = esp_wifi_set_channel(xprsnow_home_channel(),
                                             WIFI_SECOND_CHAN_NONE);
         if (ce != ESP_OK)
-            ESP_LOGW(TAG, "channel %d not set: %s", s_board->espnow_channel,
+            ESP_LOGW(TAG, "channel %u not set: %s", xprsnow_home_channel(),
                      esp_err_to_name(ce));
     }
 }
@@ -10449,6 +10474,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .status_json = api_status_json,
     .wifi_json = api_wifi_json,
     .wifi_join = api_wifi_join,
+    .internet_up = api_internet_up,
     .wifi_scan_start = api_wifi_scan_start,
     .wifi_scan_json = api_wifi_scan_json,
     .devices_json = api_devices_json,

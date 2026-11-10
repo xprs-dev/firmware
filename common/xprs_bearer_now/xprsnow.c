@@ -14,6 +14,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -69,10 +70,238 @@ static uint32_t nw_random(void) { return esp_random(); }
 static void nw_lock(void *ctx)   { (void)ctx; if (s_tx_mtx) xSemaphoreTake(s_tx_mtx, portMAX_DELAY); }
 static void nw_unlock(void *ctx) { (void)ctx; if (s_tx_mtx) xSemaphoreGive(s_tx_mtx); }
 
+/* ── Long range on a home channel ────────────────────────────────────────────
+ *
+ * ESP-NOW has a channel of its own, the home channel (13 by default), and
+ * sends on the long-range PHY (LR, 250 kbps). docs/espnow.md has the why.
+ *
+ * A station on no router sits on the home channel and hears everything. A
+ * station on a router stays on the router's channel for WiFi and visits the
+ * home channel once a second, for a window aligned to the wall clock (SNTP):
+ * [0, s_win_ms) of every second. Every station that knows the time sends
+ * inside that window, so the visitors are there to hear it. A station without
+ * a clock learns the window from the frames it hears (they arrive inside it);
+ * one that has heard nothing yet sends at once, which reaches every station
+ * sitting on the home channel. */
+
+#define NW_PERIOD_US  1000000LL
+#define NW_SEND_AT_MS 25          /* sends start this far into the window */
+#define NW_TXQ        8
+
+typedef struct { int len; char wire[XPRSNOW_WIRE_MAX]; } nw_tx_t;
+
+static uint8_t           s_home_ch = 13;
+static bool              s_lr = true;
+static uint32_t          s_win_ms = 80;
+static nw_tx_t          *s_txq;          /* NW_TXQ entries, claimed at start */
+static int               s_txq_n;
+static portMUX_TYPE      s_txq_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile int64_t  s_learned_t0 = -1;  /* esp_timer us of a window start */
+static TaskHandle_t      s_win_task;
+
+/* Window counters: visits to the home channel, refused channel switches,
+ * frames sent inside a window, frames dropped from a full window queue. */
+static volatile uint32_t s_visits, s_switch_fail, s_win_sent, s_win_dropped;
+
+static bool nw_wall_ok(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec > 1735689600;   /* 2025-01-01: SNTP has run */
+}
+
+/* Microseconds into the current one-second period, or -1 when this station
+ * does not know where the window is. */
+static int64_t nw_phase_us(void)
+{
+    if (nw_wall_ok()) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        return ((int64_t)tv.tv_sec * 1000000LL + tv.tv_usec) % NW_PERIOD_US;
+    }
+    int64_t t0 = s_learned_t0;
+    if (t0 < 0) return -1;
+    return (esp_timer_get_time() - t0) % NW_PERIOD_US;
+}
+
+/* IN THE WIFI TASK. A station without a clock takes the window from what it
+ * hears: a frame arrives about NW_SEND_AT_MS into the sender's window. */
+static void nw_learn_phase(void)
+{
+    if (nw_wall_ok()) return;
+    s_learned_t0 = esp_timer_get_time() - (int64_t)NW_SEND_AT_MS * 1000;
+}
+
+/* Queue a frame for the next window. false: send it now instead. */
+static bool nw_defer(const char *wire, int len)
+{
+    if (!s_txq || !s_win_task || nw_phase_us() < 0) return false;
+    bool queued = false;
+    portENTER_CRITICAL(&s_txq_mux);
+    if (s_txq_n < NW_TXQ) {
+        memcpy(s_txq[s_txq_n].wire, wire, (size_t)len);
+        s_txq[s_txq_n].len = len;
+        s_txq_n++;
+        queued = true;
+    }
+    portEXIT_CRITICAL(&s_txq_mux);
+    if (!queued) s_win_dropped++;
+    return true;   /* a full queue drops the frame, as a busy radio would */
+}
+
+static bool nw_send_now(const char *wire, int len);
+
+/* Send what waits for the window. */
+static void nw_flush(void)
+{
+    static nw_tx_t one;   /* the window task is the only caller */
+    for (;;) {
+        bool have = false;
+        portENTER_CRITICAL(&s_txq_mux);
+        if (s_txq_n > 0) {
+            one = s_txq[0];
+            memmove(&s_txq[0], &s_txq[1], sizeof(nw_tx_t) * (size_t)(s_txq_n - 1));
+            s_txq_n--;
+            have = true;
+        }
+        portEXIT_CRITICAL(&s_txq_mux);
+        if (!have) return;
+        if (nw_send_now(one.wire, one.len)) s_win_sent++;
+    }
+}
+
+/* A station on no router belongs on the home channel; anything that moved
+ * it (a mode switch, a scan) is undone here. */
+/* A network configured for the station: it is joining one, or will. */
+static bool nw_has_router(void)
+{
+    wifi_config_t wc;
+    return esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.ssid[0];
+}
+
+static void nw_home_if_free(void)
+{
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) return;
+    /* Joining a router scans every channel; pulling the radio back to the
+     * home channel would break the scan every time. */
+    if (nw_has_router()) return;
+    uint8_t primary = 0;
+    wifi_second_chan_t second;
+    if (esp_wifi_get_channel(&primary, &second) != ESP_OK) return;
+    if (primary != s_home_ch &&
+        esp_wifi_set_channel(s_home_ch, WIFI_SECOND_CHAN_NONE) != ESP_OK)
+        s_switch_fail++;
+}
+
+/* The driver refuses esp_wifi_set_channel() while the station is on a router.
+ * Remain-on-channel is how it leaves the router's channel for a while and
+ * comes back by itself (802.11 off-channel operation, used for DPP). The
+ * call is in the driver's private header in IDF 5.2, so it is declared here. */
+extern esp_err_t esp_wifi_remain_on_channel(uint8_t ifx, uint8_t type,
+                                            uint8_t channel, uint32_t wait_time_ms,
+                                            wifi_action_rx_cb_t rx_cb);
+
+static void nw_window_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        int64_t ph = nw_phase_us();
+        if (ph < 0) {
+            /* No window known: whatever waits goes now, on the home channel
+             * if this station is not on a router. */
+            nw_home_if_free();
+            nw_flush();
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
+        int64_t wait_us = NW_PERIOD_US - ph;
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)(wait_us / 1000) + 1));
+        int64_t start = esp_timer_get_time();
+
+        wifi_ap_record_t ap;
+        bool assoc = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+        if (!assoc && nw_has_router()) {
+            /* Still joining: leave the radio to the scan, and send what
+             * waits on whatever channel it is on. */
+            nw_flush();
+            continue;
+        }
+        uint8_t primary = 0;
+        wifi_second_chan_t second;
+        esp_wifi_get_channel(&primary, &second);
+        bool roc = false;
+        if (primary != s_home_ch) {
+            esp_err_t e;
+            if (assoc) {
+                /* Off-channel for the window; the driver returns by itself. */
+                e = esp_wifi_remain_on_channel(WIFI_IF_STA, WIFI_ROC_REQ, s_home_ch,
+                                               s_win_ms + 20, NULL);
+                roc = e == ESP_OK;
+            } else {
+                e = esp_wifi_set_channel(s_home_ch, WIFI_SECOND_CHAN_NONE);
+            }
+            if (e != ESP_OK) {
+                if (s_switch_fail++ < 3)
+                    ESP_LOGW(TAG, "home channel %u refused: %s", s_home_ch,
+                             esp_err_to_name(e));
+                continue;
+            }
+        }
+        s_visits++;
+
+        /* Into the window, with a little spread so the senders do not all
+         * start in the same microsecond (the radio's own carrier sense does
+         * the rest). */
+        uint32_t at = NW_SEND_AT_MS + (esp_random() % 10);
+        int64_t now = esp_timer_get_time();
+        if ((now - start) / 1000 < at)
+            vTaskDelay(pdMS_TO_TICKS(at - (uint32_t)((now - start) / 1000)));
+        nw_flush();
+
+        /* Stay to listen, and do not leave before the driver has sent. */
+        for (;;) {
+            uint32_t el = (uint32_t)((esp_timer_get_time() - start) / 1000);
+            bool sent = s_tx_done == s_tx_issued;
+            if ((el >= s_win_ms && sent) || el >= s_win_ms + 40) break;
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        if (roc) esp_wifi_remain_on_channel(WIFI_IF_STA, WIFI_ROC_CANCEL, s_home_ch,
+                                            0, NULL);
+    }
+}
+
+void xprsnow_configure(uint8_t home_channel, bool long_range, uint32_t window_ms)
+{
+    if (home_channel >= 1 && home_channel <= 14) s_home_ch = home_channel;
+    s_lr = long_range;
+    if (window_ms >= 30 && window_ms <= 500) s_win_ms = window_ms;
+}
+
+uint8_t xprsnow_home_channel(void) { return s_home_ch; }
+bool    xprsnow_long_range(void)   { return s_lr; }
+
+void xprsnow_window_stats(uint32_t *visits, uint32_t *switch_fail,
+                          uint32_t *sent, uint32_t *dropped)
+{
+    if (visits)      *visits = s_visits;
+    if (switch_fail) *switch_fail = s_switch_fail;
+    if (sent)        *sent = s_win_sent;
+    if (dropped)     *dropped = s_win_dropped;
+}
+
 static bool nw_air(void *ctx, const char *wire, int len)
 {
     (void)ctx;
     if (!s_started || len <= 0 || len > XPRSNOW_WIRE_MAX) return false;
+    /* A station that knows when the window is sends inside it: that is when
+     * the stations on a router are on the home channel to hear it. */
+    if (nw_defer(wire, len)) return true;
+    return nw_send_now(wire, len);
+}
+
+static bool nw_send_now(const char *wire, int len)
+{
     esp_err_t err = esp_now_send(k_broadcast, (const uint8_t *)wire, (size_t)len);
     if (err == ESP_OK) { s_tx_issued++; return true; }
     /* Loud, including the full queue. This was ESP_LOGD and therefore invisible,
@@ -139,6 +368,7 @@ static void nw_recv_cb(const esp_now_recv_info_t *info, const uint8_t *data,
      * counter downstream of here conflates them. */
     s_frames++;
     if (!xprs_looks_like(data, len)) { s_notxprs++; return; }
+    nw_learn_phase();
 
     nw_frame_t f;
     memcpy(f.wire, data, (size_t)len);
@@ -302,8 +532,29 @@ esp_err_t xprsnow_start(const char *callsign)
         return err;
     }
 
+    /* The long-range PHY for everything this station sends. Receiving it
+     * needs LR in the interface's protocols, which wifi_up() set
+     * (xprsnow_wifi_prepare). */
+    if (s_lr) {
+        esp_now_rate_config_t rc = {
+            .phymode = WIFI_PHY_MODE_LR,
+            .rate = WIFI_PHY_RATE_LORA_250K,
+        };
+        esp_err_t re = esp_now_set_peer_rate_config(k_broadcast, &rc);
+        if (re != ESP_OK)
+            ESP_LOGW(TAG, "long-range rate refused: %s; sending at 1 Mbps",
+                     esp_err_to_name(re));
+    }
+
     esp_now_register_recv_cb(nw_recv_cb);
     esp_now_register_send_cb(nw_send_cb);
+
+    if (!s_txq) s_txq = xprs_big_calloc(NW_TXQ, sizeof *s_txq);
+    if (s_txq && !s_win_task)
+        xTaskCreate(nw_window_task, "nowwin", 3072, NULL, 6, &s_win_task);
+    if (!s_win_task)
+        ESP_LOGW(TAG, "no window task: frames go out at once, and stations on "
+                      "a router hear them only when they share our channel");
 
     /* A station that modem-sleeps misses ESP-NOW frames while it is asleep.
      * This costs power and takes a share of the airtime back from Bluetooth,
@@ -324,8 +575,10 @@ esp_err_t xprsnow_start(const char *callsign)
                       "a task)");
     }
 
-    ESP_LOGI(TAG, "XPRS over ESP-NOW up on channel %u, callsign %s",
-             xprsnow_channel(), callsign ? callsign : "");
+    ESP_LOGI(TAG, "XPRS over ESP-NOW up: home channel %u (now on %u), %s, "
+                  "window %ums a second, callsign %s",
+             s_home_ch, xprsnow_channel(), s_lr ? "long range 250 kbps" : "1 Mbps",
+             (unsigned)s_win_ms, callsign ? callsign : "");
     return ESP_OK;
 }
 
@@ -337,4 +590,33 @@ void xprsnow_stop(void)
     esp_now_unregister_send_cb();
     esp_now_deinit();
     s_started = false;
+}
+
+/* Between esp_wifi_init() and esp_wifi_start(): the country (channel 13 is
+ * not in the chip's default "world safe" set), and LR among the station
+ * interface's protocols so this radio hears the long-range PHY. Returns the
+ * home channel actually usable: the configured one, or 11 where the
+ * country has no 13. */
+uint8_t xprsnow_wifi_prepare(const char *country)
+{
+    if (country && country[0]) {
+        esp_err_t e = esp_wifi_set_country_code(country, true);
+        if (e != ESP_OK)
+            ESP_LOGW(TAG, "country \"%s\" refused: %s", country, esp_err_to_name(e));
+    }
+    wifi_country_t c;
+    if (esp_wifi_get_country(&c) == ESP_OK &&
+        s_home_ch > c.schan + c.nchan - 1) {
+        ESP_LOGW(TAG, "channel %u is not allowed in \"%.2s\": home channel 11",
+                 s_home_ch, c.cc);
+        s_home_ch = 11;
+    }
+    if (s_lr) {
+        esp_err_t e = esp_wifi_set_protocol(WIFI_IF_STA,
+            WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N |
+            WIFI_PROTOCOL_LR);
+        if (e != ESP_OK)
+            ESP_LOGW(TAG, "LR protocol refused: %s", esp_err_to_name(e));
+    }
+    return s_home_ch;
 }

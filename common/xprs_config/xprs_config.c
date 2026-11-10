@@ -42,6 +42,13 @@ static cfg_entry_t s_cfg[] = {
     { "ssid",      NULL, 0, false },
     { "pass",      NULL, 0, false },
     { "espnow_on", NULL, 0, false },
+    /* ESP-NOW's home channel, the long-range PHY and the window a station
+     * on a router spends on that channel each second (docs/espnow.md); the
+     * WiFi country, which decides whether channel 13 is allowed. */
+    { "espnow_ch",  NULL, 0, false },
+    { "espnow_lr",  NULL, 0, false },
+    { "espnow_win", NULL, 0, false },
+    { "wifi_country", NULL, 0, false },
     { "share_on",  NULL, 0, false },
     { "digi_on",   NULL, 0, false },
     { "bridge_on", NULL, 0, false },
@@ -553,6 +560,10 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "wifi",    "ssid",     "ssid" },
     { "wifi",    "password", "pass" },
     { "espnow",  "enabled",  "espnow_on" },
+    { "espnow",  "channel",  "espnow_ch" },
+    { "espnow",  "long_range", "espnow_lr" },
+    { "espnow",  "window_ms", "espnow_win" },
+    { "wifi",    "country",  "wifi_country" },
     { "share",   "enabled",  "share_on" },
     { "digipeater", "enabled", "digi_on" },
     { "bridge",  "enabled",  "bridge_on" },

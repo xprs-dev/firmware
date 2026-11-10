@@ -6,6 +6,7 @@
 #include "xprs_api.h"
 #include "xprs_station.h"
 #include "xapi_send.h"
+#include "xwc.h"
 #include "xprs_auth.h"
 #include "xprs_ota.h"
 #include "xprs_diag.h"
@@ -887,6 +888,21 @@ static esp_err_t h_wifi_post(httpd_req_t *req)
     ssid[0] = pass[0] = 0;
     httpd_query_key_value(body, "ssid", ssid, 128);
     httpd_query_key_value(body, "pass", pass, 200);
+    /* A visitor keeps a station online, never takes it off a working
+     * network: with the internet up, only the administrator may change it. */
+    if (s_cfg->internet_up && s_cfg->internet_up()) {
+        char tok[XWC_TOKEN_LEN + 8] = "";
+        httpd_query_key_value(body, "session", tok, sizeof tok);
+        const char *call = tok[0] ? xwc_session_call(tok) : NULL;
+        const char *adm = xwc_admin_call();
+        bool admin = call && ((adm && !strcmp(call, adm)) ||
+                              (s_cfg->is_owner && s_cfg->is_owner(call)));
+        if (!admin) {
+            memset(body, 0, (size_t)got);
+            return xapi_resp_error(req, "403 Forbidden",
+                "the station is online: only its administrator changes its network");
+        }
+    }
     form_decode(ssid);
     form_decode(pass);
     char why[64] = "";

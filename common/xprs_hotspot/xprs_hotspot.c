@@ -106,6 +106,14 @@ esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server)
     esp_netif_t *ap = s_ap;
     if (!ap) return ESP_FAIL;
 
+    /* The channel before the mode switch: switching applies the stored AP
+     * config, whose channel (1) would otherwise become the radio's. */
+    uint8_t home = 0;
+    {
+        wifi_second_chan_t second;
+        if (esp_wifi_get_channel(&home, &second) != ESP_OK) home = 0;
+    }
+
     wifi_mode_t mode = WIFI_MODE_NULL;
     esp_wifi_get_mode(&mode);
     esp_err_t ret = esp_wifi_set_mode(
@@ -122,8 +130,8 @@ esp_err_t xprs_hotspot_start(const char *ssid, httpd_handle_t server)
     wc.ap.max_connection = 4;
     /* With a STA up the hardware forces the AP onto the STA's channel; this
      * value only matters when the AP stands alone, and then it should be
-     * the ESP-NOW fallback channel so the radio side still meets us. */
-    wc.ap.channel = 1;
+     * ESP-NOW's home channel, which wifi_up() already tuned to. */
+    wc.ap.channel = home ? home : 1;
     ret = esp_wifi_set_config(WIFI_IF_AP, &wc);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "AP config failed: %s", esp_err_to_name(ret));

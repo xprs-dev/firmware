@@ -208,3 +208,34 @@ said. Verified on the host (`test_mc_host.sh`, cases 17-20) -- the bench has
 no MeshCore node, and the T-Deck runs in `meshtastic` mode, so `mc` does not
 appear on its status. Both boards reflashed with the build that carries it
 (T-Deck `source:ntp`, `settling:1` at 40 s; C3 `source:ntp` at 9 s).
+
+## ESP-NOW long range on channel 13 (2026-11-10)
+
+Two stations, no router: X3VGAZ (ESP32-C3, `80:53:E0:32:EC:48`) and X3WWAJ
+(T-Dongle-S3), on the bench, about 30 cm apart (-44 to -48 dBm). Read from the
+serial logs.
+
+| test | result |
+|---|---|
+| both up on home channel 13, country DE, LR 250 kbps | ✓ (`XPRS over ESP-NOW up: home channel 13 ... long range 250 kbps`) |
+| C3 hears the dongle over ESP-NOW, LR both sides | ✓ about 10 frames in 2 min, `peers=1` |
+| dongle hears the C3 | ✓ beacons, `t:request`, `t:mailbox`, relayed `t:command` |
+| directed `t:command d:X3WWAJ` relayed by the C3, `t:result` back | ✓ |
+| C3 with `espnow_lr no` (1 Mbps, no LR receive) | hears **0** frames from the dongle in 4 min: the dongle's frames are LR |
+| dongle (LR receive) hears that 1 Mbps C3 | ✓ mixed reception works |
+| window without a clock: the C3 learned the window from heard frames | ✓ `window visits=` rising, `switch_fail=0` |
+| hotspot alone opens on the home channel | ✓ `ch=13` after the hotspot started |
+
+Then X3VGAZ joined the house router (FRITZ!Box, channel 11), X3WWAJ stayed
+off-router on 13:
+
+| test | result |
+|---|---|
+| `esp_wifi_set_channel(13)` while associated | refused by the driver ("STA is scanning or connecting") |
+| remain-on-channel to 13 for each window | ✓ `visits` once a second, `switch_fail=0` |
+| C3 on the router hears the dongle on 13 | ✓ `rx` rising, `peers=1` |
+| dongle hears the C3's window frames | ✓ -45 to -48 dBm |
+| the router link meanwhile | ping 5 % loss (the window is 8 % of the time), `/api/status` 40-320 ms |
+| asking the router for channel 13 at join (`sta.channel=13`) | no effect: connected on 11 |
+
+Not yet run: the outdoor range comparison against 1 Mbps.

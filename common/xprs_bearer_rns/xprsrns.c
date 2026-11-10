@@ -849,29 +849,47 @@ void xprsrns_feed(const uint8_t *frame, size_t len)
     on_frame(frame, len, NULL);
 }
 
+/* The hubs a station dials when nothing is configured: the core's first two
+ * (core preferences_service.dart _defaultRnsServers), so a board, the server
+ * and the phones meet on the same Reticulum network as soon as each has the
+ * internet. `rns_hub` overrides it (a comma list); `rns_hub = off` keeps the
+ * station off Reticulum. */
+#define XRNS_DEFAULT_HUBS "rns.wisco.network:4242,sydney.reticulum.au:4242"
+
 void xprsrns_init(xprsrns_wire_cb_t cb)
 {
     const char *hub = xcfg_get("rns_hub", "");
-    if (!hub || !hub[0]) {
-        ESP_LOGI(TAG, "idle: no rns_hub configured");
+    if (!hub || !hub[0]) hub = XRNS_DEFAULT_HUBS;
+    if (!strcmp(hub, "off") || !strcmp(hub, "no") || !strcmp(hub, "none")) {
+        ESP_LOGI(TAG, "idle: rns_hub = %s", hub);
         return;
     }
     if (!xprsrns_setup(cb)) return;
     if (!s_peers) s_peers = xprs_big_calloc(XRNS_PEERS, sizeof *s_peers);
     if (!s_peers) { ESP_LOGE(TAG, "peer table: no memory"); return; }
 
-    /* "host" or "host:port". */
-    char host[96];
-    snprintf(host, sizeof host, "%s", hub);
+    /* "host[:port][,host[:port]...]": tried in turn. */
+    char list[192];
+    snprintf(list, sizeof list, "%s", hub);
+    char host[96] = "";
     uint16_t port = RNS_TCP_DEFAULT_PORT;
-    char *colon = strrchr(host, ':');
-    if (colon && colon[1]) { *colon = 0; port = (uint16_t)atoi(colon + 1); }
+    bool first = true;
+    for (char *save = NULL, *tok = strtok_r(list, ", ", &save); tok;
+         tok = strtok_r(NULL, ", ", &save)) {
+        char h[96];
+        snprintf(h, sizeof h, "%s", tok);
+        uint16_t pt = RNS_TCP_DEFAULT_PORT;
+        char *colon = strrchr(h, ':');
+        if (colon && colon[1]) { *colon = 0; pt = (uint16_t)atoi(colon + 1); }
+        rns_tcp_add_hub(h, pt);
+        if (first) { snprintf(host, sizeof host, "%s", h); port = pt; first = false; }
+    }
+    if (!host[0]) { ESP_LOGE(TAG, "rns_hub names no host"); return; }
 
     if (!xcfg_get("rns_ann_s", "")[0] && !host_is_private(host))
         s_ann_gap_s = 3600;
 
     rns_tcp_set_rx_cb(on_frame, NULL);
-    rns_tcp_add_hub(host, port);
     if (rns_tcp_start(NULL, 0) != ESP_OK) {
         ESP_LOGE(TAG, "uplink did not start");
         return;

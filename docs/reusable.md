@@ -278,3 +278,9 @@ reuse potential.
   `ble_log_fresh()` in `common/xprs_app/xprs_app.c` (FNV-1a over the frame,
   8 slots, 30 s) is the pattern; reuse it for LoRa/ESP-NOW lines if they get
   the same noise.
+- **A shared time window without a protocol** (`common/xprs_bearer_now/xprsnow.c`
+  `nw_phase_us`, `nw_learn_phase`, `nw_window_task`): stations meet in the
+  first N ms of every wall-clock second (SNTP); one without a clock takes the
+  phase from the arrival of a frame sent inside a window. No wire words. Reuse
+  for any radio a station has to visit on a schedule (a working channel, a
+  duty-cycled receiver).
