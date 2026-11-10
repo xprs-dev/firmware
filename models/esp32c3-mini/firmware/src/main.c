@@ -98,8 +98,15 @@ static const xapp_board_t k_board = {
     .ble_scan_light = true,
 };
 
+#ifdef XPRS_HTTPS_PROBE
+void https_probe_start(void);
+#endif
+
 void app_main(void)
 {
+#ifdef XPRS_HTTPS_PROBE
+    https_probe_start();
+#endif
     xapp_run(&k_board);
 }
 #endif /* !XPRS_XWIFI_RELAY */

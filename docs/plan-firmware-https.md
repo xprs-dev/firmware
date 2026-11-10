@@ -28,11 +28,10 @@ long downloads leave the httpd worker.
 
 ## Decisions
 
-1. **Which boards.** TLS needs 25-45 KB of heap per connection. **The
-   T-Deck and boards with PSRAM** (mbedTLS allocates there), then the
-   T-Dongle (no PSRAM, ~100 KB free: one TLS connection at a time). The C3 is
-   too small for the station plus TLS; it stays plain HTTP on its own network
-   and reachable over Reticulum.
+1. **Which boards.** A TLS session peaks at ~12 KB with dynamic
+   buffers (measured below). **The T-Deck and boards with PSRAM** first, then
+   the T-Dongle (no PSRAM, ~100 KB free: one TLS connection at a time), then
+   the C3 in an internet profile with BLE off (measured below).
 2. **The TLS itself: mbedTLS, through `esp_https_server`** (in ESP-IDF
    5.2.1). A TLS stack is not something to write again; what is ours is the
    glue: certificates from our ACME client, one URI table on both ports, the
@@ -40,6 +39,44 @@ long downloads leave the httpd worker.
    much (a second httpd task and its sockets), the fallback is our own small
    TLS front: an mbedTLS session per accepted socket on 443 that hands the
    decrypted bytes to the existing httpd over a loopback socket.
+
+## The C3, measured (2026-11-10)
+
+Env `c3https` (models/esp32c3-mini, never published): the station plus
+`esp_https_server` on 443 with a self-signed ECDSA P-256 certificate, mbedTLS
+dynamic buffers (in 16 KB, out 4 KB), session tickets; `/heap` samples the
+internal heap every 10 ms. Bench C3 X3VGAZ on the house router, Reticulum on,
+hotspot on, the real 88 KB chat page served over HTTPS.
+
+| configuration | free after boot | HTTPS |
+|---|---|---|
+| everything on (BLE, hotspot, Reticulum) | 22.5 KB, largest 9 KB | **does not start** (no 10 KB block for its task) |
+| BLE off | 64 KB, largest 47 KB | starts; 54 KB free with it idle (5 KB task stack) |
+
+With BLE off:
+
+| load | result |
+|---|---|
+| one connection: handshake + page | 0.41 s TLS, 1.2 s for the 88 KB page; ~12 KB per session at its peak |
+| 10 new connections in a row | 0.36-0.48 s each, memory back each time |
+| keep-alive, 5 pages on one connection | 0.47 s in all |
+| a real browser (headless Chromium), 3 loads | the whole page in 2.7-3.0 s |
+| 4 at once, one socket, the others queued | all served, 0.9 s apart; low point 21 KB free, largest 5.6 KB |
+| 2 sockets, LRU purge on, 4 at once | some dropped; then a **panic in lwIP's task** (heap at 9.8 KB) |
+| 8 at once, one socket, queued | all failed and the **network stack wedged** (no ping, no HTTP, no reset) until reboot |
+
+The HTTPS task used about 2.5 KB of stack (5 KB is enough). The code costs
+~96 KB of flash: the C3 image goes from 88 % to 94 % of its slot.
+
+**Verdict.** The C3 can serve HTTPS, at one visitor at a time, only with BLE
+off, and only once connection floods can no longer wedge it: queued
+connections hold lwIP memory while they wait. Before a C3 is exposed: a
+backlog of 2, new connections refused (closed at once) when the free heap is
+under ~30 KB, a cap per address, smaller TCP windows for the TLS socket, and a
+watchdog that restarts networking when nothing has been received for a while.
+So the C3 takes an "internet profile" (BLE off, these limits); the T-Deck
+stays the first target, and the C3 profile comes after the same limits are
+proven there.
 
 ## Steps
 

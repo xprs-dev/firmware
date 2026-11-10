@@ -7,10 +7,17 @@ set(srcs "main.c")
 if(XPRS_QEMU)
     list(APPEND srcs "qemu_stubs.c")
 endif()
+# The c3https environment adds the HTTPS memory probe (https_probe.c,
+# docs/plan-firmware-https.md); a published image never carries it.
+set(reqs driver log fatfs vfs wear_levelling xprs_app xprs_ui_none)
+if(XPRS_HTTPS_PROBE)
+    list(APPEND srcs "https_probe.c")
+    list(APPEND reqs esp_https_server)
+endif()
 idf_component_register(
     SRCS ${srcs}
     INCLUDE_DIRS "."
-    REQUIRES driver log fatfs vfs wear_levelling xprs_app xprs_ui_none)
+    REQUIRES ${reqs})
 if(XPRS_QEMU)
     target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=adc_hal_self_calibration")
 endif()
