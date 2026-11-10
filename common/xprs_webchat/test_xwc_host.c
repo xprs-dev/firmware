@@ -151,7 +151,7 @@ int main(void)
           "names the station, offers sessions, admin, moderation, rooms, the alert policy");
     CHECK(!jfind("gallery"), "a board on its own flash offers no gallery");
     xwc_services_json(s_buf, sizeof s_buf, "chat,traffic", true);
-    CHECK(jfind("\"gallery\":true}"), "with a memory card it does (page.gallery)");
+    CHECK(jfind("\"gallery\":true,\"storage\":true}"), "with a memory card it does (page.gallery, page.storage)");
 
     printf("sessions\n");
     fresh();
@@ -357,7 +357,7 @@ int main(void)
     snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, eid);
     CHECK(gate(bob, fmt, 3) == 1, "and an event");
     snprintf(fmt, sizeof fmt, "t:status f:%%s d:%s ts:%%s m:x", room);
-    CHECK(gate(alice, fmt, 4) == -403 && strstr(s_why, "events, pictures and likes"), "a gallery takes nothing else");
+    CHECK(gate(alice, fmt, 4) == -403 && strstr(s_why, "folders, items and likes"), "a gallery takes nothing else");
     CHECK(!aired_has(room) && filed_has("t:file"), "filed, never aired");
     CHECK(xwc_topics_begin(room, bt, s_buf, sizeof s_buf) == 200, "the events are the room's index");
     for (int i = s_nfiled - 1; i >= 0; i--) xwc_topics_row(s_filed[i], (int)strlen(s_filed[i]), s_now + (uint32_t)i * 60);
@@ -376,6 +376,52 @@ int main(void)
         CHECK(session(alice, tok), "alice proves her key again");
         xwc_rooms_json(s_buf, sizeof s_buf, tok);
         CHECK(jfind("\"kind\":\"gallery\""), "still a gallery");
+    }
+
+    printf("music and library rooms\n");
+    fresh();
+    CHECK(claim(alice, tok), "alice claims");
+    {
+        /* The station's own key is its operator (as the Dart core). */
+        char st[XWC_TOKEN_LEN];
+        CHECK(session(s_station, st), "the station proves its own key");
+        xwc_admin_json(s_buf, sizeof s_buf, st, false);
+        CHECK(jfind("\"you\":true"), "and is the administrator, beside the one who claimed it");
+        snprintf(body, sizeof body, "{\"action\":\"create\",\"session\":\"%s\",\"name\":\"x\",\"kind\":\"video\"}", st);
+        CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 400 && jfind("music or library"), "an unknown kind is refused");
+        const char *kinds[2] = { "music", "library" };
+        for (int k = 0; k < 2; k++) {
+            char what[96];
+            snprintf(body, sizeof body, "{\"action\":\"create\",\"session\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\"}", st, kinds[k], kinds[k]);
+            snprintf(what, sizeof what, "the station makes a %s room", kinds[k]);
+            CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200, what);
+            jval("room", room, sizeof room);
+            snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:first-album m:demo", room);
+            CHECK(gate(s_station, fmt, 0) == 1, "and opens a folder");
+            char aid[8]; snprintf(aid, sizeof aid, "%s", s_id);
+            snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s r:%s m:opening-song", room, aid);
+            CHECK(gate(s_station, fmt, 1) == 1, "an item with no preview: a message naming it");
+            char tid[8]; snprintf(tid, sizeof tid, "%s", s_id);
+            snprintf(fmt, sizeof fmt, "t:file f:%%s d:%s ts:%%s r:%s file:Uc3nRw8kFa5xPd1qGz7mYb0tJe6vHs2iLoA9XfCqK4E.mp3 size:4.2MB name:opening-song.mp3", room, tid);
+            CHECK(gate(s_station, fmt, 1) == 1, "the file on its t:file companion");
+            snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s r:%s m:mine", room, aid);
+            CHECK(gate(bob, fmt, 2) == -403, "a visitor adds nothing");
+            snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, tid);
+            CHECK(gate(bob, fmt, 2) == 1, "and likes");
+            snprintf(fmt, sizeof fmt, "t:status f:%%s d:%s ts:%%s m:x", room);
+            CHECK(gate(s_station, fmt, 3) == -403 && strstr(s_why, "folders, items and likes"), "a collection takes nothing else");
+            CHECK(xwc_topics_begin(room, NULL, s_buf, sizeof s_buf) == 200, "and has an index");
+            xwc_topics_end(s_buf, sizeof s_buf);
+        }
+        CHECK(xwc_is_uploader(st) && xwc_is_uploader(tok), "the station and its administrator store the station's own files");
+        CHECK(session(bob, bt) && !xwc_is_uploader(bt), "a visitor does not");
+        xwc_cb_t cb = s_cb;
+        xwc_reset();
+        xwc_init(&cb, "X3STAT", s_station->priv);
+        xwc_load();
+        CHECK(session(alice, tok), "after a restart");
+        xwc_rooms_json(s_buf, sizeof s_buf, tok);
+        CHECK(jfind("\"kind\":\"music\"") && jfind("\"kind\":\"library\""), "the kinds are kept");
     }
 
     printf("alerts\n");

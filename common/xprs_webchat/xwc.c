@@ -31,6 +31,8 @@
 static xwc_cb_t s_cb;
 static char s_station[XWC_CALL_LEN];
 static const uint8_t *s_priv;
+static uint8_t s_station_pub[32];   /* the station's own key: its operator's */
+static bool    s_have_pub;
 
 enum { K_NONE = 0, K_GRANT, K_REVOKE, K_ACCEPT, K_LEAVE, K_HIDE, K_REMOVE };
 enum { R_NONE = 0, R_INVITED, R_MEMBER, R_MOD, R_ADMIN };
@@ -75,14 +77,19 @@ typedef struct {
     char    about[XWC_ROOM_ABOUT];
     bool    priv_room;              /* visibility: private */
     bool    anyone;                 /* posting: anyone */
-    uint8_t kind;                   /* RK_CHAT, RK_FORUM, RK_GALLERY */
+    uint8_t kind;                   /* RK_CHAT, RK_FORUM, or a collection */
     uint8_t priv[32], pub[32];
     bool    have_key;
 } room_t;
 /* What a room is (spec/API-HTTP.md `kind`): a conversation, topics and
  * comments beside it, or a category of photographs. */
-enum { RK_CHAT = 0, RK_FORUM, RK_GALLERY };
-static const char *const k_kinds[] = { "chat", "forum", "gallery" };
+/* A gallery, a music room and a library are one thing, a collection: its
+ * staff add folders (titled posts) and items (messages, the file on a
+ * t:file companion), its readers like. Each kind's first letter is what the
+ * kv record keeps, so they stay distinct. */
+enum { RK_CHAT = 0, RK_FORUM, RK_GALLERY, RK_MUSIC, RK_LIBRARY };
+static const char *const k_kinds[] = { "chat", "forum", "gallery", "music", "library" };
+#define RK_COLLECTION(k) ((k) >= RK_GALLERY)
 static room_t s_rooms[XWC_ROOMS];
 static int    s_nrooms;
 
@@ -281,6 +288,7 @@ static const uint8_t *key_of(const char *call)
     base_call(call, c);
     const uint8_t *k = xwc_room_pub(c);
     if (k) return k;
+    if (s_have_pub && strcmp(c, s_station) == 0) return s_station_pub;
     return s_cb.peer_key ? s_cb.peer_key(c) : NULL;
 }
 
@@ -318,7 +326,9 @@ static void rooms_load(void)
         if (!r->call[0]) continue;
         r->priv_room = flag[0][0] == 'p';
         r->anyone = flag[1][0] == 'a';
-        r->kind = flag[2][0] == 'f' ? RK_FORUM : flag[2][0] == 'g' ? RK_GALLERY : RK_CHAT;
+        r->kind = RK_CHAT;
+        for (int k = 1; k < (int)(sizeof k_kinds / sizeof k_kinds[0]); k++)
+            if (flag[2][0] == k_kinds[k][0]) r->kind = (uint8_t)k;
         char key[24], hex[80];
         snprintf(key, sizeof key, "wc_rk_%s", r->call);
         const char *h = s_cb.kv_get(key);
@@ -690,6 +700,7 @@ void xwc_init(const xwc_cb_t *cb, const char *station_call, const uint8_t *stati
     s_cb = *cb;
     base_call(station_call ? station_call : "", s_station);
     s_priv = station_priv;
+    s_have_pub = s_priv && xprssig_public_key(s_priv, s_station_pub);
     rooms_load();
 }
 
@@ -790,6 +801,8 @@ const char *xwc_admin_call(void)
 static const char *admin_of(const char *token)
 {
     const char *call = xwc_session_call(token);
+    /* Whoever holds the station's own key is its operator. */
+    if (call && s_have_pub && strcmp(call, s_station) == 0) return call;
     const char *rec = admin_rec();
     if (!call || !rec) return NULL;
     size_t n = strlen(call);
@@ -805,6 +818,7 @@ static bool is_staff(const char *call)
 {
     char c[XWC_CALL_LEN];
     base_call(call, c);
+    if (s_have_pub && strcmp(c, s_station) == 0) return true;
     const char *rec = admin_rec();
     if (rec) {
         size_t n = strlen(c);
@@ -1041,7 +1055,7 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
     if (!jget(body, "action", action, sizeof action)) return refuse(buf, cap, 400, "malformed");
     jget(body, "session", token, sizeof token);
     if (!admin_of(token)) return refuse(buf, cap, 403, "only the station's administrator manages rooms");
-    static const char *const shape = "visibility is public or private; posting members or anyone; kind chat, forum or gallery";
+    static const char *const shape = "visibility is public or private; posting members or anyone; kind chat, forum, gallery, music or library";
     char vis[12] = "", post[12] = "", kind[12] = "";
     int rk = -1;
     if (jget(body, "visibility", vis, sizeof vis) && strcmp(vis, "public") && strcmp(vis, "private"))
@@ -1171,7 +1185,7 @@ int xwc_topics_begin(const char *call, const char *token, char *buf, size_t cap)
 {
     room_t *r = call ? room_find(call) : NULL;
     if (!r || !xwc_may_read_room(r->call, token)) return refuse(buf, cap, 404, "no such room");
-    if (r->kind != RK_FORUM && r->kind != RK_GALLERY)
+    if (r->kind != RK_FORUM && !RK_COLLECTION(r->kind))
         return refuse(buf, cap, 400, "not a forum or gallery room");
     free(s_tp);
     s_tp = calloc(1, sizeof *s_tp);
@@ -1363,7 +1377,7 @@ int xwc_gate(const char *wire, int len, bool local_peer,
         room_t *r = room_find(room);
         bool blog = strcmp(type, "blog") == 0, like = strcmp(type, "reaction") == 0;
         const char *bad;
-        if (r->kind == RK_GALLERY) {
+        if (RK_COLLECTION(r->kind)) {
             /* A category of photographs (spec/API-HTTP.md): events are titled
              * posts, pictures are messages with a preview and their t:file
              * companions, likes are reactions. Only the room's staff posts;
@@ -1375,7 +1389,7 @@ int xwc_gate(const char *wire, int len, bool local_peer,
                     return -400;
                 }
             } else if (strcmp(type, "message") && strcmp(type, "file") && !like) {
-                snprintf(why, why_cap, "a gallery takes events, pictures and likes");
+                snprintf(why, why_cap, "a collection takes folders, items and likes");
                 return -403;
             }
         } else if (blog) {
@@ -1387,7 +1401,7 @@ int xwc_gate(const char *wire, int len, bool local_peer,
         }
         if (!verified(&p, from)) { snprintf(why, why_cap, "identity unknown"); return -409; }
         if (away_now(roster(room), from, now_s())) { snprintf(why, why_cap, "you were sent away from this room"); return -403; }
-        if (r->kind == RK_GALLERY) {
+        if (RK_COLLECTION(r->kind)) {
             int role = role_in(r->call, from);
             bool staff = role == R_MOD || role == R_ADMIN || is_staff(from);
             if (!like && !staff) { snprintf(why, why_cap, "only the moderators add events and pictures here"); return -403; }
@@ -1430,7 +1444,7 @@ int xwc_services_json(char *buf, size_t cap, const char *tabs_csv, bool storage)
     jb(&j, "],\"session\":true,\"mailbox\":true,\"admin\":true,\"moderation\":%s,\"rooms\":%s,\"alerts\":\"%s\"",
        s_priv ? "true" : "false", s_priv ? "true" : "false", xwc_who_may_alert());
     /* And keeps photographs: gallery rooms, where a card gives it the room. */
-    if (s_priv && storage) jb(&j, ",\"gallery\":true");
+    if (s_priv && storage) jb(&j, ",\"gallery\":true,\"storage\":true");
     jb(&j, "}");
     return (int)j.n;
 }

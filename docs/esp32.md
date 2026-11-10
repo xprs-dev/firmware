@@ -2386,6 +2386,17 @@ compare heap, not `RAM:`.
   engine itself passed the whole suite, 62 of 62 in 85 s, on the runs the
   fault did not strike (two of eleven), and passes it on the Dart server
   and in the host test every time.
+- **Collections under QEMU (2026-11-10).** The emulator has no card, so the
+  `XPRS_QEMU` build lets its 832 KB flash volume stand in for one
+  (`s_card()` in `xapi_wc.c`: a stranger's files 64 kB, 128 kB in all; the
+  staff's reserve 64 KB instead of 1 MB, `XWCF_OWN_RESERVE_MIN`), so gallery,
+  music and library rooms can be driven over HTTP:
+  `tools/qemu_collections_test.py`. It meets the wedge above as everything
+  does (tick count frozen, `INTERRUPT_CORE0_CPU_INT_THRESH` left at 4 with no
+  critical section open, every task stuck in `vPortYield`'s wait for its own
+  software interrupt), so its keys are fixed and it takes the kinds to run
+  and `--keep`: a rerun on the same image carries on where the wedge
+  stopped it. Never on a real board.
 - **Files by reference under QEMU (2026-11-07).** `/api/xprs/file/<ref>`
   (`xapi_wc.c`) passed the suite's six file checks on every run, five of
   five: the size it keeps, 404, a wrong hash refused, a non-reference

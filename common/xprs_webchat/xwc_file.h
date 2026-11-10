@@ -55,8 +55,16 @@ typedef struct {
     bool      (*space)(uint64_t *free_b, uint64_t *total_b);
 } xwcf_store_t;
 
-/* The volume left free by a staff file: 1 MB or 1 %, the larger. */
+/* The volume left free by a staff file: 1 MB or 1 %, the larger. The
+ * emulated C3 (XPRS_QEMU) stores on its 832 KB flash volume, where 1 MB is
+ * more than there is: 64 KB there. */
+#ifndef XWCF_OWN_RESERVE_MIN
+#ifdef XPRS_QEMU
+#define XWCF_OWN_RESERVE_MIN (64u * 1024u)
+#else
 #define XWCF_OWN_RESERVE_MIN (1024u * 1024u)
+#endif
+#endif
 
 /* An upload under way: begin, add every piece of the body, end. */
 typedef struct {

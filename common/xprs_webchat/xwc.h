@@ -155,8 +155,9 @@ int xwc_gate(const char *wire, int len, bool local_peer,
              char id[XWC_ID_LEN], char *why, size_t why_cap);
 
 /** The fragment /api/services adds: `"station":..,"page":{..}` (no braces).
- *  [storage]: the station has room for photographs (a memory card), so it
- *  offers gallery rooms (`page.gallery`, spec/API-HTTP.md). */
+ *  [storage]: the station has room for collections (a memory card), so it
+ *  offers gallery, music and library rooms (`page.gallery`, `page.storage`,
+ *  spec/API-HTTP.md). */
 int xwc_services_json(char *buf, size_t cap, const char *tabs_csv, bool storage);
 
 /* ---- for the host test ----------------------------------------------- */

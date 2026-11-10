@@ -358,8 +358,17 @@ static esp_err_t h_rooms_post(httpd_req_t *req)
  * (xwcf_put_*, xwcf_room, xwcf_open), host-tested; this is the socket. */
 #define FILE_DIR_SD      "/sdcard/xfiles"
 #define FILE_DIR_IDX     "/idx/xfiles"
+#ifdef XPRS_QEMU
+/* The emulated C3 has no card. Its flash volume (832 KB, the archive and
+ * the log on it too) stands in for one, so the collections can be driven
+ * over HTTP (tools/qemu_collections_test.py); a stranger's files sized to
+ * it. Never on a real board: there a card is a card. */
+#define FILE_MAX_SD      (64u * 1024u)
+#define FILE_BUDGET_SD   (128u * 1024u)
+#else
 #define FILE_MAX_SD      (2u * 1024u * 1024u)
 #define FILE_BUDGET_SD   (32u * 1024u * 1024u)
+#endif
 #define FILE_MAX_IDX     (96u * 1024u)
 #define FILE_BUDGET_IDX  (192u * 1024u)
 #define FILE_RESERVE     (128u * 1024u)   /* left free on the volume, always */
@@ -373,6 +382,9 @@ static bool s_on_sd(void)
 /* A card, wherever it is mounted: room for photographs. */
 static bool s_card(void)
 {
+#ifdef XPRS_QEMU
+    return true;
+#endif
     return s_on_sd() || (s_cfg && s_cfg->on_card && s_cfg->on_card());
 }
 static const char *file_dir(void) { return s_on_sd() ? FILE_DIR_SD : FILE_DIR_IDX; }
