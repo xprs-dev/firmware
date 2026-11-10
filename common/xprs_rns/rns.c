@@ -753,6 +753,33 @@ void rns_ed25519_keypair(uint8_t pub[32], uint8_t sec[64])
     crypto_sign_ed25519_tweet_keypair(pub, sec);
 }
 
+bool rns_ed25519_sign(const rns_identity_t *id, const uint8_t *msg, size_t len,
+                      uint8_t sig[64])
+{
+    if (!id || !id->have_private || len > 512) return false;
+    /* sig || message, TweetNaCl's form: claimed for the signature only (a
+     * link proof is rare, and a board without PSRAM keeps nothing it does
+     * not use). */
+    uint8_t *sm = malloc(64 + len);
+    if (!sm) return false;
+    uint8_t sk[64];
+    memcpy(sk, id->prv + RNS_KEY_HALF, RNS_KEY_HALF);
+    memcpy(sk + RNS_KEY_HALF, id->pub + RNS_KEY_HALF, RNS_KEY_HALF);
+    unsigned long long smlen = 0;
+    crypto_sign_ed25519_tweet(sm, &smlen, msg, len, sk);
+    memset(sk, 0, sizeof sk);
+    memcpy(sig, sm, 64);
+    free(sm);
+    return true;
+}
+
+bool rns_aes256_cbc_encrypt(const uint8_t key[32], const uint8_t iv[16],
+                            const uint8_t *in, size_t len, uint8_t *out)
+{
+    if (len % 16) return false;
+    return aes_cbc(key, iv, true, in, len, out);
+}
+
 int rns_token_encrypt(const uint8_t key[64], const uint8_t *plain, size_t len,
                       uint8_t *out, size_t out_cap)
 {

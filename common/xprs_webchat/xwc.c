@@ -694,6 +694,18 @@ static bool room_act(room_t *r, const char *body)
     return true;
 }
 
+int xwc_station_session(const char *m, char *out, size_t cap)
+{
+    if (!s_priv || !s_station[0] || !m || cap < 64) return 0;
+    char ts[20];
+    ts_format(now_s(), ts);
+    int n = snprintf(out, cap, "t:session f:%s ts:%s m:%s", s_station, ts, m);
+    if (n <= 0 || (size_t)n >= cap) return 0;
+    int sn = xprsid_sign(out, n, (int)cap, s_priv);
+    /* Unsigned is no proof at all: refuse it rather than send one. */
+    return sn > n ? sn : 0;
+}
+
 /* ---- init --------------------------------------------------------------- */
 void xwc_init(const xwc_cb_t *cb, const char *station_call, const uint8_t *station_priv)
 {

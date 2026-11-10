@@ -206,6 +206,42 @@ reuse potential.
 - **`test_rns_link_host.sh`** -- the pattern for testing C against the Dart
   implementation without a radio: `reticulum-dart/tool/files_responder.dart`
   is the real `xprs/files` responder speaking hex lines over pipes.
+- **`rns_link_respond()` / `rns_link_rtt()` / `rns_link_id_of_request()`**
+  (`rns_link.c`) -- the responder side of the same handshake (reticulum-dart
+  `RnsLink.responder` + `buildProof`): any destination of this station that
+  accepts links starts here. `rns_ed25519_sign()` and
+  `rns_aes256_cbc_encrypt()` in `rns.c` are the primitives it and a sender
+  needed.
+- **`common/xprs_rns/rns_serve.{c,h}`** -- RNS requests on links to one of
+  our destinations, the responder (reticulum-dart `RnsRequestServer`):
+  links, REQUEST in, RESPONSE out, uploads gathered through `rns_resource`,
+  and a Resource SENDER that holds no copy of what it sends: a response is
+  an `rns_src_t` read at any offset (RAM or a file), and each part's
+  ciphertext is made again from the CBC block before it (20 bytes kept per
+  part). Any new path a station answers over Reticulum is a handler on this
+  (`xprsrns_serve(path, fn)`), never a second server.
+- **`common/xprs_rns/rns_msgpack.{c,h}`** -- the msgpack RNS speaks, encoded
+  exactly as reticulum-dart's `lxmf_msgpack.dart` does (pinned by bytes in
+  `test_rns_serve_host.c`). A cursor reader and a bounded writer; no
+  allocation.
+- **`common/xprs_api/xapi_rns.c`** -- the HTTP API reused over another
+  transport by a LOOPBACK call to the board's own httpd with
+  `X-XPRS-Via: rns` (which `xapi_wc_local()` reads as "from the internet"):
+  every handler answers unchanged, and the answer (status, type, headers,
+  body) is wrapped for the far end. Another transport for the API is a
+  caller of `loopback()`, not a copy of any handler.
+- **Memory on a fragmented heap (C3 without PSRAM)** -- the pattern
+  `xapi_rns.c` and `rns_serve.c` follow, for anything that runs minutes
+  after boot: fixed working buffers are claimed ONCE at start and kept
+  (`work_t`, the serve scratch), since within minutes the largest free
+  block falls under 1 KB with 15 KB free; a variable body is a list of
+  small chunks (`body_t`, 512 B each), claimed before the handler runs
+  down to a heap floor and trimmed after, read back at any offset as an
+  `rns_src_t`. Never one large block and never a grow-by-realloc.
+- **`test_rns_serve_host.sh`** -- the same pipe pattern the other way round:
+  `reticulum-dart/tool/request_client.dart` is the real request client
+  driving the C responder (a link, inline and Resource answers over one and
+  two segments, an upload, one past the cap).
 
 ## Folders and firmware
 

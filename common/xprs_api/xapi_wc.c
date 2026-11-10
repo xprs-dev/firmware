@@ -162,11 +162,16 @@ bool xapi_wc_local(httpd_req_t *req)
             if ((a[0] & 0xfe) == 0xfc) return true;          /* fc00::/7 */
             if (a[0] == 0xfe && (a[1] & 0xc0) == 0x80) return true; /* fe80::/10 */
             static const uint8_t lo[16] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 };
-            return memcmp(a, lo, 16) == 0;
+            return memcmp(a, lo, 16) == 0 && httpd_req_get_hdr_value_len(req, "X-XPRS-Via") <= 0;
         }
 #endif
     } else return false;
     uint8_t o0 = ip >> 24, o1 = (ip >> 16) & 255;
+    /* A call the station makes to itself for a visitor on a Reticulum link
+     * (xapi_rns.c) says so: that visitor is on the internet, never on the
+     * station's network. Read from the loopback only; any other peer's
+     * header means nothing. */
+    if (o0 == 127 && httpd_req_get_hdr_value_len(req, "X-XPRS-Via") > 0) return false;
     return o0 == 127 || o0 == 10 || (o0 == 172 && o1 >= 16 && o1 < 32) ||
            (o0 == 192 && o1 == 168) || (o0 == 169 && o1 == 254) ||
            (o0 == 100 && o1 >= 64 && o1 < 128);
@@ -553,6 +558,13 @@ static void xfer_task(void *arg)
 static void xfer_start(void)
 {
     if (s_xq) return;
+#if !(defined(CONFIG_SPIRAM) && CONFIG_SPIRAM)
+    /* A board without PSRAM has no card-sized files to stream (96 KB on its
+     * own flash) and no 8 KB to keep for a task and its buffer that would
+     * idle: with BLE and the hotspot up the C3's heap is at its floor. Its
+     * long answers, if a card is ever fitted, are served by the worker. */
+    if (!s_card()) return;
+#endif
     s_xbuf = malloc(XFER_CHUNK);
     s_xq = s_xbuf ? xQueueCreate(XFER_DEPTH, sizeof(xfer_job_t *)) : NULL;
     if (!s_xq || xTaskCreatePinnedToCore(xfer_task, "xfer", XFER_STACK, NULL, 5, NULL,

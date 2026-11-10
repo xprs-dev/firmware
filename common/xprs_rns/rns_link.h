@@ -80,6 +80,30 @@ int rns_link_decrypt(const rns_link_t *l, const rns_packet_t *p,
 int rns_link_proof_packet(const rns_link_t *l, uint8_t ctx,
                           const uint8_t *data, size_t len, uint8_t *out, size_t cap);
 
+/* ── The responder side: a station answering links to its own destination ── */
+
+/** The link id a LINKREQUEST names: truncated hash of its hashable part
+ *  without the signalling bytes (the same id either header form gives). */
+void rns_link_id_of_request(const rns_packet_t *req, uint8_t out[RNS_HASH_LEN]);
+
+/**
+ * Answer the LINKREQUEST [req] to one of [id]'s destinations (mirrors
+ * reticulum-dart RnsLink.responder + buildProof): a fresh ephemeral X25519,
+ * the key HKDF(64, X25519(ours, the request's), salt = link_id), the MTU the
+ * request offered capped at [mtu_cap] (what our uplink carries), and the
+ * LRPROOF written to [proof_out]: sig(64) + our X25519 pub(32) +
+ * signalling(3), the signature by [id]'s Ed25519 key over link_id + our pub +
+ * its Ed25519 pub + signalling. The link stays PENDING until the initiator's
+ * LRRTT ([rns_link_rtt]). @return the proof's length, or -1.
+ */
+int rns_link_respond(rns_link_t *l, const rns_identity_t *id,
+                     const rns_packet_t *req, uint16_t mtu_cap,
+                     uint8_t *proof_out, size_t cap);
+
+/** Responder: the initiator's LRRTT (encrypted, context LRRTT). True when it
+ *  decrypted and the link is now ACTIVE. */
+bool rns_link_rtt(rns_link_t *l, const rns_packet_t *p);
+
 /** The resource part size this link carries: mtu - 35 - 1. */
 static inline int rns_link_sdu(const rns_link_t *l) { return (int)l->mtu - 36; }
 

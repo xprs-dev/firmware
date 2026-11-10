@@ -11,9 +11,13 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "freertos/task.h"
 
 #include "rns.h"
 #include "rns_tcp.h"
+#include "rns_msgpack.h"
+#include "rns_serve.h"
 #include "xprsrns.h"
 #include "xprs.h"      /* xprs_parse/xprs_get_str: the f: a peer answers to */
 #include "xprs_config.h"
@@ -37,11 +41,16 @@ static uint8_t            s_wapp_name[RNS_NAME_HASH_LEN];
  */
 static char               s_hello[256];
 static int                s_hello_len;
+/* The identity wire has a lock of its own, a copy long: /xprs/prove reads it
+ * on the uplink's task while the tx lock may be held for seconds by a paced
+ * send, and a proof without the identity proves nothing. */
+static portMUX_TYPE        s_hello_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint8_t            s_wapp_dest[RNS_HASH_LEN];
 static xprsrns_wire_cb_t  s_cb;
 static bool               s_ready;
 static SemaphoreHandle_t  s_tx_lock;
-static int64_t            s_last_tx_us;
+static int64_t            s_next_tx_us;   /* the next paced send's slot */
+static portMUX_TYPE        s_pace_mux = portMUX_INITIALIZER_UNLOCKED;
 static int                s_pace_ms = 1100;
 
 static uint32_t s_rx, s_tx, s_paced, s_other;
@@ -395,10 +404,12 @@ static void hello_air(void)
         return;
     char hello[8 + sizeof s_hello];
     int hn = snprintf(hello, sizeof hello, "%cxprs", 4);
+    taskENTER_CRITICAL(&s_hello_mux);
     if (s_hello_len > 0 && hn + s_hello_len < (int)sizeof hello) {
         memcpy(hello + hn, s_hello, (size_t)s_hello_len);
         hn += s_hello_len;
     }
+    taskEXIT_CRITICAL(&s_hello_mux);
     static uint8_t *pkt;   /* claimed on first use: no hub, no buffer */
     if (!pkt && !(pkt = calloc(1, RNS_MTU + 64))) return;
     /* The build's buffers are shared statics: every builder holds the
@@ -415,6 +426,246 @@ static void hello_air(void)
                         s_hello_len > 0 ? "with identity" : "TAG ONLY -- "
                         "nobody will learn us from this", (int)ok);
     else       ESP_LOGE(TAG, "hello announce did not build (%d)", n);
+}
+
+
+/* ── The visitor API over Reticulum links ───────────────────────────────
+ * rns_serve answers links to our xprs.wapp destination; this is its host.
+ * Packets come in on the uplink's task (on_frame) and are fed under the tx
+ * lock, the same lock every builder here holds: the codec's scratch is
+ * shared. A whole request is copied to a queue and run on a task of its own
+ * that may block (a loopback HTTP call, a signature), WITHOUT the lock --
+ * the httpd handler it calls may air a wire, which takes it -- and answered
+ * under the lock again. A Resource's parts are then served from the uplink's
+ * task as the far end asks for them. */
+/* Where the handlers run. With PSRAM, a request task of their own (8 KB of
+ * stack, a queue of 4), so a 2 MB answer gathered over the loopback never
+ * holds up the uplink. Without it (the C3, the T-Dongle) there is no room
+ * for another stack: the one request waiting is run on the uplink's own
+ * task once the frame that completed it has been handled, outside the
+ * lock. Reticulum traffic waits those few hundred milliseconds; the hub's
+ * TCP window holds it. Nothing is claimed for this until a link opens. */
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+#define SRV_TASK    1
+#define SRV_LINKS   4
+#define SRV_UPLOAD  (512 * 1024)
+#define SRV_STACK   8192
+#else
+#define SRV_TASK    0
+#define SRV_LINKS   2
+#define SRV_UPLOAD  (16 * 1024)
+#endif
+#define SRV_PATHS   4
+#define SRV_QUEUE   4
+/* A link nobody uses is closed after this. Visitors keep theirs alive every
+ * 2 minutes (reticulum-dart RnsRequestClient). */
+#if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
+#define SRV_IDLE_S  600
+#else
+#define SRV_IDLE_S  300
+#endif
+
+typedef struct { uint8_t hash[RNS_HASH_LEN]; xprsrns_req_fn fn; } srv_path_t;
+typedef struct {
+    int slot; uint32_t gen;
+    uint8_t link[RNS_HASH_LEN], rid[RNS_HASH_LEN];
+    uint8_t *packed; size_t len; bool too;
+} srv_job_t;
+
+static srv_path_t    s_paths[SRV_PATHS];
+static int           s_npaths;
+static QueueHandle_t s_jobs;          /* SRV_TASK */
+static bool          s_serving;
+static bool          s_have_pending;  /* !SRV_TASK: the one request waiting */
+static srv_job_t     s_pending;
+static uint32_t      s_srv_requests;
+
+static uint32_t mono_s(void) { return (uint32_t)(esp_timer_get_time() / 1000000); }
+
+static void srv_send(const uint8_t *pkt, size_t len, void *ctx)
+{
+    (void)ctx;
+    if (rns_tcp_is_up()) rns_tcp_send(pkt, len);
+}
+
+/* Under the tx lock, on the uplink's task: copy and queue. */
+static void srv_request(int slot, uint32_t gen, const uint8_t link_id[RNS_HASH_LEN],
+                        const uint8_t rid[RNS_HASH_LEN], const uint8_t *packed,
+                        size_t len, bool too_large, void *ctx)
+{
+    (void)ctx;
+    srv_job_t j = { .slot = slot, .gen = gen, .len = len, .too = too_large };
+    memcpy(j.link, link_id, RNS_HASH_LEN);
+    memcpy(j.rid, rid, RNS_HASH_LEN);
+    if (packed && len) {
+        j.packed = malloc(len);
+        if (!j.packed) return;
+        memcpy(j.packed, packed, len);
+    }
+#if SRV_TASK
+    if (xQueueSend(s_jobs, &j, 0) == pdTRUE) return;
+#else
+    if (!s_have_pending) { s_pending = j; s_have_pending = true; return; }
+#endif
+    free(j.packed);
+    ESP_LOGW(TAG, "link request dropped: requests are waiting already");
+}
+
+typedef struct { rns_src_t s; uint8_t *buf; } srv_ram_t;
+static bool ram_read(rns_src_t *s, size_t off, uint8_t *buf, size_t n)
+{
+    if (off > s->len || n > s->len - off) return false;
+    memcpy(buf, ((srv_ram_t *)s)->buf + off, n);
+    return true;
+}
+static void ram_release(rns_src_t *s) { free(((srv_ram_t *)s)->buf); free(s); }
+
+rns_src_t *xprsrns_src_ram(uint8_t *buf, size_t len)
+{
+    srv_ram_t *r = calloc(1, sizeof *r);
+    if (!r) { free(buf); return NULL; }
+    r->buf = buf;
+    r->s.len = len;
+    r->s.read = ram_read;
+    r->s.release = ram_release;
+    return &r->s;
+}
+
+/* The /xprs/api answer to a request past the upload cap: only its id is
+ * known, so the answer cannot depend on its path. */
+static rns_src_t *srv_too_large(void)
+{
+    static const char body[] = "{\"ok\":false,\"error\":\"too large over Reticulum\"}";
+    uint8_t *b = malloc(96);
+    if (!b) return NULL;
+    mp_wr_t w;
+    mp_wr_init(&w, b, 96);
+    mp_map(&w, 3);
+    mp_cstr(&w, "s"); mp_uint(&w, 413);
+    mp_cstr(&w, "t"); mp_cstr(&w, "application/json");
+    mp_cstr(&w, "b"); mp_bin(&w, (const uint8_t *)body, sizeof body - 1);
+    return xprsrns_src_ram(b, w.n);
+}
+
+static void srv_run(srv_job_t *j)
+{
+    rns_src_t *src = NULL;
+    bool answer = false;
+    if (j->too) {
+        src = srv_too_large();
+        answer = src != NULL;
+    } else {
+        /* msgpack([time, path_hash(16), data]) */
+        mp_rd_t r;
+        mp_obj_t o, ph;
+        mp_rd_init(&r, j->packed, j->len);
+        if (mp_next(&r, &o) && o.type == MP_ARR && o.len >= 3 && mp_skip(&r) &&
+            mp_next(&r, &ph) && ph.type == MP_BIN && ph.len == RNS_HASH_LEN) {
+            size_t d0 = r.i;
+            if (mp_skip(&r)) {
+                for (int k = 0; k < s_npaths; k++) {
+                    if (memcmp(s_paths[k].hash, ph.s, RNS_HASH_LEN) != 0) continue;
+                    answer = s_paths[k].fn(j->packed + d0, r.i - d0, j->link, &src);
+                    break;
+                }
+            }
+        }
+    }
+    free(j->packed);
+    j->packed = NULL;
+    if (!answer) return;
+    if (!src) {                              /* nil */
+        uint8_t *b = malloc(1);
+        if (!b) return;
+        b[0] = 0xc0;
+        src = xprsrns_src_ram(b, 1);
+        if (!src) return;
+    }
+    s_srv_requests++;
+    ESP_LOGI(TAG, "link request answered: %u bytes", (unsigned)src->len);
+    if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        if (src->release) src->release(src);
+        return;
+    }
+    rns_serve_respond(j->slot, j->gen, j->rid, src);
+    xSemaphoreGive(s_tx_lock);
+}
+
+#if SRV_TASK
+static void srv_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        srv_job_t j;
+        if (xQueueReceive(s_jobs, &j, pdMS_TO_TICKS(5000)) == pdTRUE) srv_run(&j);
+        if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            rns_serve_tick(mono_s());
+            xSemaphoreGive(s_tx_lock);
+        }
+    }
+}
+#endif
+
+bool xprsrns_serve(const char *path, xprsrns_req_fn fn)
+{
+    if (!s_tx_lock || !s_id.have_private || !path || !fn) return false;
+    if (s_npaths >= SRV_PATHS) return false;
+    if (!s_serving) {
+#if SRV_TASK
+        s_jobs = xQueueCreate(SRV_QUEUE, sizeof(srv_job_t));
+        if (!s_jobs) return false;
+        /* Claimed at boot: a task stack is internal memory. */
+        if (xTaskCreate(srv_task, "rns_api", SRV_STACK, NULL, 3, NULL) != pdPASS) {
+            vQueueDelete(s_jobs);
+            s_jobs = NULL;
+            ESP_LOGE(TAG, "no request task: the API is not served over links");
+            return false;
+        }
+#endif
+        rns_serve_cfg_t cfg = {
+            .send = srv_send, .request = srv_request, .id = &s_id,
+            .max_links = SRV_LINKS, .idle_s = SRV_IDLE_S,
+            .upload_max = SRV_UPLOAD, .mtu_cap = RNS_MTU,
+        };
+        memcpy(cfg.dest, s_wapp_dest, RNS_HASH_LEN);
+        xSemaphoreTake(s_tx_lock, portMAX_DELAY);
+        rns_serve_init(&cfg);
+        s_serving = true;
+        xSemaphoreGive(s_tx_lock);
+        ESP_LOGI(TAG, "serving requests on links to %02x%02x%02x%02x.. (%d links, uploads to %u KB)",
+                 s_wapp_dest[0], s_wapp_dest[1], s_wapp_dest[2], s_wapp_dest[3],
+                 SRV_LINKS, (unsigned)(SRV_UPLOAD / 1024));
+    }
+    uint8_t h[32];
+    rns_sha256((const uint8_t *)path, strlen(path), h);
+    memcpy(s_paths[s_npaths].hash, h, RNS_HASH_LEN);
+    s_paths[s_npaths++].fn = fn;
+    return true;
+}
+
+int xprsrns_hello(char *out, size_t cap)
+{
+    if (!out || !cap) return 0;
+    taskENTER_CRITICAL(&s_hello_mux);
+    int n = s_hello_len < (int)cap ? s_hello_len : 0;
+    if (n) memcpy(out, s_hello, (size_t)n);
+    out[n < (int)cap ? n : 0] = 0;
+    taskEXIT_CRITICAL(&s_hello_mux);
+    return n;
+}
+
+void xprsrns_serve_stats(int *links, size_t *bytes, uint32_t *requests)
+{
+    int l = 0;
+    size_t b = 0;
+    if (s_serving && s_tx_lock && xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(500)) == pdTRUE) {
+        l = rns_serve_links();
+        for (int i = 0; i < RNS_SERVE_LINKS_MAX; i++) b += rns_serve_link_bytes(i);
+        xSemaphoreGive(s_tx_lock);
+    }
+    if (links) *links = l;
+    if (bytes) *bytes = b;
+    if (requests) *requests = s_srv_requests;
 }
 
 static void on_frame(const uint8_t *frame, size_t len, void *ctx)
@@ -456,6 +707,56 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
 
     rns_packet_t p;
     if (!rns_packet_parse(frame, len, &p)) return;
+
+    /* A link to us (the visitor API over Reticulum): its request, and
+     * everything on a link this station answered. Fed under the tx lock,
+     * whose shared scratch the server's builders use too. */
+#if !SRV_TASK
+    static uint32_t s_swept;
+    if (s_serving && mono_s() - s_swept >= 5 && rns_serve_links() > 0 &&
+        xSemaphoreTake(s_tx_lock, 0) == pdTRUE) {
+        s_swept = mono_s();
+        rns_serve_tick(s_swept);
+        xSemaphoreGive(s_tx_lock);
+    }
+#endif
+    if (s_serving && (p.packet_type == RNS_PACKET_LINKREQUEST || p.dest_type == RNS_DEST_LINK)) {
+        bool mine = false, fed = false;
+        int before = rns_serve_links();
+        int64_t t0 = esp_timer_get_time();
+        /* Waited for, not dropped: the lock can be held for seconds by a
+         * paced send on a slow uplink or a link proof, and every link
+         * request and part request lost here was a visitor's timeout. The
+         * holder waits on lwIP, never on this task. */
+        if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(15000)) == pdTRUE) {
+            int64_t waited = (esp_timer_get_time() - t0) / 1000;
+            if (waited > 1000) ESP_LOGW(TAG, "link packet waited %lld ms for the uplink", (long long)waited);
+            mine = rns_serve_feed(&p, mono_s());
+            fed = true;
+            xSemaphoreGive(s_tx_lock);
+        } else {
+            ESP_LOGW(TAG, "link packet dropped: the uplink stayed busy 15 s");
+        }
+        int after = rns_serve_links();
+        if (p.packet_type == RNS_PACKET_LINKREQUEST && fed && !mine)
+            ESP_LOGD(TAG, "link request for %02x%02x%02x%02x.. (not ours)",
+                     p.dest[0], p.dest[1], p.dest[2], p.dest[3]);
+        else if (p.packet_type == RNS_PACKET_LINKREQUEST && mine)
+            ESP_LOGI(TAG, "link request (%d hops): %s, %d open, %lld ms", (int)p.hops,
+                     after > before ? "proved" : "refused or a repeat", after,
+                     (long long)((esp_timer_get_time() - t0) / 1000));
+        else if (after < before)
+            ESP_LOGI(TAG, "link closed, %d open", after);
+#if !SRV_TASK
+        /* The request that frame completed, run here, outside the lock. */
+        if (s_have_pending) {
+            srv_job_t j = s_pending;
+            s_have_pending = false;
+            srv_run(&j);
+        }
+#endif
+        if (mine) return;
+    }
 
     /* A link this station opened (XPRS.md 11.2's bulk lane): its proof and
      * everything addressed to the link id go to whoever opened it. Cheap:
@@ -601,11 +902,10 @@ bool xprsrns_peer_at(int i, char *call, size_t cap)
 void xprsrns_set_hello(const char *wire, int len)
 {
     if (!wire || len <= 0 || len >= (int)sizeof s_hello) return;
-    if (s_tx_lock && xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(500)) != pdTRUE)
-        return;
+    taskENTER_CRITICAL(&s_hello_mux);
     memcpy(s_hello, wire, (size_t)len);
     s_hello_len = len;
-    if (s_tx_lock) xSemaphoreGive(s_tx_lock);
+    taskEXIT_CRITICAL(&s_hello_mux);
 }
 
 /* ── Outbound ───────────────────────────────────────────────────────────── */
@@ -617,22 +917,29 @@ bool xprsrns_send(const char *wire, int len)
     if (!clock_set()) { s_no_clock++; return false; }   /* see s_hello_due */
     if (s_ann_gap_s > 0) { s_paced++; return false; }    /* see s_ann_gap_s */
 
+    /* Paced by slot, not inside the lock: each send takes the next slot,
+     * s_pace_ms after the last, and sleeps until it WITHOUT the lock. Paced
+     * inside it, a burst of wires held the lock for one pace each in turn,
+     * and a visitor's link packets waited 10-15 s behind them. A burst
+     * still serialises: the slots do that. */
+    int64_t gap_us = (int64_t)s_pace_ms * 1000;
+    taskENTER_CRITICAL(&s_pace_mux);
+    int64_t now = esp_timer_get_time();
+    int64_t at = s_next_tx_us > now ? s_next_tx_us : now;
+    s_next_tx_us = at + gap_us;
+    taskEXIT_CRITICAL(&s_pace_mux);
+    if (at > now) vTaskDelay(pdMS_TO_TICKS((uint32_t)((at - now) / 1000) + 1));
+
     if (xSemaphoreTake(s_tx_lock, pdMS_TO_TICKS(2500)) != pdTRUE) {
         s_paced++;
         return false;
     }
-    /* Pace inside the lock, so a burst serialises instead of interleaving.
-     * The replay path already spaces packets 1.5 s apart; this floor only
-     * matters when two tasks air at once. */
-    int64_t now = esp_timer_get_time();
-    int64_t gap_us = (int64_t)s_pace_ms * 1000;
-    if (now - s_last_tx_us < gap_us) {
-        vTaskDelay(pdMS_TO_TICKS((uint32_t)((gap_us - (now - s_last_tx_us)) / 1000) + 1));
-    }
 
     static uint8_t *app, *pkt;   /* claimed on the first send */
-    if (!app && !(app = calloc(1, RNS_MTU))) return false;
-    if (!pkt && !(pkt = calloc(1, RNS_MTU + 64))) return false;
+    if ((!app && !(app = calloc(1, RNS_MTU))) || (!pkt && !(pkt = calloc(1, RNS_MTU + 64)))) {
+        xSemaphoreGive(s_tx_lock);       /* never keep the lock on the way out */
+        return false;
+    }
     int an = 0;
     app[an++] = 4;
     memcpy(app + an, "xprs", 4); an += 4;
@@ -643,7 +950,6 @@ bool xprsrns_send(const char *wire, int len)
     bool ok = n > 0 && rns_tcp_send(pkt, (size_t)n);
     if (!ok) ESP_LOGW(TAG, "send failed: build=%d up=%d", n, (int)rns_tcp_is_up());
     if (ok) s_tx++;
-    s_last_tx_us = esp_timer_get_time();
     xSemaphoreGive(s_tx_lock);
     return ok;
 }
@@ -675,8 +981,10 @@ bool xprsrns_send_to(const char *callsign, const char *wire, int len)
     }
 
     static uint8_t *cipher, *pkt;   /* claimed on the first addressed send */
-    if (!cipher && !(cipher = calloc(1, RNS_MTU))) return false;
-    if (!pkt && !(pkt = calloc(1, RNS_MTU + 64))) return false;
+    if ((!cipher && !(cipher = calloc(1, RNS_MTU))) || (!pkt && !(pkt = calloc(1, RNS_MTU + 64)))) {
+        xSemaphoreGive(s_tx_lock);
+        return false;
+    }
     /* The salt is the recipient's IDENTITY hash, as reference RNS does
      * (Identity.get_salt()). It was their destination hash until
      * 2026-10-15, which only another station could open. */
@@ -859,6 +1167,14 @@ void xprsrns_feed(const uint8_t *frame, size_t len)
 void xprsrns_init(xprsrns_wire_cb_t cb)
 {
     const char *hub = xcfg_get("rns_hub", "");
+#ifdef XPRS_QEMU
+    /* The emulated board reads no console (docs/esp32.md, "The C3 under
+     * QEMU"), so its hub is the host's own Reticulum node, which QEMU's user
+     * networking puts at 10.0.2.2: the XPRS server on the development
+     * machine, whose gateway is what tools/qemu_c3.sh's probes reach the
+     * station through. Never on a real board. */
+    if (!hub || !hub[0]) hub = "10.0.2.2:4242";
+#endif
     if (!hub || !hub[0]) hub = XRNS_DEFAULT_HUBS;
     if (!strcmp(hub, "off") || !strcmp(hub, "no") || !strcmp(hub, "none")) {
         ESP_LOGI(TAG, "idle: rns_hub = %s", hub);

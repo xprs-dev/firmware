@@ -467,6 +467,22 @@ int main(void)
         CHECK(jfind("\"kind\":\"music\"") && jfind("\"kind\":\"library\""), "the kinds are kept");
     }
 
+    printf("the station proving itself (/xprs/prove)\n");
+    fresh();
+    {
+        const char *m = "00112233445566778899aabbccddeeff.n1700000000123";
+        char w[400];
+        int n = xwc_station_session(m, w, sizeof w);
+        char head[64];
+        char t[20]; ts(t, 0);
+        snprintf(head, sizeof head, "t:session f:X3STAT ts:%s sig:", t);
+        CHECK(n > 0 && !strncmp(w, head, strlen(head)), "t:session f:<station> ts:<now>, sig: before m:");
+        CHECK(n > 0 && strstr(w, " m:") && !strcmp(strstr(w, " m:") + 3, m), "m: the link id, a dot, the nonce, last");
+        xprs_t p;
+        CHECK(n > 0 && xprs_parse(w, n, &p) && xprsid_verify(&p, s_station->pub), "signed by the station's own key");
+        CHECK(xwc_station_session(m, w, 40) == 0, "no room: no proof rather than half of one");
+    }
+
     printf("alerts\n");
     fresh();
     CHECK(claim(alice, tok), "alice claims");

@@ -1,10 +1,10 @@
 # The station's HTTP API, board-agnostic (spec/API-HTTP.md). Boards supply
 # their callsign, index, transmitter and switches through xprs_api_cfg_t.
 idf_component_register(
-    SRCS "xprs_api.c" "xapi_send.c" "xapi_jesc.c" "xapi_wc.c"
+    SRCS "xprs_api.c" "xapi_send.c" "xapi_jesc.c" "xapi_wc.c" "xapi_rns.c"
     INCLUDE_DIRS "."
     REQUIRES esp_http_server xprs_index xprs_codec esp_timer log
              xprs_auth xprs_ota app_update esp_app_format espcoredump esp_system
              xprs_common xprs_diag xprs_station xprs_webchat xprs_nostr
-             mbedtls fatfs
+             mbedtls fatfs xprs_rns xprs_bearer_rns
 )

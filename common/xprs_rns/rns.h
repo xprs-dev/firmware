@@ -227,6 +227,19 @@ bool rns_ed25519_verify(const uint8_t ed_pub[32], const uint8_t sig[64],
 /** Ed25519 keypair from the platform's randomness: pub(32), secret(64). */
 void rns_ed25519_keypair(uint8_t pub[32], uint8_t sec[64]);
 
+/** Ed25519 signature by [id]'s identity key (its private half) over [msg]
+ *  (at most 512 bytes: a link proof, not a document). False without the
+ *  private half or the scratch it needs. Callers serialise, as for every
+ *  builder here. */
+bool rns_ed25519_sign(const rns_identity_t *id, const uint8_t *msg, size_t len,
+                      uint8_t sig[64]);
+
+/** AES-256-CBC encryption of whole blocks ([len] a multiple of 16) under
+ *  [key] from [iv], no padding: a resource sender's ciphertext, made (and
+ *  made again) a stretch at a time. In and out may be the same buffer. */
+bool rns_aes256_cbc_encrypt(const uint8_t key[32], const uint8_t iv[16],
+                            const uint8_t *in, size_t len, uint8_t *out);
+
 /**
  * An RNS Token under a 64-byte key (signing = key[0:32], encryption =
  * key[32:64]): iv(16) + AES-256-CBC(PKCS7(plain)) + HMAC-SHA256(iv+ct).

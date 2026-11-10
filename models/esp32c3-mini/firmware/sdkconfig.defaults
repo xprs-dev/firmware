@@ -17,11 +17,12 @@ CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
 # The index names files seg_<10 digits>.bin, longer than 8.3; the log and
 # the statistics live on the same volume.
 CONFIG_FATFS_LFN_HEAP=y
-# Open files on /idx, ~4 KB of internal RAM each on a board with no PSRAM.
-# There is no archive here (see storage_mount in src/main.c), so the three
-# the index holds open by itself never happen: the log, a stats or chat
-# save, and an HTTP handler reading the log are the most at once.
-CONFIG_SDCARD_MAX_FILES=4
+# Open files on /idx. With FATFS_PER_FILE_CACHE off (it is), a descriptor
+# is a small struct and the sector cache is shared, not ~4 KB each. The C3
+# keeps an archive now: the index holds two files, the log one, and a stats
+# or chat save and a gossip bucket need the rest; at 4, "no free file
+# descriptors" came several times an hour.
+CONFIG_SDCARD_MAX_FILES=6
 # Phone browsers send >512 B of headers.
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 # A phone's WebView opens the chat page's first six requests at once; lwIP's

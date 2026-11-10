@@ -30,7 +30,9 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include "rns.h"
+#include "rns_serve.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -174,6 +176,38 @@ bool xprsrns_dest_hex(char out[33]);
 void xprsrns_stats(uint32_t *rx, uint32_t *tx, uint32_t *paced,
                    uint32_t *other);
 
+/* ── The visitor API over Reticulum links (spec/API-HTTP.md, "The same API
+ *    over a Reticulum link") ─────────────────────────────────────────── */
+
+/**
+ * A request handler: [data] is the msgpack of the request's data (one object),
+ * [link_id] the link it came on. Runs on the request task, which may block (a
+ * loopback HTTP call, a signature). Set [*out] to the msgpack of the
+ * response's data (NULL answers nil) and return true; false sends no answer.
+ */
+typedef bool (*xprsrns_req_fn)(const uint8_t *data, size_t len,
+                               const uint8_t link_id[RNS_HASH_LEN], rns_src_t **out);
+
+/**
+ * Answer requests for [path] on links to this station's xprs.wapp destination.
+ * The first call starts the link server (2 links on a board without PSRAM,
+ * 4 with; 10 minutes idle) and its request task, whose stack is claimed
+ * there, so call it at boot. A request too large to take (16 KB without
+ * PSRAM, 512 KB with) is answered 413 in the /xprs/api shape. False when the
+ * bearer is idle or out of memory.
+ */
+bool xprsrns_serve(const char *path, xprsrns_req_fn fn);
+
+/** A response source over [buf] (malloc'd, [len] bytes): taken, freed when
+ *  sent. NULL when the heap cannot hold the wrapper (then [buf] is freed). */
+rns_src_t *xprsrns_src_ram(uint8_t *buf, size_t len);
+
+/** The station's identity wire as last set (xprsrns_set_hello), or 0. */
+int xprsrns_hello(char *out, size_t cap);
+
+/** Links open to us now, and what the server holds for them in bytes. */
+void xprsrns_serve_stats(int *links, size_t *bytes, uint32_t *requests);
+
 #else /* the bearer is configured out: every call is a visible no-op */
 
 typedef void (*xprsrns_wire_cb_t)(const char *wire, int len);
@@ -203,6 +237,13 @@ static inline void xprsrns_route_stats(uint32_t *v, uint32_t *q, uint32_t *u,
                                        uint32_t *c, uint32_t *l)
 { if (v) *v = 0; if (q) *q = 0; if (u) *u = 0; if (c) *c = 0; if (l) *l = 0; }
 static inline bool xprsrns_is_up(void) { return false; }
+typedef bool (*xprsrns_req_fn)(const uint8_t *data, size_t len,
+                               const uint8_t link_id[RNS_HASH_LEN], rns_src_t **out);
+static inline bool xprsrns_serve(const char *p, xprsrns_req_fn fn) { (void)p; (void)fn; return false; }
+static inline rns_src_t *xprsrns_src_ram(uint8_t *b, size_t n) { (void)n; free(b); return NULL; }
+static inline int xprsrns_hello(char *o, size_t c) { (void)o; (void)c; return 0; }
+static inline void xprsrns_serve_stats(int *l, size_t *b, uint32_t *r)
+{ if (l) *l = 0; if (b) *b = 0; if (r) *r = 0; }
 static inline bool xprsrns_dest_hex(char out[33]) { (void)out; return false; }
 static inline void xprsrns_note_address(const char *c, const char *l)
 { (void)c; (void)l; }

@@ -166,6 +166,14 @@ int xwc_gate(const char *wire, int len, bool local_peer,
  *  spec/API-HTTP.md). */
 int xwc_services_json(char *buf, size_t cap, const char *tabs_csv, bool storage);
 
+/* ---- the station proving itself (/xprs/prove over a Reticulum link) -- */
+
+/** `t:session f:<station> ts:<now> m:<m>` signed with the station's key into
+ *  [out] (spec/API-HTTP.md "/xprs/prove": [m] is the link id in hex, a dot
+ *  and the client's nonce). Returns its length, or 0 when the station cannot
+ *  sign. */
+int xwc_station_session(const char *m, char *out, size_t cap);
+
 /* ---- for the host test ----------------------------------------------- */
 void xwc_reset(void);
 const char *xwc_role_of(const char *group, const char *call);  /* none|invited|member|mod|admin */

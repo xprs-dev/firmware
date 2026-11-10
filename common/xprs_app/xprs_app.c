@@ -60,6 +60,7 @@
 #include "xprs_app.h"
 #include "xprs_setup.h"
 #include "xapi_send.h"
+#include "xapi_rns.h"
 
 /* The board this station is running on. Set once by xapp_run(), read
  * everywhere; never NULL after that. */
@@ -11597,6 +11598,11 @@ void xapp_run(const xapp_board_t *board)
      * idle unless config.ini names an rns_hub). Wires it carries land in
      * seen_note like every radio's, and idx_air answers on it. */
     xprsrns_init(on_rns);
+    /* And the visitor API on links to it (spec/API-HTTP.md, "The same API
+     * over a Reticulum link"): a browser reaches this station through a
+     * gateway at https://xprs.dev/in/<callsign>. Each call is made to our
+     * own httpd over the loopback, so only where that runs. */
+    if (xprs_api_httpd()) xapi_rns_start();
 
 
     /* 6 KB, not 3: once a minute this task calls air_identity(), and signing

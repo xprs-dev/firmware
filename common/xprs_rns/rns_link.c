@@ -167,3 +167,81 @@ int rns_link_proof_packet(const rns_link_t *l, uint8_t ctx,
     p.data_len = len;
     return rns_packet_build(&p, out, cap);
 }
+
+/* ── Responder ─────────────────────────────────────────────────────────── */
+
+void rns_link_id_of_request(const rns_packet_t *req, uint8_t out[RNS_HASH_LEN])
+{
+    /* get_hashable_part: the low nibble of the flags (destination type and
+     * packet type: the header type and transport bits are what a relay
+     * changes), the destination, the context, and the data without the
+     * signalling bytes past the two 32-byte keys. */
+    uint8_t h[1 + RNS_HASH_LEN + 1 + 64];
+    size_t dl = req->data_len > 64 ? 64 : req->data_len;
+    h[0] = (uint8_t)(((req->dest_type & 0x03) << 2) | (req->packet_type & 0x03));
+    memcpy(h + 1, req->dest, RNS_HASH_LEN);
+    h[1 + RNS_HASH_LEN] = req->context;
+    memcpy(h + 2 + RNS_HASH_LEN, req->data, dl);
+    uint8_t full[32];
+    rns_sha256(h, 2 + RNS_HASH_LEN + dl, full);
+    memcpy(out, full, RNS_HASH_LEN);
+}
+
+int rns_link_respond(rns_link_t *l, const rns_identity_t *id,
+                     const rns_packet_t *req, uint16_t mtu_cap,
+                     uint8_t *proof_out, size_t cap)
+{
+    if (!id || !id->have_private) return -1;
+    if (req->packet_type != RNS_PACKET_LINKREQUEST || req->data_len < 64) return -1;
+    memset(l, 0, sizeof *l);
+    l->state = RNS_LINK_PENDING;
+    memcpy(l->dest, req->dest, RNS_HASH_LEN);
+    memcpy(l->dest_ed_pub, id->pub + RNS_KEY_HALF, 32);
+    rns_link_id_of_request(req, l->link_id);
+    /* The MTU the initiator offered, never above what our uplink carries
+     * and never below the protocol's floor (rns_link.dart _negotiatedMtu);
+     * 500 when it offered none. */
+    uint16_t mtu = LINK_MTU_OFFER;
+    if (req->data_len >= 64 + 3) {
+        const uint8_t *d = req->data + 64;
+        uint32_t offered = (((uint32_t)d[0] << 16) | ((uint32_t)d[1] << 8) | d[2]) & 0x1FFFFFu;
+        uint32_t m = offered < mtu_cap ? offered : mtu_cap;
+        if (m < 128) m = 128;
+        mtu = (uint16_t)m;
+    }
+    if (mtu > mtu_cap) mtu = mtu_cap;
+    l->mtu = mtu;
+
+    rns_random_bytes(l->x_prv, 32);
+    rns_x25519_base(l->x_prv, l->x_pub);
+    uint8_t shared[32];
+    rns_x25519_shared(l->x_prv, req->data, shared);
+    bool ok = rns_hkdf(l->key, 64, shared, 32, l->link_id, RNS_HASH_LEN);
+    memset(shared, 0, sizeof shared);
+    if (!ok) return -1;
+
+    uint8_t sgn[3];
+    signalling(l->mtu, sgn);
+    uint8_t signed_data[RNS_HASH_LEN + 32 + 32 + 3];
+    memcpy(signed_data, l->link_id, RNS_HASH_LEN);
+    memcpy(signed_data + RNS_HASH_LEN, l->x_pub, 32);
+    memcpy(signed_data + RNS_HASH_LEN + 32, id->pub + RNS_KEY_HALF, 32);
+    memcpy(signed_data + RNS_HASH_LEN + 64, sgn, 3);
+    uint8_t data[64 + 32 + 3];
+    if (!rns_ed25519_sign(id, signed_data, sizeof signed_data, data)) return -1;
+    memcpy(data + 64, l->x_pub, 32);
+    memcpy(data + 96, sgn, 3);
+    /* The private half is no longer needed once the key is derived. */
+    memset(l->x_prv, 0, sizeof l->x_prv);
+    return rns_link_proof_packet(l, RNS_CTX_LRPROOF, data, sizeof data, proof_out, cap);
+}
+
+bool rns_link_rtt(rns_link_t *l, const rns_packet_t *p)
+{
+    if (l->state != RNS_LINK_PENDING || p->context != RNS_CTX_LRRTT) return false;
+    if (!rns_link_owns(l, p)) return false;
+    uint8_t plain[64];
+    if (rns_token_decrypt(l->key, p->data, p->data_len, plain, sizeof plain) < 0) return false;
+    l->state = RNS_LINK_ACTIVE;
+    return true;
+}
