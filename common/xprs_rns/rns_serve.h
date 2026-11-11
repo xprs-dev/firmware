@@ -98,6 +98,11 @@ void rns_serve_respond(int slot, uint32_t gen, const uint8_t rid[RNS_HASH_LEN],
 /** Links open (pending or active). */
 int rns_serve_links(void);
 
+/** Answers held now: Resources being sent and those waiting behind them. A
+ *  host with little RAM runs its next request when this is 0, so one answer
+ *  is held at a time. */
+int rns_serve_sending(void);
+
 /** Bytes this server holds for link [slot] now (state, an upload, a sender's
  *  tables): what a log line reports. 0 for a free slot. */
 size_t rns_serve_link_bytes(int slot);

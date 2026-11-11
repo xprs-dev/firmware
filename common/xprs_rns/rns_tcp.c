@@ -16,6 +16,8 @@
 #include "rns_tcp.h"
 
 #include <string.h>
+#include <fcntl.h>
+#include <sys/select.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -39,6 +41,7 @@ static const char *TAG = "rns_tcp";
 #define RECONNECT_FAST_MS   2000
 #define RECONNECT_SLOW_MS   30000
 #define FAST_ATTEMPTS       5
+#define CONNECT_TIMEOUT_S   6
 
 /* Several hubs, tried in turn. The list matters: the address that used to be
  * the default here and in the Flutter app — rns.beleth.net — does not answer at
@@ -98,6 +101,14 @@ bool rns_tcp_send(const uint8_t *packet, size_t len)
         }
         ok = (sent == n);
         if (ok) s_tx_packets++;
+        /* A send that failed is a hub that stopped taking bytes for the
+         * whole send timeout, and a frame cut short leaves the stream
+         * unreadable for it anyway: the connection is over. Shut down here,
+         * the receive loop sees it and dials again. This line used to say
+         * "the socket will reconnect" and nothing made it: measured, a
+         * station sat on a dead connection for 150 s, a send failing every
+         * 11 s, until WiFi itself dropped. */
+        else shutdown(sock, SHUT_RDWR);
     }
     xSemaphoreGive(s_tx_mtx);
     if (!ok) ESP_LOGW(TAG, "send failed (errno %d) — the socket will reconnect", errno);
@@ -136,13 +147,37 @@ static int dial(void)
 
     struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-    if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
+    /* A connect with an end. lwIP's has none of its own (SO_SNDTIMEO does
+     * not bound it), and one begun while the station was still getting its
+     * address sat for a minute before it failed: measured on a C3, the first
+     * try at 2 s (no network yet), the second begun at 4 s and given up at
+     * 65 s, with the address there since 5 s. The station was off its hub
+     * for the first minute of every boot. */
+    int fl = fcntl(sock, F_GETFL, 0);
+    fcntl(sock, F_SETFL, fl | O_NONBLOCK);
+    int cr = connect(sock, res->ai_addr, res->ai_addrlen);
+    if (cr != 0 && errno == EINPROGRESS) {
+        fd_set ws;
+        FD_ZERO(&ws);
+        FD_SET(sock, &ws);
+        struct timeval ct = { .tv_sec = CONNECT_TIMEOUT_S, .tv_usec = 0 };
+        int soerr = 0;
+        socklen_t sl = sizeof soerr;
+        if (select(sock + 1, NULL, &ws, NULL, &ct) == 1 &&
+            getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &sl) == 0 && soerr == 0) {
+            cr = 0;
+        } else {
+            errno = soerr ? soerr : ETIMEDOUT;
+        }
+    }
+    if (cr != 0) {
         ESP_LOGW(TAG, "connect to %s:%u failed (errno %d)", s_host,
                  (unsigned)s_port, errno);
         close(sock);
         freeaddrinfo(res);
         return -1;
     }
+    fcntl(sock, F_SETFL, fl);
     freeaddrinfo(res);
 
     /* A Reticulum packet is small and latency matters more than packing, so

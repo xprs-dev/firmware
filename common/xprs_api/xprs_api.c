@@ -255,6 +255,8 @@ typedef struct {
     const char *room;     /* non-NULL: only rows addressed to this room */
     bool local;           /* the asker is on the station's network */
     bool keep_local;      /* Local rows are served to this asker */
+    size_t fit;           /* non-zero: the bytes the rows may take (xapi_wc_room) */
+    size_t bytes;         /* the rows so far */
 } hist_ctx_t;
 
 static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
@@ -330,6 +332,11 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     row[n++] = '"';
     row[n++] = '}';
     row[n] = 0;
+    /* The answer has a size it must fit (a visitor on a Reticulum link to
+     * a board with little RAM): the newest rows that fit are the answer, as
+     * with `limit`. */
+    if (c->fit && c->bytes + (size_t)n > c->fit) return false;
+    c->bytes += (size_t)n;
     c->emitted++;
     return httpd_resp_send_chunk(c->req, row, n) == ESP_OK;
 }
@@ -421,6 +428,15 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
                      "{\"ok\":true,\"held\":%lu,\"time\":\"%s\",\"rows\":[",
                      (unsigned long)st.count,
                      time_synced() ? "synced" : "unsynced");
+    /* What follows the rows, made first: an answer with a size to fit
+     * (xapi_wc_room) gives the rows what the head and this leave. */
+    char tail[512];
+    int mn = xwc_moderation_json(tail, sizeof tail - 40, ctx.group);
+    size_t fit = xapi_wc_room(req);
+    if (fit) {
+        size_t fixed = (size_t)n + (size_t)mn + 24;      /* "],\"count\":NNN," and "}" */
+        ctx.fit = fit > fixed ? fit - fixed : 1;
+    }
     resp_json(req);
     httpd_resp_send_chunk(req, head, n);
 
@@ -430,12 +446,12 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
     xprsindex_query(s_cfg->index, &q, hist_emit, &ctx);
     xprsindex_pause_writes(s_cfg->index, false);
 
-    char tail[512];
-    n = snprintf(tail, sizeof tail, "],\"count\":%d,", ctx.emitted);
-    n += xwc_moderation_json(tail + n, sizeof tail - (size_t)n, ctx.group);
-    if (n < (int)sizeof tail - 2) tail[n++] = '}';
-    tail[n] = 0;
-    httpd_resp_send_chunk(req, tail, n);
+    char cnt[32];
+    n = snprintf(cnt, sizeof cnt, "],\"count\":%d,", ctx.emitted);
+    httpd_resp_send_chunk(req, cnt, n);
+    if (mn < 0) mn = 0;
+    tail[mn++] = '}';
+    httpd_resp_send_chunk(req, tail, mn);
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
@@ -919,6 +935,18 @@ static esp_err_t h_wifi_post(httpd_req_t *req)
     return httpd_resp_sendstr(req, "{\"ok\":true,\"join\":\"joining\"}");
 }
 
+/* A connection to the web server is somebody using this station over WiFi
+ * (the page, its API, a file): ESP-NOW's visits to its home channel wait
+ * while it is served (xprsnow.h). A weak reference: the API builds and runs
+ * on a board without that bearer. */
+extern void xprsnow_hold(uint32_t ms) __attribute__((weak));
+static esp_err_t api_session_open(httpd_handle_t hd, int sockfd)
+{
+    (void)hd; (void)sockfd;
+    if (xprsnow_hold) xprsnow_hold(5000);
+    return ESP_OK;
+}
+
 esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
 {
     if (s_httpd) return ESP_OK;
@@ -927,6 +955,7 @@ esp_err_t xprs_api_start(const xprs_api_cfg_t *cfg)
 
     httpd_config_t hc = HTTPD_DEFAULT_CONFIG();
     hc.server_port = 80;
+    hc.open_fn = api_session_open;
     hc.core_id = XPRS_WORK_CORE; /* handlers read flash; keep off the radio core */
     hc.stack_size = XPRS_STACK_API;
     /* A firmware push is well over a megabyte arriving while this same

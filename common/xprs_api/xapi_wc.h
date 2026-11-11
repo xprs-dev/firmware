@@ -24,6 +24,9 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg);
 
 /** Whether the request's peer is on the station's own network. */
 bool xapi_wc_local(httpd_req_t *req);
+/** The bytes this answer's body may have (a call made for a visitor on a
+ *  Reticulum link by a board with little RAM), 0 when nothing limits it. */
+size_t xapi_wc_room(httpd_req_t *req);
 
 /** The `"station":..,"page":{..}` fragment for /api/services (no braces). */
 int xapi_wc_services(char *buf, size_t cap);

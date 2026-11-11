@@ -4802,10 +4802,13 @@ static void status_task(void *arg)
         {
             uint32_t v = 0, sf = 0, ws = 0, wd = 0;
             xprsnow_window_stats(&v, &sf, &ws, &wd);
+            uint32_t sk = 0, ul = 0, up = 0;
+            xprsnow_window_busy(&sk, &ul, &up);
             ESP_LOGW(TAG, "espnow home=%u %s window visits=%u switch_fail=%u "
-                          "sent=%u dropped=%u",
+                          "sent=%u dropped=%u put_off=%u wifi_rx=%u/s peak=%u",
                      xprsnow_home_channel(), xprsnow_long_range() ? "lr" : "1m",
-                     (unsigned)v, (unsigned)sf, (unsigned)ws, (unsigned)wd);
+                     (unsigned)v, (unsigned)sf, (unsigned)ws, (unsigned)wd,
+                     (unsigned)sk, (unsigned)ul, (unsigned)up);
         }
     }
 }

@@ -26,6 +26,10 @@
 #include "esp_idf_version.h"
 #include "esp_now.h"
 #include "esp_wifi.h"
+#include "esp_netif.h"
+#include "esp_netif_net_stack.h"
+#include "lwip/netif.h"
+#include "lwip/pbuf.h"
 
 static const char *TAG = "xprsnow";
 
@@ -102,6 +106,104 @@ static TaskHandle_t      s_win_task;
 /* Window counters: visits to the home channel, refused channel switches,
  * frames sent inside a window, frames dropped from a full window queue. */
 static volatile uint32_t s_visits, s_switch_fail, s_win_sent, s_win_dropped;
+
+/* ── WiFi in use: the visit waits ────────────────────────────────────────────
+ *
+ * A visit takes the radio off the router's channel for the window and for
+ * what the driver needs to tell the access point it is away and back:
+ * measured on a C3 behind a FRITZ!Box, 150 to 290 ms of every second in
+ * which nothing addressed to the station arrives (the access point holds it
+ * and hands it over after). A page load or a Reticulum transfer waits those
+ * out one after another.
+ *
+ * (What the visits are NOT: the pings this board loses under load, 63 % and
+ * 77 % when it was first measured. With the home channel set to the router's,
+ * so that no visit happens at all, the same pings lost 0 to 2 % with 17 to
+ * 20 KB of heap free and 51 to 87 % with 8 KB. That is the heap, not this.)
+ *
+ * So the station counts the frames addressed to it alone (unicast: broadcast
+ * and multicast, which is all the LAN bearer's chatter, do not count). A
+ * second that brought NW_BUSY_FRAMES of them is somebody talking to this
+ * station, and the next visit is put off -- NW_BUSY_SKIPS visits in a row at
+ * most, then one visit whatever the traffic, so ESP-NOW is heard and what
+ * waits in the window queue goes out at least every NW_BUSY_SKIPS + 1
+ * seconds. A station nobody is talking to visits every second as before.
+ * That is the rule for traffic nobody announced (a ping, a client of some
+ * other service). Traffic that is announced is held for outright:
+ * xprsnow_hold(), below.
+ *
+ * The count is taken where lwIP is handed a frame: the interface's input
+ * function is wrapped (IN THE WIFI TASK: one test and one increment). */
+#define NW_BUSY_FRAMES 12
+#define NW_BUSY_SKIPS  5
+#define NW_HOLD_TRAIL_MS 60000u
+
+static volatile uint32_t s_uni_rx;
+static uint32_t          s_uni_seen, s_uni_last, s_uni_peak;
+static uint8_t           s_skip_run;
+static volatile uint32_t s_skipped;
+static netif_input_fn    s_input_orig;
+
+static err_t nw_input(struct pbuf *p, struct netif *inp)
+{
+    if (p && p->len >= 1 && !(((const uint8_t *)p->payload)[0] & 1)) s_uni_rx++;
+    return s_input_orig(p, inp);
+}
+
+/* The station (and the hotspot) interface exists only once WiFi has started,
+ * and is made again when it restarts: looked at before every window. */
+static void nw_watch_netifs(void)
+{
+    static const char *const keys[] = { "WIFI_STA_DEF", "WIFI_AP_DEF" };
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        esp_netif_t *en = esp_netif_get_handle_from_ifkey(keys[i]);
+        struct netif *n = en ? esp_netif_get_netif_impl(en) : NULL;
+        if (!n || !n->input || n->input == nw_input) continue;
+        /* Every lwIP interface here takes its frames through the same
+         * function (tcpip_input), so one saved pointer serves both. */
+        if (!s_input_orig) s_input_orig = n->input;
+        if (n->input == s_input_orig) n->input = nw_input;
+    }
+}
+
+/* Somebody is using this station over WiFi: a Reticulum link is open, the
+ * web server took a connection. Whoever knows says so, and for that long no
+ * visit leaves the router's channel -- however long it lasts: ESP-NOW is
+ * there for range, such visitors are few, and a station that hops away from
+ * the one it is serving serves badly (the operator's decision, 2026-11-11).
+ * What waits in the window queue goes out at the first visit after. */
+static volatile uint32_t s_hold_until_ms, s_hold_last_ms;
+static volatile bool     s_hold_any;
+static volatile uint32_t s_held;
+
+void xprsnow_hold(uint32_t ms)
+{
+    uint32_t now = nw_now_ms(), until = now + ms;
+    if (!s_hold_any || (int32_t)(until - s_hold_until_ms) > 0) s_hold_until_ms = until;
+    s_hold_last_ms = now;
+    s_hold_any = true;
+}
+
+/* True when the visit about to start should be put off. */
+static bool nw_wifi_busy(void)
+{
+    uint32_t cnt = s_uni_rx, now = nw_now_ms();
+    s_uni_last = cnt - s_uni_seen;
+    s_uni_seen = cnt;
+    if (s_uni_last > s_uni_peak) s_uni_peak = s_uni_last;
+    bool rate = s_uni_last >= NW_BUSY_FRAMES;
+    if (s_hold_any && (int32_t)(s_hold_until_ms - now) > 0) { s_held++; s_skip_run = 0; return true; }
+    /* Traffic that follows a hold within a minute is the same visitor still
+     * at it (a long download on a connection opened a while ago). */
+    if (rate && s_hold_any && now - s_hold_last_ms < NW_HOLD_TRAIL_MS) { s_held++; s_skip_run = 0; return true; }
+    if (rate && s_skip_run < NW_BUSY_SKIPS) {
+        s_skip_run++;
+        s_skipped++;
+        return true;
+    }
+    s_skip_run = 0;
+    return false;
+}
 
 static bool nw_wall_ok(void)
 {
@@ -231,6 +333,16 @@ static void nw_window_task(void *arg)
         wifi_second_chan_t second;
         esp_wifi_get_channel(&primary, &second);
         bool roc = false;
+        /* Somebody is talking to this station over WiFi: stay with them. */
+        nw_watch_netifs();
+        bool busy = nw_wifi_busy();
+        if (assoc && primary != s_home_ch && busy) {
+            /* Well past the boundary before the next one is waited for: the
+             * delay above can end a tick early, and the same window would be
+             * judged again on the few frames of those milliseconds. */
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
         if (primary != s_home_ch) {
             esp_err_t e;
             if (assoc) {
@@ -288,6 +400,13 @@ void xprsnow_window_stats(uint32_t *visits, uint32_t *switch_fail,
     if (switch_fail) *switch_fail = s_switch_fail;
     if (sent)        *sent = s_win_sent;
     if (dropped)     *dropped = s_win_dropped;
+}
+
+void xprsnow_window_busy(uint32_t *skipped, uint32_t *last, uint32_t *peak)
+{
+    if (skipped) *skipped = s_skipped + s_held;
+    if (last)    *last = s_uni_last;
+    if (peak)    { *peak = s_uni_peak; s_uni_peak = 0; }
 }
 
 static bool nw_air(void *ctx, const char *wire, int len)

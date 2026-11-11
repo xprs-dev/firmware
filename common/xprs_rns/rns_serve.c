@@ -28,6 +28,7 @@
 #define ADV_RETRY_S    5               /* no request yet: advertise again */
 #define ADV_TRIES      4               /* RNS Resource.MAX_ADV_RETRIES */
 #define TX_STALL_S     30              /* asked before, silent since: give up */
+#define EVICT_IDLE_S   60              /* full: a link quiet this long gives way */
 
 /* ── a Resource being sent ─────────────────────────────────────────────── */
 
@@ -470,6 +471,14 @@ int rns_serve_links(void)
     return n;
 }
 
+int rns_serve_sending(void)
+{
+    int n = 0;
+    for (int i = 0; i < RNS_SERVE_LINKS_MAX; i++)
+        if (s_links[i] && (s_links[i]->tx || s_links[i]->nq)) n += 1 + s_links[i]->nq;
+    return n;
+}
+
 size_t rns_serve_link_bytes(int slot)
 {
     if (slot < 0 || slot >= RNS_SERVE_LINKS_MAX || !s_links[slot]) return 0;
@@ -519,8 +528,28 @@ static void link_accept(const rns_packet_t *p, uint32_t now_s)
         else if (slot < 0) slot = i;
     }
     if (open >= s_cfg.max_links || slot < 0) {
-        RNS_SERVE_LOG("link refused: %d open already", open);
-        return;
+        /* Full. A visitor who shut the page without closing its link holds
+         * its place until the idle time, and with two places two closed tabs
+         * shut the station to everybody for five minutes (seen: "link
+         * refused: 2 open already" for a third browser). So the link quiet
+         * the longest gives way, if it has been quiet for EVICT_IDLE_S and
+         * nothing is being sent or received on it; a visitor still there
+         * opens another when it next asks. */
+        int old = -1;
+        for (int i = 0; i < RNS_SERVE_LINKS_MAX; i++) {
+            slink_t *l = s_links[i];
+            if (!l || l->tx || l->nq || l->rx || l->up) continue;
+            if (now_s - l->last_s < EVICT_IDLE_S) continue;
+            if (old < 0 || l->last_s < s_links[old]->last_s) old = i;
+        }
+        if (old < 0) {
+            RNS_SERVE_LOG("link refused: %d open already", open);
+            return;
+        }
+        RNS_SERVE_INFO("a link quiet for %u s gives way to a new one",
+                       (unsigned)(now_s - s_links[old]->last_s));
+        link_free(old, true);
+        slot = old;
     }
     if (!scratch_get()) { RNS_SERVE_LOG("link refused: no room for scratch"); return; }
     slink_t *s = calloc(1, sizeof *s);

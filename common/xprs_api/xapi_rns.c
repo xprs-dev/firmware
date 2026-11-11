@@ -8,7 +8,9 @@
  * as it answers a browser, and nothing here knows what any of them do. The
  * call carries `X-XPRS-Via: rns`, which xapi_wc_local() reads (from
  * 127.0.0.1 only) as a visitor from the internet: a link is never the
- * station's own network. The answer is {s, t, b, h?}.
+ * station's own network. On a board without PSRAM it also carries
+ * `X-XPRS-Room`, the bytes the answer's body may have (xapi_wc_room): a
+ * handler that lists things sends as many as fit. The answer is {s, t, b, h?}.
  *
  * /xprs/prove answers {session, identity}: a t:session signed by the station
  * whose m: is the link id and the client's nonce, and its t:identity, so a
@@ -41,23 +43,36 @@ static const char *TAG = "xapi_rns";
 /* What a call costs. A body is a list of chunks, never one block: on a C3
  * with BLE and the hotspot up the internal heap swings between 4 and 25 KB
  * free and its largest block can be under 2 KB, and while a handler runs (a
- * history reading the index) little is left. So a board without PSRAM
- * claims chunks before the call, down to HEAP_FLOOR, takes more one by one
- * while GROW_FLOOR stays free, and gives back the ones it did not fill once
- * the body is in; a body past that is answered 413. With PSRAM, chunks are
- * taken from it as the body arrives. */
+ * history reading the index) little is left.
+ *
+ * A board without PSRAM therefore decides BEFORE the call how much room the
+ * answer gets: what is free now above HEAP_KEEP, between ROOM_MIN and
+ * BODY_MAX (body_room). The call says so (`X-XPRS-Room`), and
+ * a handler whose answer is a list fits it: the history sends the newest rows
+ * that fit, as it does for `limit`. An answer that is past the room anyway is
+ * 413. The room never grows while the handler runs. That was tried (chunk by
+ * chunk above a floor) and measured: a 5.7 KB history gathered with 9 KB
+ * free took the heap to 3 KB for the minute its receiver needed, the uplink's
+ * sends failed (errno 11) and the transfer stalled; and a history that met a
+ * low heap half way was 413 three times out of eight after boot. BODY_MAX
+ * was 6 KB once: a 6000-byte history claimed with 18 KB free met the heap's
+ * own swing, 4.9 KB were left (880 B at the lowest), and the uplink
+ * stalled for 150 s, a send failing every 11 s.
+ *
+ * One answer is held at a time: xprsrns.c runs the next request when the
+ * last answer has gone (rns_serve_sending). The station's volume is no place
+ * for a body either: the archive fills it (0 KB free on a C3) and a page
+ * that polls would wear it out.
+ *
+ * With PSRAM, chunks are taken from it as the body arrives. */
 #if defined(CONFIG_SPIRAM) && CONFIG_SPIRAM
 #define CHUNK      (32u * 1024u)
 #define BODY_MAX   (2u * 1024u * 1024u)   /* the largest answer sent over a link */
 #else
 #define CHUNK      512u                   /* fits the holes a fragmented heap has */
-/* A 20-row history is about 6.3 KB. The floor is what the handler, Wi-Fi's
- * receive buffers and BLE need meanwhile (14 KB left too few chunks for a
- * history; at 10 KB, with the uplink lock held for seconds, a history took the
- * heap under 4 KB, the handler stalled and the hub socket dropped). */
-#define BODY_MAX   (8u * 1024u)
-#define HEAP_FLOOR (12u * 1024u)
-#define GROW_FLOOR (8u * 1024u)           /* past the claim, chunk by chunk */
+#define BODY_MAX   (4u * 1024u)
+#define HEAP_KEEP  (12u * 1024u)          /* the handler, Wi-Fi's buffers, BLE: see below */
+#define ROOM_MIN   (4u * CHUNK)
 #endif
 #define CHUNKS     (BODY_MAX / CHUNK)
 #define REQ_MAX    1024                   /* the request line and headers out */
@@ -71,9 +86,9 @@ static const char *TAG = "xapi_rns";
 
 typedef struct {
     uint8_t *c[CHUNKS];
-    int      nc;                          /* chunks held (filled or claimed) */
+    int      nc;                          /* chunks held */
     size_t   n;                           /* bytes in them */
-    bool     claimed;                     /* claimed before the call: grow only to GROW_FLOOR */
+    size_t   room;                        /* non-zero: the most it may hold, decided before the call */
     bool     over, err;
 } body_t;
 
@@ -86,17 +101,28 @@ static void *chunk_alloc(void)
     return malloc(CHUNK);
 }
 
-#if !(defined(CONFIG_SPIRAM) && CONFIG_SPIRAM)
-/* Claim chunks now, while there are holes for them; at least one. */
-static bool body_claim(body_t *b)
+#ifdef HEAP_KEEP
+/* The room this answer gets, decided now from what is free, and its chunks
+ * claimed now as far as the heap is above HEAP_KEEP: once the handler runs
+ * (a history reading the index) there is often no 512 B block to be had, and
+ * a body taking its chunks as it arrived was 413 with 20 KB free before the
+ * call. Under HEAP_KEEP one chunk is claimed and the rest of ROOM_MIN is
+ * taken as the body arrives if it can be: putting 2 KB aside with 6 KB free
+ * left a signed post 3.5 KB to run in (144 B at the lowest), and most answers
+ * are a few hundred bytes. */
+static bool body_room(body_t *b)
 {
-    while (b->nc < (int)CHUNKS) {
-        if (b->nc && heap_caps_get_free_size(MALLOC_CAP_8BIT) < HEAP_FLOOR + CHUNK) break;
+    size_t fr = heap_caps_get_free_size(MALLOC_CAP_8BIT);
+    size_t have = fr > HEAP_KEEP ? fr - HEAP_KEEP : 0;
+    if (have > BODY_MAX) have = BODY_MAX;
+    size_t room = have < ROOM_MIN ? ROOM_MIN : have;
+    b->room = room / CHUNK * CHUNK;
+    if (have < CHUNK) have = CHUNK;
+    while ((size_t)b->nc * CHUNK + CHUNK <= have) {
         uint8_t *q = malloc(CHUNK);
         if (!q) break;
         b->c[b->nc++] = q;
     }
-    b->claimed = true;
     return b->nc > 0;
 }
 #endif
@@ -108,12 +134,7 @@ static void body_add(body_t *b, const uint8_t *d, size_t n)
         int i = (int)(b->n / CHUNK);
         if (i >= (int)CHUNKS) { b->over = true; return; }
         if (i >= b->nc) {
-#ifdef GROW_FLOOR
-            if (b->claimed && heap_caps_get_free_size(MALLOC_CAP_8BIT) < GROW_FLOOR + CHUNK) {
-                b->over = true;
-                return;
-            }
-#endif
+            if (b->room && (size_t)b->nc * CHUNK >= b->room) { b->over = true; return; }
             uint8_t *q = chunk_alloc();
             if (!q) {
                 /* No RAM for the next chunk: past what this call can hold. */
@@ -408,16 +429,16 @@ static bool loopback(const char *method, const char *path, const char *query,
     const char *why = "";
     char *head = s_w->head;
     uint8_t *buf = s_w->buf;
-#if !(defined(CONFIG_SPIRAM) && CONFIG_SPIRAM)
-    /* The body's chunks, claimed now: once the handler runs a board
-     * without PSRAM has no 1 KB block left. */
-    if (!body_claim(&r->body)) { why = "no room for the answer"; goto out; }
+    char room[40] = "";
+#ifdef HEAP_KEEP
+    if (!body_room(&r->body)) { why = "no room for the answer"; goto out; }
+    snprintf(room, sizeof room, "X-XPRS-Room: %u\r\n", (unsigned)r->body.room);
 #endif
     if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { why = "connect"; goto out; }
     int hn = snprintf(head, REQ_MAX,
                       "%s %s%s%s HTTP/1.1\r\nHost: 127.0.0.1\r\nX-XPRS-Via: rns\r\n"
-                      "Connection: close\r\nContent-Length: %u\r\n%s\r\n",
-                      method, path, query[0] ? "?" : "", query, (unsigned)blen,
+                      "%sConnection: close\r\nContent-Length: %u\r\n%s\r\n",
+                      method, path, query[0] ? "?" : "", query, room, (unsigned)blen,
                       blen && body[0] == '{' ? "Content-Type: application/json\r\n" : "");
     if (hn <= 0 || hn >= REQ_MAX) { why = "request head too long"; goto out; }
     if (!send_all(fd, head, (size_t)hn) || (blen && !send_all(fd, (const char *)body, blen))) { why = "send"; goto out; }
@@ -545,7 +566,9 @@ bool xapi_rns_api(const uint8_t *data, size_t len, const uint8_t link_id[16], rn
         *out = answer_json(413, "{\"ok\":false,\"error\":\"too large over Reticulum\"}");
         return true;
     }
-    ESP_LOGI(TAG, "%s %s -> %d, %u bytes", method, path, rs->status, (unsigned)rs->body.n);
+    ESP_LOGI(TAG, "%s %s -> %d, %u bytes (room %u, %u free)", method, path, rs->status,
+             (unsigned)rs->body.n, (unsigned)rs->body.room,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT));
     *out = answer(rs->status, rs->type, &rs->body, rs->hdrs, rs->hn, rs->nh);
     return true;
 }

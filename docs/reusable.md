@@ -235,9 +235,39 @@ reuse potential.
   after boot: fixed working buffers are claimed ONCE at start and kept
   (`work_t`, the serve scratch), since within minutes the largest free
   block falls under 1 KB with 15 KB free; a variable body is a list of
-  small chunks (`body_t`, 512 B each), claimed before the handler runs
-  down to a heap floor and trimmed after, read back at any offset as an
-  `rns_src_t`. Never one large block and never a grow-by-realloc.
+  small chunks (`body_t`, 512 B each) whose ROOM is decided before the
+  handler runs (what is free above a floor, between a minimum and a cap)
+  and never raised, claimed at once as far as the heap is above the floor
+  (while the handler runs there is no 512 B block to be had) and trimmed
+  after. Read back at any offset as an `rns_src_t`. Never one large block,
+  never a grow-by-realloc, never a claim that takes the heap under the
+  floor (it starves the handler), and never the station's volume (the
+  archive fills it).
+- **`xapi_wc_room(req)`** (`xapi_wc.c`) -- the bytes an answer's body may
+  have, told by the loopback caller in `X-XPRS-Room`. Any handler that
+  LISTS things and may be asked over a small transport fits its rows to it
+  the way `history_common()` does (the fixed head and tail made first, the
+  rows counted as they go, the callback returning false at the first that
+  does not fit) instead of being answered 413.
+- **`rns_serve_sending()`** + `srv_pump()` (`xprsrns.c`) -- one answer held
+  at a time on a board without a request task: requests wait as their packed
+  bytes and the next runs when the last answer has gone. The shape for any
+  responder whose answers cost RAM it has once.
+- **Wi-Fi in use?** `xprsnow_hold(ms)` (`xprsnow.h`) is how anything that
+  serves a visitor over Wi-Fi says so; ESP-NOW's visits to its home channel
+  wait while a hold runs. A new service (another server, a transfer) calls
+  it where its use starts and while it lasts, through a WEAK reference
+  (`extern void xprsnow_hold(uint32_t) __attribute__((weak)); if
+  (xprsnow_hold) ...`, as `xprsrns.c` and `xprs_api.c` do) so it builds
+  without the bearer. Behind it `nw_watch_netifs()` / `nw_wifi_busy()` wrap
+  the lwIP interface's input function and count unicast frames a second for
+  traffic nobody announced. Anything else that takes the radio away from
+  Wi-Fi for a while (a scan, a long flash write) should ask the same
+  question first; `xprsnow_window_busy()` reads the counters.
+- **A connect with an end** -- `dial()` in `rns_tcp.c`: non-blocking
+  connect, `select` for `CONNECT_TIMEOUT_S`, `SO_ERROR`. lwIP's connect has
+  no timeout of its own and `SO_SNDTIMEO` does not bound it; any client
+  socket opened while the network may still be coming up needs this.
 - **`test_rns_serve_host.sh`** -- the same pipe pattern the other way round:
   `reticulum-dart/tool/request_client.dart` is the real request client
   driving the C responder (a link, inline and Resource answers over one and

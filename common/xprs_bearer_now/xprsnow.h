@@ -70,6 +70,17 @@ bool    xprsnow_long_range(void);
  *  frames dropped from a full window queue. */
 void    xprsnow_window_stats(uint32_t *visits, uint32_t *switch_fail,
                              uint32_t *sent, uint32_t *dropped);
+/**
+ * Somebody is using this station over WiFi (a Reticulum link is open, the
+ * web server took a connection): no visit to the home channel for the next
+ * [ms], counted from now; the longest hold asked for stands. Call it again
+ * while the use lasts. Safe from any task, before start too.
+ */
+void    xprsnow_hold(uint32_t ms);
+/** Visits put off because WiFi was in use, and the frames addressed to this
+ *  station in the second before the last window and in the busiest second
+ *  since the last call. */
+void    xprsnow_window_busy(uint32_t *skipped, uint32_t *last, uint32_t *peak);
 
 /** Longest XPRS packet, and exactly one ESP-NOW frame. */
 #define XPRSNOW_WIRE_MAX   250

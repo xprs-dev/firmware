@@ -74,7 +74,7 @@ to hear them; the radio's own carrier sense spreads them further. The
 driver refuses `esp_wifi_set_channel()` while associated, so the visit is a
 remain-on-channel request (`esp_wifi_remain_on_channel`, the driver's private
 API in IDF 5.2, as DPP uses), which returns to the router's channel by itself. 8 % of the
-time off the router's channel; TCP recovers what arrives meanwhile.
+time on the home channel, and in practice 15 to 29 % off the router's (below).
 
 **A station without a clock** (no router, no internet) learns the window from
 what it hears: a frame arrives about 25 ms into its sender's window. Until it
@@ -88,8 +88,44 @@ home channel.
 | `espnow_win` | 80 | ms each second a station on a router spends on the home channel |
 | `wifi_country` | DE | the WiFi country (channel 13 needs one that has it) |
 
+**WiFi in use: the visit waits.** A visit costs more than its 80 ms. The
+driver tells the access point the station is away and back (the access point
+holds what arrives meanwhile and hands it over after), and measured on a C3
+behind a FRITZ!Box nothing addressed to the station arrived for 150 to 290 ms
+of every second. A page load or a Reticulum transfer waits those out one
+after another. ESP-NOW is there for range and visitors over WiFi are few, so
+while one is being served the station stays with it (decided 2026-11-11):
+
+- **A hold** (`xprsnow_hold(ms)`): whoever knows the station is in use says
+  so, and no visit leaves the router's channel until the hold runs out. A
+  Reticulum link open to the station renews it with every frame off the hub
+  (5 s), a request run for it too, and so does every connection the web
+  server takes (the page, its API, a file). Traffic at 12 unicast frames a
+  second or more within a minute of a hold is the same visitor still at it
+  and holds too. Visits start again about five seconds after the last use.
+- **Traffic nobody announced** (a ping, some other service): the station
+  counts the frames addressed to it alone, where lwIP is handed them; the LAN
+  bearer's broadcast chatter does not count. A second that brought 12 or more
+  puts the next visit off, 5 in a row at most, then one visit whatever the
+  traffic.
+
+What the visits are not is the cause of the pings a C3 loses under load
+(63 % and 77 % when first measured, and blamed on them). With the home
+channel set to the router's, so that no visit happens at all, the same pings
+lost 0 to 2 % while the board had 17 to 20 KB of heap free and 51 to 87 %
+while it had 8 KB; with visits held during an open link they were lost just
+the same. That loss follows the heap, and it is open.
+
+What ESP-NOW would have sent meanwhile waits in the window queue (8 frames;
+past that a frame is dropped and counted, as a busy radio would) and goes
+out at the first visit after. A station nobody is talking to visits
+every second as before, and nothing changes on the air: the home channel,
+LR and the window are where they were.
+
 The station's 15-second line carries the window's counters:
-`espnow home=13 lr window visits=.. switch_fail=.. sent=.. dropped=..`.
+`espnow home=13 lr window visits=.. switch_fail=.. sent=.. dropped=..
+put_off=.. wifi_rx=../s peak=..` (visits put off, and the unicast frames in
+the last second and in the busiest one since the line before).
 
 Moving a pair to a working channel of their own is section 14.7's `t:channel`
 invitation; with a home channel already off the routers' ones it is wanted

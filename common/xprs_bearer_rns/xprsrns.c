@@ -476,11 +476,24 @@ static srv_path_t    s_paths[SRV_PATHS];
 static int           s_npaths;
 static QueueHandle_t s_jobs;          /* SRV_TASK */
 static bool          s_serving;
-static bool          s_have_pending;  /* !SRV_TASK: the one request waiting */
-static srv_job_t     s_pending;
+/* !SRV_TASK: the requests waiting. A page asks for several things at once
+ * on its link; each is run when the answer before it has gone
+ * (rns_serve_sending), so a board with a few kilobytes free holds one answer
+ * at a time and none is dropped behind a full queue. A waiting request is
+ * its packed bytes, about 100. */
+#define SRV_WAIT    8
+static srv_job_t     s_pend[SRV_WAIT];
+static int           s_npend;
 static uint32_t      s_srv_requests;
 
 static uint32_t mono_s(void) { return (uint32_t)(esp_timer_get_time() / 1000000); }
+
+/* A visitor on a link is somebody using this station over WiFi: ESP-NOW's
+ * visits to its home channel wait (xprsnow.h). A weak reference, so this
+ * bearer builds and runs without that one. */
+extern void xprsnow_hold(uint32_t ms) __attribute__((weak));
+#define SRV_HOLD_MS 5000
+static void srv_hold(void) { if (xprsnow_hold) xprsnow_hold(SRV_HOLD_MS); }
 
 static void srv_send(const uint8_t *pkt, size_t len, void *ctx)
 {
@@ -505,7 +518,7 @@ static void srv_request(int slot, uint32_t gen, const uint8_t link_id[RNS_HASH_L
 #if SRV_TASK
     if (xQueueSend(s_jobs, &j, 0) == pdTRUE) return;
 #else
-    if (!s_have_pending) { s_pending = j; s_have_pending = true; return; }
+    if (s_npend < SRV_WAIT) { s_pend[s_npend++] = j; return; }
 #endif
     free(j.packed);
     ESP_LOGW(TAG, "link request dropped: requests are waiting already");
@@ -549,6 +562,7 @@ static rns_src_t *srv_too_large(void)
 
 static void srv_run(srv_job_t *j)
 {
+    srv_hold();
     rns_src_t *src = NULL;
     bool answer = false;
     if (j->too) {
@@ -590,6 +604,21 @@ static void srv_run(srv_job_t *j)
     rns_serve_respond(j->slot, j->gen, j->rid, src);
     xSemaphoreGive(s_tx_lock);
 }
+
+#if !SRV_TASK
+/* The requests that wait, run here on the uplink's task, outside the lock,
+ * one at a time: the next when no answer is held any more. Called for every
+ * frame off the uplink, which is also what delivers an answer's proof. */
+static void srv_pump(void)
+{
+    while (s_npend > 0 && rns_serve_sending() == 0) {
+        srv_job_t j = s_pend[0];
+        memmove(&s_pend[0], &s_pend[1], sizeof s_pend[0] * (size_t)(s_npend - 1));
+        s_npend--;
+        srv_run(&j);
+    }
+}
+#endif
 
 #if SRV_TASK
 static void srv_task(void *arg)
@@ -720,6 +749,9 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
         xSemaphoreGive(s_tx_lock);
     }
 #endif
+    /* Every frame off the hub while a link is open renews the hold; the hub
+     * is never quiet for its five seconds. */
+    if (s_serving && rns_serve_links() > 0) srv_hold();
     if (s_serving && (p.packet_type == RNS_PACKET_LINKREQUEST || p.dest_type == RNS_DEST_LINK)) {
         bool mine = false, fed = false;
         int before = rns_serve_links();
@@ -747,16 +779,16 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
                      (long long)((esp_timer_get_time() - t0) / 1000));
         else if (after < before)
             ESP_LOGI(TAG, "link closed, %d open", after);
+        if (mine) {
 #if !SRV_TASK
-        /* The request that frame completed, run here, outside the lock. */
-        if (s_have_pending) {
-            srv_job_t j = s_pending;
-            s_have_pending = false;
-            srv_run(&j);
-        }
+            srv_pump();
 #endif
-        if (mine) return;
+            return;
+        }
     }
+#if !SRV_TASK
+    srv_pump();
+#endif
 
     /* A link this station opened (XPRS.md 11.2's bulk lane): its proof and
      * everything addressed to the link id go to whoever opened it. Cheap:

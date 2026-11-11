@@ -177,6 +177,32 @@ bool xapi_wc_local(httpd_req_t *req)
            (o0 == 100 && o1 >= 64 && o1 < 128);
 }
 
+/* The bytes this answer's body may have, 0 when nothing limits it. A call
+ * the station makes to itself for a visitor on a Reticulum link (xapi_rns.c)
+ * says how much it can carry; like X-XPRS-Via it is read from the loopback
+ * only. A handler that lists things sends as many as fit and no more. */
+size_t xapi_wc_room(httpd_req_t *req)
+{
+    char v[16];
+    if (httpd_req_get_hdr_value_str(req, "X-XPRS-Room", v, sizeof v) != ESP_OK) return 0;
+    int fd = httpd_req_to_sockfd(req);
+    struct sockaddr_storage sa;
+    socklen_t sl = sizeof sa;
+    if (fd < 0 || getpeername(fd, (struct sockaddr *)&sa, &sl) != 0) return 0;
+    bool lo = false;
+    if (sa.ss_family == AF_INET) {
+        lo = (ntohl(((struct sockaddr_in *)&sa)->sin_addr.s_addr) >> 24) == 127;
+#if LWIP_IPV6
+    } else if (sa.ss_family == AF_INET6) {
+        const uint8_t *a = ((struct sockaddr_in6 *)&sa)->sin6_addr.s6_addr;
+        static const uint8_t v4lo[13] = { 0,0,0,0,0,0,0,0,0,0,0xff,0xff,127 };
+        static const uint8_t lo6[16] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1 };
+        lo = memcmp(a, v4lo, 13) == 0 || memcmp(a, lo6, 16) == 0;
+#endif
+    }
+    return lo ? (size_t)strtoul(v, NULL, 10) : 0;
+}
+
 /* ---- the request's pieces ------------------------------------------- */
 static void query_val(httpd_req_t *req, const char *key, char *out, size_t cap)
 {
