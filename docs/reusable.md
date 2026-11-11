@@ -74,6 +74,24 @@ reuse potential.
   profile turns off reaches the page as data (`page.storage`, `file.put`),
   never as a different page.
 
+## Sharing the radio with WiFi
+
+- **`xprs_wifi_busy(ms)` / `xprs_wifi_is_busy()`** (`xprs_common/include/xprs_wifi_busy.h`)
+  -- "WiFi is serving a person now". Anything that serves somebody over WiFi
+  says so (the web server per connection, the Reticulum responder per packet
+  on a visitor's link); anything that shares the radio reads it and steps
+  back (Bluetooth: `xprsble_step_back`; ESP-NOW's long-range visits). A new
+  WiFi service calls the first; a new radio user reads the second. Never a
+  direct call from one bearer into another.
+- **`xprsble_step_back(bool)`** -- Bluetooth's controller down and its
+  memory to WiFi, then back with the same address and advert; started only
+  with `XPRSBLE_RESTART_BLOCK` contiguous (docs/esp32.md, "One radio, again").
+- **`alloc_failed()`** (xprs_app) -- every failed allocation printed with
+  its size and the largest free block: the first thing to read when a
+  driver says only "Malloc failed".
+- **Diagnostics on the C3:** `env:c3diag` prints heap per task with the
+  alive line; the alive line also lists sockets with unread input.
+
 ## Time (XPRS.md 4.8, 11.10, 15.7)
 
 - **`xst_clock_set(src, epoch, who)` / `xst_clock_src()`** — `common/xprs_station`.

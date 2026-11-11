@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "xprs_wifi_busy.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -488,12 +489,10 @@ static uint32_t      s_srv_requests;
 
 static uint32_t mono_s(void) { return (uint32_t)(esp_timer_get_time() / 1000000); }
 
-/* A visitor on a link is somebody using this station over WiFi: ESP-NOW's
- * visits to its home channel wait (xprsnow.h). A weak reference, so this
- * bearer builds and runs without that one. */
-extern void xprsnow_hold(uint32_t ms) __attribute__((weak));
+/* A visitor on a link is somebody using this station over WiFi: the radios
+ * that share WiFi's step back (xprs_wifi_busy.h). */
 #define SRV_HOLD_MS 5000
-static void srv_hold(void) { if (xprsnow_hold) xprsnow_hold(SRV_HOLD_MS); }
+static void srv_hold(void) { xprs_wifi_busy(SRV_HOLD_MS); }
 
 static void srv_send(const uint8_t *pkt, size_t len, void *ctx)
 {
@@ -749,9 +748,6 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
         xSemaphoreGive(s_tx_lock);
     }
 #endif
-    /* Every frame off the hub while a link is open renews the hold; the hub
-     * is never quiet for its five seconds. */
-    if (s_serving && rns_serve_links() > 0) srv_hold();
     if (s_serving && (p.packet_type == RNS_PACKET_LINKREQUEST || p.dest_type == RNS_DEST_LINK)) {
         bool mine = false, fed = false;
         int before = rns_serve_links();
@@ -765,6 +761,10 @@ static void on_frame(const uint8_t *frame, size_t len, void *ctx)
             if (waited > 1000) ESP_LOGW(TAG, "link packet waited %lld ms for the uplink", (long long)waited);
             mine = rns_serve_feed(&p, mono_s());
             fed = true;
+            /* Traffic on a visitor's link is WiFi serving somebody; an idle
+             * open link (a tab left open) is not, so Bluetooth is not kept
+             * from listening for as long as a page stays open. */
+            if (mine) srv_hold();
             xSemaphoreGive(s_tx_lock);
         } else {
             ESP_LOGW(TAG, "link packet dropped: the uplink stayed busy 15 s");

@@ -40,6 +40,7 @@ esp_err_t xprsble_start(const char *callsign)
 bool xprsble_is_active(void) { return false; }
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb) { (void)cb; }
 void xprsble_scan_duty(bool low) { (void)low; }
+bool xprsble_step_back(bool back) { (void)back; return true; }
 
 bool xprsble_send(const char *wire, int len)
 {
@@ -77,6 +78,7 @@ int xprsble_silent_for(void) { return -1; }
 #include "freertos/task.h"
 
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_mac.h"
 #include "esp_random.h"
@@ -387,6 +389,7 @@ static int build_ad(uint8_t subtype, const uint8_t *payload, int len,
 
 static bool s_scan_low;              /* the battery duty is engaged */
 static bool s_scanning;
+static bool s_scan_paused;           /* WiFi is serving somebody: no scan */
 
 static uint16_t scan_window(void)
 {
@@ -417,8 +420,14 @@ static void start_scan(void)
  * set. Recreating it is what makes the controller hand out a fresh random
  * address, and that churn fills peers' address books with several entries for
  * one station (docs/ble5.md §1). */
+/* The advert on the air, kept so a radio started again (xprsble_step_back)
+ * says the same thing at once instead of nothing until the next beacon. */
+static uint8_t s_last_ad[TN_ADV_DATA_MAX];
+static int     s_last_ad_n;
+
 static bool air_raw_ad(const uint8_t *ad, int n)
 {
+    if (n > 0 && n <= (int)sizeof s_last_ad) { memcpy(s_last_ad, ad, (size_t)n); s_last_ad_n = n; }
     if (!s_ble_up) return false;
     esp_err_t err = tn_adv_set_data(ad, (size_t)n);
     if (err != ESP_OK) ESP_LOGE(TAG, "adv: %s", esp_err_to_name(err));
@@ -516,6 +525,8 @@ bool xprsble_send(const char *wire, int len)
 
 #if CONFIG_XPRSBLE_BACKEND_TINYNIMBLE
 
+static esp_err_t radio_up(void);
+
 esp_err_t xprsble_start(const char *callsign)
 {
     if (callsign) snprintf(s_call, sizeof s_call, "%s", callsign);
@@ -528,6 +539,13 @@ esp_err_t xprsble_start(const char *callsign)
         return qerr;
     }
 
+    return radio_up();
+}
+
+/* The controller, our address, the advertising set and the scan: at start,
+ * and again after a step back for WiFi (xprsble_step_back). */
+static esp_err_t radio_up(void)
+{
     esp_err_t err = tn_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "tn_start: %s -- was WiFi started first?",
@@ -535,7 +553,8 @@ esp_err_t xprsble_start(const char *callsign)
         return err;
     }
 
-    /* One address, kept for the life of the station: see air_raw_ad(). */
+    /* One address, kept for the life of the station: see air_raw_ad(). The
+     * same after a restart, so a step back does not look like a new station. */
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_BT);
     mac[0] |= 0xC0;                       /* static random */
@@ -558,7 +577,7 @@ esp_err_t xprsble_start(const char *callsign)
      * tn_start() returns, so there is no window in which the radio looks ready
      * and is not. */
     s_ble_up = true;
-    start_scan();
+    if (!s_scan_paused) start_scan();
     ESP_LOGI(TAG, "BLE5 up as %s (tinynimble)", s_call[0] ? s_call : "(no callsign)");
     return ESP_OK;
 }
@@ -568,7 +587,7 @@ esp_err_t xprsble_start(const char *callsign)
 static void on_sync(void)
 {
     ble_hs_id_infer_auto(0, &s_own_addr_type);
-    start_scan();
+    if (!s_scan_paused) start_scan();
     s_ble_up = true;
     ESP_LOGI(TAG, "BLE5 up as %s", s_call[0] ? s_call : "(no callsign)");
 }
@@ -652,9 +671,76 @@ void xprsble_scan_duty(bool low)
 {
     if (low == s_scan_low) return;
     s_scan_low = low;
-    if (!s_ble_up) return;          /* it will start at the new window */
+    if (!s_ble_up || s_scan_paused) return;   /* it will start at the new window */
     stop_scan();
     start_scan();
+}
+
+/*
+ * Bluetooth steps back while WiFi serves somebody, and comes back after.
+ *
+ * On a C3 the controller holds about 34 KB of a heap that idles near 20 KB
+ * free with it, and a visitor's WiFi traffic needs more than that: frames
+ * waiting for air sit in the WiFi driver and lwIP, the driver can no longer
+ * allocate a receive buffer, and the station goes deaf for minutes. Pausing
+ * the scan alone did not help (docs/esp32.md, 2026-11-11). So, with the
+ * tinynimble backend, the controller is taken down and its memory goes back
+ * to WiFi; it comes up again with the same address and the same advert.
+ * Bluetooth is how nearby stations sync, so this lasts only while WiFi is
+ * in use. Returns false when the radio could not be brought back (the
+ * caller tries again later). With NimBLE only the scan pauses.
+ */
+static bool s_stepped_back;
+#ifndef XPRSBLE_RESTART_BLOCK
+/* Measured on a C3 (2026-11-11): the controller came back with a largest
+ * free block of 9.2 and 11.8 KB; an unguarded restart once asserted. */
+#define XPRSBLE_RESTART_BLOCK (9u * 1024u)
+#endif
+
+bool xprsble_step_back(bool back)
+{
+    if (back == s_stepped_back) return true;
+    /* Bluetooth that is not running (ble_on no, or not started yet) is not
+     * stepped back, so coming back never starts it. */
+    if (back && !s_ble_up) return true;
+#if CONFIG_XPRSBLE_BACKEND_TINYNIMBLE
+    if (back) {
+        s_scan_paused = true;
+        stop_scan();
+        s_ble_up = false;
+        s_adv_configured = false;
+        tn_stop();
+        s_stepped_back = true;
+        ESP_LOGI(TAG, "stepped back for WiFi: controller down, %u B free",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        return true;
+    }
+    /* The controller's init asserts in ROM when its allocation fails (seen:
+     * "BLE_INIT: Malloc failed", then a watchdog reset) instead of returning
+     * an error, so it is only tried with a block to spare. Free memory that
+     * WiFi has cut into pieces does not count. */
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (largest < XPRSBLE_RESTART_BLOCK) {
+        ESP_LOGW(TAG, "not back yet: largest free block %u B, the controller wants %u",
+                 (unsigned)largest, (unsigned)XPRSBLE_RESTART_BLOCK);
+        return false;
+    }
+    s_scan_paused = false;
+    if (radio_up() != ESP_OK) {
+        s_scan_paused = true;
+        return false;
+    }
+    if (s_last_ad_n) air_raw_ad(s_last_ad, s_last_ad_n);
+    s_stepped_back = false;
+    ESP_LOGI(TAG, "back after WiFi: controller up, %u B free (largest block was %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)largest);
+    return true;
+#else
+    s_scan_paused = back;
+    s_stepped_back = back;
+    if (s_ble_up) { if (back) stop_scan(); else start_scan(); }
+    return true;
+#endif
 }
 
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb) { s_rx_cb = cb; }

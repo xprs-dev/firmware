@@ -141,6 +141,9 @@ CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 # Preferring WiFi in the coexistence scheduler instead did not fix the page
 # (headers, then nothing), so it is not set.
 CONFIG_LWIP_TCP_MSS=536
+# A dead connection is aborted (rns_tcp.c), not left with lwIP to retransmit
+# its unsent bytes for minutes: on this heap that starved the WiFi deaf.
+CONFIG_LWIP_SO_LINGER=y
 # And the buffers sized to it: five segments each way (lwIP refuses less
 # than 2,440 B and silently keeps its default). The default 5,760 B
 # let every connection queue eleven of them, so three phones loading the

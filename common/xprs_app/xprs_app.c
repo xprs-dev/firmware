@@ -77,6 +77,10 @@ static char s_pass[64];
 #include "mbedtls/sha256.h"
 #include "driver/gpio.h"
 #include "lwip/sockets.h"
+#include "xprs_wifi_busy.h"
+#if CONFIG_HEAP_TASK_TRACKING
+#include "esp_heap_task_info.h"
+#endif
 #include "xprs_station.h"
 #include "xfw.h"
 #include "fw_publisher.h"
@@ -131,6 +135,7 @@ static uint32_t heap_floor(void);   /* the board's, or the default above */
 #include "soc/soc_caps.h"
 #include "esp_sntp.h"
 #include "esp_heap_caps.h"
+#include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
 #include "esp_core_dump.h"
 #include "esp_system.h"
@@ -3606,6 +3611,30 @@ static void ble_duty_apply(void)
     bool low = s_pwr_scan_low ||
                (s_board && s_board->ble_scan_light && serving);
     xprsble_scan_duty(low);
+    /* And Bluetooth steps back while WiFi serves a person: a visitor's
+     * Reticulum link, a page from the web server (xprs_wifi_busy.h). On a C3
+     * its controller's memory is what WiFi runs out of under a visitor's
+     * traffic, and the station went deaf for minutes (docs/esp32.md,
+     * 2026-11-11). Nearby stations sync over Bluetooth, so it comes back once
+     * WiFi has been quiet for BLE_BACK_QUIET_MS; a radio that could not come
+     * back is tried again every BLE_BACK_RETRY_S. */
+    {
+        /* A minute: the page polls every 15 s, and every restart is a risk
+         * (xprsble_step_back), so a visit is one step back, not one a poll. */
+        enum { BLE_BACK_QUIET_MS = 60000, BLE_BACK_RETRY_S = 30 };
+        static bool s_back;
+        static uint32_t s_back_tried_s;
+        uint32_t now_s = (uint32_t)(esp_timer_get_time() / 1000000);
+        if (xprs_wifi_is_busy()) {
+            if (!s_back) s_back = xprsble_step_back(true);
+        } else if (s_back && xprs_wifi_busy_since_ms() > BLE_BACK_QUIET_MS &&
+                   (!s_back_tried_s || now_s - s_back_tried_s >= BLE_BACK_RETRY_S)) {
+            s_back_tried_s = now_s;
+            if (xprsble_step_back(false)) { s_back = false; s_back_tried_s = 0; }
+            else ESP_LOGW(TAG, "Bluetooth did not come back after WiFi; again in %d s",
+                          BLE_BACK_RETRY_S);
+        }
+    }
 }
 
 static void pwr_ble_scan_duty(bool low)
@@ -4799,6 +4828,79 @@ static void status_task(void *arg)
                  (unsigned)xprsble_scan_results(), (unsigned)xprsble_ad_dropped(),
                  (unsigned)xprsble_chained(), (unsigned)xprsble_chain_lost(),
                  xprsble_silent_for(), (unsigned)s_idx_stack_free);
+        /* Sockets with input nobody has read yet. On WiFi a packet waiting in
+         * a socket's queue keeps a whole receive buffer (~1.6 KB) allocated
+         * whatever its size, and a board has a dozen: a task that stops
+         * reading one socket leaves the radio deaf with the heap looking
+         * merely low. Each entry: local port, u(dp)/t(cp), bytes queued. */
+        {
+            char q[160];
+            int qn = 0, held = 0;
+            for (int fd = LWIP_SOCKET_OFFSET; fd < LWIP_SOCKET_OFFSET + CONFIG_LWIP_MAX_SOCKETS; fd++) {
+                int avail = 0, type = 0;
+                socklen_t tl = sizeof type;
+                if (lwip_ioctl(fd, FIONREAD, &avail) != 0 || avail <= 0) continue;
+                getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &tl);
+                struct sockaddr_in sa;
+                socklen_t sl = sizeof sa;
+                unsigned port = getsockname(fd, (struct sockaddr *)&sa, &sl) == 0 ? ntohs(sa.sin_port) : 0;
+                held += avail;
+                if (qn < (int)sizeof q - 24)
+                    qn += snprintf(q + qn, sizeof q - qn, " %u%c:%d", port,
+                                   type == SOCK_DGRAM ? 'u' : 't', avail);
+            }
+            if (held) ESP_LOGW(TAG, "unread socket input %d B:%s", held, q);
+        }
+#if CONFIG_HEAP_TASK_TRACKING
+        /* The heap diagnostic build (env c3diag): the internal heap each task
+         * holds, largest first. "-" is memory allocated before the scheduler
+         * ran or by a task that has since ended. */
+        {
+            static heap_task_totals_t tot[24];
+            static size_t ntot;
+            heap_task_info_params_t hp = {
+                .caps = { MALLOC_CAP_INTERNAL }, .mask = { MALLOC_CAP_INTERNAL },
+                .totals = tot, .num_totals = &ntot, .max_totals = 24,
+            };
+            ntot = 0;
+            heap_caps_get_per_task_info(&hp);
+            char h[220];
+            int hn = 0;
+            for (int k = 0; k < 8; k++) {
+                int best = -1;
+                for (size_t i = 0; i < ntot; i++)
+                    if (tot[i].size[0] && (best < 0 || tot[i].size[0] > tot[best].size[0])) best = (int)i;
+                if (best < 0) break;
+                const char *nm = tot[best].task ? pcTaskGetName(tot[best].task) : "-";
+                hn += snprintf(h + hn, sizeof h - hn, " %s:%u/%u", nm,
+                               (unsigned)tot[best].size[0], (unsigned)tot[best].count[0]);
+                tot[best].size[0] = 0;
+                if (hn >= (int)sizeof h - 24) break;
+            }
+            ESP_LOGW(TAG, "heap by task (bytes/blocks):%s", h);
+            /* Once, a minute in: the archive task's blocks of 512 B or more,
+             * with the caller that took each (return address). */
+            static bool s_listed;
+            TaskHandle_t it = xTaskGetHandle("idx");
+            if (!s_listed && it && esp_timer_get_time() > 60000000LL) {
+                s_listed = true;
+                static heap_task_block_t blk[48];
+                TaskHandle_t want[1] = { it };
+                heap_task_info_params_t bp = {
+                    .caps = { MALLOC_CAP_INTERNAL }, .mask = { MALLOC_CAP_INTERNAL },
+                    .tasks = want, .num_tasks = 1,
+                    .num_totals = &ntot,  /* read even when no totals are asked */
+                    .blocks = blk, .max_blocks = 48,
+                };
+                ntot = 0;
+                size_t nblk = heap_caps_get_per_task_info(&bp);
+                ESP_LOGW(TAG, "idx blocks: %u; the archive's own state is at %p", (unsigned)nblk, (void *)s_index);
+                for (size_t i = 0; i < nblk; i++)
+                    if (blk[i].size >= 512)
+                        ESP_LOGW(TAG, "idx block %u B at %p", (unsigned)blk[i].size, blk[i].address);
+            }
+        }
+#endif
         {
             uint32_t v = 0, sf = 0, ws = 0, wd = 0;
             xprsnow_window_stats(&v, &sf, &ws, &wd);
@@ -10998,8 +11100,19 @@ static void ui_task(void *arg)
     }
 }
 
+/* Every failed allocation, with its size: "Malloc failed" from a driver says
+ * neither how much nor what it would have taken (the BLE controller's own
+ * report, docs/esp32.md). esp_rom_printf: this runs inside the allocator. */
+static void alloc_failed(size_t size, uint32_t caps, const char *fn)
+{
+    esp_rom_printf("alloc failed: %u B caps 0x%x in %s, largest free %u\n", (unsigned)size,
+                   (unsigned)caps, fn ? fn : "?",
+                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
 void xapp_run(const xapp_board_t *board)
 {
+    heap_caps_register_failed_alloc_callback(alloc_failed);
     /*
      * STDIN MUST NOT BLOCK, and on a board whose console is a plain UART it
      * does. The UI task reads one character a tick -- that is how 'S' takes

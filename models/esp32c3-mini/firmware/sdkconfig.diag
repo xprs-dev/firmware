@@ -1,0 +1,3 @@
+# The heap diagnostic build (env c3diag): who holds the internal heap, per
+# task, printed with the alive line. Costs a few bytes per allocation.
+CONFIG_HEAP_TASK_TRACKING=y

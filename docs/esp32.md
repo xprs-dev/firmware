@@ -2279,6 +2279,93 @@ a running BLE controller takes the radio from an *unassociated* station; a
 SoftAP, which sends its own beacons, keeps the WiFi side scheduled the way
 association does.
 
+### One radio, again: a visitor over WiFi with Bluetooth on (2026-11-11)
+
+A C3 on a router (X3VGAZ) answering a browser over Reticulum
+(`xprs.dev/in/<callsign>`, about 25 API calls per portal load, answers of
+2 to 6 KB) went deaf for minutes at a time: 70 to 100 % ping loss, its hub
+socket timing out, the portal never loading, while still associated and
+with Bluetooth receiving throughout. Eight portal loads 2.5 minutes apart:
+
+| | Bluetooth on | Bluetooth off | on, scan paused while WiFi serves | on, controller stepped back while WiFi serves |
+|---|---|---|---|---|
+| free heap | 4 to 20 KB, stuck at 4 to 8 KB for minutes | 35 to 61 KB | 6 to 12 KB | 10 to 50 KB, mostly 35 to 50 |
+| ping loss | 0 to 100 % | 0 to 5 % | 30 to 100 % | 0 % (one run 20 %) |
+| hub socket redials | 3 to 7 | 0 | 9 | 0 to 2 |
+| portal loaded | 4 of 8 | 8 of 8, 3 to 5 s | 3 of 8, then never | 13 of 13, 4.6 to 17 s |
+
+**What it was, found by heap per task, not by guessing.** `env:c3diag`
+(`sdkconfig.diag`, `CONFIG_HEAP_TASK_TRACKING`) prints, with every alive
+line, the internal heap each task holds, and lists one task's blocks once.
+Quiet, the WiFi driver held 20.7 KB and lwIP's task (`tiT`) 3 to 8 KB. In a
+deaf phase the driver held 25 to 34 KB and `tiT` 10 to 15 KB, for minutes:
+frames waiting for air time. On one radio Bluetooth's scan windows leave
+WiFi too little of it on a weak link (the section above); what cannot go out
+waits in the driver and in lwIP, takes the heap, and with the heap gone the
+driver cannot allocate a receive buffer (`wifi:m f null`), so the ACKs that
+would free it never arrive. Nothing leaked: the archive's 43 KB (`idx`) is
+its state, its writer's stack, the log ring, the record queue, the replay
+page and the gossip state, the same at boot and an hour later. Bluetooth's
+own share is about 34 KB (the boot allocations fell from 144.6 to 110.4 KB
+with `ble_on no`).
+
+What did not help, so nobody repeats it: fewer dynamic WiFi TX buffers (16 to
+8) with AMPDU off in both directions -- the median free heap fell from about
+17 to 8.7 KB; a socket-by-socket check for unread input -- none ever held
+any; and the lwIP task was alive throughout (a job posted to it ran at once).
+
+**What did.** Bluetooth cannot simply be off: nearby stations sync over it
+without sharing a LAN. Pausing its scan was not enough (the table): on this
+board the trouble is the controller's ~34 KB, not only its air time. So it
+steps back while WiFi serves a person and comes back after:
+`xprs_wifi_busy(ms)` (xprs_common) is said by the web server on every
+connection and by the Reticulum responder on every packet of a visitor's
+link; `ble_duty_apply()` then calls `xprsble_step_back(true)`, which takes
+the tinynimble controller down (`tn_stop`) and gives its memory to WiFi, and
+`xprsble_step_back(false)` a minute after WiFi went quiet, which brings it
+up with the same static address (from the MAC) and the advert it had. A tab
+left open (an idle link) does not hold it; a visit is one step back, not one
+per poll.
+
+The restart is the risky half. `esp_bt_controller_init()` does not return an
+error when an allocation fails: it prints `BLE_INIT: Malloc failed` and
+asserts in ROM (`emi.c`), and the interrupt watchdog resets the board; that
+happened once in 31 unguarded cycles, with 37 KB free. Free memory is not
+the measure, the largest block is: after a visit WiFi leaves the freed space
+in pieces (40 KB free, 9 to 17 KB the largest). The controller came back
+every time with a largest block of 9.2 to 11.8 KB, so it is started only
+with 9 KB to spare (`XPRSBLE_RESTART_BLOCK`) and otherwise tried again every
+30 s. `alloc_failed()` in xprs_app prints the size of every failed
+allocation (`heap_caps_register_failed_alloc_callback`), which is how the
+driver's silent failures got a number: the WiFi driver's receive buffers are
+1,700 bytes, and with Bluetooth back and 4 KB free they failed 1,398 times in
+twenty minutes between visits. A C3 that keeps Bluetooth, the Reticulum
+uplink and an archive runs at that edge whenever nobody visits too; it needs
+more permanent headroom, not only this.
+
+**And a dead connection is aborted, not closed.** A socket closed with
+unsent bytes leaves them with lwIP, retransmitted for minutes (12 tries with
+backoff). Seven hub redials held about 15 KB in `tiT` that way, which on
+this heap is the difference between receiving and not. `rns_tcp.c` and the
+loopback in `xapi_rns.c` set `SO_LINGER` to 0 on a failed connection
+(`CONFIG_LWIP_SO_LINGER=y` in the C3's defaults; without it the option is
+refused and nothing changes).
+
+**ESP-NOW visiting another channel drops a station off its router.** A
+station on a router that leaves its channel 80 ms every second (the
+long-range home channel) missed the router's group-key renewal, every 10
+minutes on a FRITZ!Box, and was dropped each time (the driver's `run -> init`
+line carries reason 16, group key update timeout, as `0x10c0`). No drop in
+20 minutes without the visits. That is why only the long-range profile has
+a channel of its own (docs/profiles.md).
+
+**Flashing: `pio run -t upload` is not how a C3 station is flashed.** It
+writes the application at 0x10000, over otadata and phy_init, and the
+board boot-loops ("No bootable app partitions"). The application goes to
+its OTA slot, `esptool.py write_flash 0x20000 firmware.bin`; recovery is
+`erase_region 0xf000 0x3000` and the same write. NVS and the station's
+volume are not touched by either.
+
 ### This board's receiver is thirty decibels down, and the trace that proved it (2026-09-12)
 
 The C3 listed a phone from its own Bluetooth adverts and never took the

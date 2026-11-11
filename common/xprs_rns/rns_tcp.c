@@ -255,6 +255,13 @@ static void rns_tcp_task(void *arg)
         xSemaphoreTake(s_tx_mtx, portMAX_DELAY);
         s_sock = -1;
         xSemaphoreGive(s_tx_mtx);
+        /* Aborted, not closed: this connection is dead, and a graceful close
+         * leaves what it had not sent with lwIP, retransmitted for minutes.
+         * On a C3 seven redials held 15 KB that way, the WiFi had no heap to
+         * receive the ACKs that would have freed it, and the station was
+         * deaf until lwIP gave up. Needs CONFIG_LWIP_SO_LINGER. */
+        struct linger lg = { .l_onoff = 1, .l_linger = 0 };
+        setsockopt(sock, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
         close(sock);
         if (s_running) vTaskDelay(pdMS_TO_TICKS(RECONNECT_FAST_MS));
     }

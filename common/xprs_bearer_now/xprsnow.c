@@ -27,6 +27,7 @@
 #include "esp_now.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "xprs_wifi_busy.h"
 #include "esp_netif_net_stack.h"
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
@@ -130,7 +131,7 @@ static volatile uint32_t s_visits, s_switch_fail, s_win_sent, s_win_dropped;
  * seconds. A station nobody is talking to visits every second as before.
  * That is the rule for traffic nobody announced (a ping, a client of some
  * other service). Traffic that is announced is held for outright:
- * xprsnow_hold(), below.
+ * xprs_wifi_busy(), below.
  *
  * The count is taken where lwIP is handed a frame: the interface's input
  * function is wrapped (IN THE WIFI TASK: one test and one increment). */
@@ -166,36 +167,26 @@ static void nw_watch_netifs(void)
     }
 }
 
-/* Somebody is using this station over WiFi: a Reticulum link is open, the
- * web server took a connection. Whoever knows says so, and for that long no
- * visit leaves the router's channel -- however long it lasts: ESP-NOW is
- * there for range, such visitors are few, and a station that hops away from
- * the one it is serving serves badly (the operator's decision, 2026-11-11).
- * What waits in the window queue goes out at the first visit after. */
-static volatile uint32_t s_hold_until_ms, s_hold_last_ms;
-static volatile bool     s_hold_any;
+/* Somebody is using this station over WiFi (xprs_wifi_busy.h: a Reticulum
+ * link is open, the web server took a connection): for that long no visit
+ * leaves the router's channel -- ESP-NOW is there for range, such visitors
+ * are few, and a station that hops away from the one it is serving serves
+ * badly (the operator's decision, 2026-11-11). What waits in the window
+ * queue goes out at the first visit after. */
 static volatile uint32_t s_held;
-
-void xprsnow_hold(uint32_t ms)
-{
-    uint32_t now = nw_now_ms(), until = now + ms;
-    if (!s_hold_any || (int32_t)(until - s_hold_until_ms) > 0) s_hold_until_ms = until;
-    s_hold_last_ms = now;
-    s_hold_any = true;
-}
 
 /* True when the visit about to start should be put off. */
 static bool nw_wifi_busy(void)
 {
-    uint32_t cnt = s_uni_rx, now = nw_now_ms();
+    uint32_t cnt = s_uni_rx;
     s_uni_last = cnt - s_uni_seen;
     s_uni_seen = cnt;
     if (s_uni_last > s_uni_peak) s_uni_peak = s_uni_last;
     bool rate = s_uni_last >= NW_BUSY_FRAMES;
-    if (s_hold_any && (int32_t)(s_hold_until_ms - now) > 0) { s_held++; s_skip_run = 0; return true; }
+    if (xprs_wifi_is_busy()) { s_held++; s_skip_run = 0; return true; }
     /* Traffic that follows a hold within a minute is the same visitor still
      * at it (a long download on a connection opened a while ago). */
-    if (rate && s_hold_any && now - s_hold_last_ms < NW_HOLD_TRAIL_MS) { s_held++; s_skip_run = 0; return true; }
+    if (rate && xprs_wifi_busy_since_ms() < NW_HOLD_TRAIL_MS) { s_held++; s_skip_run = 0; return true; }
     if (rate && s_skip_run < NW_BUSY_SKIPS) {
         s_skip_run++;
         s_skipped++;

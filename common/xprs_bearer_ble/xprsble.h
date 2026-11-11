@@ -92,6 +92,15 @@ bool xprsble_is_active(void);
  */
 void xprsble_scan_duty(bool low);
 
+/**
+ * Step back while WiFi serves somebody (a visitor's link, a page), and come
+ * back after. With tinynimble the controller goes down and gives its memory
+ * to WiFi, then comes up with the same address and advert; with NimBLE only
+ * the scan pauses. False when the radio could not come back yet (try again
+ * later). Driven by xprs_app from xprs_wifi_busy.h.
+ */
+bool xprsble_step_back(bool back);
+
 /** Register the receive hook. Called on the NimBLE host task: copy and return. */
 void xprsble_set_rx_cb(xprsble_rx_cb_t cb);
 

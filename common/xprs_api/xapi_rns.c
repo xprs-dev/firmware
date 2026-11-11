@@ -468,7 +468,12 @@ static bool loopback(const char *method, const char *path, const char *query,
     ok = read_body(fd, r, buf, extra);
     if (!ok) why = "body";
 out:
-    if (!ok) ESP_LOGW(TAG, "loopback %s %s failed at: %s (errno %d)", method, path, why, errno);
+    if (!ok) {
+        ESP_LOGW(TAG, "loopback %s %s failed at: %s (errno %d)", method, path, why, errno);
+        /* Aborted: a failed call's unsent bytes are not kept by lwIP. */
+        struct linger lg = { .l_onoff = 1, .l_linger = 0 };
+        setsockopt(fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
+    }
     close(fd);
     return ok;
 }

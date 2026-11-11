@@ -3,6 +3,7 @@
  * @brief The station's HTTP API (spec/API-HTTP.md).
  */
 
+#include "xprs_wifi_busy.h"
 #include "xprs_api.h"
 #include "xprs_station.h"
 #include "xapi_send.h"
@@ -936,14 +937,12 @@ static esp_err_t h_wifi_post(httpd_req_t *req)
 }
 
 /* A connection to the web server is somebody using this station over WiFi
- * (the page, its API, a file): ESP-NOW's visits to its home channel wait
- * while it is served (xprsnow.h). A weak reference: the API builds and runs
- * on a board without that bearer. */
-extern void xprsnow_hold(uint32_t ms) __attribute__((weak));
+ * (the page, its API, a file): the radios that share WiFi's step back while
+ * it is served (xprs_wifi_busy.h). */
 static esp_err_t api_session_open(httpd_handle_t hd, int sockfd)
 {
     (void)hd; (void)sockfd;
-    if (xprsnow_hold) xprsnow_hold(5000);
+    xprs_wifi_busy(5000);
     return ESP_OK;
 }
 
