@@ -1970,6 +1970,15 @@ static void xi_tails_trim(xprsidx_t *st)
                 if (win[k] == 0 || win[k] < lo || win[k] >= hi) dead++;
         }
         if (dead * 4u < XI_TAIL_TRIM_MIN) { fclose(f); continue; }
+        if (dead >= total) {
+            /* Nothing alive: the file goes, which needs no room at all. */
+            fclose(f);
+            int rerr = remove(path) == 0 ? 0 : errno;
+            (void)rerr;
+            XI_LOGW("type tail %s: all %u entries dead, removed%s (errno %d)", path,
+                    (unsigned)total, rerr ? " -- FAILED" : "", rerr);
+            continue;
+        }
         uint32_t w = 0;
         bool ok = true;
         for (uint32_t i = 0; ok && i < total; i += 64) {
@@ -1988,8 +1997,7 @@ static void xi_tails_trim(xprsidx_t *st)
         if (ok && w && ftruncate(fileno(f), (off_t)w * 4) != 0) { ok = false; terr = errno; }
         XI_FSYNC(f);
         fclose(f);
-        /* Nothing left alive: the file goes, which needs no room at all. */
-        if (ok && !w && remove(path) != 0) { ok = false; terr = errno; }
+        (void)terr;
         XI_LOGW("type tail %s: %u of %u entries dropped%s (errno %d)", path, (unsigned)(total - w),
                 (unsigned)total, ok ? "" : ", incomplete", terr);
     }
