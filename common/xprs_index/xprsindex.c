@@ -1948,7 +1948,7 @@ static void xi_tails_trim(xprsidx_t *st)
 {
     xi_tail_close(st);
     for (int t = 0; t < XI_T__COUNT; t++) {
-        char path[96], tmp[100];
+        char path[96];
         xi_type_path(st, path, sizeof path, t);
         uint32_t size = xi_file_size(path);
         if (size < XI_TAIL_TRIM_MIN) continue;
