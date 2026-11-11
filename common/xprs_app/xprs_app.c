@@ -4778,6 +4778,31 @@ static void storage_report(void)
     }
     closedir(d);
     ESP_LOGW(TAG, "%s", line);
+
+    /* And the archive's directory by kind of file: what holds the room. */
+    static const char *const kinds[] = { "seg_", "g_", "zone", "t", "" };
+    uint64_t sum[5] = {0};
+    int cnt[5] = {0};
+    d = opendir("/idx/xprs");
+    if (!d) return;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        int k = snprintf(p, sizeof p, "/idx/xprs/%s", e->d_name);
+        if (k < 0 || k >= (int)sizeof p) continue;
+        struct stat st;
+        if (stat(p, &st) != 0) continue;
+        uint64_t b2 = S_ISDIR(st.st_mode) ? du(p, 2) : (uint64_t)st.st_size;
+        int i = 0;
+        while (kinds[i][0] && strncmp(e->d_name, kinds[i], strlen(kinds[i])) != 0) i++;
+        sum[i] += b2; cnt[i]++;
+        if (!kinds[i][0]) ESP_LOGW(TAG, "storage /idx/xprs other: %s %lluK", e->d_name,
+                                   (unsigned long long)((b2 + 1023) / 1024));
+    }
+    closedir(d);
+    ESP_LOGW(TAG, "storage /idx/xprs: segments %d=%lluK gossip %d=%lluK zone=%lluK types=%lluK other %d=%lluK",
+             cnt[0], (unsigned long long)(sum[0] / 1024), cnt[1], (unsigned long long)(sum[1] / 1024),
+             (unsigned long long)(sum[2] / 1024), (unsigned long long)(sum[3] / 1024),
+             cnt[4], (unsigned long long)(sum[4] / 1024));
 }
 
 static void status_task(void *arg)
