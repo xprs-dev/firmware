@@ -677,6 +677,15 @@ xgossip_t *xgossip_open(const char *dir)
      * archive lives in -- and this checks rather than assumes.
      */
     mkdir(g->dir, 0777);
+    /* The budget and the trim first: on a volume this store filled, the
+     * probe below cannot be written until the trim has given room back
+     * (seen: "Permission denied" on a C3 with 0 KB free). */
+    xgossip_set_always_on(g, false);
+    uint32_t rows = 0;
+    for (int b = 0; b < XG_BUCKETS; b++) {
+        xg_scan(g, b, NULL, &g->scan);
+        rows += (uint32_t)xg_trim(g, b, g->scan.rows);
+    }
     char probe[112];
     snprintf(probe, sizeof probe, "%s/g_probe.tmp", g->dir);
     FILE *pf = fopen(probe, "wb");
@@ -689,13 +698,6 @@ xgossip_t *xgossip_open(const char *dir)
     fclose(pf);
     remove(probe);
     g->ready = true;
-    xgossip_set_always_on(g, false);
-
-    uint32_t rows = 0;
-    for (int b = 0; b < XG_BUCKETS; b++) {
-        xg_scan(g, b, NULL, &g->scan);
-        rows += (uint32_t)xg_trim(g, b, g->scan.rows);
-    }
     g->st.rows = rows;
     g->st.bytes = rows * (uint32_t)sizeof(xg_rec_t);
     XG_LOGI("gossip open %s: %u sighting(s)", dir, (unsigned)rows);
