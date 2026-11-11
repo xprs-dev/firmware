@@ -4730,6 +4730,54 @@ static void tasks_report(void)
 #endif
 }
 
+/* Bytes under [path], files and subdirectories, by walking it (FAT keeps
+ * no totals). [depth] bounds the walk; a C3's /idx is two levels deep. */
+static uint64_t du(const char *path, int depth)
+{
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    uint64_t sum = 0;
+    struct dirent *e;
+    char p[160];
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) { if (depth > 0) sum += du(p, depth - 1); }
+        else sum += (uint64_t)st.st_size;
+    }
+    closedir(d);
+    return sum;
+}
+
+/* What the station's volume holds, by top-level entry, with its total and
+ * free: a full volume stops the archive rolling a segment (docs/esp32.md),
+ * and only this says which store grew into the archive's room. */
+static void storage_report(void)
+{
+    uint64_t total = 0, freeb = 0;
+    if (esp_vfs_fat_info("/idx", &total, &freeb) != ESP_OK || !total) return;
+    char line[256];
+    int n = snprintf(line, sizeof line, "storage /idx: %lluK total, %lluK free:",
+                     (unsigned long long)(total / 1024), (unsigned long long)(freeb / 1024));
+    DIR *d = opendir("/idx");
+    if (!d) return;
+    struct dirent *e;
+    char p[160];
+    while ((e = readdir(d)) && n < (int)sizeof line - 24) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(p, sizeof p, "/idx/%s", e->d_name);
+        struct stat st;
+        if (stat(p, &st) != 0) continue;
+        uint64_t b = S_ISDIR(st.st_mode) ? du(p, 3) : (uint64_t)st.st_size;
+        n += snprintf(line + n, sizeof line - n, " %s=%lluK", e->d_name,
+                      (unsigned long long)((b + 1023) / 1024));
+    }
+    closedir(d);
+    ESP_LOGW(TAG, "%s", line);
+}
+
 static void status_task(void *arg)
 {
     (void)arg;
@@ -4828,6 +4876,14 @@ static void status_task(void *arg)
                  (unsigned)xprsble_scan_results(), (unsigned)xprsble_ad_dropped(),
                  (unsigned)xprsble_chained(), (unsigned)xprsble_chain_lost(),
                  xprsble_silent_for(), (unsigned)s_idx_stack_free);
+        {
+            static int64_t s_storage_at;
+            int64_t up = esp_timer_get_time();
+            if (up > 60000000LL && (!s_storage_at || up - s_storage_at > 600000000LL)) {
+                s_storage_at = up;
+                storage_report();
+            }
+        }
         /* Sockets with input nobody has read yet. On WiFi a packet waiting in
          * a socket's queue keeps a whole receive buffer (~1.6 KB) allocated
          * whatever its size, and a board has a dozen: a task that stops
