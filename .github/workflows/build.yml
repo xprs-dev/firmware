@@ -53,6 +53,14 @@ jobs:
           echo "env=$ENV" >> "$GITHUB_OUTPUT"
       - name: Build
         run: pio run -d "${{ steps.proj.outputs.proj }}" -e "${{ steps.proj.outputs.env }}"
+      - name: Size by component (also when the image is too large)
+        if: always()
+        run: |
+          MAP="${{ steps.proj.outputs.proj }}/.pio/build/${{ steps.proj.outputs.env }}/firmware.map"
+          [ -f "$MAP" ] || exit 0
+          IDF=$(ls -d ~/.platformio/packages/framework-espidf)
+          python3 -m pip install -q -r "$IDF/tools/requirements/requirements.core.txt" >/dev/null 2>&1 || true
+          IDF_PATH="$IDF" python3 "$IDF/tools/idf_size.py" --archives "$MAP" | head -45
       - uses: actions/upload-artifact@v4
         with:
           name: image-${{ matrix.board }}
