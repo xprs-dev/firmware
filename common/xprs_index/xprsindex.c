@@ -1984,11 +1984,14 @@ static void xi_tails_trim(xprsidx_t *st)
             }
         }
         fflush(f);
-        if (ok && ftruncate(fileno(f), (off_t)w * 4) != 0) ok = false;
+        int terr = 0;
+        if (ok && w && ftruncate(fileno(f), (off_t)w * 4) != 0) { ok = false; terr = errno; }
         XI_FSYNC(f);
         fclose(f);
-        XI_LOGW("type tail %s: %u of %u entries dropped%s", path, (unsigned)(total - w),
-                (unsigned)total, ok ? "" : " (incomplete)");
+        /* Nothing left alive: the file goes, which needs no room at all. */
+        if (ok && !w && remove(path) != 0) { ok = false; terr = errno; }
+        XI_LOGW("type tail %s: %u of %u entries dropped%s (errno %d)", path, (unsigned)(total - w),
+                (unsigned)total, ok ? "" : ", incomplete", terr);
     }
 }
 
