@@ -1947,51 +1947,48 @@ static uint64_t xi_used_bytes(const xprsidx_t *st)
 static void xi_tails_trim(xprsidx_t *st)
 {
     xi_tail_close(st);
+    const uint32_t lo = st->oldest_first, hi = st->next_index;
     for (int t = 0; t < XI_T__COUNT; t++) {
         char path[96];
         xi_type_path(st, path, sizeof path, t);
         uint32_t size = xi_file_size(path);
         if (size < XI_TAIL_TRIM_MIN) continue;
-        FILE *src = fopen(path, "rb");
-        if (!src) continue;
-        /* Count the dead prefix. */
-        uint32_t win[64], dead = 0, total = size / 4u;
-        bool more = true;
-        while (more && dead < total) {
-            uint32_t take = total - dead < 64 ? total - dead : 64;
-            if (fseek(src, (long)dead * 4L, SEEK_SET) != 0 ||
-                fread(win, 4, take, src) != take) break;
-            for (uint32_t k = 0; k < take; k++) {
-                if (win[k] >= st->oldest_first) { more = false; dead += k; break; }
-                if (k == take - 1) dead += take;
+        /* Every entry outside the live range goes, wherever it is: the tails
+         * were meant to be ascending, so this used to drop only a dead
+         * PREFIX, and on a C3 whose tails held 51,000 entries for 6,400
+         * records (2026-11-11) the prefix was empty. One pass to count,
+         * one to compact in place: a copy beside it needs room, and the
+         * volume this runs on is the one that filled. The tail is derived
+         * (see the header): cut midway it answers less, never wrongly. */
+        FILE *f = fopen(path, "r+b");
+        if (!f) { XI_LOGW("type tail %s: cannot open to trim (errno %d)", path, errno); continue; }
+        uint32_t win[64], total = size / 4u, dead = 0;
+        for (uint32_t i = 0; i < total; i += 64) {
+            uint32_t take = total - i < 64 ? total - i : 64;
+            if (fseek(f, (long)i * 4L, SEEK_SET) != 0 || fread(win, 4, take, f) != take) break;
+            for (uint32_t k = 0; k < take; k++)
+                if (win[k] == 0 || win[k] < lo || win[k] >= hi) dead++;
+        }
+        if (dead * 4u < XI_TAIL_TRIM_MIN) { fclose(f); continue; }
+        uint32_t w = 0;
+        bool ok = true;
+        for (uint32_t i = 0; ok && i < total; i += 64) {
+            uint32_t take = total - i < 64 ? total - i : 64;
+            ok = fseek(f, (long)i * 4L, SEEK_SET) == 0 && fread(win, 4, take, f) == take;
+            uint32_t m = 0;
+            for (uint32_t k = 0; ok && k < take; k++)
+                if (!(win[k] == 0 || win[k] < lo || win[k] >= hi)) win[m++] = win[k];
+            if (ok && m) {
+                ok = fseek(f, (long)w * 4L, SEEK_SET) == 0 && fwrite(win, 4, m, f) == m;
+                w += m;
             }
         }
-        if (dead * 4u < XI_TAIL_TRIM_MIN) { fclose(src); continue; }
-        fclose(src);
-        /* In place: the live suffix moved down, then the file cut short. A
-         * copy beside it needs room, and the volume this runs on is the one
-         * that filled -- the copy failed every time on a C3 with 0 KB free
-         * and the tails reached 202 KB (2026-11-11). Cut midway, the tail
-         * holds the live entries twice, still ascending at the end, which
-         * the newest-N reader does not mind; it is derived anyway. */
-        FILE *f = fopen(path, "r+b");
-        if (!f) continue;
-        bool ok = true;
-        for (uint32_t i = dead; ok && i < total; i += 64) {
-            uint32_t take = total - i < 64 ? total - i : 64;
-            ok = fseek(f, (long)i * 4L, SEEK_SET) == 0 &&
-                 fread(win, 4, take, f) == take &&
-                 fseek(f, (long)(i - dead) * 4L, SEEK_SET) == 0 &&
-                 fwrite(win, 4, take, f) == take;
-        }
         fflush(f);
-        if (ok) {
-            if (ftruncate(fileno(f), (off_t)(total - dead) * 4) != 0) ok = false;
-            XI_FSYNC(f);
-        }
+        if (ok && ftruncate(fileno(f), (off_t)w * 4) != 0) ok = false;
+        XI_FSYNC(f);
         fclose(f);
-        XI_LOGI("type tail %s: %u dead entries dropped%s", path, (unsigned)dead,
-                ok ? "" : " (incomplete)");
+        XI_LOGW("type tail %s: %u of %u entries dropped%s", path, (unsigned)(total - w),
+                (unsigned)total, ok ? "" : " (incomplete)");
     }
 }
 
