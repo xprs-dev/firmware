@@ -161,3 +161,7 @@ CONFIG_LWIP_TCP_WND_DEFAULT=2680
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_FATFS_PER_FILE_CACHE=n
 CONFIG_LWIP_IPV6=n
+
+# No LoRa radio on this board (.lora = NULL): the bearer is built as stubs
+# and the SX1262, Meshtastic and MeshCore code is not linked.
+CONFIG_XPRS_LORA=n

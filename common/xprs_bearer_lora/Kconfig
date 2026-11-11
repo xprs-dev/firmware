@@ -1,0 +1,11 @@
+menu "XPRS LoRa"
+
+config XPRS_LORA
+    bool "LoRa radio code (the SX1262 bearer, Meshtastic and MeshCore)"
+    default y
+    help
+        Off on a board with no LoRa radio: the bearer is built as stubs
+        (xprslora_stub.c) and the SX1262, Meshtastic and MeshCore code is
+        not linked, about 44 KB of flash on the e-paper board.
+
+endmenu

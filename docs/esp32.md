@@ -1593,6 +1593,20 @@ seven `multiboard` targets. That is why m5stack-core stayed broken for ten
 hours after a shared component gained a new REQUIRES. Adding the three board
 projects to that script is outstanding.
 
+### A board without LoRa need not carry it (2026-11-11)
+
+The Reticulum responder pushed the e-paper image 15.7 KB past its 1.5 MB
+OTA slot, and the board has no LoRa radio, yet it linked the SX1262 bearer,
+Meshtastic and MeshCore (about 44 KB; `idf_size.py --archives`, printed by
+CI's build.yml for every board). `CONFIG_XPRS_LORA=n` builds
+`xprslora_stub.c` instead: every function of `xprslora.h`, generated from
+its prototypes, doing nothing (never active, nothing available, a start is
+`ESP_ERR_NOT_SUPPORTED`). Nothing in `xprs_app` changed: its calls land on
+the stubs, and nothing references the mesh code, so the linker leaves it
+out. Set in the defaults of every board with `.lora = NULL` (e-paper, C3,
+T-Dongle, M5Stack, generic). Growing the OTA slots instead was not an
+option: a partition table does not travel over the air.
+
 ### Touch, and the three rules it arrived with
 
 The T-Deck's GT911 is polled -- no interrupt -- by LVGL's own indev timer,

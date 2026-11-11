@@ -271,3 +271,7 @@ CONFIG_MBEDTLS_ECP_DP_CURVE25519_ENABLED=n
 # 2026-11-10): 3584, the IDF default, overflowed on the T-Dongle. 4096 as
 # every other board.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# No LoRa radio on this board (.lora = NULL): the bearer is built as stubs
+# and the SX1262, Meshtastic and MeshCore code is not linked.
+CONFIG_XPRS_LORA=n

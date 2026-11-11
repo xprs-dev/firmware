@@ -68,3 +68,7 @@ CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=12
 CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
 CONFIG_LWIP_TCP_WND_DEFAULT=2880
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+
+# No LoRa radio on this board (.lora = NULL): the bearer is built as stubs
+# and the SX1262, Meshtastic and MeshCore code is not linked.
+CONFIG_XPRS_LORA=n
