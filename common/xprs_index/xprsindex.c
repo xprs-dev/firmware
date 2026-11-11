@@ -1963,20 +1963,24 @@ static void xi_tails_trim(xprsidx_t *st)
         FILE *f = fopen(path, "r+b");
         if (!f) { XI_LOGW("type tail %s: cannot open to trim (errno %d)", path, errno); continue; }
         uint32_t win[64], total = size / 4u, dead = 0;
+        bool readable = true;
         for (uint32_t i = 0; i < total; i += 64) {
             uint32_t take = total - i < 64 ? total - i : 64;
-            if (fseek(f, (long)i * 4L, SEEK_SET) != 0 || fread(win, 4, take, f) != take) break;
+            if (fseek(f, (long)i * 4L, SEEK_SET) != 0 || fread(win, 4, take, f) != take) {
+                readable = false;          /* seen: a tail the full volume damaged */
+                break;
+            }
             for (uint32_t k = 0; k < take; k++)
                 if (win[k] == 0 || win[k] < lo || win[k] >= hi) dead++;
         }
-        if (dead * 4u < XI_TAIL_TRIM_MIN) { fclose(f); continue; }
-        if (dead >= total) {
+        if (readable && dead * 4u < XI_TAIL_TRIM_MIN) { fclose(f); continue; }
+        if (!readable || dead >= total) {
             /* Nothing alive: the file goes, which needs no room at all. */
             fclose(f);
             int rerr = remove(path) == 0 ? 0 : errno;
             (void)rerr;
-            XI_LOGW("type tail %s: all %u entries dead, removed%s (errno %d)", path,
-                    (unsigned)total, rerr ? " -- FAILED" : "", rerr);
+            XI_LOGW("type tail %s: %s, removed%s (errno %d)", path,
+                    readable ? "nothing alive" : "unreadable", rerr ? " -- FAILED" : "", rerr);
             continue;
         }
         uint32_t w = 0;
