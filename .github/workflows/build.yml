@@ -1,0 +1,61 @@
+name: build
+
+# Every board built on every push, so a change is checked without a bench
+# (the Raspberry Pi's shared build queue can wait an hour). Nothing is signed
+# or published here: that is release.yml, from a tag. The images are kept
+# as artifacts for a week; a bench flashes one with
+#   gh run download <run> -n image-esp32c3-mini
+#   esptool.py --chip esp32c3 write_flash 0x20000 firmware.bin
+# (a C3 station's application goes to its OTA slot, docs/esp32.md).
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore: ['docs/**', '**.md', 'models/*/prebuilt*/**']
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIO_VERSION: '6.1.18'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [tdeck, tdongle-s3, m5stack-core, heltec-v3, epaper-1in54, esp32c3-mini, generic]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: PlatformIO
+        run: pip install "platformio==$PIO_VERSION" pyyaml
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/platforms
+            ~/.platformio/packages
+          key: pio-${{ runner.os }}-${{ hashFiles(format('models/{0}/firmware/platformio.ini', matrix.board)) }}
+      - name: Prepare the project (no bench secrets)
+        id: proj
+        run: |
+          PROJ=$(python3 -c "import yaml;print(yaml.safe_load(open('models/${{ matrix.board }}/board.yml'))['firmware']['project'])")
+          ENV=$(python3 -c "import yaml;print(yaml.safe_load(open('models/${{ matrix.board }}/board.yml'))['firmware']['env'])")
+          cp "$PROJ/src/wifi_secrets.h.example" "$PROJ/src/wifi_secrets.h"
+          [ -f "$PROJ/src/fw_secrets.h.example" ] && cp "$PROJ/src/fw_secrets.h.example" "$PROJ/src/fw_secrets.h"
+          echo "proj=$PROJ" >> "$GITHUB_OUTPUT"
+          echo "env=$ENV" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: pio run -d "${{ steps.proj.outputs.proj }}" -e "${{ steps.proj.outputs.env }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.board }}
+          path: ${{ steps.proj.outputs.proj }}/.pio/build/${{ steps.proj.outputs.env }}/firmware.bin
+          retention-days: 7
+          if-no-files-found: error
