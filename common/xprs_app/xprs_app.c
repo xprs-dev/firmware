@@ -4741,7 +4741,8 @@ static uint64_t du(const char *path, int depth)
     char p[160];
     while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
-        snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+        int k = snprintf(p, sizeof p, "%s/%s", path, e->d_name);
+        if (k < 0 || k >= (int)sizeof p) continue;     /* too deep to name */
         struct stat st;
         if (stat(p, &st) != 0) continue;
         if (S_ISDIR(st.st_mode)) { if (depth > 0) sum += du(p, depth - 1); }
@@ -4767,7 +4768,8 @@ static void storage_report(void)
     char p[160];
     while ((e = readdir(d)) && n < (int)sizeof line - 24) {
         if (e->d_name[0] == '.') continue;
-        snprintf(p, sizeof p, "/idx/%s", e->d_name);
+        int k = snprintf(p, sizeof p, "/idx/%s", e->d_name);
+        if (k < 0 || k >= (int)sizeof p) continue;
         struct stat st;
         if (stat(p, &st) != 0) continue;
         uint64_t b = S_ISDIR(st.st_mode) ? du(p, 3) : (uint64_t)st.st_size;
