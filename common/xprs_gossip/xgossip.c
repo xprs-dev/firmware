@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #ifdef XGOSSIP_HOST_TEST
 #include <time.h>
@@ -30,6 +31,7 @@
 #define XG_LOGE(fmt, ...) fprintf(stderr, "xgossip: " fmt "\n", ##__VA_ARGS__)
 #else
 #include "esp_log.h"
+#include "esp_vfs_fat.h"
 static const char *TAG = "xgossip";
 #define XG_LOGI(...) ESP_LOGI(TAG, __VA_ARGS__)
 #define XG_LOGW(...) ESP_LOGW(TAG, __VA_ARGS__)
@@ -125,6 +127,7 @@ struct xgossip_s {
     bool     ready;
     bool     always_on;
     uint32_t max_bytes;
+    int      bucket_max;          /* rows a bucket may hold: max_bytes / buckets */
     int      visit_k;
 
     xg_job_t queue[XG_QUEUE_LEN];
@@ -340,7 +343,7 @@ static void xg_apply(xgossip_t *g, const xg_job_t *j)
         } else if (sc->free_off >= 0) {
             off = sc->free_off;
             sc->free_off = -1;                /* one insert, one slot */
-        } else if (sc->rows < XG_BUCKET_MAX) {
+        } else if (sc->rows < g->bucket_max) {
             off = sc->end_off;
             sc->end_off += (long)sizeof(xg_rec_t);
             sc->rows++;
@@ -545,16 +548,113 @@ int xgossip_try_candidates(xgossip_t *g, const char *call, const char *self,
 
 /* ── lifecycle ───────────────────────────────────────────────────────────── */
 
+/* The volume [dir] is on, in bytes; 0 when unknown (and on the host). */
+static uint64_t xg_volume_total(const char *dir)
+{
+#ifdef XGOSSIP_HOST_TEST
+    (void)dir;
+    return 0;
+#else
+    char mnt[32];
+    size_t n = 0;
+    if (dir && *dir == '/') {
+        mnt[0] = '/';
+        for (n = 1; n + 1 < sizeof mnt && dir[n] && dir[n] != '/'; n++) mnt[n] = dir[n];
+    }
+    mnt[n] = 0;
+    uint64_t total = 0, freeb = 0;
+    if (!n || esp_vfs_fat_info(mnt, &total, &freeb) != ESP_OK) return 0;
+    return total;
+#endif
+}
+
 void xgossip_set_always_on(xgossip_t *g, bool always_on)
 {
     if (!g) return;
     g->always_on = always_on;
     g->max_bytes = always_on ? XGOSSIP_MAX_BYTES_ALWAYS_ON : XGOSSIP_MAX_BYTES;
+    /* An ordinary station's gossip takes at most a fifth of its volume. The
+     * archive takes four fifths of what is left to it (xprsindex_budget),
+     * and on a C3's 792 KB volume 256 KB of gossip beside 384 KB of archive
+     * left nothing: the log went to zero and the archive could no longer
+     * roll a segment (docs/esp32.md, 2026-11-11). */
+    uint64_t vol = xg_volume_total(g->dir);
+    if (!always_on && vol && vol / 5 < g->max_bytes) g->max_bytes = (uint32_t)(vol / 5);
+    /* The budget is enforced per bucket: it used to be logged and never
+     * applied, and the buckets' own cap (256 rows each) allowed 512 KB. */
+    g->bucket_max = (int)(g->max_bytes / XG_BUCKETS / sizeof(xg_rec_t));
+    if (g->bucket_max > XG_BUCKET_MAX) g->bucket_max = XG_BUCKET_MAX;
+    if (g->bucket_max < XG_PER_CALL) g->bucket_max = XG_PER_CALL;
     g->visit_k = always_on ? XGOSSIP_VISIT_K_ALWAYS_ON : XGOSSIP_VISIT_K;
-    XG_LOGI("gossip: %s, %u KB, K=%d",
+    XG_LOGI("gossip: %s, %u KB (%d rows a bucket), K=%d",
             always_on ? "always-on (every callsign it can learn of)"
                   : "need-to-know", (unsigned)(g->max_bytes / 1024),
-            g->visit_k);
+            g->bucket_max, g->visit_k);
+}
+
+/* ── trimming a bucket to its cap ────────────────────────────────────────
+ * A store written under a larger cap (or none, before 2026-11-11) is cut back
+ * when opened. Streamed like everything else here: rows are counted, never
+ * loaded, the cut-off found by counting, and the rows kept moved down in
+ * place, because a full volume has no room for a copy. Live sightings (L3)
+ * go first, newest kept; visits (L2) only if they alone are over the cap. */
+
+/* Rows of [layer] in the file with last_ts >= [from]. */
+static int xg_count(FILE *f, uint8_t layer, uint32_t from)
+{
+    xg_rec_t r;
+    int n = 0;
+    fseek(f, 0, SEEK_SET);
+    while (fread(&r, sizeof r, 1, f) == 1)
+        if (!xg_slot_free(&r) && r.layer == layer && r.last_ts >= from) n++;
+    return n;
+}
+
+/* The smallest timestamp T with at most [keep] rows of [layer] at or after it. */
+static uint32_t xg_cutoff(FILE *f, uint8_t layer, int keep)
+{
+    uint32_t lo = 0, hi = 0xFFFFFFFFu;       /* answer in [lo, hi] */
+    if (xg_count(f, layer, 0) <= keep) return 0;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (xg_count(f, layer, mid) <= keep) hi = mid; else lo = mid + 1;
+    }
+    return lo;
+}
+
+/* Cut bucket [b] to the cap. Returns the rows it holds after. */
+static int xg_trim(xgossip_t *g, int b, int rows)
+{
+    if (rows <= g->bucket_max) return rows;
+    char path[112];
+    xg_path(g, path, sizeof path, b);
+    FILE *f = fopen(path, "r+b");
+    if (!f) return rows;
+    int n2 = xg_count(f, 2, 0);
+    uint32_t t2 = 0, t3 = 0xFFFFFFFFu;        /* keep L2 >= t2, L3 >= t3 */
+    if (n2 >= g->bucket_max) t2 = xg_cutoff(f, 2, g->bucket_max);
+    else t3 = xg_cutoff(f, 3, g->bucket_max - n2);
+    xg_rec_t r;
+    long rd = 0, wr = 0;
+    int kept = 0;
+    for (;;) {
+        if (fseek(f, rd, SEEK_SET) != 0 || fread(&r, sizeof r, 1, f) != 1) break;
+        rd += (long)sizeof r;
+        if (xg_slot_free(&r)) continue;
+        bool keep = (r.layer == 2 && r.last_ts >= t2) || (r.layer == 3 && r.last_ts >= t3);
+        if (!keep || kept >= g->bucket_max) continue;
+        if (wr != rd - (long)sizeof r) {
+            if (fseek(f, wr, SEEK_SET) != 0 || fwrite(&r, sizeof r, 1, f) != 1) break;
+        }
+        wr += (long)sizeof r;
+        kept++;
+    }
+    fflush(f);
+    if (ftruncate(fileno(f), wr) != 0)
+        XG_LOGW("bucket %s: kept %d rows but could not shorten it", path, kept);
+    fclose(f);
+    XG_LOGW("bucket %02X trimmed from %d to %d rows (cap %d)", b, rows, kept, g->bucket_max);
+    return kept;
 }
 
 xgossip_t *xgossip_open(const char *dir)
@@ -594,7 +694,7 @@ xgossip_t *xgossip_open(const char *dir)
     uint32_t rows = 0;
     for (int b = 0; b < XG_BUCKETS; b++) {
         xg_scan(g, b, NULL, &g->scan);
-        rows += (uint32_t)g->scan.rows;
+        rows += (uint32_t)xg_trim(g, b, g->scan.rows);
     }
     g->st.rows = rows;
     g->st.bytes = rows * (uint32_t)sizeof(xg_rec_t);

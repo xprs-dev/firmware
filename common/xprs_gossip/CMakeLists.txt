@@ -8,4 +8,4 @@
 idf_component_register(
     SRCS "xgossip.c"
     INCLUDE_DIRS "."
-    REQUIRES log)
+    REQUIRES log fatfs)

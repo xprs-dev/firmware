@@ -299,6 +299,62 @@ static void test_ssid_is_the_same_station(const char *dir)
     xgossip_close(g);
 }
 
+/* A bucket written under no cap (before 2026-11-11) is cut back when the
+ * store opens: live sightings go first, the newest kept, and visits stay.
+ * The record is the store's on-card layout, 32 bytes. */
+typedef struct {
+    char     call[10];
+    char     gw[10];
+    unsigned char bearer, layer;
+    unsigned int  first_ts, last_ts;
+} card_rec_t;
+
+static void test_trim_on_open(const char *dir)
+{
+    rm_rf(dir);
+    char path[256];
+    snprintf(path, sizeof path, "%s/g_05.bin", dir);
+    FILE *f = fopen(path, "wb");
+    for (int i = 0; i < 300; i++) {
+        card_rec_t r;
+        memset(&r, 0, sizeof r);
+        snprintf(r.call, sizeof r.call, "X1T%03d", i);
+        snprintf(r.gw, sizeof r.gw, "X3GW%02d", i % 7);
+        r.layer = i % 3 == 0 ? 2 : 3;            /* 100 visits, 200 live */
+        r.first_ts = r.last_ts = 1000u + (unsigned)((i * 37) % 300);
+        fwrite(&r, sizeof r, 1, f);
+    }
+    fclose(f);
+
+    xgossip_t *g = xgossip_open(dir);           /* host: 256 KB, 128 a bucket */
+    struct stat st;
+    stat(path, &st);
+    CHECK(st.st_size == 128 * 32, "bucket is %ld bytes after open, wanted %d",
+          (long)st.st_size, 128 * 32);
+    f = fopen(path, "rb");
+    int l2 = 0, l3 = 0;
+    unsigned min_l3 = 0xFFFFFFFFu;
+    card_rec_t r;
+    while (f && fread(&r, sizeof r, 1, f) == 1) {
+        if (!r.call[0]) continue;
+        if (r.layer == 2) l2++;
+        else { l3++; if (r.last_ts < min_l3) min_l3 = r.last_ts; }
+    }
+    if (f) fclose(f);
+    CHECK(l2 == 100, "visits kept: %d, wanted all 100", l2);
+    CHECK(l3 == 28, "live kept: %d, wanted the newest 28", l3);
+    /* The 200 live rows carry 200 distinct times out of 1000..1299; the 28
+     * kept are the newest, so none is older than the 28th newest of them. */
+    int newer = 0;
+    for (int i = 0; i < 300; i++)
+        if (i % 3 != 0 && 1000u + (unsigned)((i * 37) % 300) >= min_l3) newer++;
+    CHECK(newer == 28, "the live rows kept are not the newest (%d at or after %u)", newer, min_l3);
+    xgossip_stats_t gs;
+    xgossip_stats(g, &gs);
+    CHECK(gs.rows == 128, "store reports %u rows, wanted 128", (unsigned)gs.rows);
+    xgossip_close(g);
+}
+
 int main(void)
 {
     const char *dir = "/tmp/xgossip_test";
@@ -313,6 +369,7 @@ int main(void)
     test_survives_a_reboot(dir);
     test_per_callsign_cap(dir);
     test_ssid_is_the_same_station(dir);
+    test_trim_on_open(dir);
     printf("%d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }

@@ -22,6 +22,26 @@ env:
   PIO_VERSION: '6.1.18'
 
 jobs:
+  # The components' host tests (common/*/test_*_host.sh): gcc over the pure C,
+  # OpenSSL standing in for mbedtls. The ones that drive a Dart client
+  # (reticulum-dart, a sibling repository) stay on the bench.
+  host-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compilers and OpenSSL
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libssl-dev >/dev/null
+      - name: Host tests
+        run: |
+          failed=""
+          for t in common/*/test_*_host.sh; do
+            if grep -q dart "$t"; then echo "skip (needs Dart): $t"; continue; fi
+            echo "::group::$t"
+            if sh "$t"; then echo "ok"; else failed="$failed $t"; fi
+            echo "::endgroup::"
+          done
+          [ -z "$failed" ] || { echo "::error::failed:$failed"; exit 1; }
+
   build:
     runs-on: ubuntu-24.04
     strategy:
