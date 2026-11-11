@@ -748,6 +748,7 @@ static void xi_served_save(xprsidx_t *st);
 static void xi_reg_load(xprsidx_t *st);
 static void xi_reg_save(xprsidx_t *st);
 static bool xi_evict_locked(xprsidx_t *st);
+static void xi_tails_trim(xprsidx_t *st);
 static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,
                        const char *call, uint32_t ts);
 static void xi_sync_card(xprsidx_t *st);
@@ -1311,6 +1312,9 @@ xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
         }
         xi_read_close(st);
     }
+    /* Tails that eviction could not trim (no room for the copy it used to
+     * make) are trimmed here, before the writer can append to them. */
+    if (st->oldest_first) xi_tails_trim(st);
     st->ready = true;
 #ifndef XPRSIDX_HOST_TEST
     /* Core 1, deliberately. The BLE controller and host are pinned to core 0
@@ -1963,25 +1967,31 @@ static void xi_tails_trim(xprsidx_t *st)
             }
         }
         if (dead * 4u < XI_TAIL_TRIM_MIN) { fclose(src); continue; }
-        snprintf(tmp, sizeof tmp, "%s.new", path);
-        FILE *dst = fopen(tmp, "wb");
-        bool ok = dst != NULL;
+        fclose(src);
+        /* In place: the live suffix moved down, then the file cut short. A
+         * copy beside it needs room, and the volume this runs on is the one
+         * that filled -- the copy failed every time on a C3 with 0 KB free
+         * and the tails reached 202 KB (2026-11-11). Cut midway, the tail
+         * holds the live entries twice, still ascending at the end, which
+         * the newest-N reader does not mind; it is derived anyway. */
+        FILE *f = fopen(path, "r+b");
+        if (!f) continue;
+        bool ok = true;
         for (uint32_t i = dead; ok && i < total; i += 64) {
             uint32_t take = total - i < 64 ? total - i : 64;
-            ok = fseek(src, (long)i * 4L, SEEK_SET) == 0 &&
-                 fread(win, 4, take, src) == take &&
-                 fwrite(win, 4, take, dst) == take;
+            ok = fseek(f, (long)i * 4L, SEEK_SET) == 0 &&
+                 fread(win, 4, take, f) == take &&
+                 fseek(f, (long)(i - dead) * 4L, SEEK_SET) == 0 &&
+                 fwrite(win, 4, take, f) == take;
         }
-        fclose(src);
-        if (dst) {
-            if (ok) { fflush(dst); XI_FSYNC(dst); }
-            fclose(dst);
+        fflush(f);
+        if (ok) {
+            if (ftruncate(fileno(f), (off_t)(total - dead) * 4) != 0) ok = false;
+            XI_FSYNC(f);
         }
-        /* The tail is derived (see the header): losing it to a cut here
-         * costs the fast path for that type until it refills, never a
-         * record. */
-        if (ok && unlink(path) == 0 && rename(tmp, path) == 0) continue;
-        unlink(tmp);
+        fclose(f);
+        XI_LOGI("type tail %s: %u dead entries dropped%s", path, (unsigned)dead,
+                ok ? "" : " (incomplete)");
     }
 }
 

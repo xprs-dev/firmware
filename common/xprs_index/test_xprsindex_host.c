@@ -6,6 +6,8 @@
  * Build + run:  ./test_xprsindex_host.sh
  */
 #include <stdio.h>
+#include <sys/stat.h>
+#include <dirent.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -679,6 +681,22 @@ static void test_evicts_on_real_bytes(const char *dir)
     xprsindex_stats(st, &s2);
     CHECK(s2.segments == 1, "did not evict over budget (%u segments)",
           (unsigned)s2.segments);
+    /* And the type tails lost the evicted segment's entries, in place: they
+     * held ~4100 (16 KB) and only the surviving segment's few may remain. */
+    char tdir[300];
+    snprintf(tdir, sizeof tdir, "%s/t", dir);
+    long tail_bytes = 0;
+    DIR *td = opendir(tdir);
+    struct dirent *te;
+    while (td && (te = readdir(td))) {
+        if (te->d_name[0] == '.') continue;
+        char tp[600];
+        snprintf(tp, sizeof tp, "%s/%s", tdir, te->d_name);
+        struct stat tst;
+        if (stat(tp, &tst) == 0) tail_bytes += (long)tst.st_size;
+    }
+    if (td) closedir(td);
+    CHECK(tail_bytes < 1024, "type tails still %ld bytes after eviction", tail_bytes);
     xprsindex_close(st);
 }
 
