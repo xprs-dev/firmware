@@ -508,6 +508,37 @@ what does not fit is dropped declared-mail-last and the boot log says how
 many were kept. This replaces the older check, which formatted only a
 volume with no segment at all and therefore missed this one.
 
+
+### What filled a C3's volume, found by its own report (2026-11-11)
+
+The C3 X3VGAZ had 0 KB free on its 792 KB volume and its archive failed to
+roll a segment (`could not lay down its table`, errno 28) several times a
+minute. The station now logs what its volume holds (`storage /idx: ...` a
+minute after start and every ten minutes, with the archive's directory by
+kind of file), and that line found it at once: segments 363 KB (inside the
+384 KB budget), gossip 3 KB, and the per-type tails (`t/NN.idx`) 202 KB --
+51,000 entries for 6,400 records. Three faults, each now fixed:
+
+- The tails were trimmed after eviction by writing a copy beside them, which
+  needs free space, so on the volume that filled it failed every time. They
+  are trimmed in place now (live entries moved down, the file cut short),
+  also when the archive opens.
+- The trim dropped only a dead prefix, the tails being meant to be
+  ascending; these were not, and the prefix was empty. Every entry outside
+  the live range goes now, wherever it is; a tail that cannot be read whole
+  (one was: the full volume had damaged it) is removed, being derived.
+- Gossip's 256 KB budget was logged and never applied (the buckets' own cap
+  allowed 512 KB), and beside a 384 KB archive it could not have fitted a
+  792 KB volume anyway. It is enforced per bucket now, an ordinary station's
+  gossip takes at most a fifth of its volume (158 KB on a C3), oversized
+  buckets are trimmed at open, and the trim runs BEFORE gossip's write probe:
+  on a full volume the probe fails ("Permission denied") and the store never
+  opened to make room.
+
+Removing the damaged tail exposed the lost clusters behind it, and the
+existing rescue (above) did the rest on the next boot: 44 mail records kept,
+`/idx` formatted, 676 KB free.
+
 ## The internet WiFi: anyone may add a network, only the station's own screen may remove one
 
 The hotspot page's menu (top right) opens **Settings**, with the internet
