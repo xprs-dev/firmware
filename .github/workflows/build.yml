@@ -56,8 +56,8 @@ jobs:
       - name: Size by component (also when the image is too large)
         if: always()
         run: |
-          MAP="${{ steps.proj.outputs.proj }}/.pio/build/${{ steps.proj.outputs.env }}/firmware.map"
-          [ -f "$MAP" ] || exit 0
+          MAP=$(ls "${{ steps.proj.outputs.proj }}/.pio/build/${{ steps.proj.outputs.env }}"/*.map 2>/dev/null | head -1)
+          [ -n "$MAP" ] || { echo "no map file"; exit 0; }
           IDF=$(ls -d ~/.platformio/packages/framework-espidf)
           python3 -m pip install -q -r "$IDF/tools/requirements/requirements.core.txt" >/dev/null 2>&1 || true
           IDF_PATH="$IDF" python3 "$IDF/tools/idf_size.py" --archives "$MAP" | head -45
