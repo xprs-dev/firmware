@@ -21,11 +21,13 @@
  * ESP-NOW device on the channel through the ordinary receive path, and the RSSI
  * that sniffing would have been for arrives with them (`rx_ctrl`).
  *
- * ── Its own channel, on the long-range PHY ─────────────────────────────────
+ * ── The channel and PHY: the station's profile ─────────────────────────────
  *
- * ESP-NOW has a home channel (13 by default, `espnow_ch`; 11 where the WiFi
- * country has no 13) and sends on Espressif's long-range PHY, 250 kbps
- * (`espnow_lr`). A station on no router sits on the home channel. A station
+ * Default profile: ESP-NOW is on the WiFi channel at 1 Mbps and never leaves
+ * it (a station with no router uses `espnow_ch`). Long-range profile
+ * (docs/profiles.md): ESP-NOW has a home channel (13 by default,
+ * `espnow_ch`; 11 where the WiFi country has no 13) and sends on Espressif's
+ * long-range PHY, 250 kbps. A station on no router sits on the home channel. A station
  * on a router keeps the router's channel for WiFi and visits the home
  * channel for `espnow_win` ms (80) at the start of every second of the wall
  * clock; every station that knows the time sends inside that window, and one
@@ -57,9 +59,12 @@ extern "C" {
 #endif
 
 /**
- * The home channel, the long-range PHY and the window (docs/espnow.md).
- * Call before wifi_up(): home channel 1..14 (13 by default), LR on or off,
- * the window each second a station on a router spends on the home channel.
+ * The profile's ESP-NOW (docs/profiles.md, docs/espnow.md). Call before
+ * wifi_up().
+ * long_range false (the default profile): ESP-NOW on the WiFi channel at
+ *   1 Mbps; [home_channel] is used only by a station with no router.
+ * long_range true: the home channel (1..14) is ESP-NOW's own, the long-range
+ *   PHY, and a station on a router visits it [window_ms] each second.
  */
 void    xprsnow_configure(uint8_t home_channel, bool long_range, uint32_t window_ms);
 /** Between esp_wifi_init() and esp_wifi_start(); returns the home channel. */

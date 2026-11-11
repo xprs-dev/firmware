@@ -64,6 +64,16 @@ reuse potential.
   (sig/via removed), `xprs_looks_like`, `xprs_append_via`. One grammar, every
   client (firmware, hotspot page, phone app).
 
+## The station's profile (docs/profiles.md)
+
+- **`xcfg_long_range()`** (`common/xprs_config`) -- true when `profile` is
+  `longrange`. Anything that behaves differently in the long-range profile
+  asks this, once at start, instead of growing its own switch: ESP-NOW's
+  channel and PHY (xprs_app.c), the visitor API over Reticulum
+  (`xapi_rns_start`), hosted files (`h_file_post`, `xapi_wc_services`). What a
+  profile turns off reaches the page as data (`page.storage`, `file.put`),
+  never as a different page.
+
 ## Time (XPRS.md 4.8, 11.10, 15.7)
 
 - **`xst_clock_set(src, epoch, who)` / `xst_clock_src()`** — `common/xprs_station`.

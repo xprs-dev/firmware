@@ -26,6 +26,7 @@
 #include "xwc.h"
 #include "xwc_file.h"
 #include "xprs_core.h"
+#include "xprs_config.h"
 
 static const char *TAG = "xapi_wc";
 static const xprs_api_cfg_t *s_cfg;
@@ -718,6 +719,10 @@ static esp_err_t h_file_post(httpd_req_t *req)
 {
     char ref[80], ext[XWCF_EXT_MAX + 1], token[XWC_TOKEN_LEN + 8], pv[4];
     uint8_t sha[32];
+    /* A long-range station is a repeater and archiver: it hosts no files
+     * (docs/profiles.md). */
+    if (xcfg_long_range())
+        return answer(req, 403, "{\"ok\":false,\"error\":\"this station hosts no files (long-range profile)\"}");
     if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
     query_val(req, "session", token, sizeof token);
     query_val(req, "preview", pv, sizeof pv);
@@ -770,12 +775,17 @@ static esp_err_t h_file_post(httpd_req_t *req)
 /* ---- the hooks ------------------------------------------------------ */
 int xapi_wc_services(char *buf, size_t cap)
 {
-    /* Every panel the board serves: the page hides what is not listed. */
-    int n = xwc_services_json(buf, cap, "chat,traffic,devices,stats,station,settings,alerts", s_card());
-    /* Files by reference (/api/xprs/file/<ref>), as large as this board keeps. */
+    /* Every panel the board serves: the page hides what is not listed. A
+     * long-range station (docs/profiles.md) keeps the chat and what it
+     * repeats and archives, and offers no gallery, music or library. */
+    bool lr = xcfg_long_range();
+    int n = xwc_services_json(buf, cap, "chat,traffic,devices,stats,station,settings,alerts",
+                              s_card() && !lr);
+    /* Files by reference (/api/xprs/file/<ref>), as large as this board
+     * keeps; a long-range station still serves what it holds, takes none. */
     if (n > 0 && (size_t)n < cap)
-        n += snprintf(buf + n, cap - (size_t)n, ",\"file\":{\"get\":true,\"put\":true,\"max\":%u}",
-                      (unsigned)file_max());
+        n += snprintf(buf + n, cap - (size_t)n, ",\"file\":{\"get\":true,\"put\":%s,\"max\":%u}",
+                      lr ? "false" : "true", (unsigned)file_max());
     return n;
 }
 

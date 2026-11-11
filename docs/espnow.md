@@ -43,10 +43,30 @@ Unencrypted, because broadcast always is. Authorship is `sig:` (section 9.1),
 which is the answer to "who sent this" on every bearer and does not become the
 transport's job here.
 
-## Its own channel, on the long-range PHY
+## Which channel and PHY: the station's profile
 
-*Since 2026-11-10. Older stations (1 Mbps, on the router's channel) and these
-do not meet over ESP-NOW; that was accepted.*
+*Since 2026-11-11 the station's profile decides (`profile`, see
+[profiles.md](profiles.md)).*
+
+- **Default profile:** ESP-NOW is on the WiFi channel, whatever the router
+  chose, at 1 Mbps, and never leaves it. A station with no router uses
+  `espnow_ch` (the board's fallback channel unless set). Default stations meet
+  each other on a shared router's channel, as before 2026-11-10.
+- **Long-range profile:** ESP-NOW has its own channel and the long-range PHY,
+  described below.
+
+Why the default is not the long-range setup: a station on a router that
+visits another channel every second misses the router's group-key renewal
+(every 10 minutes on a FRITZ!Box) and is dropped (reason 16, "group key update
+timeout"). Measured on a C3 on 2026-11-11: dropped at every renewal with
+visits, no drop in 20 minutes without; each drop broke the station's Reticulum
+uplink and any visitor's link. Under load the visits also lost 63 to 77 % of
+large pings.
+
+## Long range: its own channel, on the long-range PHY
+
+*The long-range profile only. Long-range and default stations do not meet over
+ESP-NOW: a default station is on its router's channel at 1 Mbps.*
 
 **Long range.** Every frame goes out on Espressif's long-range PHY at
 250 kbps (`esp_now_set_peer_rate_config`, `WIFI_PHY_MODE_LR`), and the station
@@ -83,8 +103,8 @@ home channel.
 
 | setting | default | |
 |---|---|---|
-| `espnow_ch` | 13 | the home channel |
-| `espnow_lr` | yes | send and receive the long-range PHY |
+| `profile` | default | `longrange` for everything in this section |
+| `espnow_ch` | 13 | the home channel (in the default profile: the channel of a station with no router, the board's fallback) |
 | `espnow_win` | 80 | ms each second a station on a router spends on the home channel |
 | `wifi_country` | DE | the WiFi country (channel 13 needs one that has it) |
 

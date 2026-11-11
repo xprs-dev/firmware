@@ -5507,16 +5507,21 @@ static void wifi_up(void)
         IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
 
-    /* ESP-NOW's own channel and the long-range PHY (docs/espnow.md):
-     * espnow_ch (13), espnow_lr (yes), espnow_win (80 ms a second on the
-     * home channel while on a router), wifi_country (DE; 13 needs it). */
+    /* ESP-NOW as the profile has it (docs/profiles.md). Default: on the
+     * WiFi channel at 1 Mbps (espnow_ch, the board's fallback, only with no
+     * router). Long range: its own channel, espnow_ch (13), the long-range
+     * PHY, and espnow_win (80 ms a second) on it while on a router.
+     * wifi_country (DE) decides whether 13 is allowed. */
     {
-        const char *ch = xcfg_get("espnow_ch", "13");
+        bool lr = xcfg_long_range();
+        char fb[4];
+        snprintf(fb, sizeof fb, "%d", s_board->espnow_channel);
+        const char *ch = xcfg_get("espnow_ch", lr ? "13" : fb);
         const char *win = xcfg_get("espnow_win", "80");
-        xprsnow_configure((uint8_t)atoi(ch ? ch : "13"),
-                          xcfg_get_bool("espnow_lr", true),
+        xprsnow_configure((uint8_t)atoi(ch ? ch : fb), lr,
                           (uint32_t)atoi(win ? win : "80"));
         xprsnow_wifi_prepare(xcfg_get("wifi_country", "DE"));
+        ESP_LOGI(TAG, "profile: %s", lr ? "long range (a repeater and archiver)" : "default");
     }
 
     if (s_ssid[0]) {
@@ -11605,7 +11610,7 @@ void xapp_run(const xapp_board_t *board)
      * over a Reticulum link"): a browser reaches this station through a
      * gateway at https://xprs.dev/in/<callsign>. Each call is made to our
      * own httpd over the loopback, so only where that runs. */
-    if (xprs_api_httpd()) xapi_rns_start();
+    if (xprs_api_httpd() && !xcfg_long_range()) xapi_rns_start();
 
 
     /* 6 KB, not 3: once a minute this task calls air_identity(), and signing

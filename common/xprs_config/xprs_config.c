@@ -42,11 +42,15 @@ static cfg_entry_t s_cfg[] = {
     { "ssid",      NULL, 0, false },
     { "pass",      NULL, 0, false },
     { "espnow_on", NULL, 0, false },
-    /* ESP-NOW's home channel, the long-range PHY and the window a station
-     * on a router spends on that channel each second (docs/espnow.md); the
-     * WiFi country, which decides whether channel 13 is allowed. */
+    /* The station's profile (docs/profiles.md): "default" (ESP-NOW on the
+     * WiFi channel at 1 Mbps, every function on) or "longrange" (ESP-NOW's
+     * own channel and the long-range PHY, a repeater and archiver). Then
+     * ESP-NOW's channel (the home channel in long range, the channel of a
+     * station with no router otherwise), the window a long-range station on
+     * a router spends on its home channel each second (docs/espnow.md), and
+     * the WiFi country, which decides whether channel 13 is allowed. */
+    { "profile",    NULL, 0, false },
     { "espnow_ch",  NULL, 0, false },
-    { "espnow_lr",  NULL, 0, false },
     { "espnow_win", NULL, 0, false },
     { "wifi_country", NULL, 0, false },
     { "share_on",  NULL, 0, false },
@@ -259,6 +263,12 @@ const char *xcfg_get(const char *key, const char *def)
     cfg_entry_t *e = find(key);
     if (e && e->loaded && e->val && e->val[0]) return e->val;
     return def;
+}
+
+bool xcfg_long_range(void)
+{
+    const char *v = xcfg_get("profile", "default");
+    return v && strcmp(v, "longrange") == 0;
 }
 
 bool xcfg_get_bool(const char *key, bool def)
@@ -561,7 +571,7 @@ static const struct { const char *sec, *ini, *key; } s_ini_map[] = {
     { "wifi",    "password", "pass" },
     { "espnow",  "enabled",  "espnow_on" },
     { "espnow",  "channel",  "espnow_ch" },
-    { "espnow",  "long_range", "espnow_lr" },
+    { "station", "profile",  "profile" },
     { "espnow",  "window_ms", "espnow_win" },
     { "wifi",    "country",  "wifi_country" },
     { "share",   "enabled",  "share_on" },

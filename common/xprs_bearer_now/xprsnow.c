@@ -95,7 +95,7 @@ static void nw_unlock(void *ctx) { (void)ctx; if (s_tx_mtx) xSemaphoreGive(s_tx_
 typedef struct { int len; char wire[XPRSNOW_WIRE_MAX]; } nw_tx_t;
 
 static uint8_t           s_home_ch = 13;
-static bool              s_lr = true;
+static bool              s_lr = false;
 static uint32_t          s_win_ms = 80;
 static nw_tx_t          *s_txq;          /* NW_TXQ entries, claimed at start */
 static int               s_txq_n;
@@ -308,6 +308,17 @@ static void nw_window_task(void *arg)
 {
     (void)arg;
     for (;;) {
+        /* The default profile: ESP-NOW is on the WiFi channel, whatever it
+         * is, at 1 Mbps, and never leaves it -- a station on a router that
+         * left its channel missed the router's key renewals and was dropped
+         * every ten minutes. Only a long-range station has a channel of its
+         * own (the home channel) and the window on it. */
+        if (!s_lr) {
+            nw_home_if_free();
+            nw_flush();
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
         int64_t ph = nw_phase_us();
         if (ph < 0) {
             /* No window known: whatever waits goes now, on the home channel

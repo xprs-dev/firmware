@@ -39,6 +39,12 @@ const char *xcfg_get(const char *key, const char *def);
 /** "yes"/"no", "true"/"false", "1"/"0" all work. */
 bool xcfg_get_bool(const char *key, bool def);
 
+/** The station's profile is "longrange" (docs/profiles.md): ESP-NOW on its
+ *  own channel with the long-range PHY, and the station a repeater and
+ *  archiver, without the visitor API over Reticulum or hosted files.
+ *  Otherwise "default". Read at start; a change takes a restart. */
+bool xcfg_long_range(void);
+
 /** Set and persist one value. An empty string erases the key. */
 esp_err_t xcfg_set(const char *key, const char *value);
 
