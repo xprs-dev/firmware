@@ -102,6 +102,9 @@ int xwc_admin_post(const char *body, bool local, char *buf, size_t cap);
 bool        xwc_local_private(void);
 const char *xwc_who_may_post(void);    /* everyone | local | nobody */
 const char *xwc_who_may_alert(void);   /* moderators | everyone */
+/** The position the administrator set (`pos`, `acc` settings), as the beacon
+ *  carries it; false when none is set. */
+bool        xwc_station_pos(char *pos, size_t pcap, uint32_t *acc_m);
 const char *xwc_admin_call(void);      /* or NULL */
 
 /* ---- hosted rooms (/api/rooms) ------------------------------------------- */

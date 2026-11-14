@@ -853,6 +853,41 @@ bool        xwc_local_private(void) { return strcmp(kv_or("wc_lp", "1"), "0") !=
 const char *xwc_who_may_post(void)  { return kv_or("wc_post", "everyone"); }
 const char *xwc_who_may_alert(void) { return kv_or("wc_alert", "moderators"); }
 
+/* Where the station says it is (XPRS.md 15.1), as its administrator set it
+ * from the page: `pos` carried as given (its decimals are the precision
+ * claimed), `acc` in metres. The page does the arithmetic (a country's
+ * centre and radius, a spot coarsened); the station stores and announces. */
+bool xwc_station_pos(char *pos, size_t pcap, uint32_t *acc_m)
+{
+    const char *p = kv_or("wc_pos", "");
+    if (!*p) return false;
+    if (pos) snprintf(pos, pcap, "%s", p);
+    if (acc_m) *acc_m = (uint32_t)strtoul(kv_or("wc_acc", "0"), NULL, 10);
+    return true;
+}
+
+/* "lat,lon" in degrees, at most five decimals each, in range. */
+static bool pos_ok(const char *v)
+{
+    double lat = 0, lon = 0;
+    int dec = 0, part = 0;
+    bool digits = false, dot = false;
+    for (const char *c = v; ; c++) {
+        if (*c == '-' && (c == v || c[-1] == ',')) continue;
+        if (*c >= '0' && *c <= '9') { digits = true; if (dot && ++dec > 5) return false; continue; }
+        if (*c == '.' && digits && !dot) { dot = true; dec = 0; continue; }
+        if ((*c == ',' && part == 0) || *c == 0) {
+            if (!digits || (dot && dec == 0)) return false;
+            if (*c == 0) break;
+            part = 1; digits = dot = false; dec = 0;
+            continue;
+        }
+        return false;
+    }
+    if (part != 1 || sscanf(v, "%lf,%lf", &lat, &lon) != 2) return false;
+    return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
+}
+
 static void moderation_state(jb_t *j, const char *token, bool you)
 {
     const char *call = xwc_session_call(token);
@@ -896,8 +931,10 @@ static int admin_state(jb_t *j, const char *token, bool local)
     jb(j, ",\"you\":%s,\"local\":%s,\"claimable\":%s", you ? "true" : "false",
        local ? "true" : "false", (!admin && local) ? "true" : "false");
     if (you)
-        jb(j, ",\"settings\":{\"local_private\":%s,\"who_may_post\":\"%s\",\"who_may_alert\":\"%s\"}",
-           xwc_local_private() ? "true" : "false", xwc_who_may_post(), xwc_who_may_alert());
+        jb(j, ",\"settings\":{\"local_private\":%s,\"who_may_post\":\"%s\",\"who_may_alert\":\"%s\","
+              "\"pos\":\"%s\",\"acc\":%s}",
+           xwc_local_private() ? "true" : "false", xwc_who_may_post(), xwc_who_may_alert(),
+           kv_or("wc_pos", ""), kv_or("wc_acc", "0"));
     moderation_state(j, token, you);
     jb(j, "}");
     return 200;
@@ -968,6 +1005,18 @@ int xwc_admin_post(const char *body, bool local, char *buf, size_t cap)
             if (strcmp(v, "moderators") && strcmp(v, "everyone"))
                 return refuse(buf, cap, 400, "who_may_alert must be moderators or everyone");
             s_cb.kv_set("wc_alert", v);
+        }
+        if (jget(body, "pos", v, sizeof v)) {
+            if (*v && !pos_ok(v))
+                return refuse(buf, cap, 400, "pos is \"lat,lon\" in degrees, at most 5 decimals");
+            s_cb.kv_set("wc_pos", v);
+        }
+        if (jget(body, "acc", v, sizeof v)) {
+            char *end = NULL;
+            unsigned long a = strtoul(v, &end, 10);
+            if (!*v || *end || v[0] == '-' || a > 3000000UL)
+                return refuse(buf, cap, 400, "acc is metres, 0 to 3000000");
+            s_cb.kv_set("wc_acc", v);
         }
         jb_t j; jb_init(&j, buf, cap);
         return admin_state(&j, token, local);

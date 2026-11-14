@@ -202,6 +202,31 @@ int main(void)
     snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"who_may_post\":\"everyone\"}}", tok);
     admin_post(body);
 
+    printf("where the station is (pos, acc)\n");
+    {
+        char pv[24]; uint32_t acc = 1;
+        CHECK(!xwc_station_pos(pv, sizeof pv, &acc), "no position until one is set");
+        static const char *const bad[] = {
+            "\"pos\":\"91,0\"", "\"pos\":\"38.7,-9.1,3\"", "\"pos\":\"38.123456,-9.1\"",
+            "\"pos\":\"Lisbon\"", "\"pos\":\"38.,-9\"", "\"acc\":-1", "\"acc\":3000001",
+            "\"acc\":\"300km\"",
+        };
+        int refused = 0;
+        for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+            snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{%s}}", tok, bad[i]);
+            if (admin_post(body) == 400) refused++;
+        }
+        CHECK(refused == (int)(sizeof bad / sizeof bad[0]), "malformed positions and radii are refused");
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos\":\"39,-8\",\"acc\":171000}}", tok);
+        CHECK(admin_post(body) == 200 && jfind("\"pos\":\"39,-8\",\"acc\":171000"), "a country's centre and radius are kept");
+        CHECK(xwc_station_pos(pv, sizeof pv, &acc) && !strcmp(pv, "39,-8") && acc == 171000,
+              "and given to the beacon as set");
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos\":\"-33.86882,151.20929\",\"acc\":0}}", tok);
+        CHECK(admin_post(body) == 200 && xwc_station_pos(pv, sizeof pv, &acc) && acc == 0, "a spot to five decimals");
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos\":\"\"}}", tok);
+        CHECK(admin_post(body) == 200 && !xwc_station_pos(pv, sizeof pv, &acc), "cleared, the station says nothing");
+    }
+
     printf("moderation\n");
     snprintf(body, sizeof body, "{\"action\":\"appoint\",\"session\":\"%s\",\"call\":\"X1BOBB\"}", tok);
     CHECK(admin_post(body) == 200 && jfind("\"invited\":[\"X1BOBB\"]"), "the administrator appoints bob");

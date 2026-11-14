@@ -4357,9 +4357,21 @@ static int observation_beacon(const char *bearer, char *out, int cap,
                        (unsigned)boot_epoch(),
                        (unsigned)(esp_timer_get_time() / 1000000ULL));
     }
+    /* Where the station says it is, when its administrator set it from the
+     * page (XPRS.md 15.1: pos: as given, acc: in metres). */
+    char posf[48] = "";
+    {
+        char pv[24];
+        uint32_t acc = 0;
+        if (xwc_station_pos(pv, sizeof pv, &acc)) {
+            if (acc) snprintf(posf, sizeof posf, " pos:%s acc:%lu", pv, (unsigned long)acc);
+            else snprintf(posf, sizeof posf, " pos:%s", pv);
+        }
+    }
     int fixed = (int)(sizeof "t:observation f:" - 1) + (int)strlen(s_call)
               + (int)(sizeof " link:" - 1) + (int)strlen(bearer)
-              + (int)(sizeof " peers:" - 1) + 3 + an + (int)strlen(lx) + acn;
+              + (int)(sizeof " peers:" - 1) + 3 + an + (int)strlen(lx) + acn
+              + (int)strlen(posf);
     int budget = room - fixed - sign_room;
 
     char hears[208];
@@ -4368,8 +4380,8 @@ static int observation_beacon(const char *bearer, char *out, int cap,
     int hn = xst_hears_render(bearer, 600, budget, hears, sizeof hears,
                               &total, q, sizeof q);
 
-    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s%s%s",
-                     s_call, bearer, total, acct, lx, anc);
+    int n = snprintf(out, (size_t)cap, "t:observation f:%s link:%s peers:%d%s%s%s%s",
+                     s_call, bearer, total, acct, posf, lx, anc);
     if (acn > 0 && n > 0 && n < cap) {
         s_anchor_due = false;
         ESP_LOGI(TAG, "clock: epoch %u anchored on %s (%s)", (unsigned)boot_epoch(),
@@ -4668,6 +4680,54 @@ static const xc_ops_t k_chan_ops = {
     .on_home = on_home,
 };
 
+/* The identity on every bearer that carries one (see air_identity). */
+static void air_identity_wire(const char *wire, int n)
+{
+    xprsnow_send(wire, n);
+    if (xprsble_is_active()) xprsble_send(wire, n);
+    xprslan_send(wire, n);
+    if (xprsrns_is_up()) {
+        xprsrns_send(wire, n);
+        xprsrns_deposit(wire, n);
+    }
+}
+
+/* The decoration (XPRS.md 6.3.2) this board has: its place, `pos:` and
+ * `acc:` as its administrator set it from the page (15.1), with its name.
+ * A decoration is rare by design: on a change, and once a day. `pos:-` once
+ * when the place is cleared, so the removal travels like a change. */
+static void air_decoration(void)
+{
+    static char s_last[64];
+    static int64_t s_at;
+    static bool s_had;
+    char pv[24], body[64] = "";
+    uint32_t acc = 0;
+    if (xwc_station_pos(pv, sizeof pv, &acc)) {
+        if (acc) snprintf(body, sizeof body, "pos:%s acc:%lu", pv, (unsigned long)acc);
+        else snprintf(body, sizeof body, "pos:%s", pv);
+    } else if (s_had) {
+        snprintf(body, sizeof body, "pos:-");
+    } else {
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (!strcmp(body, s_last) && s_at && now - s_at < 24LL * 3600 * 1000000) return;
+    char wire[XPRS_MAX_WIRE + 1], ts[24];
+    time_field(ts, sizeof ts);
+    const char *nick = xcfg_get("name", "");
+    int n = snprintf(wire, sizeof wire, "t:identity f:%s %s%s%s %s", s_call, ts,
+                     nick[0] ? " nick:" : "", nick, body);
+    if (n <= 0 || n > XPRS_MAX_WIRE - 70) return;      /* room for sig: */
+    n = sign_wire(wire, n, (int)sizeof wire);
+    if (n <= 0) return;
+    air_identity_wire(wire, n);
+    snprintf(s_last, sizeof s_last, "%s", body);
+    s_at = now;
+    s_had = strcmp(body, "pos:-") != 0;
+    ESP_LOGI(TAG, "decoration: %s", body);
+}
+
 /* §9.3: publish the key, or nobody can check a thing we say — including the
  * acceptance §23.7 leans on. */
 static void air_identity(void)
@@ -4701,6 +4761,7 @@ static void air_identity(void)
      * to cross a shared transport, and a peer that joins after us would
      * otherwise wait for our next ordinary wire to learn we exist. */
     xprsrns_set_hello(wire, n);
+    air_decoration();
 }
 
 /* ── Status, every 15 s, the same shape the dongle prints ───────────────── */
