@@ -571,7 +571,7 @@ out on every bearer from `api_send_wire`, on httpd's task (6 KB on a C3), and
 the Reticulum copy is a signed announce: the signature did not fit on top of
 the web chat's frames. `xprsrns_send` also slept there for its pacing slot
 (1.1 s a wire). It now goes through `xprsrns_send_later`: the wire is copied
-into an 8-slot ring and the uplink's own task (8 KB) signs and sends one per
+into an 8-slot ring (allocated per wire while it waits; a standing 2 KB ring took the heap under its floor with Bluetooth up) and the uplink's own task (8 KB) signs and sends one per
 pacing slot, from `rns_tcp`'s idle hook (after every read, at least once a
 second). A wire with no free slot is counted as `paced`. A burst of five sends
 from a page aired all five; the suite ran through with no reset.
