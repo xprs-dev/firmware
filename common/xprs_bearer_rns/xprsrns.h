@@ -226,6 +226,8 @@ static inline bool xprsrns_peer_at(int i, char *c, size_t n)
 { (void)i; (void)c; (void)n; return false; }
 static inline bool xprsrns_send(const char *wire, int len)
 { (void)wire; (void)len; return false; }
+static inline bool xprsrns_send_later(const char *wire, int len)
+{ (void)wire; (void)len; return false; }
 static inline bool xprsrns_send_to(const char *c, const char *wire, int len)
 { (void)c; (void)wire; (void)len; return false; }
 static inline bool xprsrns_can_address(const char *c) { (void)c; return false; }
