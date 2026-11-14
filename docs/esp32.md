@@ -562,6 +562,20 @@ bytes, so none of them saw it. Fixed in four places:
 
 The log was already bounded: `cur.txt` rotates to `prev.txt` at 64 KB.
 
+### httpd's stack and the Reticulum announce (2026-11-14)
+
+With room on the volume again, the conformance suite ran past file storage on
+X3VGAZ for the first time and the board rebooted: `Stack protection fault`
+in `httpd`, in tweetnacl's Ed25519 `scalarmult`. Every wire a page sends goes
+out on every bearer from `api_send_wire`, on httpd's task (6 KB on a C3), and
+the Reticulum copy is a signed announce: the signature did not fit on top of
+the web chat's frames. `xprsrns_send` also slept there for its pacing slot
+(1.1 s a wire). It now goes through `xprsrns_send_later`: the wire is copied
+into an 8-slot ring and the uplink's own task (8 KB) signs and sends one per
+pacing slot, from `rns_tcp`'s idle hook (after every read, at least once a
+second). A wire with no free slot is counted as `paced`. A burst of five sends
+from a page aired all five; the suite ran through with no reset.
+
 ## The internet WiFi: anyone may add a network, only the station's own screen may remove one
 
 The hotspot page's menu (top right) opens **Settings**, with the internet

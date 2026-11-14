@@ -942,6 +942,45 @@ void xprsrns_set_hello(const char *wire, int len)
 
 /* ── Outbound ───────────────────────────────────────────────────────────── */
 
+/* Wires waiting for the uplink's task (xprsrns_send_later): one goes per
+ * pacing slot (1.1 s), and a page's burst is a few. 8 slots hold 7, 2 KB. */
+#define LATER_N 8
+static struct { int16_t len; char wire[XPRS_MAX_WIRE + 1]; } s_later[LATER_N];
+static volatile uint8_t s_later_r, s_later_w;
+static portMUX_TYPE     s_later_mux = portMUX_INITIALIZER_UNLOCKED;
+
+bool xprsrns_send_later(const char *wire, int len)
+{
+    if (!s_ready || !rns_tcp_is_up() || len <= 0 || len > XPRS_MAX_WIRE) return false;
+    bool ok = false;
+    taskENTER_CRITICAL(&s_later_mux);
+    uint8_t w = s_later_w, nw = (uint8_t)((w + 1) % LATER_N);
+    if (nw != s_later_r) {
+        memcpy(s_later[w].wire, wire, (size_t)len);
+        s_later[w].len = (int16_t)len;
+        s_later_w = nw;
+        ok = true;
+    }
+    taskEXIT_CRITICAL(&s_later_mux);
+    if (!ok) s_paced++;                 /* refused for want of a slot */
+    return ok;
+}
+
+/* The uplink's task: one waiting wire, when its pacing slot has come, so
+ * this task never sleeps in xprsrns_send's pacing. */
+static void later_drain(void *ctx)
+{
+    (void)ctx;
+    if (s_later_r == s_later_w || esp_timer_get_time() < s_next_tx_us) return;
+    static char w[XPRS_MAX_WIRE + 1];        /* this task alone reads it */
+    int n = s_later[s_later_r].len;
+    memcpy(w, s_later[s_later_r].wire, (size_t)n);
+    taskENTER_CRITICAL(&s_later_mux);
+    s_later_r = (uint8_t)((s_later_r + 1) % LATER_N);
+    taskEXIT_CRITICAL(&s_later_mux);
+    xprsrns_send(w, n);
+}
+
 bool xprsrns_send(const char *wire, int len)
 {
     if (!s_ready || !rns_tcp_is_up() || len <= 0) return false;
@@ -1238,6 +1277,7 @@ void xprsrns_init(xprsrns_wire_cb_t cb)
         s_ann_gap_s = 3600;
 
     rns_tcp_set_rx_cb(on_frame, NULL);
+    rns_tcp_set_idle_cb(later_drain, NULL);
     if (rns_tcp_start(NULL, 0) != ESP_OK) {
         ESP_LOGE(TAG, "uplink did not start");
         return;

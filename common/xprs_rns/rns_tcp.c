@@ -59,6 +59,13 @@ static volatile bool s_running;
 static SemaphoreHandle_t s_tx_mtx;
 static rns_tcp_rx_cb_t s_rx_cb;
 static void *s_rx_ctx;
+static void (*s_idle_cb)(void *ctx);
+static void *s_idle_ctx;
+void rns_tcp_set_idle_cb(void (*cb)(void *ctx), void *ctx)
+{
+    s_idle_cb = cb;
+    s_idle_ctx = ctx;
+}
 
 static rns_hdlc_rx_t s_rx;          /* static: 600-odd bytes, not stack */
 static uint32_t s_rx_packets, s_tx_packets, s_connects;
@@ -236,6 +243,8 @@ static void rns_tcp_task(void *arg)
 
         while (s_running && !s_paused) {
             int n = recv(sock, buf, sizeof buf, 0);
+            if (s_idle_cb && (n > 0 || errno == EAGAIN || errno == EWOULDBLOCK))
+                s_idle_cb(s_idle_ctx);
             if (n > 0) {
                 rns_hdlc_rx_feed(&s_rx, buf, (size_t)n, on_frame, NULL);
                 /* One tick back to the scheduler per read. The frames are

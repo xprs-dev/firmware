@@ -57,6 +57,10 @@ void rns_tcp_pause(bool paused);
 void      rns_tcp_stop(void);
 bool      rns_tcp_is_up(void);
 void      rns_tcp_set_rx_cb(rns_tcp_rx_cb_t cb, void *ctx);
+/** Called on the uplink's task after every read, and at least once a second
+ *  while connected: work that needs this task's stack (signing) and must
+ *  not block it. */
+void      rns_tcp_set_idle_cb(void (*cb)(void *ctx), void *ctx);
 
 /** Frame and send one RNS packet. False when the socket is down. */
 bool rns_tcp_send(const uint8_t *packet, size_t len);

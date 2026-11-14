@@ -10322,8 +10322,11 @@ static bool api_send_wire(const char *wire, int len, const char *bearer,
         xprslora_mc_offer(wire, len, MC_XPRS_OWN);
     }
     bool ble = WANT("ble")    && near && xprsble_is_active() && xprsble_send(air, alen);
+    /* Later, on the uplink's task: signing the announce here overflowed the
+     * httpd task's stack on a C3 (tweetnacl, 2026-11-14), and its pacing
+     * slept on the request. */
     bool rns = WANT("rns")    && !local && xprsrns_is_up() &&
-               xprsrns_send(air, alen);
+               xprsrns_send_later(air, alen);
     #undef WANT
     if (took && took_cap) {
         int n = 0;

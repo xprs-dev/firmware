@@ -87,6 +87,13 @@ bool xprsrns_peer_at(int i, char *call, size_t cap);
  *  nothing beyond it. Use it for what is addressed to everybody. */
 bool xprsrns_send(const char *wire, int len);
 
+/** xprsrns_send, later, on the uplink's own task: for a caller whose stack
+ *  cannot hold an Ed25519 signature (the HTTP server's, 6 KB on a C3, which
+ *  overflowed signing one, 2026-11-14) or that must not wait for a pacing
+ *  slot. The wire is copied; false when the uplink is down, it does not fit
+ *  or the few slots are taken. */
+bool xprsrns_send_later(const char *wire, int len);
+
 /**
  * Send one wire ADDRESSED to a callsign we have heard announce.
  *
