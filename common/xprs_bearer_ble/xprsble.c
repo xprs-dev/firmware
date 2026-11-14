@@ -696,6 +696,14 @@ static bool s_stepped_back;
  * free block of 9.2 and 11.8 KB; an unguarded restart once asserted. */
 #define XPRSBLE_RESTART_BLOCK (9u * 1024u)
 #endif
+/* And free memory in all. The block alone was not enough (X3VGAZ,
+ * 2026-11-14): the controller took its 9 KB, then failed a 272 B allocation
+ * with 1.5 KB left in pieces and asserted. Restarts that lived left 4-26 KB
+ * free; the controller takes about 28 KB (measured: 41,888 B free before,
+ * 13,912 after). This keeps 8 KB beyond it. */
+#ifndef XPRSBLE_RESTART_FREE
+#define XPRSBLE_RESTART_FREE (36u * 1024u)
+#endif
 
 bool xprsble_step_back(bool back)
 {
@@ -720,9 +728,11 @@ bool xprsble_step_back(bool back)
      * an error, so it is only tried with a block to spare. Free memory that
      * WiFi has cut into pieces does not count. */
     size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    if (largest < XPRSBLE_RESTART_BLOCK) {
-        ESP_LOGW(TAG, "not back yet: largest free block %u B, the controller wants %u",
-                 (unsigned)largest, (unsigned)XPRSBLE_RESTART_BLOCK);
+    size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    if (largest < XPRSBLE_RESTART_BLOCK || before < XPRSBLE_RESTART_FREE) {
+        ESP_LOGW(TAG, "not back yet: %u B free, largest block %u; the controller wants %u and %u",
+                 (unsigned)before, (unsigned)largest,
+                 (unsigned)XPRSBLE_RESTART_FREE, (unsigned)XPRSBLE_RESTART_BLOCK);
         return false;
     }
     s_scan_paused = false;
@@ -732,8 +742,9 @@ bool xprsble_step_back(bool back)
     }
     if (s_last_ad_n) air_raw_ad(s_last_ad, s_last_ad_n);
     s_stepped_back = false;
-    ESP_LOGI(TAG, "back after WiFi: controller up, %u B free (largest block was %u)",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)largest);
+    ESP_LOGI(TAG, "back after WiFi: controller up, %u B free (was %u, largest block %u)",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), (unsigned)before,
+             (unsigned)largest);
     return true;
 #else
     s_scan_paused = back;

@@ -576,6 +576,13 @@ pacing slot, from `rns_tcp`'s idle hook (after every read, at least once a
 second). A wire with no free slot is counted as `paced`. A burst of five sends
 from a page aired all five; the suite ran through with no reset.
 
+The same runs found the Bluetooth step-back's restart guard short: a 9 KB
+block was free, the controller took it, failed a 272 B allocation with 1.5 KB
+left in pieces and asserted in ROM (interrupt watchdog reset). The controller
+takes about 28 KB in all (41,888 B free before, 13,912 after), so a restart
+now also needs 36 KB free (`XPRSBLE_RESTART_FREE`), and both numbers are
+logged on the way up.
+
 ## The internet WiFi: anyone may add a network, only the station's own screen may remove one
 
 The hotspot page's menu (top right) opens **Settings**, with the internet
