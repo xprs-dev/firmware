@@ -62,6 +62,9 @@ static int file_cb(const char *w, int n)
     snprintf(s_filed[s_nfiled++ % 32], 256, "%.*s", n, w);
     return s_file_result;
 }
+/* The files a room took: the room and the wire, as the host binds them. */
+static char s_bound[256];
+static void bind_cb(const char *w, int n, const char *room) { snprintf(s_bound, sizeof s_bound, "%s %.*s", room, n, w); }
 static bool aired_has(const char *s) { for (int i = 0; i < s_naired && i < 32; i++) if (strstr(s_aired[i], s)) return true; return false; }
 static bool filed_has(const char *s) { for (int i = 0; i < s_nfiled && i < 32; i++) if (strstr(s_filed[i], s)) return true; return false; }
 
@@ -74,7 +77,8 @@ static void fresh(void)
     remove(ACTS);
     s_nkv = 0; s_naired = s_nfiled = 0;
     xwc_reset();
-    s_cb = (xwc_cb_t){ now_cb, uptime_cb, peer_key_cb, random_cb, kv_get_cb, kv_set_cb, air_cb, file_cb, ACTS };
+    s_cb = (xwc_cb_t){ now_cb, uptime_cb, peer_key_cb, random_cb, kv_get_cb, kv_set_cb, air_cb, file_cb, ACTS, bind_cb };
+    s_bound[0] = 0;
     xwc_init(&s_cb, "X3STAT", s_station->priv);
 }
 
@@ -380,8 +384,12 @@ int main(void)
     char pid[8]; snprintf(pid, sizeof pid, "%s", s_id);
     snprintf(fmt, sizeof fmt, "t:file f:%%s d:%s ts:%%s r:%s file:Uc3nRw8kFa5xPd1qGz7mYb0tJe6vHs2iLoA9XfCqK4E.jpg size:2.1MB name:mast.jpg", room, pid);
     CHECK(gate(alice, fmt, 2) == 1, "the original on its t:file companion");
+    CHECK(!strncmp(s_bound, room, strlen(room)) && strstr(s_bound, "file:Uc3nRw8k"),
+          "its files are bound to the room, served to whoever reads it (11.2)");
+    s_bound[0] = 0;
     snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s r:%s file:nYxKzGm4vT2pQ8dW5jR7cL0aFbNs9hUe3oXiC6EkM1w.jpg", room, eid);
     CHECK(gate(bob, fmt, 3) == -403, "a visitor adds no picture");
+    CHECK(!s_bound[0], "a refused post binds nothing");
     snprintf(fmt, sizeof fmt, "t:blog f:%%s d:%s ts:%%s title:mine m:x", room);
     CHECK(gate(bob, fmt, 3) == -403 && strstr(s_why, "moderators"), "nor an event");
     snprintf(fmt, sizeof fmt, "t:reaction f:%%s d:%s ts:%%s r:%s add:like", room, pid);

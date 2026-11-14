@@ -72,6 +72,9 @@ typedef struct {
     int (*file)(const char *wire, int len);
     /* Where the acts are kept, one wire per line. NULL: memory only. */
     const char *acts_path;
+    /* A hosted room took [wire]: the files it names are that room's, served
+     * to whoever may read it (XPRS.md 11.2, xwcf_acl_bind). NULL: none. */
+    void (*bind)(const char *wire, int len, const char *room);
 } xwc_cb_t;
 
 /** Start. [station_priv] is the station's secp256k1 scalar (32 bytes). */

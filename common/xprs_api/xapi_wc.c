@@ -651,6 +651,23 @@ static int xfer_offer(httpd_req_t *req, FILE *f, const char *head, int head_len,
     return 1;
 }
 
+/* ---- who a file is served to (XPRS.md 11.2) ----------------------------
+ * A file posted in a hosted room is that room's: served to whoever may read
+ * it (xwc_may_read_room: anyone for a public room, its members and the
+ * administrator for a private one), decided at each ask, so a room made
+ * private later closes its old files too. The page proves the visitor with
+ * `?session=`. A file posted nowhere is public, as before. */
+static void bind_one(const uint8_t sha[32], void *room)
+{
+    xwcf_store_t st;
+    file_store(&st);
+    if (!xwcf_acl_bind(&st, sha, room, false)) ESP_LOGW(TAG, "file store: a file of %s left unbound", (const char *)room);
+}
+static void bind_cb(const char *wire, int len, const char *room)
+{
+    xwcf_refs(wire, len, bind_one, (void *)room);
+}
+
 /* GET (and HEAD) /api/xprs/file/<ref>: the whole file, or the part a
  * `Range:` asks for (206), so a film plays from where the viewer seeks to.
  * The answer is written by hand: httpd's own sends a body it holds whole
@@ -667,6 +684,15 @@ static esp_err_t h_file_get(httpd_req_t *req)
     uint64_t size = 0, a = 0, b = 0;
     FILE *f = xwcf_open(&st, sha, &size);
     if (!f) return answer(req, 404, "{\"ok\":false,\"error\":\"not held\"}");
+    char room[XWCF_ACL_CALL], token[XWC_TOKEN_LEN + 8];
+    bool roomed = xwcf_acl_room(&st, sha, room);
+    if (roomed) {
+        query_val(req, "session", token, sizeof token);
+        if (!xwc_may_read_room(room, token[0] ? token : NULL)) {
+            fclose(f);
+            return answer(req, 403, "{\"ok\":false,\"error\":\"not a public file\"}");
+        }
+    }
     xwcf_hex(sha, hex);
     char range[64] = "";
     if (httpd_req_get_hdr_value_len(req, "Range") > 0)
@@ -677,10 +703,11 @@ static esp_err_t h_file_get(httpd_req_t *req)
     char head[512];
     int n = snprintf(head, sizeof head,
         "HTTP/1.1 %s\r\nContent-Type: %s\r\nContent-Length: %llu\r\nAccept-Ranges: bytes\r\n"
-        "Cache-Control: public, max-age=31536000, immutable\r\nETag: \"%s\"\r\n"
-        "X-Content-Type-Options: nosniff\r\nAccess-Control-Allow-Origin: *\r\n",
+        "Cache-Control: %s, max-age=31536000, immutable\r\nETag: \"%s\"\r\n"
+        "X-Content-Type-Options: nosniff\r\n%s",
         part > 0 ? "206 Partial Content" : part < 0 ? "416 Range Not Satisfiable" : "200 OK",
-        xwcf_type(ext), (unsigned long long)len, hex);
+        xwcf_type(ext), (unsigned long long)len, roomed ? "private" : "public", hex,
+        roomed ? "" : "Access-Control-Allow-Origin: *\r\n");
     if (part > 0)
         n += snprintf(head + n, sizeof head - (size_t)n, "Content-Range: bytes %llu-%llu/%llu\r\n",
                       (unsigned long long)a, (unsigned long long)b, (unsigned long long)size);
@@ -726,6 +753,14 @@ static esp_err_t h_file_post(httpd_req_t *req)
     if (!file_ref(req, ref, sizeof ref, sha, ext)) return answer(req, 400, "{\"ok\":false,\"error\":\"not a file reference\"}");
     query_val(req, "session", token, sizeof token);
     query_val(req, "preview", pv, sizeof pv);
+    /* `room=`: the upload is for a hosted room's post, bound before the post
+     * so a private picture is never open in between. Only for somebody who
+     * reads that room; never re-binding a file already posted. */
+    char roomq[XWC_CALL_LEN + 4];
+    query_val(req, "room", roomq, sizeof roomq);
+    const char *room = roomq[0] ? xwc_room_of(roomq) : NULL;
+    if (roomq[0] && (!room || !xwc_may_read_room(room, token[0] ? token : NULL)))
+        return answer(req, 403, "{\"ok\":false,\"error\":\"not a room you read\"}");
     bool staff = token[0] && xwc_is_uploader(token);
     /* One visitor's limit is the core's; a board has one HTTP worker and a
      * small flash, so it caps every visitor together. The staff are not
@@ -767,6 +802,8 @@ static esp_err_t h_file_post(httpd_req_t *req)
         snprintf(out, sizeof out, "{\"ok\":false,\"error\":\"%s\"}", why);
         return answer(req, code, out);
     }
+    if (room && !xwcf_acl_bind(&st, sha, room, true))
+        return answer(req, 507, "{\"ok\":false,\"error\":\"too many room files held\"}");
     if (staff) ESP_LOGI(TAG, "file store: %s kept as the station's own, %u bytes", ref, (unsigned)total);
     snprintf(out, sizeof out, "{\"ok\":true,\"ref\":\"%s\",\"size\":%u}", ref, (unsigned)total);
     return answer(req, 200, out);
@@ -810,7 +847,7 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
     if (stat(file_dir(), &ds) != 0) mkdir(file_dir(), 0775);
     static const xwc_cb_t cb = {
         .now = now_cb, .uptime = uptime_cb, .peer_key = peer_key_cb, .random_bytes = random_cb,
-        .kv_get = kv_get, .kv_set = kv_set, .air = air_cb, .file = file_cb,
+        .kv_get = kv_get, .kv_set = kv_set, .air = air_cb, .file = file_cb, .bind = bind_cb,
         .acts_path = "/idx/wcacts.txt",
     };
     const nostr_keys_t *k = nostr_keys_available() ? nostr_keys_get() : NULL;

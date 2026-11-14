@@ -54,6 +54,44 @@ static void age(const uint8_t sha[32], const char *sub, time_t t)
     utime(path, &u);
 }
 
+/* ---- the rooms files were posted in (.acl) ---- */
+static int s_seen;
+static uint8_t s_last[32];
+static void seen(const uint8_t sha[32], void *ctx) { (void)ctx; s_seen++; memcpy(s_last, sha, 32); }
+
+/* A digest the store does not hold, for the prune. */
+static const uint8_t *vs_held(const xwcf_store_t *s) { (void)s; static uint8_t z[32] = { 0xee }; return z; }
+
+static void acl_tests(xwcf_store_t *s, const uint8_t held[32], const uint8_t gone[32])
+{
+    char room[XWCF_ACL_CALL];
+    CHECK(!xwcf_acl_room(s, held, room), "a file never posted in a room has no room: public");
+    CHECK(xwcf_acl_bind(s, held, "X5ROOMA", false) && xwcf_acl_room(s, held, room) && !strcmp(room, "X5ROOMA"),
+          "a file posted in a room is bound to it");
+    CHECK(xwcf_acl_bind(s, held, "X5ROOMB", true) && xwcf_acl_room(s, held, room) && !strcmp(room, "X5ROOMA"),
+          "an upload naming a room does not re-bind a file already posted");
+    CHECK(xwcf_acl_bind(s, held, "X5ROOMB", false) && xwcf_acl_room(s, held, room) && !strcmp(room, "X5ROOMB"),
+          "a later post re-binds it: the newest wins (11.2)");
+    CHECK(xwcf_acl_bind(s, gone, "X5ROOMA", false) && xwcf_acl_room(s, gone, room), "a second file, its own record");
+    /* Full: the flash table holds 512; the record of a file not held goes. */
+    s->own = false;
+    uint8_t x[32] = { 0 };
+    bool ok = true;
+    for (int i = 0; i < 510 && ok; i++) { x[0] = 0x10; x[1] = (uint8_t)i; x[2] = (uint8_t)(i >> 8); ok = xwcf_acl_bind(s, x, "X5ROOMA", false); }
+    CHECK(ok, "the table fills");
+    x[1] = 0xff; x[2] = 0xff;
+    CHECK(xwcf_acl_bind(s, x, "X5ROOMA", false) && xwcf_acl_room(s, held, room) && !xwcf_acl_room(s, gone, room),
+          "full, the records of files no longer held go; a held one stays");
+    s->own = true;
+    char w[400], hex[65];
+    xwcf_hex(held, hex);
+    snprintf(w, sizeof w, "t:message f:X1ABC d:X5ROOMA file:%s.jpg m:see file:A5BYxvLAy0ksUzsKTRTvd8wPeKvMztUofYShogEc-4E.png. and xfile:nope", hex);
+    s_seen = 0;
+    int got = xwcf_refs(w, (int)strlen(w), seen, NULL), saw = s_seen;
+    CHECK(got == 2 && saw == 2, "the field and a reference in the text are found, a sentence's stop left off");
+    CHECK(xwcf_refs("t:message m:no files", 20, seen, NULL) == 0, "a wire with none has none");
+}
+
 static void store_tests(void)
 {
     if (system("rm -rf " DIR_T) != 0) { /* nothing there yet */ }
@@ -150,6 +188,7 @@ static void store_tests(void)
           strcmp(xwcf_type("m4a"), "audio/mp4") == 0 && strcmp(xwcf_type("wav"), "audio/wav") == 0 &&
           strcmp(xwcf_type("ogv"), "video/ogg") == 0 && strcmp(xwcf_type("m4v"), "video/mp4") == 0,
           "films, sound and phone photographs have their types");
+    acl_tests(&s, fsha, vs_held(&s));
     if (system("rm -rf " DIR_T) != 0) { /* left for a look */ }
 }
 

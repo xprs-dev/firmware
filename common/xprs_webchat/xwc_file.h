@@ -96,6 +96,25 @@ bool xwcf_room(const xwcf_store_t *s, uint64_t need);
  *  NULL when it is not held. [size] is its length. */
 void *xwcf_open(const xwcf_store_t *s, const uint8_t sha[32], uint64_t *size);
 
+/* ---- the rooms files were posted in (XPRS.md 11.2) ---------------------
+ * A file's reach is the reach of the words that carried it: a picture posted
+ * in a hosted room is served to whoever may read that room, decided when it
+ * is asked for (a room made private later closes its old pictures too). The
+ * store keeps `.acl` beside the files: one 28-byte record per file, the
+ * digest's first 16 bytes and the room's callsign. A file never posted in a
+ * room has no record and is public. */
+#define XWCF_ACL_CALL 12
+/** Bind [sha] to [room]. The newest post wins (11.2) unless [only_new]
+ *  (an upload naming its room: it never re-binds a file already posted).
+ *  False when the record could not be written (the table is full of held
+ *  files, or the volume is). */
+bool xwcf_acl_bind(const xwcf_store_t *s, const uint8_t sha[32], const char *room, bool only_new);
+/** The room [sha] was posted in, into [room]; false when none (public). */
+bool xwcf_acl_room(const xwcf_store_t *s, const uint8_t sha[32], char room[XWCF_ACL_CALL]);
+/** Every `file:` reference in [wire] (the field, and tokens in the text),
+ *  handed to [each]. Returns how many. */
+int  xwcf_refs(const char *wire, int len, void (*each)(const uint8_t sha[32], void *ctx), void *ctx);
+
 /** A `Range:` header against a file of [size] bytes (RFC 9110 14.1.2):
  *   0  serve it whole (no header, or one this store does not take: several
  *      ranges, another unit, nonsense -- a 200 is a valid answer to those)

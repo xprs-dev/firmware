@@ -1482,6 +1482,7 @@ int xwc_gate(const char *wire, int len, bool local_peer,
             snprintf(why, why_cap, "busy, try again");
             return -503;
         }
+        if (s_cb.bind) s_cb.bind(wire, len, r->call);
         return 1;
     }
 

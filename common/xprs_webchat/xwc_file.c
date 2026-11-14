@@ -328,3 +328,145 @@ int xwcf_range(const char *hdr, uint64_t size, uint64_t *a, uint64_t *b)
     *b = open || y >= size ? size - 1 : y;
     return 1;
 }
+
+/* ---- .acl: the rooms files were posted in ------------------------------ */
+#define ACL_PREFIX 16
+#define ACL_REC    (ACL_PREFIX + XWCF_ACL_CALL)
+/* Records the table holds: a card's store keeps thousands of pictures, the
+ * board's own flash a few dozen. Full, the records of files no longer held
+ * go first; a table still full refuses the bind. */
+#define ACL_MAX_CARD  16384
+#define ACL_MAX_FLASH 512
+
+static void acl_path(const xwcf_store_t *s, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s/.acl", s->dir);
+}
+
+/* The record's index for [sha], or -1; [n] gets how many there are. */
+static long acl_find(FILE *f, const uint8_t sha[32], long *n)
+{
+    uint8_t r[ACL_REC];
+    long i = 0, at = -1;
+    rewind(f);
+    while (fread(r, 1, ACL_REC, f) == ACL_REC) {
+        if (at < 0 && memcmp(r, sha, ACL_PREFIX) == 0) at = i;
+        i++;
+    }
+    if (n) *n = i;
+    return at;
+}
+
+/* Drop the records of files the store no longer holds. */
+static long acl_prune(const xwcf_store_t *s, const char *path)
+{
+    char tmp[300];
+    if (snprintf(tmp, sizeof tmp, "%s.new", path) >= (int)sizeof tmp) return -1;
+    FILE *in = fopen(path, "rb"), *out = in ? fopen(tmp, "wb") : NULL;
+    if (!out) { if (in) fclose(in); return -1; }
+    uint8_t r[ACL_REC], sha[32];
+    long kept = 0;
+    while (fread(r, 1, ACL_REC, in) == ACL_REC) {
+        /* Held under any digest with this prefix: the store names files by
+         * the whole digest, so look for the prefix among the names. */
+        memset(sha, 0, sizeof sha);
+        memcpy(sha, r, ACL_PREFIX);
+        char hex[65];
+        xwcf_hex(sha, hex);
+        hex[ACL_PREFIX * 2] = 0;
+        bool held = false;
+        for (int k = 0; k < 4 && !held; k++) {
+            char dir[280];
+            if (snprintf(dir, sizeof dir, "%s%s", s->dir, k_places[k]) >= (int)sizeof dir) continue;
+            DIR *d = opendir(dir);
+            if (!d) continue;
+            struct dirent *e;
+            while ((e = readdir(d)))
+                if (!strncmp(e->d_name, hex, ACL_PREFIX * 2)) { held = true; break; }
+            closedir(d);
+        }
+        if (held && fwrite(r, 1, ACL_REC, out) == ACL_REC) kept++;
+    }
+    fclose(in);
+    if (fclose(out) != 0) { remove(tmp); return -1; }
+    remove(path);
+    if (rename(tmp, path) != 0) return -1;
+    return kept;
+}
+
+bool xwcf_acl_bind(const xwcf_store_t *s, const uint8_t sha[32], const char *room, bool only_new)
+{
+    if (!room || !room[0]) return false;
+    char path[280];
+    acl_path(s, path, sizeof path);
+    uint8_t r[ACL_REC];
+    memset(r, 0, sizeof r);
+    memcpy(r, sha, ACL_PREFIX);
+    strncpy((char *)r + ACL_PREFIX, room, XWCF_ACL_CALL - 1);
+    long n = 0, at = -1;
+    FILE *f = fopen(path, "r+b");
+    if (f) {
+        at = acl_find(f, sha, &n);
+        if (at >= 0) {
+            uint8_t old[ACL_REC];
+            if (fseek(f, at * ACL_REC, SEEK_SET) != 0 || fread(old, 1, ACL_REC, f) != ACL_REC) { fclose(f); return false; }
+            if (only_new || !memcmp(old, r, ACL_REC)) { fclose(f); return true; }
+            bool ok = fseek(f, at * ACL_REC, SEEK_SET) == 0 && fwrite(r, 1, ACL_REC, f) == ACL_REC;
+            return fclose(f) == 0 && ok;
+        }
+        fclose(f);
+    }
+    long max = s->own ? ACL_MAX_CARD : ACL_MAX_FLASH;
+    if (n >= max && acl_prune(s, path) >= max) return false;
+    f = fopen(path, "ab");
+    if (!f) return false;
+    bool ok = fwrite(r, 1, ACL_REC, f) == ACL_REC;
+    return fclose(f) == 0 && ok;
+}
+
+bool xwcf_acl_room(const xwcf_store_t *s, const uint8_t sha[32], char room[XWCF_ACL_CALL])
+{
+    char path[280];
+    acl_path(s, path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    long at = acl_find(f, sha, NULL);
+    bool ok = false;
+    if (at >= 0) {
+        uint8_t r[ACL_REC];
+        ok = fseek(f, at * ACL_REC, SEEK_SET) == 0 && fread(r, 1, ACL_REC, f) == ACL_REC;
+        if (ok) {
+            memcpy(room, r + ACL_PREFIX, XWCF_ACL_CALL);
+            room[XWCF_ACL_CALL - 1] = 0;
+            ok = room[0] != 0;
+        }
+    }
+    fclose(f);
+    return ok;
+}
+
+static bool ref_char(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '-' || c == '_' || c == '.';
+}
+
+int xwcf_refs(const char *wire, int len, void (*each)(const uint8_t sha[32], void *ctx), void *ctx)
+{
+    int found = 0;
+    for (int i = 0; i + 5 <= len; i++) {
+        if (memcmp(wire + i, "file:", 5) != 0) continue;
+        if (i > 0 && ref_char(wire[i - 1])) continue;    /* `xfile:`, not a field */
+        int a = i + 5, b = a;
+        while (b < len && b - a < 80 && ref_char(wire[b])) b++;
+        while (b > a && wire[b - 1] == '.') b--;          /* a sentence's full stop */
+        char ref[81];
+        memcpy(ref, wire + a, (size_t)(b - a));
+        ref[b - a] = 0;
+        uint8_t sha[32];
+        char ext[XWCF_EXT_MAX + 1];
+        if (xwcf_parse(ref, sha, ext)) { each(sha, ctx); found++; }
+        i = b - 1;
+    }
+    return found;
+}
