@@ -48,6 +48,15 @@ static const char *TAG = "xgossip";
  * store grows to.
  */
 #define XG_BUCKETS      64
+/* A bucket is a file, and a file takes whole clusters: 64 buckets on a
+ * 4 KB-cluster volume are 256 KB on disk however few rows they hold. That
+ * is a third of a C3's 792 KB volume, measured 2026-11-14 holding 9 KB of
+ * rows. A small volume uses 8 buckets (at most 8 KB each, 64 KB in all). 8
+ * divides 64, so a row in bucket b < 8 of the wide layout is where the
+ * narrow one looks for it; buckets 8..63 are dropped at open (soft state:
+ * live rows age out in a day, visits are relearned). */
+#define XG_BUCKETS_SMALL 8
+#define XG_SMALL_VOLUME  (4ull * 1024u * 1024u)
 #define XG_BUCKET_MAX  256        /* records per bucket; 8 KB of card */
 #define XG_PER_CALL     40        /* G + K_ALWAYS_ON: every row one callsign can
                                    * have in its bucket */
@@ -127,6 +136,7 @@ struct xgossip_s {
     bool     ready;
     bool     always_on;
     uint32_t max_bytes;
+    int      nb;                  /* buckets: XG_BUCKETS, or XG_BUCKETS_SMALL */
     int      bucket_max;          /* rows a bucket may hold: max_bytes / buckets */
     int      visit_k;
 
@@ -163,14 +173,14 @@ static void xg_base(char *out, size_t cap, const char *call)
     out[n] = 0;
 }
 
-static int xg_bucket(const char *base)
+static int xg_bucket(const xgossip_t *g, const char *base)
 {
     uint32_t h = 2166136261u;                    /* FNV-1a */
     for (const char *p = base; *p; p++) {
         h ^= (uint8_t)*p;
         h *= 16777619u;
     }
-    return (int)(h % XG_BUCKETS);
+    return (int)(h % (uint32_t)g->nb);
 }
 
 static void xg_path(const xgossip_t *g, char *out, size_t cap, int bucket)
@@ -291,7 +301,7 @@ static void xg_queue(xgossip_t *g, const char *call, const char *gw,
 
 static void xg_apply(xgossip_t *g, const xg_job_t *j)
 {
-    const int bucket = xg_bucket(j->call);
+    const int bucket = xg_bucket(g, j->call);
     xg_scan_t *sc = &g->scan;
     xg_scan(g, bucket, j->call, sc);
 
@@ -490,7 +500,7 @@ int xgossip_where_is(xgossip_t *g, const char *call,
     char cb[10];
     xg_base(cb, sizeof cb, call);
     xg_scan_t *sc = &g->scan;
-    xg_scan(g, xg_bucket(cb), cb, sc);
+    xg_scan(g, xg_bucket(g, cb), cb, sc);
 
     int w = 0;
     /* L3 first, then L2: a live sighting outranks a place somebody used to
@@ -548,12 +558,16 @@ int xgossip_try_candidates(xgossip_t *g, const char *call, const char *self,
 
 /* ── lifecycle ───────────────────────────────────────────────────────────── */
 
-/* The volume [dir] is on, in bytes; 0 when unknown (and on the host). */
+/* The volume [dir] is on, in bytes; 0 when unknown (and on the host,
+ * unless the test says what volume to pretend). */
+#ifdef XGOSSIP_HOST_TEST
+uint64_t xgossip_test_volume;
+#endif
 static uint64_t xg_volume_total(const char *dir)
 {
 #ifdef XGOSSIP_HOST_TEST
     (void)dir;
-    return 0;
+    return xgossip_test_volume;
 #else
     char mnt[32];
     size_t n = 0;
@@ -582,7 +596,7 @@ void xgossip_set_always_on(xgossip_t *g, bool always_on)
     if (!always_on && vol && vol / 5 < g->max_bytes) g->max_bytes = (uint32_t)(vol / 5);
     /* The budget is enforced per bucket: it used to be logged and never
      * applied, and the buckets' own cap (256 rows each) allowed 512 KB. */
-    g->bucket_max = (int)(g->max_bytes / XG_BUCKETS / sizeof(xg_rec_t));
+    g->bucket_max = (int)(g->max_bytes / (uint32_t)g->nb / sizeof(xg_rec_t));
     if (g->bucket_max > XG_BUCKET_MAX) g->bucket_max = XG_BUCKET_MAX;
     if (g->bucket_max < XG_PER_CALL) g->bucket_max = XG_PER_CALL;
     g->visit_k = always_on ? XGOSSIP_VISIT_K_ALWAYS_ON : XGOSSIP_VISIT_K;
@@ -680,9 +694,16 @@ xgossip_t *xgossip_open(const char *dir)
     /* The budget and the trim first: on a volume this store filled, the
      * probe below cannot be written until the trim has given room back
      * (seen: "Permission denied" on a C3 with 0 KB free). */
+    uint64_t vol = xg_volume_total(g->dir);
+    g->nb = vol && vol < XG_SMALL_VOLUME ? XG_BUCKETS_SMALL : XG_BUCKETS;
+    for (int b = g->nb; b < XG_BUCKETS; b++) {
+        char stale[112];
+        xg_path(g, stale, sizeof stale, b);
+        remove(stale);
+    }
     xgossip_set_always_on(g, false);
     uint32_t rows = 0;
-    for (int b = 0; b < XG_BUCKETS; b++) {
+    for (int b = 0; b < g->nb; b++) {
         xg_scan(g, b, NULL, &g->scan);
         rows += (uint32_t)xg_trim(g, b, g->scan.rows);
     }

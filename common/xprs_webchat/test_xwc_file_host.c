@@ -192,6 +192,41 @@ static void store_tests(void)
     if (system("rm -rf " DIR_T) != 0) { /* left for a look */ }
 }
 
+/* A C3's flash volume: 792 KB in 4 KB clusters. A file is billed the
+ * clusters it takes, and the reserve is held under the archive's own floor. */
+static void small_volume_tests(void)
+{
+    if (system("rm -rf " DIR_T) != 0) { /* nothing there yet */ }
+    xwcf_store_t s = { .dir = DIR_T, .visitor_max = 96u * 1024u, .budget = 3u * 4096u,
+                       .reserve = 128u * 1024u, .cluster = 4096, .own = false, .space = space };
+    const char *why = "";
+    uint8_t v[4][1500], vs[4][32];
+    for (int i = 0; i < 4; i++) {
+        memset(v[i], 'k' + i, sizeof v[i]);
+        SHA256(v[i], sizeof v[i], vs[i]);
+    }
+    printf("a small volume\n");
+    s_total = 792u * 1024u;
+    s_free = 60u * 1024u;               /* under the 128 KB reserve, over a sixteenth */
+    int r0 = put(&s, v[0], sizeof v[0], NULL, false, false, &why);
+    if (r0 != 200) printf("    got %d %s\n", r0, why);
+    CHECK(r0 == 200, "a file fits while a sixteenth of the volume stays free");
+    s_free = 40u * 1024u;               /* under a sixteenth (49.5 KB) */
+    int r1 = put(&s, v[1], sizeof v[1], NULL, false, false, &why);
+    if (r1 != 503) printf("    got %d\n", r1);
+    CHECK(r1 == 503, "and none when it would not");
+    s_free = 200u * 1024u;
+    CHECK(put(&s, v[1], sizeof v[1], NULL, false, false, &why) == 200, "a second");
+    CHECK(put(&s, v[2], sizeof v[2], NULL, false, false, &why) == 200, "a third: three clusters");
+    age(vs[0], "", 1000); age(vs[1], "", 2000); age(vs[2], "", 3000);
+    /* 4 x 1500 bytes is 6000, inside 12 KB by bytes; by clusters it is 16 KB. */
+    CHECK(put(&s, v[3], sizeof v[3], NULL, false, false, &why) == 200 && !there("", vs[0]) &&
+          there("", vs[1]) && there("", vs[3]),
+          "a fourth costs a fourth cluster: the oldest goes");
+    s_total = 100u * 1024u * 1024u;
+    s_free = 10u * 1024u * 1024u;
+}
+
 int main(void)
 {
     uint8_t sha[32], want[32];
@@ -215,6 +250,7 @@ int main(void)
     CHECK(strcmp(xwcf_type("png"), "image/png") == 0 && strcmp(xwcf_type("exe"), "application/octet-stream") == 0,
           "types: known ones by name, the rest octets");
     store_tests();
+    small_volume_tests();
     printf(fails ? "xwc_file: %d failed\n" : "xwc_file: all passed\n", fails);
     return fails ? 1 : 0;
 }

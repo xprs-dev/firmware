@@ -700,6 +700,51 @@ static void test_evicts_on_real_bytes(const char *dir)
     xprsindex_close(st);
 }
 
+/* A volume short of room takes the oldest segment even while the archive is
+ * inside its own budget: on a C3 the log, gossip and cluster slack filled
+ * the volume with the archive at 382 of 633 KB (2026-11-14). */
+extern uint64_t xprsindex_host_total, xprsindex_host_free;
+static void test_evicts_on_a_full_volume(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    char w[300];
+    for (int i = 0; i < 4100; i++) {
+        snprintf(w, sizeof w, "t:info f:X1FL%02d ts:2026-02-01_09:00:00 m:fill %d",
+                 i % 90, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    }
+    xprsindex_set_max_bytes(st, 10u * 1024u * 1024u);   /* far inside it */
+    xprsidx_stats_t s;
+
+    /* Room to spare: nothing goes. */
+    xprsindex_host_total = 792u * 1024u;
+    xprsindex_host_free = 200u * 1024u;
+    snprintf(w, sizeof w, "t:info f:X1ROOM ts:2026-02-02_09:00:00 m:room");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    xprsindex_stats(st, &s);
+    CHECK(s.segments == 2, "evicted with room to spare (%u segments)", (unsigned)s.segments);
+
+    /* Under an eighth of the volume free: the oldest segment goes. */
+    xprsindex_host_free = 40u * 1024u;
+    snprintf(w, sizeof w, "t:info f:X1FULL ts:2026-02-03_09:00:00 m:full");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    xprsindex_stats(st, &s);
+    CHECK(s.segments == 1, "a full volume kept the oldest segment (%u segments)",
+          (unsigned)s.segments);
+    xprsidx_query_t q = { .type = -1, .from = "X1FULL", .limit = 5, .trusted = true };
+    collect_t c = { 0 };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 1, "the newest record went with it");
+
+    /* Never the active segment, however full. */
+    snprintf(w, sizeof w, "t:info f:X1LAST ts:2026-02-04_09:00:00 m:last");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, 0);
+    xprsindex_stats(st, &s);
+    CHECK(s.segments == 1, "the active segment went (%u segments)", (unsigned)s.segments);
+    xprsindex_host_total = xprsindex_host_free = 0;
+    xprsindex_close(st);
+}
+
 
 /*
  * XPRS.md 10.7: a station with no clock stamps epoch:B.S, and a receiver that
@@ -1868,6 +1913,7 @@ int main(void)
     test_directory(dir);
     test_directory_tracks_the_store(dir);
     test_evicts_on_real_bytes(dir);
+    test_evicts_on_a_full_volume(dir);
     test_verifies_what_it_stores(dir);
     test_retention_priorities(dir);
     test_declared_mail_is_the_last_to_go(dir);

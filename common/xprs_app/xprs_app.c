@@ -4791,8 +4791,13 @@ static void tasks_report(void)
 #endif
 }
 
-/* Bytes under [path], files and subdirectories, by walking it (FAT keeps
- * no totals). [depth] bounds the walk; a C3's /idx is two levels deep. */
+/* What a file of [b] bytes takes on /idx: whole 4 KB clusters. Byte sizes
+ * left a quarter of a C3's volume unaccounted for (2026-11-14). */
+static uint64_t on_idx(uint64_t b) { return (b + 4095u) & ~(uint64_t)4095u; }
+
+/* Space under [path], files and subdirectories, by walking it (FAT keeps
+ * no totals), in clusters. [depth] bounds the walk; a C3's /idx is two
+ * levels deep. */
 static uint64_t du(const char *path, int depth)
 {
     DIR *d = opendir(path);
@@ -4806,8 +4811,8 @@ static uint64_t du(const char *path, int depth)
         if (k < 0 || k >= (int)sizeof p) continue;     /* too deep to name */
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { if (depth > 0) sum += du(p, depth - 1); }
-        else sum += (uint64_t)st.st_size;
+        if (S_ISDIR(st.st_mode)) { if (depth > 0) sum += 4096u + du(p, depth - 1);  /* a directory is a cluster too */ }
+        else sum += on_idx((uint64_t)st.st_size);
     }
     closedir(d);
     return sum;
@@ -4833,7 +4838,7 @@ static void storage_report(void)
         if (k < 0 || k >= (int)sizeof p) continue;
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        uint64_t b = S_ISDIR(st.st_mode) ? du(p, 3) : (uint64_t)st.st_size;
+        uint64_t b = S_ISDIR(st.st_mode) ? du(p, 3) : on_idx((uint64_t)st.st_size);
         n += snprintf(line + n, sizeof line - n, " %s=%lluK", e->d_name,
                       (unsigned long long)((b + 1023) / 1024));
     }
@@ -4852,7 +4857,7 @@ static void storage_report(void)
         if (k < 0 || k >= (int)sizeof p) continue;
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        uint64_t b2 = S_ISDIR(st.st_mode) ? du(p, 2) : (uint64_t)st.st_size;
+        uint64_t b2 = S_ISDIR(st.st_mode) ? du(p, 2) : on_idx((uint64_t)st.st_size);
         int i = 0;
         while (kinds[i][0] && strncmp(e->d_name, kinds[i], strlen(kinds[i])) != 0) i++;
         sum[i] += b2; cnt[i]++;

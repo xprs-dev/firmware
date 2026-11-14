@@ -442,6 +442,8 @@ static void file_store(xwcf_store_t *st)
         .dir = file_dir(), .visitor_max = file_max(),
         .budget = s_card() ? FILE_BUDGET_SD : FILE_BUDGET_IDX,
         .reserve = FILE_RESERVE, .own = s_card(), .space = file_space,
+        /* The flash volume's FAT allocates 4 KB at a time. */
+        .cluster = s_on_sd() ? 0 : 4096u,
     };
 }
 

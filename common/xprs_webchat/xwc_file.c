@@ -145,8 +145,16 @@ static void mkdir_p(const char *dir)
  * first (it never goes), then a stranger's. */
 static const char *const k_places[4] = { OWN, OWN THUMBS, "", THUMBS };
 
+/* What [bytes] take on the volume: whole clusters, as the FAT counts. */
+static uint64_t on_disk(const xwcf_store_t *s, uint64_t bytes)
+{
+    if (!s->cluster) return bytes;
+    return (bytes + s->cluster - 1) / s->cluster * s->cluster;
+}
+
 bool xwcf_room(const xwcf_store_t *s, uint64_t need)
 {
+    need = on_disk(s, need);
     char dirs[2][128];
     snprintf(dirs[0], sizeof dirs[0], "%s", s->dir);
     snprintf(dirs[1], sizeof dirs[1], "%s" THUMBS, s->dir);
@@ -165,7 +173,7 @@ bool xwcf_room(const xwcf_store_t *s, uint64_t need)
                 struct stat st;
                 snprintf(path, sizeof path, "%.127s/%.64s", dirs[k], e->d_name);
                 if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-                total += (uint64_t)st.st_size;
+                total += on_disk(s, (uint64_t)st.st_size);
                 if (!oldest[0] || st.st_mtime < oldest_t) {
                     oldest_t = st.st_mtime;
                     snprintf(oldest, sizeof oldest, "%s", path);
@@ -175,7 +183,13 @@ bool xwcf_room(const xwcf_store_t *s, uint64_t need)
         }
         uint64_t fre = 0, tot = 0;
         bool known = s->space && s->space(&fre, &tot);
-        if (total + need <= s->budget && (!known || fre >= need + s->reserve)) return true;
+        /* The reserve keeps the archive able to roll a segment. On a small
+         * volume it is held to a sixteenth: the archive keeps an eighth free
+         * itself (xprsindex, xi_volume_tight), and a file reserve above that
+         * left no room for any file at all on a C3. */
+        uint64_t keep = s->reserve;
+        if (known && tot / 16u < keep) keep = tot / 16u;
+        if (total + need <= s->budget && (!known || fre >= need + keep)) return true;
         if (!oldest[0]) return false;
         if (remove(oldest) != 0) return false;
     }

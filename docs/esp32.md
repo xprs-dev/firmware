@@ -539,6 +539,29 @@ Removing the damaged tail exposed the lost clusters behind it, and the
 existing rescue (above) did the rest on the next boot: 44 mail records kept,
 `/idx` formatted, 676 KB free.
 
+### Filled again, by clusters (2026-11-14)
+
+Three days later X3VGAZ was at 0 KB free again, with the archive at 382 KB of
+its 633 KB budget and the files adding up to 531 KB: 260 KB of the volume was
+in no file's byte size. A FAT file takes whole 4 KB clusters, and gossip's 64
+bucket files held 9 KB of rows in 256 KB of clusters. Every budget counted
+bytes, so none of them saw it. Fixed in four places:
+
+- **Gossip** uses 8 buckets on a volume under 4 MB (64 KB at most, rows and
+  clusters alike). 8 divides 64, so rows in buckets 0-7 keep their place;
+  buckets 8-63 are dropped at open (soft state, relearned).
+- **The archive** keeps an eighth of its volume free (64 KB to 4 MB), dropping
+  its oldest segment as it would over budget, carrying only declared mail
+  (`volume short of room` in the log). Whatever else fills the volume, the
+  archive gives the room back, so a segment can always roll.
+- **The file store** bills strangers' files in clusters on `/idx`, and holds
+  its reserve to a sixteenth of the volume, under the archive's floor: with
+  128 KB on a 792 KB volume no file ever fitted.
+- **The `storage /idx` report** counts clusters, so its parts add up to what
+  the volume says is used.
+
+The log was already bounded: `cur.txt` rotates to `prev.txt` at 64 KB.
+
 ## The internet WiFi: anyone may add a network, only the station's own screen may remove one
 
 The hotspot page's menu (top right) opens **Settings**, with the internet

@@ -37,8 +37,10 @@
 #define XI_LOGI(fmt, ...) ((void)0)
 #define XI_LOGW(fmt, ...) ((void)0)
 #define XI_LOGE(fmt, ...) ((void)0)
-static uint64_t xi_card_total(const char *d) { (void)d; return 0; }
-static uint64_t xi_card_free(const char *d) { (void)d; return 0; }
+/* The volume a host test pretends to have; 0 = unknown, as before. */
+uint64_t xprsindex_host_total, xprsindex_host_free;
+static uint64_t xi_card_total(const char *d) { (void)d; return xprsindex_host_total; }
+static uint64_t xi_card_free(const char *d) { (void)d; return xprsindex_host_free; }
 #else
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -2007,11 +2009,37 @@ static void xi_tails_trim(xprsidx_t *st)
     }
 }
 
+/*
+ * Is the VOLUME short of room, whatever the archive's own budget says?
+ *
+ * The budget counts the archive's bytes; the volume counts everybody's
+ * clusters. On a C3 (792 KB, 4 KB clusters) the archive was inside its
+ * 633 KB budget at 382 KB while the volume had 0 KB free (2026-11-14): the
+ * log, the gossip buckets and the cluster slack of every small file took the
+ * rest, and a full volume cannot roll a segment, store a file or keep a log.
+ * The archive is the store that can give room back, so it does: it keeps an
+ * eighth of the volume free (at least 64 KB, at most 4 MB) by dropping its
+ * oldest segment, the same way the budget does.
+ */
+#define XI_FREE_FLOOR_MIN (64ull * 1024u)
+#define XI_FREE_FLOOR_MAX (4ull * 1024u * 1024u)
+static bool xi_volume_tight(const xprsidx_t *st)
+{
+    uint64_t tot = xi_card_total(st->dir);
+    if (!tot) return false;                       /* unknown: the budget alone */
+    uint64_t floor = tot / 8u;
+    if (floor < XI_FREE_FLOOR_MIN) floor = XI_FREE_FLOOR_MIN;
+    if (floor > XI_FREE_FLOOR_MAX) floor = XI_FREE_FLOOR_MAX;
+    return xi_card_free(st->dir) < floor;
+}
+
 static bool xi_evict_locked(xprsidx_t *st)
 {
-    if (!st->max_bytes || st->nseg < 2) return false;
+    if (st->nseg < 2) return false;
     uint64_t used = xi_used_bytes(st);
-    if (used <= st->max_bytes) return false;
+    const bool over = st->max_bytes && used > st->max_bytes;
+    const bool tight = !over && xi_volume_tight(st);
+    if (!over && !tight) return false;
 
     uint32_t first = st->oldest_first;
     if (first == st->active_first) return false;     /* never the active one */
@@ -2028,6 +2056,7 @@ static bool xi_evict_locked(xprsidx_t *st)
     const bool readable = st->read_fp != NULL;
     /* Not fatal -- the segment is still dropped -- but it means 36.11 carried
      * nothing forward, so mail somebody asked for is gone. Never silently. */
+    if (tight) XI_LOGW("volume short of room: %s goes, the archive inside its budget", path);
     if (!readable) XI_LOGE("evicting %s WITHOUT carry-forward: %s", path, strerror(errno));
     uint32_t now = (uint32_t)time(NULL);
     if (now < 1700000000u) now = 0;
@@ -2045,7 +2074,8 @@ static bool xi_evict_locked(xprsidx_t *st)
      * is the price of keeping the mail of stations that chose this one. */
     const uint64_t used_now = xi_used_bytes(st);
     const uint64_t after_evict = used_now > seg_size ? used_now - seg_size : 0;
-    const bool room_for_class2 = after_evict <= st->max_bytes;
+    /* A tight volume carries only what 36.11 keeps longest. */
+    const bool room_for_class2 = !tight && after_evict <= st->max_bytes;
     const uint32_t seg_end = first + st->recs;
     for (int pass = 0; pass < 2 && readable; pass++) {
         if (pass == 1 && !room_for_class2) {

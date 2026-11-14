@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <stdint.h>
 
 static int checks, failed;
 #define CHECK(cond, ...) do {                                              \
@@ -355,6 +356,69 @@ static void test_trim_on_open(const char *dir)
     xgossip_close(g);
 }
 
+/* A small volume keeps 8 bucket files, not 64: each file takes whole
+ * clusters, and 64 of them were a third of a C3's volume. Buckets the wide
+ * layout left behind go at open; a row in a bucket both layouts share is
+ * still found. */
+extern uint64_t xgossip_test_volume;
+static int bucket_files(const char *dir)
+{
+    int n = 0;
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    while (d && (e = readdir(d)) != NULL)
+        if (strncmp(e->d_name, "g_", 2) == 0 && strstr(e->d_name, ".bin")) n++;
+    if (d) closedir(d);
+    return n;
+}
+
+static void test_small_volume_buckets(const char *dir)
+{
+    rm_rf(dir);
+    xgossip_t *g = xgossip_open(dir);           /* the wide layout */
+    char call[12];
+    for (int i = 0; i < 200; i++) {
+        snprintf(call, sizeof call, "X1W%03d", i);
+        xgossip_note_direct(g, call, "X3SELF", "ble", 1000u + (unsigned)i);
+        xgossip_pump(g);
+    }
+    static int before[200];
+    xgossip_sighting_t s[8];
+    for (int i = 0; i < 200; i++) {
+        snprintf(call, sizeof call, "X1W%03d", i);
+        before[i] = xgossip_where_is(g, call, s, 8);
+    }
+    xgossip_close(g);
+    int wide = bucket_files(dir);
+    CHECK(wide > 8, "the wide layout wrote %d bucket files", wide);
+
+    xgossip_test_volume = 792u * 1024u;
+    g = xgossip_open(dir);
+    int narrow = bucket_files(dir);
+    CHECK(narrow <= 8, "a small volume keeps %d bucket files, wanted at most 8", narrow);
+    /* Whoever sat in a shared bucket is still known as before; the rest
+     * are gone, not misfiled. */
+    int kept = 0;
+    for (int i = 0; i < 200; i++) {
+        snprintf(call, sizeof call, "X1W%03d", i);
+        int n = xgossip_where_is(g, call, s, 8);
+        CHECK(n == 0 || n == before[i], "%s found %d times, %d before", call, n, before[i]);
+        kept += n > 0;
+    }
+    CHECK(kept > 0 && kept < 200, "%d of 200 kept across the change", kept);
+    /* And it keeps learning, into the 8 files. */
+    for (int i = 0; i < 200; i++) {
+        snprintf(call, sizeof call, "X1N%03d", i);
+        xgossip_note_direct(g, call, "X3SELF", "ble", 5000u + (unsigned)i);
+        xgossip_pump(g);
+    }
+    snprintf(call, sizeof call, "X1N%03d", 7);
+    CHECK(xgossip_where_is(g, call, s, 8) > 0, "a new callsign was not kept");
+    CHECK(bucket_files(dir) <= 8, "%d bucket files after learning", bucket_files(dir));
+    xgossip_close(g);
+    xgossip_test_volume = 0;
+}
+
 int main(void)
 {
     const char *dir = "/tmp/xgossip_test";
@@ -370,6 +434,7 @@ int main(void)
     test_per_callsign_cap(dir);
     test_ssid_is_the_same_station(dir);
     test_trim_on_open(dir);
+    test_small_volume_buckets(dir);
     printf("%d checks, %d failed\n", checks, failed);
     return failed ? 1 : 0;
 }

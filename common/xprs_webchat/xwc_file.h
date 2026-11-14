@@ -49,7 +49,10 @@ typedef struct {
     const char *dir;            /* the store's directory, no trailing slash */
     uint64_t    visitor_max;    /* the largest file a stranger stores (file.max) */
     uint64_t    budget;         /* what strangers' files hold together */
-    uint64_t    reserve;        /* left free on the volume by a stranger's file */
+    uint64_t    reserve;        /* left free on the volume by a stranger's file,
+                                 * at most a sixteenth of it (xwcf_room) */
+    uint32_t    cluster;        /* the volume's allocation unit: a file is
+                                 * billed whole clusters; 0 = its bytes */
     bool        own;            /* staff files kept uncapped in own/ (a card) */
     /* The volume's free and total bytes; false when it cannot say. */
     bool      (*space)(uint64_t *free_b, uint64_t *total_b);
