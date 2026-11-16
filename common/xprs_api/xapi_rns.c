@@ -415,8 +415,13 @@ static bool read_body(int fd, resp_t *r, uint8_t *buf, size_t have)
     }
 }
 
+/* The most of a file one answer carries (spec/API-HTTP.md, "A file larger
+ * than one answer"): the client asks for the next part from where this one
+ * ended, so a film crosses a link whose answers are far smaller than it. */
+#define PART_MAX   (256u * 1024u)
+
 static bool loopback(const char *method, const char *path, const char *query,
-                     const uint8_t *body, size_t blen, resp_t *r)
+                     const uint8_t *body, size_t blen, const char *range, resp_t *r)
 {
     int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return false;
@@ -435,10 +440,23 @@ static bool loopback(const char *method, const char *path, const char *query,
     snprintf(room, sizeof room, "X-XPRS-Room: %u\r\n", (unsigned)r->body.room);
 #endif
     if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) { why = "connect"; goto out; }
+    /* `Range: bytes=<first>-[<last>]`, cut to what one answer holds here:
+     * the handler answers 206 and says in Content-Range what it sent. */
+    char rng[64] = "";
+    unsigned long long first = 0, last = 0;
+    int got_r = range ? sscanf(range, "bytes=%llu-%llu", &first, &last) : 0;
+    if (got_r >= 1) {
+        size_t most = PART_MAX < BODY_MAX ? PART_MAX : BODY_MAX;
+#ifdef HEAP_KEEP
+        if (r->body.room && r->body.room < most) most = r->body.room;
+#endif
+        if (got_r < 2 || last < first || last - first >= most) last = first + most - 1;
+        snprintf(rng, sizeof rng, "Range: bytes=%llu-%llu\r\n", first, last);
+    }
     int hn = snprintf(head, REQ_MAX,
                       "%s %s%s%s HTTP/1.1\r\nHost: 127.0.0.1\r\nX-XPRS-Via: rns\r\n"
-                      "%sConnection: close\r\nContent-Length: %u\r\n%s\r\n",
-                      method, path, query[0] ? "?" : "", query, room, (unsigned)blen,
+                      "%s%sConnection: close\r\nContent-Length: %u\r\n%s\r\n",
+                      method, path, query[0] ? "?" : "", query, room, rng, (unsigned)blen,
                       blen && body[0] == '{' ? "Content-Type: application/json\r\n" : "");
     if (hn <= 0 || hn >= REQ_MAX) { why = "request head too long"; goto out; }
     if (!send_all(fd, head, (size_t)hn) || (blen && !send_all(fd, (const char *)body, blen))) { why = "send"; goto out; }
@@ -556,10 +574,22 @@ bool xapi_rns_api(const uint8_t *data, size_t len, const uint8_t link_id[16], rn
         body = v.s;
         blen = v.len;
     }
+    /* The request's headers (`h`): `Range` on a file is the one read. */
+    char range[48] = "";
+    if (mp_map_find(&r, nmap, "h", &at) && mp_next(&at, &v) && v.type == MP_MAP) {
+        for (size_t k = 0; k < v.len; k++) {
+            mp_obj_t key, val;
+            if (!mp_next(&at, &key) || !mp_next(&at, &val)) break;
+            if (val.type == MP_ARR || val.type == MP_MAP) break;
+            if (key.type == MP_STR && key.len == 5 && !strncasecmp((const char *)key.s, "range", 5) &&
+                !strcmp(method, "GET"))
+                str_of(&val, range, sizeof range);
+        }
+    }
     static resp_t rsv;
     resp_t *rs = &rsv;
     memset(rs, 0, sizeof *rs);
-    bool ok = loopback(method, path, query, body, blen, rs);
+    bool ok = loopback(method, path, query, body, blen, range[0] ? range : NULL, rs);
     if (!ok || rs->body.err) {
         ESP_LOGW(TAG, "%s %s: the loopback call failed", method, path);
         body_free(&rs->body);
