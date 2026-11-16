@@ -562,6 +562,30 @@ bytes, so none of them saw it. Fixed in four places:
 
 The log was already bounded: `cur.txt` rotates to `prev.txt` at 64 KB.
 
+### Lost clusters found at run time, not only at boot (2026-11-14)
+
+Flashing X3VGAZ while the old image wrote to its full volume left the
+archive's segments out of the directory with their clusters still taken. That
+boot ran on: the report said `0K free` with 204 KB in files, and only the next
+reset's check formatted it (`792 KB of 792 used, files hold 220 KB`). The
+missed boot's own check left no trace (it logged only when it acted, and the
+capture began 0.6 s in), so:
+
+- **The boot check logs its numbers every boot**, `storage: N KB of M free`
+  or `storage: U KB of M used, files hold F KB`.
+- **The 10-minute `storage /idx` report runs the same test**
+  (`idx_lost_space`: free under 1/16, used more than files + 1/4). Seen on two
+  reports running, `idx_task` closes the archive, sets an RTC mark and
+  restarts; the next boot formats on the mark whatever its own check says,
+  keeping the mail. Twice, because a file being written holds clusters before
+  its size reaches the disk. Not a format at run time: gossip, the file store
+  and the log hold files open on `/idx`.
+
+Tested with a crafted image (`lose_clusters.py`: the partition read off the
+board, wear levelling stripped, segments' entries deleted and free clusters
+marked end-of-chain, re-wrapped): 56 KB free at boot passes the boot check,
+and the station's own writes take it under.
+
 ### httpd's stack and the Reticulum announce (2026-11-14)
 
 With room on the volume again, the conformance suite ran past file storage on

@@ -58,11 +58,11 @@ typedef struct {
 
 /* Reference constants of 36.9.4, matching xprs_gossip.dart where the board
  * can afford to. K is the one that differs: the phone keeps 100 gateways per
- * callsign in sqlite, and an ordinary board keeping that many would spend its
+ * callsign in its zx store, and an ordinary board keeping that many would spend its
  * card on one busy neighbour. */
 #define XGOSSIP_LIVE_G          8        /* gateways per callsign, L3 */
 #define XGOSSIP_VISIT_K         8        /* gateways per callsign, L2 */
-/* What an always-on archiver keeps. The phone keeps 100 in sqlite; a board keeps 32,
+/* What an always-on archiver keeps. The phone keeps 100 in zx; a board keeps 32,
  * because every row a callsign can have has to fit in the working array the
  * store uses instead of loading a bucket into RAM. Four times an ordinary
  * station is still the difference the role is about. */

@@ -30,6 +30,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_attr.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
@@ -577,6 +578,22 @@ static struct askq_s s_ask_over;
 static volatile uint8_t s_askq_w, s_askq_r, s_askq_n;
 static volatile bool s_ask_over_pending;
 static volatile bool s_wipe_req;   /* Settings asked for the archive to go */
+/* The storage report found /idx full of space no file owns (twice running,
+ * idx_lost_space): idx_task closes the archive and restarts, and the next
+ * boot formats, whatever its own check makes of the volume. A runtime
+ * format would pull the volume from under the files other tasks hold open
+ * (gossip, the file store, the log). The mark lives in RTC memory, so it
+ * survives esp_restart and nothing else. */
+#define IDX_LOST_MAGIC 0x1D71057Fu
+static RTC_NOINIT_ATTR uint32_t s_idx_lost_mark;
+static volatile bool s_idx_lost_req;
+
+/* A volume nearly full whose files hold a quarter of it less than is used:
+ * clusters the FAT marks taken that no file owns (idx_volume_damaged). */
+static bool idx_lost_space(uint64_t total, uint64_t freeb, uint64_t files)
+{
+    return total && freeb < total / 16u && total - freeb > files + total / 4u;
+}
 
 /* Slots of the ring that heard traffic may not take. What this station
  * sends -- a hotspot visitor's message among it -- is said once and never
@@ -4832,18 +4849,37 @@ static void storage_report(void)
     if (!d) return;
     struct dirent *e;
     char p[160];
-    while ((e = readdir(d)) && n < (int)sizeof line - 24) {
+    uint64_t files = 4096;   /* the root directory */
+    while ((e = readdir(d))) {
         if (e->d_name[0] == '.') continue;
         int k = snprintf(p, sizeof p, "/idx/%s", e->d_name);
         if (k < 0 || k >= (int)sizeof p) continue;
         struct stat st;
         if (stat(p, &st) != 0) continue;
-        uint64_t b = S_ISDIR(st.st_mode) ? du(p, 3) : on_idx((uint64_t)st.st_size);
-        n += snprintf(line + n, sizeof line - n, " %s=%lluK", e->d_name,
-                      (unsigned long long)((b + 1023) / 1024));
+        uint64_t b = S_ISDIR(st.st_mode) ? 4096u + du(p, 3) : on_idx((uint64_t)st.st_size);
+        files += b;
+        if (n < (int)sizeof line - 24)
+            n += snprintf(line + n, sizeof line - n, " %s=%lluK", e->d_name,
+                          (unsigned long long)((b + 1023) / 1024));
     }
     closedir(d);
     ESP_LOGW(TAG, "%s", line);
+
+    /* The boot check, again at run time: a C3's boot once let lost
+     * clusters through (2026-11-14) and the station ran on a full volume
+     * until the next reset. Twice running, ten minutes apart, so a file
+     * being written (clusters taken, size not yet on disk) is not it. */
+    static int lost_seen;
+    if (s_idx_own_flash && idx_lost_space(total, freeb, files)) {
+        ESP_LOGE(TAG, "storage: %lluK used, files hold %lluK -- the FAT has "
+                      "lost the rest%s",
+                 (unsigned long long)((total - freeb) / 1024),
+                 (unsigned long long)(files / 1024),
+                 lost_seen ? "; restarting to format" : "; looking again in 10 min");
+        if (++lost_seen >= 2) s_idx_lost_req = true;
+    } else {
+        lost_seen = 0;
+    }
 
     /* And the archive's directory by kind of file: what holds the room. */
     static const char *const kinds[] = { "seg_", "g_", "zone", "t", "" };
@@ -7882,17 +7918,26 @@ static uint64_t idx_bytes_in_files(const char *dir, uint64_t total, int depth)
 static bool idx_volume_damaged(void)
 {
     uint64_t total = 0, freeb = 0;
-    if (esp_vfs_fat_info("/idx", &total, &freeb) != ESP_OK || !total) return false;
-    if (freeb >= total / 16u) return false;
+    if (esp_vfs_fat_info("/idx", &total, &freeb) != ESP_OK || !total) {
+        ESP_LOGW(TAG, "storage: /idx gives no size; not checked");
+        return false;
+    }
+    if (freeb >= total / 16u) {
+        ESP_LOGI(TAG, "storage: %llu KB of %llu free",
+                 (unsigned long long)(freeb / 1024u), (unsigned long long)(total / 1024u));
+        return false;
+    }
     uint64_t files = idx_bytes_in_files("/idx", total, 0);
     uint64_t used = total - freeb;
-    bool damaged = used > files + total / 4u;
-    if (damaged)
-        ESP_LOGE(TAG, "storage: %llu KB of %llu used, files hold %llu KB -- "
-                      "the FAT has lost the rest",
-                 (unsigned long long)(used / 1024u),
-                 (unsigned long long)(total / 1024u),
-                 (unsigned long long)(files / 1024u));
+    bool damaged = idx_lost_space(total, freeb, files);
+    /* Said every boot: one boot of a C3 (2026-11-14) let a volume through
+     * that its next boot formatted, and that boot's numbers were nowhere. */
+    ESP_LOG_LEVEL(damaged ? ESP_LOG_ERROR : ESP_LOG_INFO, TAG,
+                  "storage: %llu KB of %llu used, files hold %llu KB%s",
+                  (unsigned long long)(used / 1024u),
+                  (unsigned long long)(total / 1024u),
+                  (unsigned long long)(files / 1024u),
+                  damaged ? " -- the FAT has lost the rest" : "");
     return damaged;
 }
 
@@ -8947,7 +8992,12 @@ static void idx_task(void *arg)
         /* Before the store opens: the walk below must not race its writer,
          * and the FAT VFS deadlocks a directory walk against one
          * (docs/esp32.md). */
-        bool damaged = s_idx_own_flash && idx_volume_damaged();
+        bool forced = s_idx_lost_mark == IDX_LOST_MAGIC;
+        s_idx_lost_mark = 0;
+        if (forced && s_idx_own_flash)
+            ESP_LOGE(TAG, "storage: the last run found space no file owns; "
+                          "formatting");
+        bool damaged = s_idx_own_flash && (idx_volume_damaged() || forced);
         s_index = idx_open();
         if (damaged) idx_rescue_and_format();
         xprsindex_set_own(s_index, s_call);
@@ -9888,6 +9938,19 @@ named_done:
          * remove its files, reopen empty -- all here, the one task allowed
          * near the storage. The chats this station hosts are gone; the log
          * and the statistics stay. */
+        if (s_idx_lost_req) {
+            s_idx_lost_req = false;
+            if (s_index) {
+                s_api_cfg.index = NULL;
+                xprsindex_close(s_index);   /* the mail stays for the boot */
+                s_index = NULL;
+            }
+            s_idx_lost_mark = IDX_LOST_MAGIC;
+            ESP_LOGE(TAG, "storage: restarting to format /idx");
+            vTaskDelay(pdMS_TO_TICKS(200));
+            esp_restart();
+        }
+
         if (s_wipe_req) {
             s_wipe_req = false;
             if (s_index) {
