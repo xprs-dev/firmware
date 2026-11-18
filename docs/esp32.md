@@ -581,10 +581,10 @@ capture began 0.6 s in), so:
   its size reaches the disk. Not a format at run time: gossip, the file store
   and the log hold files open on `/idx`.
 
-Tested with a crafted image (`lose_clusters.py`: the partition read off the
-board, wear levelling stripped, segments' entries deleted and free clusters
-marked end-of-chain, re-wrapped): 56 KB free at boot passes the boot check,
-and the station's own writes take it under.
+Not yet seen on a board. The test planned: a crafted image (the partition
+read off the board, wear levelling stripped, segments' entries deleted and
+free clusters marked end-of-chain, re-wrapped) with 56 KB free at boot, so
+the boot check passes and the station's own writes take it under.
 
 ### httpd's stack and the Reticulum announce (2026-11-14)
 
