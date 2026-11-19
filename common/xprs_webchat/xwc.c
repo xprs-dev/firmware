@@ -34,7 +34,7 @@ static const uint8_t *s_priv;
 static uint8_t s_station_pub[32];   /* the station's own key: its operator's */
 static bool    s_have_pub;
 
-enum { K_NONE = 0, K_GRANT, K_REVOKE, K_ACCEPT, K_LEAVE, K_HIDE, K_REMOVE };
+enum { K_NONE = 0, K_GRANT, K_REVOKE, K_ACCEPT, K_LEAVE, K_HIDE, K_REMOVE, K_STATE };
 enum { R_NONE = 0, R_INVITED, R_MEMBER, R_MOD, R_ADMIN };
 
 typedef struct {
@@ -44,7 +44,7 @@ typedef struct {
     char     target[XWC_CALL_LEN];   /* a callsign, or an r: identifier */
     uint32_t ts, until, since;
     uint8_t  kind, role;             /* role: R_MEMBER or R_MOD on a grant */
-    uint8_t  accept_mod;             /* accept:mod */
+    uint8_t  accept_mod;             /* accept:mod; on K_STATE: 1 closed, 0 open */
 } act_t;
 static act_t s_acts[ACTS_MAX];
 static int   s_nacts;
@@ -63,6 +63,7 @@ typedef struct {
     member_t m[MEMBERS_MAX]; int nm;
     away_t   away[AWAY_MAX]; int na;
     char     removed[REMOVED_MAX][XWC_ID_LEN]; int nr;
+    uint32_t closed_since;           /* 10.4.2: nonzero while closed to posts */
 } roster_t;
 static roster_t s_rosters[XWC_ROOMS + 1];
 
@@ -451,6 +452,7 @@ static void roster_build(roster_t *r, uint32_t now)
     const char *group = r->group;
     r->nm = r->na = r->nr = 0;
     r->next_change = 0;
+    r->closed_since = 0;
     /* A: what the admin voided -- revoke:X since:T by the group itself.
      * The walk's array lives off the stack: a replay runs inside an HTTP
      * handler, under the index's query, on a task sized for JSON. */
@@ -511,6 +513,11 @@ static void roster_build(roster_t *r, uint32_t now)
                 if (m) { m->role = R_NONE; m->offer[0] = 0; }
                 away_set(r, a->target, 0);
             }
+            break;
+        case K_STATE:
+            /* 10.4.2: the newest act that counts decides; the gate above let
+             * only the admin and a moderator of that moment through. */
+            r->closed_since = a->accept_mod ? a->ts : 0;
             break;
         case K_HIDE:
         case K_REMOVE:
@@ -600,7 +607,8 @@ static int acts_take(const xprs_t *p, const char *wire, int len, bool persist)
             if (s_nacts >= ACTS_MAX) {
                 /* Losing a grant is safe, losing a revocation is not (26.5). */
                 int drop = -1;
-                for (int i = 0; i < s_nacts; i++) if (s_acts[i].kind != K_REVOKE) { drop = i; break; }
+                /* Only a grant: a leave, a state or an acceptance is not one. */
+                for (int i = 0; i < s_nacts; i++) if (s_acts[i].kind == K_GRANT) { drop = i; break; }
                 if (drop < 0) drop = 0;
                 memmove(&s_acts[drop], &s_acts[drop + 1], (size_t)(s_nacts - drop - 1) * sizeof s_acts[0]);
                 s_nacts--;
@@ -629,6 +637,13 @@ static int acts_take(const xprs_t *p, const char *wire, int len, bool persist)
         act_t *a = &s_acts[s_nacts++];
         *a = t;
         a->kind = K_LEAVE;
+        added++;
+    } else if (xprs_get_str(p, "state", v, sizeof v) && s_nacts < ACTS_MAX &&
+               (strcmp(v, "closed") == 0 || strcmp(v, "open") == 0)) {
+        act_t *a = &s_acts[s_nacts++];
+        *a = t;
+        a->kind = K_STATE;
+        a->accept_mod = strcmp(v, "closed") == 0;
         added++;
     }
     if (added) {
@@ -1068,7 +1083,11 @@ static void room_json(jb_t *j, room_t *r, const char *who, bool admin)
         if (m && m->offer[0]) jb(j, ",\"offer\":\"%s\",\"offer_role\":\"%s\"", m->offer,
                                  m->offer_role == R_MOD ? "mod" : "member");
     }
-    bool can = who && !sent_away && (!members_only || role == R_MEMBER || role == R_MOD || role == R_ADMIN);
+    bool closed = ro->closed_since != 0;
+    bool can = who && !sent_away &&
+               (closed ? (role == R_MOD || role == R_ADMIN)
+                       : (!members_only || role == R_MEMBER || role == R_MOD || role == R_ADMIN));
+    jb(j, ",\"state\":\"%s\"", closed ? "closed" : "open");
     jb(j, ",\"can_post\":%s", can ? "true" : "false");
     if (admin || role == R_MOD) {
         static const int roles[3] = { R_MEMBER, R_MOD, R_INVITED };
@@ -1179,6 +1198,15 @@ int xwc_rooms_post(const char *body, char *buf, size_t cap)
         if (post[0]) r->anyone = strcmp(post, "anyone") == 0;
         if (rk >= 0) r->kind = (uint8_t)rk;
         if (r->priv_room) r->anyone = false;
+        /* Closed or open to new posts (10.4.2): an act the room signs. */
+        char st[8] = "";
+        if (jget(body, "state", st, sizeof st) &&
+            (strcmp(st, "closed") == 0 || strcmp(st, "open") == 0) &&
+            (roster(r->call)->closed_since != 0) != (st[0] == 'c')) {
+            char b[16];
+            snprintf(b, sizeof b, "state:%s", st);
+            if (!room_act(r, b)) return refuse(buf, cap, 409, "this station does not hold that room");
+        }
         rooms_save();
         jb_t j; jb_init(&j, buf, cap);
         return rooms_list(&j, token, r->call);
@@ -1462,6 +1490,14 @@ int xwc_gate(const char *wire, int len, bool local_peer,
         }
         if (!verified(&p, from)) { snprintf(why, why_cap, "identity unknown"); return -409; }
         if (away_now(roster(room), from, now_s())) { snprintf(why, why_cap, "you were sent away from this room"); return -403; }
+        if (roster(room)->closed_since) {
+            /* 10.4.2: while closed, only the admin and moderators post. */
+            int role = role_in(r->call, from);
+            if (role != R_MOD && role != R_ADMIN && !is_staff(from)) {
+                snprintf(why, why_cap, "this room is closed to new posts");
+                return -403;
+            }
+        }
         if (RK_COLLECTION(r->kind)) {
             int role = role_in(r->call, from);
             bool staff = role == R_MOD || role == R_ADMIN || is_staff(from);

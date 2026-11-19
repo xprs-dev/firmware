@@ -319,6 +319,18 @@ int main(void)
     s_nfiled = 0;
     snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s m:hi", room);
     CHECK(gate(bob, fmt, 2) == 1 && filed_has("m:hi") && !aired_has("m:hi"), "a member's message is filed, not aired");
+    /* 10.4.2: closed to new posts, by the admin's update or a moderator's act. */
+    snprintf(body, sizeof body, "{\"action\":\"update\",\"session\":\"%s\",\"call\":\"%s\",\"state\":\"closed\"}", tok, room);
+    CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && filed_has("state:closed"), "the administrator closes the room to new posts");
+    xwc_rooms_json(s_buf, sizeof s_buf, bt);
+    CHECK(jfind("\"state\":\"closed\"") && jfind("\"can_post\":false"), "bob sees it closed");
+    snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s m:closedhi", room);
+    CHECK(gate(bob, fmt, 2) == -403, "a member cannot post while it is closed");
+    CHECK(gate(alice, fmt, 2) == 1, "a moderator still can");
+    snprintf(fmt, sizeof fmt, "t:moderate f:%%s d:%s ts:%%s state:open", room);
+    CHECK(gate(alice, fmt, 3) == 1, "alice opens it again");
+    snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s m:openhi", room);
+    CHECK(gate(bob, fmt, 3) == 1, "bob posts again");
     CHECK(xwc_may_read_room(room, NULL), "a public room is read by anybody");
     snprintf(body, sizeof body, "{\"action\":\"update\",\"session\":\"%s\",\"call\":\"%s\",\"visibility\":\"private\"}", tok, room);
     CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && jfind("\"posting\":\"members\""), "made private: always members-only");
