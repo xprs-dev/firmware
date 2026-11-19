@@ -356,7 +356,7 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
     if (!s_cfg->index) return resp_error(req, "404 Not Found", "no index");
 
     char query[256] = {0}, p[48], call[48] = {0}, session[XWC_TOKEN_LEN + 8] = {0};
-    char room[16] = {0};
+    char room[20] = {0};
     hist_ctx_t ctx = { .req = req, .group = s_cfg->callsign };
     ctx.local = xapi_wc_local(req);
     ctx.keep_local = ctx.local || !xwc_local_private();
@@ -415,6 +415,16 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
         ctx.group = room;
         ctx.staff = xwc_room_staff(room, session[0] ? session : NULL);
         ctx.asker = who;
+    } else if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK &&
+               xwc_group_of(p, room, sizeof room)) {
+        /* A group by name (XPRS.md 7.3, 10): its rows are the ones addressed
+         * to it. An open group is anybody's; a closed one this board does
+         * not host it cannot verify, so it fails open (10.7). Group traffic
+         * is no mail, so the section 36 rule does not hold it back. */
+        q.trusted = true;
+        q.only = room;
+        ctx.room = room;
+        ctx.group = room;
     } else if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK) {
         q.room = !strcmp(p, "local")    ? XPRS_REACH_LOCAL + 1
                  : !strcmp(p, "regional") ? XPRS_REACH_REGIONAL + 1

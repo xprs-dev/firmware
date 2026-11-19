@@ -365,6 +365,40 @@ static room_t *room_find(const char *call)
     return NULL;
 }
 
+/* Reads like a callsign an authority issues: prefix, numeral, letters
+ * (as the core's xprsLooksIssued, without the -SSID or /suffix forms). */
+static bool looks_issued(const char *c, int n)
+{
+    for (int p = 1; p <= 3 && p < n; p++) {
+        bool ok = true;
+        for (int i = 0; i < p; i++) if (!isalnum((unsigned char)c[i])) ok = false;
+        if (!ok || !isdigit((unsigned char)c[p])) continue;
+        int k = n - p - 1;
+        if (k < 1 || k > 4) continue;
+        for (int i = p + 1; i < n; i++) if (!isupper((unsigned char)c[i])) ok = false;
+        if (ok) return true;
+    }
+    return false;
+}
+
+const char *xwc_group_of(const char *v, char *out, size_t cap)
+{
+    int n = v ? (int)strlen(v) : 0;
+    if (n < 1 || n > 16 || (size_t)n >= cap) return NULL;
+    for (int i = 0; i < n; i++) {
+        char c = v[i];
+        if (!(isupper((unsigned char)c) || isdigit((unsigned char)c) || (i && (c == '_' || c == '-'))))
+            return NULL;
+    }
+    if (n >= 2 && v[0] == 'X' && v[1] == '5') {
+        if (n < 3 || strchr(v, '-') || strchr(v, '_') || xwc_room_of(v)) return NULL;
+    } else if (xprs_is_unissued(v, n) || looks_issued(v, n)) {
+        return NULL;
+    }
+    memcpy(out, v, (size_t)n + 1);
+    return out;
+}
+
 const char *xwc_room_of(const char *v)
 {
     if (!v) return NULL;

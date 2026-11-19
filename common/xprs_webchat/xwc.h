@@ -114,6 +114,10 @@ const char *xwc_admin_call(void);      /* or NULL */
 
 /** The hosted room [v] names (an X5 callsign this station holds), or NULL. */
 const char *xwc_room_of(const char *v);
+/** [v] when it names a group the station may serve by name: an open group
+ *  (XPRS.md 7.3) or a closed X5 group it does not host (10), copied to
+ *  [out]; else NULL. Lower-case room names (local, ...) are never groups. */
+const char *xwc_group_of(const char *v, char *out, size_t cap);
 /** The public key of a hosted room, for the host's verifier. */
 const uint8_t *xwc_room_pub(const char *call);
 bool xwc_may_read_room(const char *room, const char *token);

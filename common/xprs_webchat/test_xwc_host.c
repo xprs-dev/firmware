@@ -357,6 +357,15 @@ int main(void)
     snprintf(body, sizeof body, "{\"action\":\"close\",\"session\":\"%s\",\"call\":\"%s\"}", tok, room);
     CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && !jfind(room), "closed");
 
+    {
+        char g[20];
+        CHECK(xwc_group_of("LISBOA", g, sizeof g) && !strcmp(g, "LISBOA"), "LISBOA is an open group");
+        CHECK(xwc_group_of("X5ABCD", g, sizeof g) != NULL, "a closed group this station does not host is served by name");
+        CHECK(!xwc_group_of("local", g, sizeof g) && !xwc_group_of("X1ALIC", g, sizeof g) &&
+              !xwc_group_of("CT1ABC", g, sizeof g) && !xwc_group_of("MT0012ABCD", g, sizeof g),
+              "a room word, a person, an issued callsign and a foreign node are not groups");
+    }
+
     printf("forum rooms\n");
     fresh();
     CHECK(claim(alice, tok), "alice claims");
