@@ -146,7 +146,7 @@ esp_err_t xprs_api_send_handler(httpd_req_t *req, char *buf, size_t cap,
                 return xapi_resp_error(req, "503 Service Unavailable", why);
             }
             const char *st = g == -400 ? "400 Bad Request" : g == -409 ? "409 Conflict"
-                           : g == -404 ? "404 Not Found" : "403 Forbidden";
+                           : g == -404 ? "404 Not Found" : g == -429 ? "429 Too Many Requests" : "403 Forbidden";
             return xapi_resp_error(req, st, why);
         }
         if (g > 0) {

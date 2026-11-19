@@ -258,6 +258,8 @@ typedef struct {
     bool keep_local;      /* Local rows are served to this asker */
     size_t fit;           /* non-zero: the bytes the rows may take (xapi_wc_room) */
     size_t bytes;         /* the rows so far */
+    bool staff;           /* the asker moderates the hosted room asked for */
+    const char *asker;    /* the session's callsign, or NULL */
 } hist_ctx_t;
 
 static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
@@ -291,6 +293,12 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
                          scope_local, c->local || c->keep_local))
             return true;
     }
+    /* A request to join (XPRS.md 10.3): a post by somebody who was no
+     * member then, shown to the room's staff only and marked so. */
+    bool request = c->room && xwc_row_request(c->room, rec->from, rec->ts);
+    if (request && ((!c->staff && !(c->asker && call_matches(c->asker, rec->from))) ||
+                    strcmp(xprsidx_type_name(rec->type), "message") != 0))
+        return true;
     const char *sig = !(rec->flags & XI_F_SIGNED)   ? "none"
                       : (rec->flags & XI_F_VERIFIED) ? "verified"
                                                       : "unverified";
@@ -316,14 +324,15 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
     int n = snprintf(row, ROW,
         "%s{\"ts\":%lu,\"bearer\":\"%s\",\"rssi\":%d,\"from\":\"%s\","
         "\"to\":\"%s\",\"type\":\"%s\",\"sig\":\"%s\",\"own\":%s,"
-        "\"out\":%s,\"wire\":\"",
+        "\"out\":%s,%s\"wire\":\"",
         c->emitted ? "," : "", (unsigned long)rec->ts,
         xprsidx_bearer_name(rec->bearer), (int)rec->rssi,
         from_e, to_e, xprsidx_type_name(rec->type), sig,
         own ? "true" : "false",
         /* Heard on a bearer wider than its scope (XPRS.md 9.11): kept,
          * shown in no room. */
-        (rec->flags & XI_F_OUTRANGE) ? "true" : "false");
+        (rec->flags & XI_F_OUTRANGE) ? "true" : "false",
+        request ? "\"request\":true," : "");
     if (n < 0 || n >= (int)ROW) return true;
     /* As in log_emit: the closing quote and brace are not optional. A
      * heavily escaped wire (every byte over 0x7e becomes six characters)
@@ -404,6 +413,8 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
         q.only = room;
         ctx.room = room;
         ctx.group = room;
+        ctx.staff = xwc_room_staff(room, session[0] ? session : NULL);
+        ctx.asker = who;
     } else if (httpd_query_key_value(query, "room", p, sizeof p) == ESP_OK) {
         q.room = !strcmp(p, "local")    ? XPRS_REACH_LOCAL + 1
                  : !strcmp(p, "regional") ? XPRS_REACH_REGIONAL + 1

@@ -117,6 +117,12 @@ const char *xwc_room_of(const char *v);
 /** The public key of a hosted room, for the host's verifier. */
 const uint8_t *xwc_room_pub(const char *call);
 bool xwc_may_read_room(const char *room, const char *token);
+/** 1 when a row in [room] by [from] dated [ts] is a request to join
+ *  (XPRS.md 10.3): its author was no member then. Shown to staff only. */
+int  xwc_row_request(const char *room, const char *from, uint32_t ts);
+/** Whether [token] proves the administrator, a station moderator, or a
+ *  moderator or the admin of [room]. */
+bool xwc_room_staff(const char *room, const char *token);
 int  xwc_rooms_json(char *buf, size_t cap, const char *token);
 int  xwc_rooms_post(const char *body, char *buf, size_t cap);
 bool xwc_has_rooms(void);

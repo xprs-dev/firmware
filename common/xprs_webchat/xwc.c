@@ -54,6 +54,7 @@ typedef struct {
     uint8_t role;
     char    offer[XWC_ID_LEN];
     uint8_t offer_role;
+    uint32_t since, left;   /* member from (acceptance) and until (left/removed) */
 } member_t;
 typedef struct { char call[XWC_CALL_LEN]; uint32_t until; } away_t;
 typedef struct {
@@ -496,10 +497,12 @@ static void roster_build(roster_t *r, uint32_t now)
             if (sm && sm->role == R_INVITED && strcmp(sm->offer, a->target) == 0) {
                 sm->role = (sm->offer_role == R_MOD && a->accept_mod) ? R_MOD : R_MEMBER;
                 sm->offer[0] = 0;
+                sm->since = a->ts;
+                sm->left = 0;
             }
             break;
         case K_LEAVE:
-            if (sm) { sm->role = R_NONE; sm->offer[0] = 0; }
+            if (sm) { if (sm->role >= R_MEMBER) sm->left = a->ts; sm->role = R_NONE; sm->offer[0] = 0; }
             away_clear(r, a->signer);
             break;
         case K_REVOKE:
@@ -510,7 +513,7 @@ static void roster_build(roster_t *r, uint32_t now)
                 } else away_clear(r, a->target);
             } else {
                 member_t *m = member_find(r, a->target);
-                if (m) { m->role = R_NONE; m->offer[0] = 0; }
+                if (m) { if (m->role >= R_MEMBER) m->left = a->ts; m->role = R_NONE; m->offer[0] = 0; }
                 away_set(r, a->target, 0);
             }
             break;
@@ -1371,6 +1374,52 @@ int xwc_topics_end(char *buf, size_t cap)
 }
 
 /* ---- the rules on reading and sending ---------------------------------- */
+/* Asking to join, at most once an hour per person and room (10.3). */
+#define ASKS_MAX 16
+static struct { char key[2 * XWC_CALL_LEN]; uint32_t at; } s_asks[ASKS_MAX];
+static bool ask_ok(const char *room, const char *from)
+{
+    char k[2 * XWC_CALL_LEN], c[XWC_CALL_LEN];
+    base_call(from, c);
+    snprintf(k, sizeof k, "%s|%s", room, c);
+    uint32_t now = now_s();
+    int oldest = 0;
+    for (int i = 0; i < ASKS_MAX; i++) {
+        if (strcmp(s_asks[i].key, k) == 0) {
+            if (now - s_asks[i].at < 3600) return false;
+            s_asks[i].at = now;
+            return true;
+        }
+        if (s_asks[i].at < s_asks[oldest].at) oldest = i;
+    }
+    snprintf(s_asks[oldest].key, sizeof s_asks[oldest].key, "%s", k);
+    s_asks[oldest].at = now;
+    return true;
+}
+
+int xwc_row_request(const char *room, const char *from, uint32_t ts)
+{
+    room_t *r = room_find(room);
+    if (!r || r->anyone || RK_COLLECTION(r->kind)) return 0;
+    char c[XWC_CALL_LEN];
+    base_call(from, c);
+    if (strcmp(c, r->call) == 0 || is_staff(c)) return 0;
+    member_t *m = member_find(roster(r->call), c);
+    if (!m || !m->since) return 1;
+    if (ts && ts < m->since) return 1;               /* before they joined */
+    if (m->role >= R_MEMBER) return 0;
+    return (m->left && ts >= m->left) ? 1 : 0;       /* after they left */
+}
+
+bool xwc_room_staff(const char *room, const char *token)
+{
+    if (admin_of(token)) return true;
+    const char *c = xwc_session_call(token);
+    if (!c) return false;
+    int role = role_in(room, c);
+    return role == R_MOD || role == R_ADMIN || is_staff(c);
+}
+
 bool xwc_hide_row(const char *group, const char *id, const char *from,
                   const char *type, bool scope_local, bool local_peer)
 {
@@ -1508,8 +1557,16 @@ int xwc_gate(const char *wire, int len, bool local_peer,
                 return -403;
             }
         } else if ((r->priv_room || !r->anyone) && !room_member(r, from)) {
-            snprintf(why, why_cap, "only members post in this room");
-            return -403;
+            /* 10.3: asking to join is an ordinary message to the group,
+             * filed and shown to the room's staff only. A public room. */
+            if (r->priv_room || strcmp(type, "message") != 0) {
+                snprintf(why, why_cap, "only members post in this room");
+                return -403;
+            }
+            if (!ask_ok(r->call, from)) {
+                snprintf(why, why_cap, "you asked already: the moderators will answer");
+                return -429;
+            }
         }
         /* Filed, or answered so: a post the archive could not take (its
          * write queue full, the card slower than the air) is not claimed

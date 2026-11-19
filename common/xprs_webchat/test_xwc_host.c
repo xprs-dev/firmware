@@ -306,7 +306,14 @@ int main(void)
         CHECK(gate(alice, fmt, 0) == 1 && !strcmp(xwc_role_of(room, "X1ALIC"), "mod"), "alice accepts moderating the room");
     }
     snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s m:hi", room);
-    CHECK(gate(bob, fmt, 1) == -403, "bob, no member, cannot post in a members-only room");
+    CHECK(gate(bob, fmt, -2) == 1, "bob, no member, asks to join: his message is filed as a request (10.3)");
+    CHECK(gate(bob, fmt, -1) == -429, "once an hour");
+    CHECK(xwc_row_request(room, "X1BOBB", s_now - 120) == 1, "it is a request: bob was no member then");
+    {
+        char ct[XWC_TOKEN_LEN];
+        CHECK(session(carol, ct) && !xwc_room_staff(room, ct) && xwc_room_staff(room, tok),
+              "staff see requests, carol does not");
+    }
     snprintf(body, sizeof body, "{\"action\":\"add\",\"session\":\"%s\",\"call\":\"%s\",\"member\":\"X1BOBB\"}", tok, room);
     CHECK(xwc_rooms_post(body, s_buf, sizeof s_buf) == 200 && jfind("\"invited\":[\"X1BOBB\"]"), "the administrator adds bob");
     xwc_rooms_json(s_buf, sizeof s_buf, bt);
@@ -315,6 +322,8 @@ int main(void)
         char offer[8]; jval("offer", offer, sizeof offer);
         snprintf(fmt, sizeof fmt, "t:moderate f:%%s d:%s ts:%%s r:%s accept:member", room, offer);
         CHECK(gate(bob, fmt, 1) == 1 && !strcmp(xwc_role_of(room, "X1BOBB"), "member"), "bob accepts");
+    CHECK(xwc_row_request(room, "X1BOBB", s_now - 120) == 1 && xwc_row_request(room, "X1BOBB", s_now + 120) == 0,
+          "his request stays one; what he writes as a member is not");
     }
     s_nfiled = 0;
     snprintf(fmt, sizeof fmt, "t:message f:%%s d:%s ts:%%s m:hi", room);
