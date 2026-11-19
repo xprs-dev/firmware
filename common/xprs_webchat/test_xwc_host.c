@@ -251,7 +251,9 @@ int main(void)
     CHECK(strstr(s_buf, spam_id) != NULL, "and listed as removed");
     CHECK(gate(carol, "t:moderate f:%s d:X3STAT ts:%s revoke:X1BOBB", 1) == -403, "carol, no moderator, cannot act");
     CHECK(gate(bob, "t:moderate f:%s d:X3STAT ts:%s grant:X1CARO role:mod", 1) == -403, "only the administrator appoints");
-    CHECK(gate(bob, "t:moderate f:%s d:X5OTHR ts:%s revoke:X1CARO", 1) == -403, "only this station's rooms");
+    CHECK(gate(bob, "t:moderate f:%s d:X5OTHR ts:%s revoke:X1CARO", 1) == 1 && aired_has("d:X5OTHR"),
+          "an act about somebody else's group is carried, for its own record to judge (10.4)");
+    CHECK(gate(bob, "t:moderate f:%s d:X1CARO ts:%s revoke:X1CARO", 1) == -403, "a person is not a group");
     {
         char until[20]; ts(until, 60);
         snprintf(fmt, sizeof fmt, "t:moderate f:%%s d:X3STAT ts:%%s revoke:X1CARO until:%s", until);

@@ -517,18 +517,37 @@ static void roster_build(roster_t *r, uint32_t now)
         if (!is_admin && !is_mod && !self_act) continue;
         switch (a->kind) {
         case K_GRANT:
-            if (!is_admin) break;
+            /* 10.3: a moderator grants plain membership to somebody who holds
+             * no place; appointing is the admin's. */
+            if (!is_admin && (a->role != R_MEMBER || (member_find(r, a->target) &&
+                              member_find(r, a->target)->role >= R_MEMBER))) break;
             {
+                member_t *ex = member_find(r, a->target);
+                if (ex && ex->role >= R_MEMBER) {
+                    /* 10.3: the admin's grant to somebody who holds a place
+                     * changes their role, never their place. role:mod to a
+                     * member is an offer they answer while still posting; a
+                     * plain grant to a moderator takes the role at once. */
+                    if (a->role == R_MOD && ex->role == R_MEMBER) {
+                        snprintf(ex->offer, XWC_ID_LEN, "%s", a->id);
+                        ex->offer_role = R_MOD;
+                    } else if (a->role == R_MEMBER && ex->role == R_MOD) {
+                        ex->role = R_MEMBER;
+                        ex->offer[0] = 0;
+                    }
+                    break;
+                }
                 member_t *m = member_get(r, a->target);
                 if (!m) break;
                 m->role = R_INVITED;
                 snprintf(m->offer, XWC_ID_LEN, "%s", a->id);
                 m->offer_role = a->role;
-                away_clear(r, a->target);       /* 10.10: a grant lifts */
+                if (is_admin) away_clear(r, a->target);   /* 10.10: the admin's grant lifts */
             }
             break;
         case K_ACCEPT:
-            if (sm && sm->role == R_INVITED && strcmp(sm->offer, a->target) == 0) {
+            if (sm && sm->offer[0] && strcmp(sm->offer, a->target) == 0 &&
+                (sm->role == R_INVITED || sm->role == R_MEMBER)) {
                 sm->role = (sm->offer_role == R_MOD && a->accept_mod) ? R_MOD : R_MEMBER;
                 sm->offer[0] = 0;
                 sm->since = a->ts;
@@ -1527,12 +1546,23 @@ int xwc_gate(const char *wire, int len, bool local_peer,
     if (strcmp(type, "moderate") == 0) {
         char target[XWC_CALL_LEN];
         base_call(d, target);
-        if (strcmp(target, s_station) != 0 && !room) { snprintf(why, why_cap, "only this station's rooms"); return -403; }
+        if (strcmp(target, s_station) != 0 && !room) {
+            /* Somebody else's group (XPRS.md 10): an act its members and
+             * moderators sign is carried like a post to it, and judged by
+             * every replay of its record (10.4). This board keeps no record
+             * of groups it does not host, so it only checks the signature. */
+            if (target[0] != 'X' || target[1] != '5') { snprintf(why, why_cap, "only this station's rooms"); return -403; }
+            if (!verified(&p, from)) { snprintf(why, why_cap, "not signed by a key this station knows"); return -403; }
+            if (s_cb.air) s_cb.air(wire, len);
+            return 1;
+        }
         if (strcmp(from, s_station) == 0 || strcmp(from, target) == 0) { snprintf(why, why_cap, "not as this station"); return -403; }
         if (!verified(&p, from)) { snprintf(why, why_cap, "not signed by a key this station knows"); return -403; }
         bool self = xprs_get(&p, "accept", NULL) || xprs_get(&p, "leave", NULL);
         if (!self) {
-            if (xprs_get(&p, "grant", NULL)) { snprintf(why, why_cap, "only the administrator appoints"); return -403; }
+            /* Appointing and listing folders are the admin's; a moderator may
+             * grant plain membership (10.3). */
+            if (xprs_get(&p, "grant", NULL) && xprs_get(&p, "role", NULL)) { snprintf(why, why_cap, "only the administrator appoints"); return -403; }
             if (role_in(target, from) != R_MOD) { snprintf(why, why_cap, "not a moderator here"); return -403; }
         }
         if (!acts_take(&p, wire, len, true)) { snprintf(why, why_cap, "the act was not taken"); return -400; }
