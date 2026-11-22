@@ -1099,6 +1099,97 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
 }
 
 /*
+ * The station as a meeting point. A sealed message its author left here
+ * first-hand, for somebody who has never been here and declared nothing, is
+ * kept with declared mail when the store runs out of room, and so is its
+ * author's identity: the letter opens only against the author's key, and the
+ * reader may come months after the author's last announcement. Seen on a C3
+ * (2026-11-22): the letter was held, its author's key was gone in minutes,
+ * and the reader could open nothing.
+ *
+ * No such promise for a relay's copy, for words left in the clear, or past
+ * what one author may leave in a day.
+ */
+static void test_a_letter_left_for_a_stranger(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open(dir);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+    xprsindex_set_verifier(st, trust_all_verify);
+
+    char w[300];
+    const uint32_t day0 = 1787000000u;
+
+    /* Maria announces herself, then leaves a sealed letter for Bob. */
+    snprintf(w, sizeof w, "t:identity f:X1MARI ts:" TS_2026 " k:npub1maria sig:aaa");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "the author's identity");
+    snprintf(w, sizeof w, "t:message f:X1MARI d:X1BOBB ts:" TS_2026 " x:c2VhbGVkLWxldHRlcg sig:bbb");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "the letter");
+    /* The same kind of letter, but a relay's copy: carried, not promised. */
+    snprintf(w, sizeof w, "t:identity f:X1FARR ts:" TS_2026 " k:npub1far sig:aaa");
+    xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    snprintf(w, sizeof w, "t:message f:X1FARR d:X1BOBB ts:" TS_2026 " x:cmVsYXllZA sig:ccc via:X3OTHR");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "a relayed letter");
+    /* Words left in the clear: ordinary custody mail. */
+    snprintf(w, sizeof w, "t:message f:X1CLEA d:X1BOBB ts:" TS_2026 " m:in the clear");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "a clear letter");
+
+    /* One author, one day: the twenty-first is not promised. */
+    for (int i = 0; i < 25; i += 1) {
+        snprintf(w, sizeof w, "t:message f:X1LOUD d:X1BOBB ts:" TS_2026 " x:bG91ZC0%02d sig:ddd", i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    }
+
+    /* A volume with no room to spare: only the longest-kept class is
+     * carried when a segment goes. */
+    for (int i = 0; i < 9000; i += 1) {
+        snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:filler %d", i % 90, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    }
+    xprsindex_host_total = 8ull * 1024u * 1024u;
+    xprsindex_host_free = 16u * 1024u;
+    snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
+
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    CHECK(s.segments < 3, "nothing was evicted (%u segments)", (unsigned)s.segments);
+
+    collect_t c = { 0 };
+    xprsidx_query_t q = { .type = -1, .from = "X1MARI", .asker = "X1BOBB", .limit = 5,
+                          .types = xprsidx_type_mask("message") };
+    CHECK(xprsindex_query(st, &q, collect, &c) == 1, "the letter left first-hand is gone");
+    CHECK(c.first.flags & XI_F_LEFT, "the letter is not marked as left here");
+
+    collect_t ci = { 0 };
+    xprsidx_query_t qi = { .type = -1, .from = "X1MARI", .limit = 5,
+                           .types = xprsidx_type_mask("identity") };
+    CHECK(xprsindex_query(st, &qi, collect, &ci) == 1,
+          "the author's identity went with the spool: the letter cannot be opened");
+
+    collect_t cf = { 0 };
+    xprsidx_query_t qf = { .type = -1, .from = "X1FARR", .asker = "X1BOBB", .limit = 5,
+                           .types = xprsidx_type_mask("message") };
+    CHECK(xprsindex_query(st, &qf, collect, &cf) == 0, "a relay's copy was promised like a first-hand one");
+    collect_t cc = { 0 };
+    xprsidx_query_t qc = { .type = -1, .from = "X1CLEA", .asker = "X1BOBB", .limit = 5,
+                           .types = xprsidx_type_mask("message") };
+    CHECK(xprsindex_query(st, &qc, collect, &cc) == 0, "clear words were promised like a sealed letter");
+
+    collect_t cl = { 0 };
+    xprsidx_query_t ql = { .type = -1, .from = "X1LOUD", .asker = "X1BOBB", .limit = 50,
+                           .types = xprsidx_type_mask("message") };
+    size_t loud = xprsindex_query(st, &ql, collect, &cl);
+    CHECK(loud == 20, "one author's day: %zu kept, twenty are promised", loud);
+
+    /* A year on, the letter has waited long enough and makes room. */
+    xprsindex_host_total = 0;
+    xprsindex_host_free = 0;
+    xprsindex_close(st);
+}
+
+/*
  * XPRS.md 25.3 and 12.11: a standing alert (scope:local, until:) and its
  * withdrawal are kept with custody mail when the spool goes, so an alert
  * posted months ago is still there for the next visitor. A warning for
@@ -1918,6 +2009,7 @@ int main(void)
     test_retention_priorities(dir);
     test_declared_mail_is_the_last_to_go(dir);
     test_standing_alerts_are_carried(dir);
+    test_a_letter_left_for_a_stranger(dir);
     test_mail_count(dir);
     test_served(dir);
     test_declarations(dir);

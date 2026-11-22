@@ -112,6 +112,9 @@ static uint64_t xi_card_free(const char *d);
  * times. 128 ids are 512 bytes.
  */
 #define XI_MAIL_RING      128
+#define XI_AUTH_MAX      64   /* authors of held mail whose identity is kept */
+#define XI_LEFT_RATE_N   16   /* authors whose deposits today are counted */
+#define XI_LEFT_PER_DAY  20   /* first-hand messages one author leaves a day */
 #define XI_DEFAULT_LIMIT  64
 /* Recent segments cached in RAM. The zone file is the real map — an index that
  * kept every segment in memory would cost 384 KB on a full card, which is the
@@ -297,6 +300,13 @@ struct xprsidx_s {
     uint32_t dedup[XI_DEDUP_RING];
     uint32_t mail_seen[XI_MAIL_RING];
     int      mail_pos;
+    /* The meeting point (xi_census_locked): who wrote the mail held here,
+     * so their identity is kept with it, how much was left first-hand, and
+     * how much each author left today. */
+    uint32_t mail_auth[XI_AUTH_MAX];
+    int      mail_auth_n;
+    uint32_t left_n;
+    struct { uint32_t who, day; uint16_t n; } left_rate[XI_LEFT_RATE_N];
     int      dedup_pos;
     /* Presence repeats: same words, new timestamp. See xi_presence_hash. */
     uint32_t pres[XI_PRESENCE_RING];
@@ -750,6 +760,8 @@ static void xi_served_save(xprsidx_t *st);
 static void xi_reg_load(xprsidx_t *st);
 static void xi_reg_save(xprsidx_t *st);
 static bool xi_evict_locked(xprsidx_t *st);
+static void xi_census_locked(xprsidx_t *st);
+static bool xi_left_admit(xprsidx_t *st, const char *from, uint32_t now);
 static void xi_tails_trim(xprsidx_t *st);
 static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,
                        const char *call, uint32_t ts);
@@ -1318,6 +1330,7 @@ xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
      * make) are trimmed here, before the writer can append to them. */
     if (st->oldest_first) xi_tails_trim(st);
     st->ready = true;
+    xi_census_locked(st);
 #ifndef XPRSIDX_HOST_TEST
     /* Core 1, deliberately. The BLE controller and host are pinned to core 0
      * (CONFIG_BT_NIMBLE_PINNED_TO_CORE 0), WiFi runs there and so does the main
@@ -1734,9 +1747,42 @@ static bool xi_declared(const xprsidx_t *st, const char *call)
  */
 static bool xi_is_alert(const xi_rec_t *r);
 
+/* A base callsign as a number, case-insensitive (the suffix is a device). */
+static uint32_t xi_call_hash(const char *c)
+{
+    uint32_t h = 2166136261u;
+    for (; c && *c && *c != '-'; c += 1) {
+        char ch = *c;
+        if (ch >= 'a' && ch <= 'z') ch = (char)(ch - 32);
+        h = (h ^ (uint8_t)ch) * 16777619u;
+    }
+    return h ? h : 1u;
+}
+
+/* Is mail from [call] held here? What keeps an author's identity alive. */
+static bool xi_auth_has(const xprsidx_t *st, const char *call)
+{
+    uint32_t h = xi_call_hash(call);
+    for (int i = 0; i < st->mail_auth_n; i += 1)
+        if (st->mail_auth[i] == h) return true;
+    return false;
+}
+
+static void xi_auth_add(xprsidx_t *st, const char *call)
+{
+    if (!call || !call[0] || xi_auth_has(st, call)) return;
+    if (st->mail_auth_n < XI_AUTH_MAX) {
+        st->mail_auth[st->mail_auth_n] = xi_call_hash(call);
+        st->mail_auth_n += 1;
+    }
+}
+
 static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
 {
     if (!(r->flags & XI_F_MAIL)) return xi_is_alert(r) ? 2 : 1;
+    /* Left here first-hand, sealed, for whoever arrives: the station is
+     * where the two meet, and nothing else holds a copy. */
+    if (r->flags & XI_F_LEFT) return 3;
     /* A visitor this station took in as their mailbox (12.8.3 step zero)
      * is a declarer whose declaration may not have been filed yet. */
     return (xi_declared(st, r->to) || xi_served_slot(st, r->to) >= 0) ? 3 : 2;
@@ -1879,7 +1925,9 @@ static uint32_t xi_rec_until(const xi_rec_t *r)
     if (!xprs_parse(r->wire, r->len, &p)) return 0;
     int vlen = 0;
     const char *v = xprs_get(&p, "until", &vlen);
-    return v ? xi_ts_to_epoch(v, vlen) : 0;
+    if (v) return xi_ts_to_epoch(v, vlen);
+    /* Mail left at a meeting point waits a year, then makes room. */
+    return (r->flags & XI_F_LEFT) && r->ts ? r->ts + XI_LEFT_KEEP_S : 0;
 }
 
 /* A standing alert (XPRS.md 25.3): a warning or a notice for this place
@@ -2109,7 +2157,13 @@ static bool xi_evict_locked(xprsidx_t *st)
              * spool by a field almost nothing on the air sets, so what
              * actually happened was that the whole spool went and the
              * ranking never chose anything. */
-            if (cls == 1) continue;   /* mail and standing alerts only */
+            /* ...and the identity of whoever wrote mail held here: a
+             * sealed letter opens only against its author's key, and the
+             * reader may arrive months after the author's last announcement
+             * went with the spool (seen on a C3, 2026-11-22: the mail was
+             * held and its author's key was gone within minutes). */
+            if (cls == 1 &&
+                !(r.type == XI_T_IDENTITY && xi_auth_has(st, r.from))) continue;
 
             r.index = st->next_index++;
             if (xi_write_rec(st, &r)) carried++;
@@ -2145,6 +2199,7 @@ static bool xi_evict_locked(xprsidx_t *st)
     st->dir_valid = false;
     XI_LOGI("evicted seg_%u: %d mail record(s) carried forward", (unsigned)first,
             carried);
+    xi_census_locked(st);
     return true;
 }
 
@@ -2427,6 +2482,20 @@ static int xi_add_locked(xprsidx_t *st, const char *wire, int len,
     r.len   = (uint16_t)len;
     r.flags = 0;
     if (r.to[0]) r.flags |= XI_F_MAIL;
+    /* The meeting point: a sealed message its author left here first-hand
+     * (through this station's page, or heard directly on a local bearer,
+     * never a relay's copy and never off the internet) for somebody else.
+     * Kept with declared mail while there is room for it, a bounded number
+     * a day from one author; past either bound it is ordinary custody mail,
+     * carried while it can be. A spammer needs to stand at the station, and
+     * gets twenty. */
+    if (r.to[0] && code == XI_T_MESSAGE && xprs_get(&p, "x", &vlen) &&
+        !xprs_get(&p, "via", &vlen) &&
+        !(st->own[0] && xi_base_eq(r.to, st->own)) &&
+        (outgoing || xprsidx_bearer_reach(bearer, st->lora_local) == XPRS_REACH_LOCAL) &&
+        xi_left_admit(st, r.from, ts_now))
+        r.flags |= XI_F_LEFT;
+    if (r.flags & XI_F_MAIL) xi_auth_add(st, r.from);
     /* Mail, and the conversation: a chat message comes back round as a
      * relay's re-air (via:) long after the short ring has turned over. */
     bool talk = r.to[0] || code == XI_T_MESSAGE;
@@ -3015,6 +3084,65 @@ static void xi_writer_task(void *arg)
     }
 }
 #endif
+
+
+/* How much first-hand mail a store keeps in its longest-lived class: a
+ * quarter of its budget, between 32 and 2000 records. */
+static uint32_t xi_left_max(const xprsidx_t *st)
+{
+    uint64_t n = st->max_bytes ? (st->max_bytes / 4u) / sizeof(xi_rec_t) : 400u;
+    if (n < 32u) n = 32u;
+    if (n > 2000u) n = 2000u;
+    return (uint32_t)n;
+}
+
+/* May [from] leave one more today, and is there room? */
+static bool xi_left_admit(xprsidx_t *st, const char *from, uint32_t now)
+{
+    if (st->left_n >= xi_left_max(st)) return false;
+    const uint32_t who = xi_call_hash(from), day = now / 86400u;
+    int slot = 0;
+    for (int i = 0; i < XI_LEFT_RATE_N; i += 1) {
+        if (st->left_rate[i].who == who && st->left_rate[i].day == day) {
+            if (st->left_rate[i].n >= XI_LEFT_PER_DAY) return false;
+            st->left_rate[i].n += 1;
+            st->left_n += 1;
+            return true;
+        }
+        if (st->left_rate[i].day < st->left_rate[slot].day) slot = i;
+    }
+    st->left_rate[slot].who = who;
+    st->left_rate[slot].day = day;
+    st->left_rate[slot].n = 1;
+    st->left_n += 1;
+    return true;
+}
+
+static bool xi_census_cb(const xprsidx_rec_t *rec, void *ctx)
+{
+    xprsidx_t *st = ctx;
+    if (!(rec->flags & XI_F_MAIL)) return true;
+    xi_auth_add(st, rec->from);
+    if (rec->flags & XI_F_LEFT) st->left_n += 1;
+    return true;
+}
+
+/* Who wrote the mail held here, and how much of it was left first-hand:
+ * read once when the store opens and again when a segment goes, one pass
+ * over the messages. */
+static void xi_census_locked(xprsidx_t *st)
+{
+    st->mail_auth_n = 0;
+    st->left_n = 0;
+    xprsidx_query_t q = {
+        .type = -1,
+        .types = xprsidx_type_mask("message"),
+        .trusted = true,
+        .limit = 4000,
+        .newest_first = true,
+    };
+    xi_query_locked(st, &q, xi_census_cb, st);
+}
 
 /* The public entry points hold the lock; everything below them assumes it. */
 bool xprsindex_add(xprsidx_t *st, const char *wire, int len,

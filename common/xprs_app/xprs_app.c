@@ -8146,6 +8146,18 @@ static struct hist_page {
     int16_t len[HIST_PAGE];
 } *s_page;
 
+/* One record's wire, copied out: the newest identity of a letter's author. */
+typedef struct { char wire[XPRS_MAX_WIRE + 1]; int len; } one_wire_t;
+static bool one_wire_collect(const xprsidx_rec_t *rec, void *ctx)
+{
+    one_wire_t *o = ctx;
+    if (rec->len <= 0 || rec->len > XPRS_MAX_WIRE) return true;
+    memcpy(o->wire, rec->wire, rec->len);
+    o->wire[rec->len] = 0;
+    o->len = rec->len;
+    return false;
+}
+
 static bool hist_collect(const xprsidx_rec_t *rec, void *ctx)
 {
     (void)ctx;
@@ -9510,6 +9522,9 @@ no_announce:
             xprsindex_query(s_index, &q, hist_collect, NULL);
             int aired = 0;
             uint32_t oldest = 0;               /* of what actually went out */
+            /* The authors whose identity went out with this page. */
+            char keyed[4][XPRS_CALL_LEN];
+            int nkeyed = 0;
             for (int i = 0; i < s_page->n; i++) {
                 /* only: matched from OR to; mail is what carries d:THEM.
                  * Their own sayings are not deliveries. */
@@ -9525,6 +9540,42 @@ no_announce:
                 char relid[XPRS_ID_LEN];
                 if (xprs_id_of(s_page->wire[i], s_page->len[i], relid) &&
                     acked_has(relid)) continue;
+                /* A sealed letter opens only against its author's key, and
+                 * the reader may never have heard its author: the identity
+                 * this station kept with the letter goes out first, once an
+                 * author a page, as the relayed packet it is. */
+                char mfrom[XPRS_CALL_LEN] = "";
+                int xl = 0;
+                if (xprs_get(&mp, "x", &xl) &&
+                    xprs_get_str(&mp, "f", mfrom, sizeof mfrom) && mfrom[0]) {
+                    bool had = false;
+                    for (int k = 0; k < nkeyed; k++)
+                        if (strcasecmp(keyed[k], mfrom) == 0) had = true;
+                    if (!had && nkeyed < 4) {
+                        snprintf(keyed[nkeyed], sizeof keyed[0], "%s", mfrom);
+                        nkeyed++;
+                        static one_wire_t idw;
+                        idw.len = 0;
+                        xprsidx_query_t iq = {
+                            .type = -1,
+                            .types = xprsidx_type_mask("identity"),
+                            .from = mfrom,
+                            .limit = 1,
+                            .newest_first = true,
+                        };
+                        xprsindex_query(s_index, &iq, one_wire_collect, &idw);
+                        char idrel[XPRS_MAX_WIRE + 1];
+                        int idn = idw.len > 0
+                            ? xprs_append_via(idw.wire, idw.len, s_call, idrel, (int)sizeof idrel)
+                            : 0;
+                        if (idn > 0) {
+                            vTaskDelay(pdMS_TO_TICKS(1000));
+                            esp_task_wdt_reset();
+                            idx_air(rbearer, idrel, idn);
+                            ESP_LOGI(TAG, "  with the identity of %s, who wrote it", mfrom);
+                        }
+                    }
+                }
                 vTaskDelay(pdMS_TO_TICKS(1500));
                 esp_task_wdt_reset();
                 /* 36.8.1: "via: gains the holder's callsign, the 13.1 budget

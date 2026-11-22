@@ -382,3 +382,16 @@ reuse potential.
   phase from the arrival of a frame sent inside a window. No wire words. Reuse
   for any radio a station has to visit on a schedule (a working channel, a
   duty-cycled receiver).
+
+## The meeting point (2026-11-22, XPRS.md 12.7.1)
+
+- `XI_F_LEFT` (`xprs_index`): a sealed message left first-hand is class 3 and
+  waits `XI_LEFT_KEEP_S`. `xi_left_admit` is the one place its limits live
+  (per author a day, a share of the store). `xi_auth_has` / `xi_census_locked`
+  keep the identity of every author of held mail through eviction. Anything
+  else that must survive the spool goes through `xi_class_of`, not a second
+  rule in the eviction loop.
+- `one_wire_collect` (`xprs_app.c`): one record's wire out of a query, for
+  "the newest X of Y" asks from the station task.
+- Reading a board's console over USB-JTAG restarts it. Use `/api/diag`
+  (`boot`, `heap.min_ever`, `crash`) and `/api/log` to watch a running board.
