@@ -1,76 +1,77 @@
 {
-  "generated": "2026-11-22T22:51:17Z",
+  "generated": "2026-11-22T22:59:25Z",
   "publisher": {
     "callsign": "X1WATT",
     "key": "7756ba1e8d04b9eea1bd7e8be8e573b93add4cbfd388abe7bb1bf6673e7b47e9"
   },
   "stable": {
-    "listing": "42591b70409edeeddf465608236f8ac972bff11ef548e13459ee1adbf19e6b18",
+    "listing": "bdcb4fb5a7695be2591dcf3259440f7cf2214f6c06d0f20f5ae342f00d552196",
+    "listing_text": "XFL1\neuil06LBqSDw5gzaIjVfHeH45ikb451zDNFFXVtDMpM.bin 1547216 epaper-1in54-0.6.0.bin\n3PnWplkgORDhsFhQyE9E8R6wYEXHTt6Z701zHz0Y4aw.bin 1356864 esp32c3-mini-0.6.0.bin\nl6MINGK_zmgAwuH5CWOY3i1d-x_tUb6rHIyHNtiIkE4.bin 1493280 generic-0.6.0.bin\n9Nmr3BCYEcr1GJIxYLck9oRrxqgRH7FeY4kz129eC04.bin 1536352 heltec-v3-0.6.0.bin\nb5qLibIlPVALjyQCC0j9yzASPMGeQqU4jx4zaeIcHJA.bin 1634416 m5stack-core-0.6.0.bin\nZKUg7B6mzxukO1nRVqT1QSyZR7-6NYoDU6ye2ySxWf4.bin 1851248 tdeck-0.6.0.bin\neKrDd4Vk-TKqNVSyLOcA5HngXN-Rtahe0tk5uHThg5g.bin 1499664 tdongle-s3-0.6.0.bin\n",
     "wires": [
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:QlkbcECe3u3fRlYII2-KyXK_8R71SOE0We4a2_Geaxg.xfl kind:folder count:7 size:11018224 sig:H?68))d<f9cAeC#l0-yv4TR[bAH;/!vw1d9JUeHPmH$ZYpH%k;eBVegdd_t! m:XPRS firmware stable",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:_pt0alU-j5p39D7fJWa9dUOhQxaBW8MxTdHNLadkC0E.bin size:1677744 tag:stable name:tdeck-0.5.1.bin sig:q!gN@=xVUjnc$4>/r6>pWk/z]cr)FB/nMSb^Wccu@(N[p!j6cx)%C/thAFou",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:DeTqOdCJBl1E8g8gvymEy9MfdSGoCyc3mQDXBejqRdo.bin size:1543648 tag:stable name:epaper-1in54-0.1.1.bin sig:S@2/GyaR]z*i%3f93I,>3hs=7W^WkI$+ljq3%1hZ%DAdd<mlj1f(uZ;lRz=y",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:KBZhVlQXGdM5vReUgda-G0AJfJ_8SA1XPJRdxL8HAMY.bin size:1590848 tag:stable name:heltec-v3-0.1.1.bin sig:B=VIPZAVpWjuX7y9<ZoD8VwlU+Wl4;Fl96DX+4i^Z,_(6WUyD<qDyc)rFVWL",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:0ZD6SsETiTt2Uhzy7bE1WX1dmzcGpbHAXi3rpajpAm0.bin size:1414272 tag:stable name:esp32c3-mini-0.2.1.bin sig:EaB6/M&3I5Tbxpb)gkv43rWo@8uF(-^nV]BhgWBc##2)$z2&/K3i;WMTVjrC",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:2yIFj6Y8nh1UxkQtQa4EFgdjSA1v21hcSt4jWc5-d3g.bin size:1418128 tag:stable name:generic-0.2.1.bin sig:GS[CF1%,oK9xI#YpK@>n[YVGU&lZ3)hXi*CxDQDf5JsfI[HOj4[EI(jQMj)L",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:9QxI1r-LdA8E05EzSLyMhq9UmcBaIm2-6TyfHJ9dBEg.bin size:1725760 tag:stable name:m5stack-core-0.3.1.bin sig:O4KY%#SI)+Nfn<3Z!&&AAVs8YfIH>[Bg+Fq^b$g7>Cx$TwkNlSRt%f!SU?[3",
-      "t:file f:X1WATT ts:2026-10-25_16:36:32 file:_YEtNrXTqB6KDvxZIUgP1xHxWSa0Lf4kjZvI-CeS_qY.bin size:1647824 tag:stable name:tdongle-s3-0.5.1.bin sig:>yI3!M0ry[pZX=Unsw+N1=;$6))gKOP)K4TlnwEr!cH*vqus#ofb$3c?(H-C"
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:vctPtadpW-JZHc8yWUQPfPIhT2wG0PIPWuNC8A1VIZY.xfl kind:folder count:7 size:10919040 sig:<$(zA@vEAtQwX!ROWaPK?./R[lY>7I18GosG+kF!1h*7XS@BIZL?Q#MOKJ4* m:XPRS firmware stable",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:euil06LBqSDw5gzaIjVfHeH45ikb451zDNFFXVtDMpM.bin size:1547216 tag:stable name:epaper-1in54-0.6.0.bin sig:4Y>Ms=E.[NF64=k2o[?Ai])Z.C!Yr>Ex%mt-)%OpENW0<<+0$+Uq_OEsd1>l",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:3PnWplkgORDhsFhQyE9E8R6wYEXHTt6Z701zHz0Y4aw.bin size:1356864 tag:stable name:esp32c3-mini-0.6.0.bin sig:M^<(Kq49[$B[FHd&dy593@X?WTQ6Bqci3SiJhXT1<=QcrG&SRd$,S2oR,OwL",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:l6MINGK_zmgAwuH5CWOY3i1d-x_tUb6rHIyHNtiIkE4.bin size:1493280 tag:stable name:generic-0.6.0.bin sig:lm+Ye2Kff)+5%A9cp*sdgUFx1V2TOD*qPN+V7@F#[D+d^7LRrZ)+f@FgAqP5",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:9Nmr3BCYEcr1GJIxYLck9oRrxqgRH7FeY4kz129eC04.bin size:1536352 tag:stable name:heltec-v3-0.6.0.bin sig:3lhAzpd$&_ir-MhY!,Ex-WI#;ng0CgsGK_)L2;%knEJ,&&Y%mod9S2um1E<#",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:b5qLibIlPVALjyQCC0j9yzASPMGeQqU4jx4zaeIcHJA.bin size:1634416 tag:stable name:m5stack-core-0.6.0.bin sig:T;q3p%$9@y[/%I.(/LRI1cv=&LjKql?_=Fz9&7qwK9Py>hp<Y8)@XXYXp_Wt",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:ZKUg7B6mzxukO1nRVqT1QSyZR7-6NYoDU6ye2ySxWf4.bin size:1851248 tag:stable name:tdeck-0.6.0.bin sig:CXj<IY3Z0YhYqj</G3O.<%=)74Y/yUqf%@HPc;.wE;G7b6x.^0.J0r$xNZ/#",
+      "t:file f:X1WATT ts:2026-11-22_22:59:25 file:eKrDd4Vk-TKqNVSyLOcA5HngXN-Rtahe0tk5uHThg5g.bin size:1499664 tag:stable name:tdongle-s3-0.6.0.bin sig:XxZYuV*ca_p@F_=%B2w?^JY]!#BOX/a8#D$SDwH&W*Zpj6=Gv)7M-#3?-)%1"
     ],
     "members": [
       {
         "board": "epaper-1in54",
-        "version": "0.1.1",
-        "name": "epaper-1in54-0.1.1.bin",
-        "sha256": "0de4ea39d089065d44f20f20bf2984cbd31f7521a80b27379900d705e8ea45da",
-        "size": 1543648,
+        "version": "0.6.0",
+        "name": "epaper-1in54-0.6.0.bin",
+        "sha256": "7ae8a5d3a2c1a920f0e60cda22355f1de1f8e6291be39d730cd1455d5b433293",
+        "size": 1547216,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/prebuilt/firmware.bin"
       },
       {
         "board": "esp32c3-mini",
-        "version": "0.2.1",
-        "name": "esp32c3-mini-0.2.1.bin",
-        "sha256": "d190fa4ac113893b76521cf2edb135597d5d9b3706a5b1c05e2deba5a8e9026d",
-        "size": 1414272,
+        "version": "0.6.0",
+        "name": "esp32c3-mini-0.6.0.bin",
+        "sha256": "dcf9d6a659203910e1b05850c84f44f11eb06045c74ede99ef4d731f3d18e1ac",
+        "size": 1356864,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/prebuilt/firmware.bin"
       },
       {
         "board": "generic",
-        "version": "0.2.1",
-        "name": "generic-0.2.1.bin",
-        "sha256": "db22058fa63c9e1d54c6442d41ae04160763480d6fdb585c4ade2359ce7e7778",
-        "size": 1418128,
+        "version": "0.6.0",
+        "name": "generic-0.6.0.bin",
+        "sha256": "97a3083462bfce6800c2e1f9096398de2d5dfb1fed51beab1c8c8736d888904e",
+        "size": 1493280,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/prebuilt/firmware.bin"
       },
       {
         "board": "heltec-v3",
-        "version": "0.1.1",
-        "name": "heltec-v3-0.1.1.bin",
-        "sha256": "28166156541719d339bd179481d6be1b40097c9ffc480d573c945dc4bf0700c6",
-        "size": 1590848,
+        "version": "0.6.0",
+        "name": "heltec-v3-0.6.0.bin",
+        "sha256": "f4d9abdc109811caf518923160b724f6846bc6a8111fb15e638933d76f5e0b4e",
+        "size": 1536352,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt/firmware.bin"
       },
       {
         "board": "m5stack-core",
-        "version": "0.3.1",
-        "name": "m5stack-core-0.3.1.bin",
-        "sha256": "f50c48d6bf8b740f04d3913348bc8c86af5499c05a226dbee93c9f1c9f5d0448",
-        "size": 1725760,
+        "version": "0.6.0",
+        "name": "m5stack-core-0.6.0.bin",
+        "sha256": "6f9a8b89b2253d500b8f24020b48fdcb30123cc19e42a5388f1e3369e21c1c90",
+        "size": 1634416,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin"
       },
       {
         "board": "tdeck",
-        "version": "0.5.1",
-        "name": "tdeck-0.5.1.bin",
-        "sha256": "fe9b746a553e8f9a77f43edf2566bd7543a14316815bc3314dd1cd2da7640b41",
-        "size": 1677744,
+        "version": "0.6.0",
+        "name": "tdeck-0.6.0.bin",
+        "sha256": "64a520ec1ea6cf1ba43b59d156a4f5412c9947bfba358a0353ac9edb24b159fe",
+        "size": 1851248,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin"
       },
       {
         "board": "tdongle-s3",
-        "version": "0.5.1",
-        "name": "tdongle-s3-0.5.1.bin",
-        "sha256": "fd812d36b5d3a81e8a0efc5921480fd711f15926b42dfe248d9bc8f82792fea6",
-        "size": 1647824,
+        "version": "0.6.0",
+        "name": "tdongle-s3-0.6.0.bin",
+        "sha256": "78aac3778564f932aa3554b22ce700e479e05cdf91b5a85ed2d939b874e18398",
+        "size": 1499664,
         "url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin"
       }
     ]

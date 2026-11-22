@@ -120,8 +120,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdeck/firmware",
       "image": "tdeck_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdeck/prebuilt/firmware.bin",
-      "sha256": "fe9b746a553e8f9a77f43edf2566bd7543a14316815bc3314dd1cd2da7640b41",
-      "size": 1677744
+      "sha256": "64a520ec1ea6cf1ba43b59d156a4f5412c9947bfba358a0353ac9edb24b159fe",
+      "size": 1851248
     },
     "docs": [
       {
@@ -307,8 +307,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/epaper-1in54/firmware",
       "image": "epaper_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/epaper-1in54/prebuilt/firmware.bin",
-      "sha256": "0de4ea39d089065d44f20f20bf2984cbd31f7521a80b27379900d705e8ea45da",
-      "size": 1543648
+      "sha256": "7ae8a5d3a2c1a920f0e60cda22355f1de1f8e6291be39d730cd1455d5b433293",
+      "size": 1547216
     },
     "docs": [
       {
@@ -460,8 +460,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/esp32c3-mini/firmware",
       "image": "esp32c3_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/esp32c3-mini/prebuilt/firmware.bin",
-      "sha256": "d190fa4ac113893b76521cf2edb135597d5d9b3706a5b1c05e2deba5a8e9026d",
-      "size": 1414272
+      "sha256": "dcf9d6a659203910e1b05850c84f44f11eb06045c74ede99ef4d731f3d18e1ac",
+      "size": 1356864
     },
     "docs": [
       {
@@ -617,8 +617,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/heltec-v3/firmware",
       "image": "heltec_v3_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/heltec-v3/prebuilt/firmware.bin",
-      "sha256": "28166156541719d339bd179481d6be1b40097c9ffc480d573c945dc4bf0700c6",
-      "size": 1590848
+      "sha256": "f4d9abdc109811caf518923160b724f6846bc6a8111fb15e638933d76f5e0b4e",
+      "size": 1536352
     },
     "docs": [
       {
@@ -762,8 +762,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/tdongle-s3/firmware",
       "image": "tdongle_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/tdongle-s3/prebuilt/firmware.bin",
-      "sha256": "fd812d36b5d3a81e8a0efc5921480fd711f15926b42dfe248d9bc8f82792fea6",
-      "size": 1647824
+      "sha256": "78aac3778564f932aa3554b22ce700e479e05cdf91b5a85ed2d939b874e18398",
+      "size": 1499664
     },
     "docs": [
       {
@@ -925,8 +925,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/m5stack-core/firmware",
       "image": "m5stack_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/m5stack-core/prebuilt/firmware.bin",
-      "sha256": "f50c48d6bf8b740f04d3913348bc8c86af5499c05a226dbee93c9f1c9f5d0448",
-      "size": 1725760
+      "sha256": "6f9a8b89b2253d500b8f24020b48fdcb30123cc19e42a5388f1e3369e21c1c90",
+      "size": 1634416
     },
     "docs": [
       {
@@ -1707,8 +1707,8 @@
       "project_url": "https://github.com/xprs-dev/firmware/tree/main/models/generic/firmware",
       "image": "esp32_generic_xprs",
       "artifact_url": "https://raw.githubusercontent.com/xprs-dev/firmware/main/models/generic/prebuilt/firmware.bin",
-      "sha256": "db22058fa63c9e1d54c6442d41ae04160763480d6fdb585c4ade2359ce7e7778",
-      "size": 1418128
+      "sha256": "97a3083462bfce6800c2e1f9096398de2d5dfb1fed51beab1c8c8736d888904e",
+      "size": 1493280
     },
     "docs": [
       {
