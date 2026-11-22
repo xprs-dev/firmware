@@ -1776,10 +1776,16 @@ static bool xi_auth_has(const xprsidx_t *st, const char *call)
 static void xi_auth_add(xprsidx_t *st, const char *call)
 {
     if (!call || !call[0] || xi_auth_has(st, call)) return;
-    if (st->mail_auth_n < XI_AUTH_MAX) {
-        st->mail_auth[st->mail_auth_n] = xi_call_hash(call);
-        st->mail_auth_n += 1;
+    /* Full: the oldest half is let go. Their identities stop being carried
+     * at the next eviction unless their mail is carried again, which puts
+     * them straight back (the carry adds its author). */
+    if (st->mail_auth_n >= XI_AUTH_MAX) {
+        memmove(st->mail_auth, st->mail_auth + XI_AUTH_MAX / 2,
+                (XI_AUTH_MAX / 2) * sizeof st->mail_auth[0]);
+        st->mail_auth_n = XI_AUTH_MAX / 2;
     }
+    st->mail_auth[st->mail_auth_n] = xi_call_hash(call);
+    st->mail_auth_n += 1;
 }
 
 static int xi_class_of(const xprsidx_t *st, const xi_rec_t *r)
@@ -2142,7 +2148,10 @@ static bool xi_evict_locked(xprsidx_t *st)
              * the cursor with it; xi_read_rec reopens it by name. */
             if (!xi_read_rec(st, i, &r)) continue;
             uint32_t until = xi_rec_until(&r);
-            if (until && now && now > until) continue;        /* expired */
+            if (until && now && now > until) {                /* expired */
+                if (pass == 0 && (r.flags & XI_F_LEFT) && st->left_n) st->left_n -= 1;
+                continue;
+            }
             int cls = xi_class_of(st, &r);
             if (pass == 0 && cls == 2) continue;   /* class 2 waits for pass 2 */
             if (pass == 1 && cls != 2) continue;   /* already carried */
@@ -2170,6 +2179,7 @@ static bool xi_evict_locked(xprsidx_t *st)
             if (cls == 1 &&
                 !(r.type == XI_T_IDENTITY && xi_auth_has(st, r.from))) continue;
 
+            if (r.flags & XI_F_MAIL) xi_auth_add(st, r.from);
             r.index = st->next_index++;
             if (xi_write_rec(st, &r)) carried++;
         }
@@ -2204,7 +2214,12 @@ static bool xi_evict_locked(xprsidx_t *st)
     st->dir_valid = false;
     XI_LOGI("evicted seg_%u: %d mail record(s) carried forward", (unsigned)first,
             carried);
-    xi_census_locked(st);
+    /* Not a census here. Reading every message this store holds, under the
+     * lock, each time a segment goes is the stall this component was cured
+     * of once already (a board that answered in twenty seconds, 2026-11-22).
+     * The authors already known stay known: one whose mail has all gone
+     * keeps its identity a while longer, which costs a record. What was
+     * left first-hand and not carried is counted off as it goes (above). */
     return true;
 }
 
@@ -3162,6 +3177,9 @@ bool xprsindex_left_take(xprsidx_t *st, char *id, int id_cap, char *from, int fr
                          int *bearer)
 {
     if (!st) return false;
+    /* Asked after every packet the station files: the common answer, none,
+     * is read without the lock (a stale read costs one turn). */
+    if (!st->left_id[0]) return false;
     bool got = false;
     XI_LOCK(st);
     if (st->left_id[0]) {
