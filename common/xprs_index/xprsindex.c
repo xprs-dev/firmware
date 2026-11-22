@@ -306,6 +306,11 @@ struct xprsidx_s {
     uint32_t mail_auth[XI_AUTH_MAX];
     int      mail_auth_n;
     uint32_t left_n;
+    /* The last letter filed as left here, until the caller takes it
+     * (xprsindex_left_take): who wrote it, its identifier and the bearer. */
+    char     left_id[XPRSIDX_ID_LEN];
+    char     left_from[XPRSIDX_CALL_LEN];
+    uint8_t  left_bearer;
     struct { uint32_t who, day; uint16_t n; } left_rate[XI_LEFT_RATE_N];
     int      dedup_pos;
     /* Presence repeats: same words, new timestamp. See xi_presence_hash. */
@@ -2493,8 +2498,16 @@ static int xi_add_locked(xprsidx_t *st, const char *wire, int len,
         !xprs_get(&p, "via", &vlen) &&
         !(st->own[0] && xi_base_eq(r.to, st->own)) &&
         (outgoing || xprsidx_bearer_reach(bearer, st->lora_local) == XPRS_REACH_LOCAL) &&
-        xi_left_admit(st, r.from, ts_now))
+        xi_left_admit(st, r.from, ts_now ? ts_now : xi_wall())) {
         r.flags |= XI_F_LEFT;
+        /* An author on the air is told (the caller airs it); one who wrote
+         * through this station's page has its answer already. */
+        if (!outgoing) {
+            xi_copy(st->left_id, sizeof st->left_id, r.id, -1);
+            xi_copy(st->left_from, sizeof st->left_from, r.from, -1);
+            st->left_bearer = r.bearer;
+        }
+    }
     if (r.flags & XI_F_MAIL) xi_auth_add(st, r.from);
     /* Mail, and the conversation: a chat message comes back round as a
      * relay's re-air (via:) long after the short ring has turned over. */
@@ -3145,6 +3158,23 @@ static void xi_census_locked(xprsidx_t *st)
 }
 
 /* The public entry points hold the lock; everything below them assumes it. */
+bool xprsindex_left_take(xprsidx_t *st, char *id, int id_cap, char *from, int from_cap,
+                         int *bearer)
+{
+    if (!st) return false;
+    bool got = false;
+    XI_LOCK(st);
+    if (st->left_id[0]) {
+        xi_copy(id, (size_t)id_cap, st->left_id, -1);
+        xi_copy(from, (size_t)from_cap, st->left_from, -1);
+        if (bearer) *bearer = st->left_bearer;
+        st->left_id[0] = 0;
+        got = true;
+    }
+    XI_UNLOCK(st);
+    return got;
+}
+
 bool xprsindex_add(xprsidx_t *st, const char *wire, int len,
                    int rssi, bool outgoing, uint32_t ts_now)
 {

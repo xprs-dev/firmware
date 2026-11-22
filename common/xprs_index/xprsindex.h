@@ -418,6 +418,15 @@ bool xprsindex_serves(xprsidx_t *st, const char *call);
 int  xprsindex_served_count(xprsidx_t *st);
 int  xprsindex_served_max(void);
 
+/**
+ * The letter most recently filed as left here first-hand by an author on the
+ * air (XI_F_LEFT), once: its identifier, its author and the bearer it came
+ * on. What the station tells that author (XPRS.md 12.7.1). False when there
+ * is none since the last call.
+ */
+bool xprsindex_left_take(xprsidx_t *st, char *id, int id_cap, char *from, int from_cap,
+                         int *bearer);
+
 /** Storage budget in bytes; 0 (the default) = no cap. Over it, the writer
  * deletes the oldest segment, carrying mail forward: class 3 (declared)
  * and class 2 (custody) survive, the spool goes first, and nothing

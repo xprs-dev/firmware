@@ -9076,6 +9076,28 @@ static void idx_task(void *arg)
                                s_idxq[r].rssi, s_idxq[r].own,
                                s_idxq[r].own ? (uint32_t)time(NULL) : 0,
                                s_idxq[r].bearer);
+            /* 12.7.1: a sealed letter left here first-hand is kept, and its
+             * author is told so, once, on the bearer it came on: a signed
+             * observation naming the letter. Somebody leaving word for a
+             * person who is not here has nothing else to go by. */
+            {
+                char lid[XPRS_ID_LEN] = "", lfrom[XPRS_CALL_LEN] = "";
+                int lb = 0;
+                if (s_index && xprsindex_left_take(s_index, lid, sizeof lid,
+                                                   lfrom, sizeof lfrom, &lb)) {
+                    char w[XPRSIDX_WIRE_MAX + 1], ts[32];
+                    time_field(ts, sizeof ts);
+                    int n = snprintf(w, sizeof w, "t:observation f:%s d:%s %s s:held r:%s",
+                                     s_call, lfrom, ts, lid);
+                    if (n > 0 && n < (int)sizeof w) {
+                        n = sign_wire(w, n, sizeof w);
+                        const char *bn = lb == XI_B_BLE ? "ble" : lb == XI_B_ESPNOW ? "espnow"
+                                       : lb == XI_B_LORA ? "lora" : "lan";
+                        idx_air(bn, w, n);
+                        ESP_LOGI(TAG, "kept a letter from %s (%s): told them (12.7.1)", lfrom, lid);
+                    }
+                }
+            }
             /* A warning or notice may be a standing alert or the withdrawal
              * of one (25.3): what stands is re-read once it is on the
              * volume, which the index's writer does a few seconds later. */
