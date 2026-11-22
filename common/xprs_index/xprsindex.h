@@ -119,7 +119,7 @@ const char *xprsidx_bearer_name(int code);
 /* Heard on a bearer wider than its scope (XPRS.md 9.11): kept, never relayed,
  * never served, shown in no room. Decided once, when the record is accepted. */
 #define XI_F_OUTRANGE  0x10
-/* Sealed mail its author left here first-hand, for somebody who may never
+/* A message its author left here first-hand, for somebody who may never
  * have been here (the station as a meeting point): kept with declared mail,
  * for XI_LEFT_KEEP_S unless it says until: itself. */
 #define XI_F_LEFT      0x20

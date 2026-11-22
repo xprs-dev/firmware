@@ -767,6 +767,15 @@ static void xi_reg_save(xprsidx_t *st);
 static bool xi_evict_locked(xprsidx_t *st);
 static void xi_census_locked(xprsidx_t *st);
 static bool xi_left_admit(xprsidx_t *st, const char *from, uint32_t now);
+/* Written about now, by this station's clock: the year a letter waits is
+ * counted from its own date, so one dated long ago (a replay, a device with
+ * a wrong clock) is ordinary custody mail and not promised a year it has
+ * already used up. A station with no clock cannot tell and takes it. */
+static bool xi_left_fresh(uint32_t ts, uint32_t now)
+{
+    if (!now || !ts) return true;
+    return ts + 86400u >= now && ts <= now + 86400u;
+}
 static void xi_tails_trim(xprsidx_t *st);
 static void xi_dir_put(xprsidx_dir_entry_t *out, int *n, int max,
                        const char *call, uint32_t ts);
@@ -2502,17 +2511,20 @@ static int xi_add_locked(xprsidx_t *st, const char *wire, int len,
     r.len   = (uint16_t)len;
     r.flags = 0;
     if (r.to[0]) r.flags |= XI_F_MAIL;
-    /* The meeting point: a sealed message its author left here first-hand
+    /* (Sealed or in the clear alike: a station stores what it is given and
+     * needs nobody's key to do it. Sealing is the writer's choice.)
+     * The meeting point: a message its author left here first-hand
      * (through this station's page, or heard directly on a local bearer,
      * never a relay's copy and never off the internet) for somebody else.
      * Kept with declared mail while there is room for it, a bounded number
      * a day from one author; past either bound it is ordinary custody mail,
      * carried while it can be. A spammer needs to stand at the station, and
      * gets twenty. */
-    if (r.to[0] && code == XI_T_MESSAGE && xprs_get(&p, "x", &vlen) &&
+    if (r.to[0] && code == XI_T_MESSAGE &&
         !xprs_get(&p, "via", &vlen) &&
         !(st->own[0] && xi_base_eq(r.to, st->own)) &&
         (outgoing || xprsidx_bearer_reach(bearer, st->lora_local) == XPRS_REACH_LOCAL) &&
+        xi_left_fresh(r.ts, ts_now ? ts_now : xi_wall()) &&
         xi_left_admit(st, r.from, ts_now ? ts_now : xi_wall())) {
         r.flags |= XI_F_LEFT;
         /* An author on the air is told (the caller airs it); one who wrote

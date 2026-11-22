@@ -1107,8 +1107,9 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
  * (2026-11-22): the letter was held, its author's key was gone in minutes,
  * and the reader could open nothing.
  *
- * No such promise for a relay's copy, for words left in the clear, or past
- * what one author may leave in a day.
+ * Sealed or in the clear alike: a station stores what it is given and needs
+ * nobody's key for that. No such promise for a relay's copy, or past what
+ * one author may leave in a day.
  */
 static void test_a_letter_left_for_a_stranger(const char *dir)
 {
@@ -1122,34 +1123,34 @@ static void test_a_letter_left_for_a_stranger(const char *dir)
     const uint32_t day0 = 1787000000u;
 
     /* Maria announces herself, then leaves a sealed letter for Bob. */
-    snprintf(w, sizeof w, "t:identity f:X1MARI ts:" TS_2026 " k:npub1maria sig:aaa");
+    snprintf(w, sizeof w, "t:identity f:X1MARI ts:2026-08-17_20:53:20 k:npub1maria sig:aaa");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "the author's identity");
-    snprintf(w, sizeof w, "t:message f:X1MARI d:X1BOBB ts:" TS_2026 " x:c2VhbGVkLWxldHRlcg sig:bbb");
+    snprintf(w, sizeof w, "t:message f:X1MARI d:X1BOBB ts:2026-08-17_20:53:20 x:c2VhbGVkLWxldHRlcg sig:bbb");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "the letter");
     /* The same kind of letter, but a relay's copy: carried, not promised. */
-    snprintf(w, sizeof w, "t:identity f:X1FARR ts:" TS_2026 " k:npub1far sig:aaa");
+    snprintf(w, sizeof w, "t:identity f:X1FARR ts:2026-08-17_20:53:20 k:npub1far sig:aaa");
     xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
-    snprintf(w, sizeof w, "t:message f:X1FARR d:X1BOBB ts:" TS_2026 " x:cmVsYXllZA sig:ccc via:X3OTHR");
+    snprintf(w, sizeof w, "t:message f:X1FARR d:X1BOBB ts:2026-08-17_20:53:20 x:cmVsYXllZA sig:ccc via:X3OTHR");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "a relayed letter");
-    /* Words left in the clear: ordinary custody mail. */
-    snprintf(w, sizeof w, "t:message f:X1CLEA d:X1BOBB ts:" TS_2026 " m:in the clear");
+    /* Words left in the clear: kept the same. */
+    snprintf(w, sizeof w, "t:message f:X1CLEA d:X1BOBB ts:2026-08-17_20:53:20 m:in the clear");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "a clear letter");
 
     /* One author, one day: the twenty-first is not promised. */
     for (int i = 0; i < 25; i += 1) {
-        snprintf(w, sizeof w, "t:message f:X1LOUD d:X1BOBB ts:" TS_2026 " x:bG91ZC0%02d sig:ddd", i);
+        snprintf(w, sizeof w, "t:message f:X1LOUD d:X1BOBB ts:2026-08-17_20:53:20 x:bG91ZC0%02d sig:ddd", i);
         xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
     }
 
     /* A volume with no room to spare: only the longest-kept class is
      * carried when a segment goes. */
     for (int i = 0; i < 9000; i += 1) {
-        snprintf(w, sizeof w, "t:info f:X1SP%02d ts:" TS_2026 " m:filler %d", i % 90, i);
+        snprintf(w, sizeof w, "t:info f:X1SP%02d ts:2026-08-17_20:53:20 m:filler %d", i % 90, i);
         xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
     }
     xprsindex_host_total = 8ull * 1024u * 1024u;
     xprsindex_host_free = 16u * 1024u;
-    snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
+    snprintf(w, sizeof w, "t:info f:X1LAST ts:2026-08-17_20:53:20 m:the drop");
     CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
 
     xprsidx_stats_t s;
@@ -1175,7 +1176,8 @@ static void test_a_letter_left_for_a_stranger(const char *dir)
     collect_t cc = { 0 };
     xprsidx_query_t qc = { .type = -1, .from = "X1CLEA", .asker = "X1BOBB", .limit = 5,
                            .types = xprsidx_type_mask("message") };
-    CHECK(xprsindex_query(st, &qc, collect, &cc) == 0, "clear words were promised like a sealed letter");
+    CHECK(xprsindex_query(st, &qc, collect, &cc) == 1,
+          "words left in the clear were not kept: a station needs no key to store");
 
     collect_t cl = { 0 };
     xprsidx_query_t ql = { .type = -1, .from = "X1LOUD", .asker = "X1BOBB", .limit = 50,
