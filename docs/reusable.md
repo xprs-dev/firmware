@@ -395,3 +395,5 @@ reuse potential.
   "the newest X of Y" asks from the station task.
 - Reading a board's console over USB-JTAG restarts it. Use `/api/diag`
   (`boot`, `heap.min_ever`, `crash`) and `/api/log` to watch a running board.
+
+| a lock that names its long holder: `XI_LOCK`/`XI_UNLOCK` (`common/xprs_index/xprsindex.c`) keep `lock_by` (`__func__`) and `lock_at`, and log `store held N ms by <function>` on release after a second or more | the web server has one task, so a long holder of any shared lock is every page waiting; copy the two macros for any new mutex a handler can wait on, and release inside long loops the way `xi_evict_breathe` does |

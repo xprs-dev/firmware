@@ -2948,3 +2948,40 @@ deposit ring), nothing new on a radio task's stack.
   `?ACK` purge covers the normal case.
 - The old `xprs_mesh` component is the DISABLED ESP-WIFI-MESH bridge
   (`FEATURE_MESH=0`), unrelated to the BLE street mesh -- don't confuse the two.
+
+### A C3 that answered a page in 47 seconds: three causes, one after another (2026-11-23)
+
+Seen from a browser as every request failing for the first half minute of a
+visit, and from a prompt as two pings in five lost. Each cause hid the next.
+
+1. **Bluetooth stepped back late, and came back during the visit.** With the
+   controller up the board had 9 to 21 KB free (largest block 5.6 KB) and
+   lost 20 to 42 % of pings; stepped back it had 48 KB and lost none. The
+   step back was evaluated below the drain of the heard-packet queue in
+   `idx_task`, and on a busy bench that queue never empties: it came 45 s
+   after the visitor. And the hold was taken per CONNECTION
+   (`api_session_open`), while the page polls on one connection it keeps
+   open, so Bluetooth returned a minute into the visit. Now looked at inside
+   the drain, once a second, and `history_common` renews the hold.
+2. **Retiring a segment held the store for 48 s.** `store held 48003 ms by
+   xi_writer_task`, every fifty seconds: the web server has one task, and a
+   history request waited for the whole carry-forward. `xi_evict_breathe`
+   lets the store go every other record.
+3. **The store never shrank.** 250 of a segment's 256 records were mail for
+   strangers (anything with a `d:`, and a bench full of stations asking each
+   other for history is mostly that), all carried forward, so the next
+   segment went fifty seconds later, for ever. Class 2 is now carried only
+   up to half a segment, counting what class 3 needed, the newest first.
+
+Measured after, same bench, a page-style poll every three seconds for three
+minutes: mean 0.39 s, worst 4.5 s, 2 of 51 over two seconds, 3 % of pings
+lost (before: 34 to 47 s for the first request, 20 to 42 % lost).
+
+How it was found, which is the reusable part: `XI_LOCK`/`XI_UNLOCK` now
+remember who holds the store and log `store held N ms by <function>` for a
+second or more. The board's log ring is too small under load to keep that
+line; read it from the serial port (`cat` on the USB-JTAG port did not
+reset this board).
+
+Also found on the way: one packet stamped 2106 became the store's "newest",
+and every catch-up asked for history since 2106 (`xi_ts_future`).

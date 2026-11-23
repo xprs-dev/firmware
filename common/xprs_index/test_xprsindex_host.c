@@ -1099,6 +1099,42 @@ static void test_declared_mail_is_the_last_to_go(const char *dir)
 }
 
 /*
+ * A store full of other people's mail must still shrink when a segment
+ * goes. Seen on a C3 (2026-11-23): 250 of a segment's 256 records were
+ * mail for strangers, all of it was carried forward, the segment gave back
+ * six records and the next one went fifty seconds later, for ever, with
+ * the store held 48 s each time. Half a segment at most is carried, the
+ * newest of it.
+ */
+static void test_strangers_mail_does_not_fill_the_store(const char *dir)
+{
+    rm_rf(dir);
+    xprsidx_t *st = xprsindex_open2(dir, 256);
+    CHECK(xprsindex_ready(st), "store did not open");
+    xprsindex_set_own(st, "X3ARC1");
+    xprsindex_set_verifier(st, trust_all_verify);
+    char w[300];
+    const uint32_t day0 = 1787000000u;
+    for (int i = 0; i < 256 * 3; i++) {
+        snprintf(w, sizeof w,
+                 "t:message f:X1AA%02d d:X1ZZ%02d ts:" TS_2026 " m:letter %04d",
+                 i % 40, i % 37, i);
+        xprsindex_add(st, w, (int)strlen(w), 0, false, day0);
+    }
+    xprsidx_stats_t s;
+    xprsindex_stats(st, &s);
+    const uint32_t before = s.count;
+    xprsindex_set_max_bytes(st, s.used_bytes - 1);
+    snprintf(w, sizeof w, "t:info f:X1LAST ts:" TS_2026 " m:the drop");
+    CHECK(xprsindex_add(st, w, (int)strlen(w), 0, false, day0), "post-cap add");
+    xprsindex_stats(st, &s);
+    CHECK(s.count + 100 <= before,
+          "a retired segment gave nothing back (%u records before, %u after)",
+          (unsigned)before, (unsigned)s.count);
+    xprsindex_close(st);
+}
+
+/*
  * The station as a meeting point. A sealed message its author left here
  * first-hand, for somebody who has never been here and declared nothing, is
  * kept with declared mail when the store runs out of room, and so is its
@@ -2010,6 +2046,7 @@ int main(void)
     test_verifies_what_it_stores(dir);
     test_retention_priorities(dir);
     test_declared_mail_is_the_last_to_go(dir);
+    test_strangers_mail_does_not_fill_the_store(dir);
     test_standing_alerts_are_carried(dir);
     test_a_letter_left_for_a_stranger(dir);
     test_mail_count(dir);

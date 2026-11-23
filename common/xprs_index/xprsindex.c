@@ -67,13 +67,32 @@ static uint64_t xi_card_free(const char *d);
 #define XI_LOCK(st)    ((void)(st))
 #define XI_UNLOCK(st)  ((void)(st))
 #else
-#define XI_LOCK(st)    do { if ((st)->lock) xSemaphoreTake((st)->lock, portMAX_DELAY); } while (0)
-#define XI_UNLOCK(st)  do { if ((st)->lock) xSemaphoreGive((st)->lock); } while (0)
+/* Who holds the store, and since when: a holder of a second or more is
+ * named when it lets go. The web server has one task, and a reader that
+ * waits here is every page on the station waiting (a history request took
+ * 34 and 47 s on a C3 with the radio answering pings, 2026-11-23). */
+#define XI_LOCK(st)    do { if ((st)->lock) { \
+        xSemaphoreTake((st)->lock, portMAX_DELAY); \
+        (st)->lock_by = __func__; (st)->lock_at = esp_timer_get_time(); } } while (0)
+#define XI_UNLOCK(st)  do { if ((st)->lock) { \
+        const char *xi_by_ = (st)->lock_by; \
+        int64_t xi_held_ = esp_timer_get_time() - (st)->lock_at; \
+        xSemaphoreGive((st)->lock); \
+        if (xi_held_ >= 1000000) \
+            XI_LOGW("store held %d ms by %s", (int)(xi_held_ / 1000), xi_by_ ? xi_by_ : "?"); \
+    } } while (0)
 #endif
 
 /* Slots per segment, unless the store already on the volume says otherwise
  * (xprsindex_open2). Segments of the old fixed format always hold this many. */
 #define XI_RECS_PER_SEG   4096u
+
+/* More than a day ahead of this station's clock, when it has one. */
+static bool xi_ts_future(uint32_t ts)
+{
+    const uint32_t now = (uint32_t)time(NULL);
+    return now > 1700000000u && ts > now + 86400u;
+}
 #define XI_RECS_MIN       64u
 /* Directory entries kept in the store. Matches XPRS_DIR_MAX, what the only
  * caller asks for; an ask for more than this is served by a full walk. */
@@ -382,6 +401,8 @@ struct xprsidx_s {
     uint32_t boot_newest_ts;        /* newest_ts as it was at open() */
 #ifndef XPRSIDX_HOST_TEST
     SemaphoreHandle_t lock;
+    const char *lock_by;            /* XI_LOCK: the function holding it */
+    int64_t     lock_at;
 #endif
 };
 
@@ -1314,7 +1335,8 @@ xprsidx_t *xprsindex_open2(const char *dir, uint32_t recs)
     for (uint32_t zn = 0;; zn++) {
         xi_zone_t z;
         if (!xi_zone_read(st, zn, &z)) break;
-        if (z.max_ts > st->newest_ts) st->newest_ts = z.max_ts;
+        if (z.max_ts > st->newest_ts && !xi_ts_future(z.max_ts))
+            st->newest_ts = z.max_ts;
     }
     /* The catch-up since: (36.10). Snapshot NOW: by the time an archiver
      * peer is sighted, newest_ts has already moved past the hole -- fresh
@@ -2101,6 +2123,25 @@ static bool xi_volume_tight(const xprsidx_t *st)
     return xi_card_free(st->dir) < floor;
 }
 
+/* A segment is retired a record at a time, and the store is let go between
+ * every few: the web server has one task, and a reader that waited for a
+ * whole segment waited most of a minute. The segment is still on the volume
+ * until the end, so a reader in between sees a carried record twice at
+ * worst (same identifier). Lock held on entry and on return. */
+static void xi_evict_breathe(xprsidx_t *st, uint32_t done)
+{
+#ifndef XPRSIDX_HOST_TEST
+    /* Every other record: eight at a time still held it 1 to 2.3 s on
+     * flash (a record read and maybe written is about 200 ms there). */
+    if (done == 0 || done % 2u) return;
+    XI_UNLOCK(st);
+    vTaskDelay(1);
+    XI_LOCK(st);
+#else
+    (void)st; (void)done;
+#endif
+}
+
 static bool xi_evict_locked(xprsidx_t *st)
 {
     if (st->nseg < 2) return false;
@@ -2145,7 +2186,22 @@ static bool xi_evict_locked(xprsidx_t *st)
     /* A tight volume carries only what 36.11 keeps longest. */
     const bool room_for_class2 = !tight && after_evict <= st->max_bytes;
     const uint32_t seg_end = first + st->recs;
+    /* Other people's mail (class 2) is carried only as far as the segment
+     * still gives something back: half of it at most, counting what pass 1
+     * had to carry, the newest first. Carried whole, a store full of mail
+     * for strangers gave back six records of 256 per segment and retired
+     * the next one fifty seconds later, for ever (C3, 2026-11-23: 250 of
+     * 256 carried, the store held 48 s each time). */
+    uint32_t c2_seen = 0, c2_skip = 0, c2_at = 0;
     for (int pass = 0; pass < 2 && readable; pass++) {
+        if (pass == 1) {
+            const uint32_t half = st->recs / 2u;
+            const uint32_t room = (uint32_t)carried < half ? half - (uint32_t)carried : 0u;
+            c2_skip = c2_seen > room ? c2_seen - room : 0u;
+            if (c2_skip)
+                XI_LOGI("evict: %u of %u carried-mail records let go to make room",
+                        (unsigned)c2_skip, (unsigned)c2_seen);
+        }
         if (pass == 1 && !room_for_class2) {
             XI_LOGI("evict: over budget after the segment goes - "
                     "carried mail dropped, declared mail kept");
@@ -2155,6 +2211,7 @@ static bool xi_evict_locked(xprsidx_t *st)
         for (uint32_t i = first; i < seg_end && i < st->written_end; i++) {
             /* Writing a carried record may roll the active segment and take
              * the cursor with it; xi_read_rec reopens it by name. */
+            xi_evict_breathe(st, i - first);
             if (!xi_read_rec(st, i, &r)) continue;
             uint32_t until = xi_rec_until(&r);
             if (until && now && now > until) {                /* expired */
@@ -2162,8 +2219,15 @@ static bool xi_evict_locked(xprsidx_t *st)
                 continue;
             }
             int cls = xi_class_of(st, &r);
-            if (pass == 0 && cls == 2) continue;   /* class 2 waits for pass 2 */
+            if (pass == 0 && cls == 2) { c2_seen += 1; continue; }  /* waits for pass 2 */
             if (pass == 1 && cls != 2) continue;   /* already carried */
+            if (pass == 1) {
+                c2_at += 1;
+                if (c2_at <= c2_skip) {             /* the oldest go */
+                    if ((r.flags & XI_F_LEFT) && st->left_n) st->left_n -= 1;
+                    continue;
+                }
+            }
 
             /* What survives a full store: XPRS.md 36.11, which decides by
              * class first and age second, and within a class the oldest
@@ -2553,7 +2617,10 @@ static int xi_add_locked(xprsidx_t *st, const char *wire, int len,
     if (xprs_get(&p, "sig", &vlen)) r.flags |= XI_F_SIGNED;
     memcpy(r.wire, wire, (size_t)len);
 
-    if (r.ts > st->newest_ts) st->newest_ts = r.ts;
+    /* A ts from the future is not "the newest thing held": one packet
+     * stamped 2106 (seen on a C3, 2026-11-23) made every catch-up ask for
+     * history since 2106, which nobody has, for as long as it was kept. */
+    if (r.ts > st->newest_ts && !xi_ts_future(r.ts)) st->newest_ts = r.ts;
     /* Who is actually here. Counted from the AUTHOR of anything stored, so
      * presence is observed rather than declared -- see xi_reg_note. */
     xi_reg_note(st, r.from, ts_now);

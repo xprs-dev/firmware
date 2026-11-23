@@ -354,6 +354,12 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
 static esp_err_t history_common(httpd_req_t *req, bool mail_only)
 {
     if (!s_cfg->index) return resp_error(req, "404 Not Found", "no index");
+    /* The page asks this every few seconds on a connection it keeps open,
+     * so the hold taken when the connection opened (api_session_open) ran
+     * out five seconds into a visit and Bluetooth came back a minute later
+     * with the reader still there (C3, 2026-11-23: 9 to 21 KB free and two
+     * pings in five lost, against 48 KB and none with Bluetooth back). */
+    xprs_wifi_busy(5000);
 
     char query[256] = {0}, p[48], call[48] = {0}, session[XWC_TOKEN_LEN + 8] = {0};
     char room[20] = {0};

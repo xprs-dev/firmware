@@ -1445,8 +1445,10 @@ static cu_peer_t *cu_find(const char *call, bool create)
 static uint32_t cu_since_floor(void)
 {
     const uint32_t newest = s_index ? xprsindex_boot_newest_ts(s_index) : 0;
-    if (newest) return newest;
     const uint32_t now = xst_epoch_now();
+    /* A store opened before the clock was set may still carry a newest
+     * from the future (xi_ts_future): never ask from there. */
+    if (newest && !(now && newest > now)) return newest;
     return now > CU_BOOTSTRAP_SEC ? now - CU_BOOTSTRAP_SEC : 0;
 }
 
@@ -9071,6 +9073,19 @@ static void idx_task(void *arg)
          * (2026-08-30, the first evening the Heltec V3 was on the air). */
         while (s_idxq_r != s_idxq_w) {
             int r = s_idxq_r;
+            /* Bluetooth steps back for a visitor from here too, at most once
+             * a second: on a busy bench this queue never empties, the check
+             * below the drain was reached 45 s after the visitor arrived,
+             * and for those 45 s WiFi had no memory to answer them with
+             * (C3, 2026-11-23). */
+            {
+                static uint32_t s_back_look_ms;
+                uint32_t ms = (uint32_t)(esp_timer_get_time() / 1000);
+                if (xprs_wifi_is_busy() && ms - s_back_look_ms >= 1000) {
+                    s_back_look_ms = ms;
+                    ble_duty_apply();
+                }
+            }
             if (s_index && xcfg_get_bool("index_on", true))
                 xprsindex_add2(s_index, s_idxq[r].wire, s_idxq[r].len,
                                s_idxq[r].rssi, s_idxq[r].own,
