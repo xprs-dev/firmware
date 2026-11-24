@@ -307,6 +307,12 @@ reuse potential.
   description readers, `<board>-<version>.bin` parsing and a dotted version
   compare (`xfolder_version_cmp`). Reuse the version compare wherever a
   version string is ordered; it is numeric, not lexical.
+- **`published_version(b)` in `tools/scripts/build_catalog.py`** -- the
+  version a reader actually downloads: `prebuilt/manifest.json` first (a
+  release rewrites it), `board.yml`'s `firmware.version` only as a
+  fallback. Use it for every version the catalogue prints or exports
+  (`docs/boards.json`, the cards, the install box); `board.yml` alone
+  stays behind after a release and the app's flasher waits on it.
 - **A shared mbedtls object is a lock, not a static (`xs_lock()` in
   `common/xprs_sig/xprssig.c`)** -- `mbedtls_ecp_group` caches its comb
   table in `grp->T` on the first multiplication, so one group used from

@@ -158,6 +158,25 @@ def cmake_project_name(path):
     return m.group(1) if m else None
 
 
+def published_version(b):
+    """The version a reader actually downloads: the one in the board's
+    prebuilt/manifest.json when there is one (a release rewrites it), else
+    board.yml's firmware.version. board.yml is not touched by a release, so
+    reading it alone leaves the catalogue naming an older image than the
+    one it serves (the app's flasher then waits for a download that already
+    happened)."""
+    fw = b.get("firmware") or {}
+    manifest = os.path.join(b.get("_dir") or "", "prebuilt", "manifest.json")
+    if b.get("_dir") and os.path.isfile(manifest):
+        try:
+            v = json.load(open(manifest)).get("version")
+        except (OSError, ValueError):
+            v = None
+        if v:
+            return str(v)
+    return fw.get("version")
+
+
 def to_json(b):
     """One board as the catalogue JSON: board.yml verbatim, plus what a
     program outside this tree cannot derive -- where the folder is on GitHub
@@ -167,6 +186,8 @@ def to_json(b):
     out = {"repo": REPO, "source_url": f"{REPO_URL}/tree/main/{rel}"}
     out.update(d)
     fw = out.get("firmware") or {}
+    if fw and published_version(b):
+        fw["version"] = published_version(b)
     if fw.get("project"):
         fw["project_url"] = f"{REPO_URL}/tree/main/{fw['project']}"
         # The CMake project name is what esp_app_desc_t.project_name says on
@@ -218,9 +239,7 @@ def prebuilt_block(b, fw):
                 f'<p class="pb-how">{why}{esc(one) + "." if fw.get("project") else ""} '
                 f'<a href="#{sec_id}">Details</a>.</p></div>')
     manifest = os.path.join(pre, "manifest.json")
-    ver = fw.get("version")
-    if os.path.isfile(manifest):
-        ver = json.load(open(manifest)).get("version") or ver
+    ver = published_version(b)
     links = "".join(
         f'<a class="dl mono" href="{esc(rel)}/{esc(f)}" download>{esc(f)}'
         f'<span>{os.path.getsize(os.path.join(pre, f)) // 1024} KB</span></a>'
@@ -406,8 +425,8 @@ def card(b, embed):
         build = (f'<div class="build build-none"><div class="build-head">No firmware yet</div>'
                  f'<p class="flashnote">Not buildable from this tree.</p></div>')
 
-    ver = (f'<span class="ver mono">v{esc(fw["version"])}</span>'
-           if fw.get("version") else "")
+    ver = (f'<span class="ver mono">v{esc(published_version(b))}</span>'
+           if published_version(b) else "")
 
     return f"""
 <article class="card" id="{esc(b.get('id'))}" data-status="{esc(status)}"
