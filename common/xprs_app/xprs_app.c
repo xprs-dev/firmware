@@ -4019,6 +4019,25 @@ static bool lora_worth(const char *wire, int len)
     return lr_worth(wire, len, xprslora_mode() == XPRSLORA_MODE_XPRS);
 }
 
+/* The LoRa radio's QoS.md gate asks the station three things (xb_qos.h):
+ * is a destination heard directly on LoRa, was it heard directly on a
+ * cheaper bearer (then the packet reached it already), and the time. */
+static bool qos_here(const char *call)
+{
+    return xst_heard_direct(call, "lora", 600);
+}
+
+static bool qos_cheaper(const char *call)
+{
+    return xst_heard_direct(call, "ble", 600) || xst_heard_direct(call, "lan", 600) ||
+           xst_heard_direct(call, "espnow", 600);
+}
+
+static uint32_t qos_epoch(void)
+{
+    return xst_epoch_now();
+}
+
 static void bridge_out(const char *wire, int len, from_t from)
 {
     if (command_to_us(wire, len)) return;
@@ -10678,6 +10697,15 @@ static int api_lora_json(char *buf, size_t cap)
                       (unsigned long)cls.mt, (unsigned long)cls.mc,
                       (unsigned long)cls.xprs_mt, (unsigned long)cls.xprs_mc,
                       (unsigned long)cls.either, (unsigned long)cls.neither);
+    /* QoS.md section 5: what the gate carried and why it refused the rest,
+     * per class -- "why did my packet not go out" answered off the board. */
+    if (n > 0 && (size_t)n < cap) {
+        /* Whole or not at all: a cut-off object would spoil the reply. */
+        static char qj[768];
+        int q = xprslora_qos_json(qj, (int)sizeof qj);
+        if (q > 0 && q < (int)sizeof qj - 1 && (size_t)(n + 7 + q) < cap)
+            n += snprintf(buf + n, cap - (size_t)n, ",\"qos\":%s", qj);
+    }
     /* Taking turns on two networks: which ones, how long a turn is, where
      * the radio is this moment and how many turns it has served. A reader
      * that sees `mode` alone would think this station lives there. */
@@ -12090,6 +12118,10 @@ void xapp_run(const xapp_board_t *board)
                 ESP_LOGW(TAG, "lora_profile far is for xprs mode only -- ignored");
             if (xprslora_start(s_call, &lc) == ESP_OK) {
                 xprslora_set_rx_cb(on_lora);
+                static const xq_hooks_t qh = { .heard_here = qos_here,
+                                               .reached_cheaper = qos_cheaper,
+                                               .epoch_s = qos_epoch };
+                xprslora_set_qos(&qh, lora_reach());
                 uint32_t duty = reg->duty_ms, resv = reg->reserve_ms,
                          dwell = reg->dwell_ms;
                 const char *v;

@@ -431,6 +431,17 @@ void xprslora_set_duty(uint32_t budget_ms, uint32_t reserve_ms,
 void xprslora_duty(xb_duty_report_t *out);
 
 /**
+ * The station's answers for the radio's QoS.md gate (xb_qos.h): who is heard
+ * directly here and on the cheaper bearers, the clock, and this radio's 9.11
+ * class (regional, or local where the operator says so). Before or after
+ * start; NULL hooks leave the gate knowing only the packets.
+ */
+void xprslora_set_qos(const xq_hooks_t *hooks, xprs_reach_t reach);
+
+/** The gate's counters as JSON (xq_json); 0 when the radio is down. */
+int xprslora_qos_json(char *out, int cap);
+
+/**
  * Point the radio at a frequency of the operator's choosing, now: the same
  * retune the mode switch uses, and the station keeps its uptime.
  *

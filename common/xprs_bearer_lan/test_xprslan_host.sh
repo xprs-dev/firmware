@@ -15,6 +15,6 @@ COMMON=../xprs_common/include          # xprs_psram.h (host arm: plain calloc)
 gcc -Wall -Wextra -Werror -O1 -DXPRSLAN_HOST_TEST -DXB_HOST_TEST \
     -I. -I"$XPRS" -I"$BEARER" -I"$COMMON" \
     -o /tmp/test_xprslan \
-    xprslan.c "$BEARER"/xprsbearer.c "$XPRS"/xprs.c test_xprslan_host.c "$SHA"
+    xprslan.c "$BEARER"/xprsbearer.c "$BEARER"/xb_qos.c "$XPRS"/xprs.c test_xprslan_host.c "$SHA"
 
 /tmp/test_xprslan

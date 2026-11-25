@@ -185,6 +185,108 @@ static uint32_t xb_air_cost(const xb_t *b, int len)
     return b->duty->airtime(len, b->duty->airtime_ctx);
 }
 
+/* ── QoS.md (xb_qos.h) ─────────────────────────────────────────────────── */
+
+/* What the gate is told about a packet now. [wire] NULL for a frame that
+ * is not an XPRS packet (xb_spend) or for the pump, which reads the queue. */
+static void xb_qos_ctx(xb_t *b, const char *wire, int len, uint32_t now,
+                       xq_ctx_t *c)
+{
+    memset(c, 0, sizeof *c);
+    c->now_ms = now;
+    xq_t *q = b->qos;
+    if (q->hooks.epoch_s) c->epoch_s = q->hooks.epoch_s();
+    if (q->hooks.util_pct) c->util_pct = q->hooks.util_pct();
+    int st = xb_peer_count(b, 600);
+    c->stations = (uint8_t)(st > 255 ? 255 : st);
+    if (b->duty && b->duty->budget_ms) {
+        xb_duty_roll(b->duty, now);
+        c->spent_ms = b->duty->spent_ms;
+        c->budget_ms = b->duty->budget_ms;
+    }
+    if (wire) {
+        int vl = 0;
+        const char *f = xq_field(wire, len, "f", &vl);
+        uint32_t me = xq_call_hash(b->call, (int)strlen(b->call));
+        c->own = f && me && xq_call_hash(f, vl) == me;
+        /* 25.9's first:, the station's answer (xb_set_priority_hook). */
+        c->first = s_prio_hook && s_prio_hook(wire, len);
+    }
+}
+
+/* The QoS fields of a queue entry, before it has a slot. */
+typedef struct {
+    uint8_t  cls, rank, urg, ptype;
+    uint32_t author, ts_s, expires_ms, k;
+} xb_qmeta_t;
+
+static uint32_t xb_fnv(const char *v, int vl)
+{
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < vl; i++) h = (h ^ (uint8_t)v[i]) * 16777619u;
+    return h;
+}
+
+static void xb_qos_meta(const xq_t *q, const char *wire, int len,
+                        xq_class_t cls, const xq_ctx_t *c, xb_qmeta_t *m)
+{
+    memset(m, 0, sizeof *m);
+    m->cls = (uint8_t)cls;
+    m->rank = cls == XQ_LIFE ? 0 : cls == XQ_OWNER ? 1 : c->first ? 2 : 3;
+    m->urg = xq_urg_rank(wire, len, cls != XQ_OWNER && !c->first);
+    int vl = 0;
+    const char *v = xq_field(wire, len, "ts", &vl);
+    uint32_t ts = xq_ts_epoch(v, vl);
+    m->ts_s = ts ? ts : c->epoch_s;
+    v = xq_field(wire, len, "f", &vl);
+    m->author = v ? xq_call_hash(v, vl) : 0;
+    m->ptype = xq_periodic_type(wire, len);
+    v = xq_field(wire, len, "k", &vl);
+    m->k = v ? xb_fnv(v, vl) : 0;
+    /* 4.8: the class's limit, or the packet's own until: if sooner. */
+    uint32_t lim = xq_limit_ms(q, cls, c);
+    v = xq_field(wire, len, "until", &vl);
+    uint32_t until = xq_ts_epoch(v, vl);
+    if (until && c->epoch_s) {
+        if (until <= c->epoch_s) lim = 0;
+        else if (until - c->epoch_s < lim / 1000u) lim = (until - c->epoch_s) * 1000u;
+    }
+    m->expires_ms = c->now_ms + lim;
+}
+
+int xb_qos_order(const xb_queued_t *a, const xb_queued_t *b)
+{
+    if (a->rank != b->rank) return (int)a->rank - (int)b->rank;
+    if (a->urg != b->urg) return (int)a->urg - (int)b->urg;
+    if (a->ts_s != b->ts_s) return a->ts_s < b->ts_s ? -1 : 1;
+    int32_t d = (int32_t)(a->queued_ms - b->queued_ms);
+    return d < 0 ? -1 : d > 0 ? 1 : 0;
+}
+
+/* 4.8: whom a full queue gives up for [in] -- the lowest class, then the
+ * lowest urg:, then the one that would go last; never an sos for anything
+ * else, never the owner's for a third party's. -1: [in] is the one lost. */
+static int xb_qos_victim(const xb_t *b, const xb_qmeta_t *in)
+{
+    int w = -1;
+    for (int i = 0; i < XB_QUEUE_MAX; i++) {
+        const xb_queued_t *x = &b->queue[i];
+        if (!x->used) continue;
+        if (x->cls == XQ_LIFE && in->cls != XQ_LIFE) continue;
+        if (x->cls == XQ_OWNER && in->cls > XQ_OWNER) continue;
+        if (w < 0) { w = i; continue; }
+        const xb_queued_t *y = &b->queue[w];
+        if (x->cls > y->cls ||
+            (x->cls == y->cls && x->urg > y->urg) ||
+            (x->cls == y->cls && x->urg == y->urg && xb_qos_order(x, y) > 0))
+            w = i;
+    }
+    if (w < 0) return -1;
+    const xb_queued_t *y = &b->queue[w];
+    bool keep_in = in->cls < y->cls || (in->cls == y->cls && in->urg < y->urg);
+    return keep_in ? w : -1;
+}
+
 /* Pick the due packet that should go next: earliest due among the wanted
  * class. Two scans of eight, no sort. */
 static int xb_pick(const xb_t *b, uint32_t now, bool want_prio)
@@ -220,8 +322,98 @@ static void xb_drop_stale(xb_t *b, uint32_t now)
     }
 }
 
+/* The pump under QoS.md: expiry by class (4.8), then the first due packet
+ * in 4.3's order that the hour, the reserve, the pace and the fair share
+ * allow (4.2, 4.6, 4.7). A packet the budget holds does not hold the ones
+ * behind it: a third party over its share waits while a message goes. */
+static int xb_pump_qos(xb_t *b, uint32_t now)
+{
+    xq_t *q = b->qos;
+    if (b->duty) b->duty->held_now = 0;
+    for (int i = 0; i < XB_QUEUE_MAX; i++) {
+        if (!b->queue[i].used) continue;
+        if (xb_since(now, b->queue[i].expires_ms) < 0) continue;
+        b->queue[i].used = false;
+        xq_count_shed(q, (xq_class_t)b->queue[i].cls, XQ_EXPIRED);
+        if (b->duty) b->duty->stale++;
+        XB_LOGW("%s: %s waited %lds -- past its class's limit, dropped",
+                b->ops.name ? b->ops.name : "?", b->queue[i].id,
+                (long)(xb_since(now, b->queue[i].queued_ms) / 1000));
+    }
+
+    int sent = 0;
+    for (;;) {
+        if (b->pace_ms && (int32_t)(now - b->free_at_ms) < 0) {
+            for (int i = 0; i < XB_QUEUE_MAX; i++) {
+                if (!b->queue[i].used) continue;
+                if ((int32_t)(now - b->queue[i].due_ms) < 0) continue;
+                b->queue[i].why = XB_WAIT_PACE;
+                if (!b->queue[i].held) { b->queue[i].held = true; b->paced++; }
+            }
+            break;
+        }
+        xq_ctx_t c;
+        xb_qos_ctx(b, NULL, 0, now, &c);
+        int best = -1;
+        uint32_t best_air = 0;
+        for (int i = 0; i < XB_QUEUE_MAX; i++) {
+            xb_queued_t *e = &b->queue[i];
+            if (!e->used || (int32_t)(now - e->due_ms) < 0) continue;
+            uint32_t air = xb_air_cost(b, e->len);
+            if (b->duty && b->duty->dwell_ms && air > b->duty->dwell_ms) {
+                e->used = false;
+                b->duty->stale++;
+                xq_count_shed(q, (xq_class_t)e->cls, XQ_BUDGET);
+                continue;
+            }
+            xq_shed_t may = xq_may_air(q, (xq_class_t)e->cls,
+                                       e->cls >= XQ_CONV ? e->author : 0, air, &c);
+            if (may != XQ_OK) {
+                e->why = XB_WAIT_DUTY;
+                if (b->duty) b->duty->held_now++;
+                continue;
+            }
+            if (best < 0 || xb_qos_order(e, &b->queue[best]) < 0) {
+                best = i;
+                best_air = air;
+            }
+        }
+        if (best < 0) break;
+
+        xb_queued_t *e = &b->queue[best];
+        e->used = false;
+        e->held = false;
+        XB_LOCK(b);
+        bool ok = b->ops.air(b->ops.ctx, e->wire, e->len);
+        xb_duty_charge(b->duty, best_air);
+        xq_aired(q, e->wire, e->len, e->id, (xq_class_t)e->cls,
+                 e->cls >= XQ_CONV ? e->author : 0, best_air,
+                 b->duty ? b->duty->spent_ms : 0, c.budget_ms, now);
+        uint32_t after = b->ops.now_ms();
+        if (ok) {
+            xb_ring_add(b->aired, &b->aired_pos, e->id, now);
+            b->tx_count++;
+            b->last_ms = after;
+        }
+        b->free_at_ms = after + b->pace_ms;
+        XB_UNLOCK(b);
+        if (ok) sent++;
+        for (int j = 0; j < XB_QUEUE_MAX; j++) {
+            if (!b->queue[j].used) continue;
+            if ((int32_t)(now - b->queue[j].due_ms) < 0) continue;
+            if (b->queue[j].why != XB_WAIT_DUTY) b->queue[j].why = XB_WAIT_PRIO;
+        }
+        if (b->pace_ms || b->duty) break;
+    }
+    return sent;
+}
+
 static int xb_pump(xb_t *b, uint32_t now)
 {
+    if (b->qos) {
+        if (b->duty) xb_duty_roll(b->duty, now);
+        return xb_pump_qos(b, now);
+    }
     if (b->duty) {
         xb_duty_roll(b->duty, now);
         b->duty->held_now = 0;
@@ -349,16 +541,50 @@ static uint32_t xb_due_ms(xb_t *b, uint32_t now, int rssi)
     return now + XB_JITTER_MIN_MS + graded + jitter;
 }
 
-static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
-                          uint32_t now)
+/* Queue [wire]. [d] and [c] are the gate's verdict and context on a bearer
+ * under QoS.md, NULL otherwise. False when it was not queued. */
+static bool xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
+                          uint32_t now, const xq_decision_t *d,
+                          const xq_ctx_t *c)
 {
     uint32_t due = xb_due_ms(b, now, b->last_rssi_id[0] &&
                              strcmp(b->last_rssi_id, id) == 0
                                  ? b->last_rssi : 0);
     bool prio = xb_is_priority(wire, len);
+    xb_qmeta_t m;
+    bool qos = b->qos && d && c;
 
     int slot = -1;
-    for (int i = 0; i < XB_QUEUE_MAX; i++) {
+    if (qos) {
+        xb_qos_meta(b->qos, wire, len, d->cls, c, &m);
+        prio = d->cls == XQ_LIFE;
+        /* The gate records a repeat only when a packet goes out, so two
+         * copies heard before the first airs would both pass it: one
+         * periodic packet per author and type in the queue (the Dart
+         * harness caught an identity aired twice a second apart). */
+        for (int i = 0; m.ptype && i < XB_QUEUE_MAX; i++) {
+            const xb_queued_t *x = &b->queue[i];
+            if (!x->used || x->ptype != m.ptype || x->author != m.author) continue;
+            if (m.ptype == 3 && x->k != m.k) continue;
+            xq_revoke(b->qos, d->cls, XQ_REPEAT);
+            return false;
+        }
+        for (int i = 0; i < XB_QUEUE_MAX; i++)
+            if (!b->queue[i].used) { slot = i; break; }
+        if (slot < 0) {
+            slot = xb_qos_victim(b, &m);
+            if (slot < 0) {
+                xq_revoke(b->qos, d->cls, XQ_EVICTED);
+                XB_LOGW("%s: queue full of better traffic -- refusing %s",
+                        b->ops.name ? b->ops.name : "?", id);
+                return false;
+            }
+            xq_count_shed(b->qos, (xq_class_t)b->queue[slot].cls, XQ_EVICTED);
+            XB_LOGW("%s: queue full -- %s gives way to %s",
+                    b->ops.name ? b->ops.name : "?", b->queue[slot].id, id);
+        }
+    }
+    for (int i = 0; slot < 0 && i < XB_QUEUE_MAX; i++) {
         if (!b->queue[i].used) { slot = i; break; }
     }
     if (slot < 0) {
@@ -381,7 +607,7 @@ static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
         if (!prio && b->queue[slot].prio) {
             XB_LOGW("%s: re-air queue full of priority traffic — refusing %s",
                     b->ops.name ? b->ops.name : "?", id);
-            return;
+            return false;
         }
         XB_LOGW("%s: re-air queue full — dropping %s for %s",
                 b->ops.name ? b->ops.name : "?", b->queue[slot].id, id);
@@ -397,6 +623,17 @@ static void xb_queue_push(xb_t *b, const char *wire, int len, const char *id,
     b->queue[slot].prio = prio ? 1 : 0;
     b->queue[slot].own = 0;
     b->queue[slot].why = XB_WAIT_JITTER;
+    if (qos) {
+        b->queue[slot].cls = m.cls;
+        b->queue[slot].rank = m.rank;
+        b->queue[slot].urg = m.urg;
+        b->queue[slot].ptype = m.ptype;
+        b->queue[slot].author = m.author;
+        b->queue[slot].ts_s = m.ts_s;
+        b->queue[slot].expires_ms = m.expires_ms;
+        b->queue[slot].k = m.k;
+    }
+    return true;
 }
 
 /* ── Offering a packet from another bearer ──────────────────────────────── */
@@ -469,7 +706,16 @@ static void xb_queue_relay(xb_t *b, const char *wire, int len, bool same_medium)
     int n = xprs_append_via(wire, len, b->call, out, (int)sizeof out);
     if (n <= 0) return;
 
-    xb_queue_push(b, out, n, id, now);
+    if (b->qos) {
+        /* QoS.md 4.4/4.5: whether this bearer carries it at all. */
+        xq_ctx_t c;
+        xb_qos_ctx(b, wire, len, now, &c);
+        xq_decision_t d = xq_admit(b->qos, wire, len, id, &c, true);
+        if (d.shed != XQ_OK) return;
+        xb_queue_push(b, out, n, id, now, &d, &c);
+        return;
+    }
+    xb_queue_push(b, out, n, id, now, NULL, NULL);
 }
 
 void xb_offer(xb_t *b, const char *wire, int len)
@@ -500,7 +746,18 @@ void xb_echo(xb_t *b, const char *wire, int len)
      * whole point. The wait is the plain one -- an echo is nobody's race.
      * And NEVER priority, whatever the wire says: an echoed sos on a timer
      * must not draw on the emergency reserve. */
-    xb_queue_push(b, wire, len, id, now);
+    if (b->qos) {
+        /* A second chance is still a repeat: on a metered bearer the gate
+         * refuses it within half an hour unless it is ours (4.4). */
+        xq_ctx_t c;
+        xb_qos_ctx(b, wire, len, now, &c);
+        xq_decision_t d = xq_admit(b->qos, wire, len, id, &c, true);
+        if (d.shed != XQ_OK) return;
+        if (d.cls == XQ_LIFE) d.cls = XQ_CONV;   /* never the sos reserve */
+        xb_queue_push(b, wire, len, id, now, &d, &c);
+        return;
+    }
+    xb_queue_push(b, wire, len, id, now, NULL, NULL);
     for (int i = 0; i < XB_QUEUE_MAX; i++)
         if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0)
             b->queue[i].prio = 0;
@@ -538,6 +795,8 @@ void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi)
 
     uint32_t now = b->ops.now_ms();
     if (peer) xb_peer_touch(b, peer, now);
+    /* A packet heard is evidence of the time, carried or not (4.4). */
+    if (b->qos) xq_note(b->qos, wire, len, now);
     b->rx_count++;
     b->last_ms = now;
     /* Kept for the re-air wait, which is decided a few calls further down
@@ -589,6 +848,62 @@ void xb_on_wire(xb_t *b, const char *wire, int len, uint64_t peer, int rssi)
 
 /* ── Our own packets ────────────────────────────────────────────────────── */
 
+/* xb_send_ex on a bearer under QoS.md. What this station says passes the
+ * same gate as everything else -- scope, and its own beacon's repeat
+ * interval -- and then goes now if its tier of the hour allows (the owner
+ * to 98%, an sos to all of it), else waits at the front of the queue. A
+ * packet handed here that is not this station's (a Meshtastic text the
+ * bridge translated) is third-party traffic and is treated as such. */
+static xb_send_t xb_send_qos(xb_t *b, const char *wire, int len,
+                             const char *id, uint32_t now, uint32_t air_ms)
+{
+    xq_ctx_t c;
+    xb_qos_ctx(b, wire, len, now, &c);
+    xq_decision_t d = xq_admit(b->qos, wire, len, id, &c, true);
+    if (d.shed != XQ_OK) {
+        XB_LOGI("%s: %s not sent -- %s", b->ops.name ? b->ops.name : "?",
+                id ? id : "?", xq_shed_name(d.shed));
+        return XB_REFUSED;
+    }
+    if (b->duty && b->duty->dwell_ms && air_ms > b->duty->dwell_ms) {
+        xq_revoke(b->qos, d.cls, XQ_BUDGET);
+        return XB_REFUSED;
+    }
+    int fl = 0;
+    const char *f = xq_field(wire, len, "f", &fl);
+    uint32_t author = d.cls >= XQ_CONV && f ? xq_call_hash(f, fl) : 0;
+    if (xq_may_air(b->qos, d.cls, author, air_ms, &c) != XQ_OK) {
+        if (!id) { xq_revoke(b->qos, d.cls, XQ_BUDGET); return XB_REFUSED; }
+        for (int i = 0; i < XB_QUEUE_MAX; i++)
+            if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0)
+                return XB_QUEUED;
+        if (!xb_queue_push(b, wire, len, id, now, &d, &c)) return XB_REFUSED;
+        for (int i = 0; i < XB_QUEUE_MAX; i++)
+            if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0) {
+                b->queue[i].due_ms = now;
+                b->queue[i].own = d.cls == XQ_OWNER;
+                b->queue[i].why = XB_WAIT_DUTY;
+            }
+        if (b->duty) b->duty->deferred++;
+        return XB_QUEUED;
+    }
+    XB_LOCK(b);
+    if (id) xb_ring_add(b->aired, &b->aired_pos, id, now);
+    bool ok = b->ops.air(b->ops.ctx, wire, len);
+    xb_duty_charge(b->duty, air_ms);
+    xq_aired(b->qos, wire, len, id, d.cls, author, air_ms,
+             b->duty ? b->duty->spent_ms : 0, c.budget_ms, now);
+    uint32_t after = b->ops.now_ms();
+    if (ok) {
+        b->tx_count++;
+        b->last_ms = after;
+    }
+    b->free_at_ms = ((int32_t)(b->free_at_ms - after) > 0 ? b->free_at_ms
+                                                          : after) + b->pace_ms;
+    XB_UNLOCK(b);
+    return ok ? XB_AIRED : XB_REFUSED;
+}
+
 xb_send_t xb_send_ex(xb_t *b, const char *wire, int len)
 {
     if (!b || !b->active || !wire || len <= 0 || len > XB_WIRE_MAX)
@@ -600,6 +915,8 @@ xb_send_t xb_send_ex(xb_t *b, const char *wire, int len)
     bool have_id = xprs_id_of(wire, len, id);   /* a SHA-256: outside the lock */
     bool prio = xb_is_priority(wire, len);
     uint32_t air_ms = xb_air_cost(b, len);
+
+    if (b->qos) return xb_send_qos(b, wire, len, have_id ? id : NULL, now, air_ms);
 
     if (b->duty) {
         xb_duty_roll(b->duty, now);
@@ -618,7 +935,7 @@ xb_send_t xb_send_ex(xb_t *b, const char *wire, int len)
             for (int i = 0; i < XB_QUEUE_MAX; i++)
                 if (!b->queue[i].used) { free_slot = i; break; }
             if (free_slot < 0 && !prio) return XB_REFUSED;
-            xb_queue_push(b, wire, len, id, now);
+            xb_queue_push(b, wire, len, id, now, NULL, NULL);
             for (int i = 0; i < XB_QUEUE_MAX; i++)
                 if (b->queue[i].used && strcmp(b->queue[i].id, id) == 0) {
                     b->queue[i].due_ms = now;
@@ -703,10 +1020,29 @@ bool xb_spend(xb_t *b, uint32_t air_ms, bool prio)
     uint32_t now = b->ops.now_ms();
     xb_duty_roll(b->duty, now);
     if (b->duty->dwell_ms && air_ms > b->duty->dwell_ms) return false;
+    if (b->qos) {
+        /* A frame that is not an XPRS packet: an sos-grade one spends as
+         * life, anything else as third-party conversation -- the reserve,
+         * the pace -- with no author to share by. */
+        xq_class_t cls = prio ? XQ_LIFE : XQ_CONV;
+        xq_ctx_t c;
+        xb_qos_ctx(b, NULL, 0, now, &c);
+        if (xq_may_air(b->qos, cls, 0, air_ms, &c) != XQ_OK) return false;
+        xb_duty_charge(b->duty, air_ms);
+        xq_aired(b->qos, NULL, 0, NULL, cls, 0, air_ms, b->duty->spent_ms,
+                 b->duty->budget_ms, now);
+        b->last_ms = now;
+        return true;
+    }
     if (!xb_afford(b->duty, air_ms, prio)) return false;
     xb_duty_charge(b->duty, air_ms);
     b->last_ms = now;
     return true;
+}
+
+void xb_set_qos(xb_t *b, xq_t *q)
+{
+    if (b) b->qos = q;
 }
 
 void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out)

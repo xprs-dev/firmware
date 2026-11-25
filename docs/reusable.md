@@ -60,6 +60,19 @@ reuse potential.
   cancel, the hop budget, the beacon cadence, the duty ledger. A bearer is just
   a radio + a `xw_port`-style ops table; everything above the complete packet
   is here. `xprs_bearer_now/_lan/_ble/_lora` all wrap it.
+- **`xb_qos` (`xq_*`, `xb_set_qos`)** — `common/xprs_bearer/xb_qos.c`, spec
+  `QoS.md`; the Dart twin is core's `xprs_qos.dart`, rule for rule. What a
+  constrained bearer carries and in what order: admission classes L0-L6
+  (scope, repeats per author and type, reached on a cheaper bearer, a
+  transaction for nobody heard here, aired in 30 min, old news), the hour's
+  three tiers (third parties 90%, owner 98%, sos 100%), the six-minute pace
+  and the fair share, expiry and eviction by class. Fixed memory (`xq_t`
+  ~1.7 KB, caller-owned), host tests `test_xbqos_host.sh` and the replay
+  harness `test_xbqos_replay_host.sh` (the bench trace, QoS.md 8). Attach it
+  to any metered bearer with `xq_init` + `xb_set_qos`; the station answers
+  who is heard where through `xq_hooks_t` (`nhr_qos_hooks` on nRF52,
+  `xst_heard_direct` on ESP32). Do not add per-board LoRa filters: add a rule
+  to QoS.md and here.
 - **`xprs_codec` (`xprs_*`)** — the 250-byte text wire, the §5 identifier
   (sig/via removed), `xprs_looks_like`, `xprs_append_via`. One grammar, every
   client (firmware, hotspot page, phone app).
@@ -428,11 +441,11 @@ reuse potential.
   board that wants the full bridge copies this section.
 - **`nrf_hears.h`** — `common/xprs_nrf52/nrf_hears.cpp`. Who an nRF52 station
   hears directly, per link (`nhr_touch`, `nhr_on`, `nhr_render` for the
-  beacon's `hears:`, `nhr_find_ble`), and `nhr_to_lora()`: what Bluetooth or a
-  digipeat may put on a shared LoRa channel (lr_worth, scope, nothing for a
-  callsign heard on BLE, commands only for one heard on LoRa, identities once
-  in 3 h, no old news, nothing twice in 30 min). Lifted from the T1000-E; the
-  P1-Pro uses it on Meshtastic's channel. A third nRF52 board starts here.
+  beacon's `hears:`, `nhr_find_ble`), `nhr_to_lora()`: what may be offered to
+  a shared LoRa channel at all (lr_worth and scope), and `nhr_qos_hooks()`:
+  the station's answers for the LoRa bearer's QoS gate (`xb_qos`), which
+  decides the rest. Lifted from the T1000-E; the P1-Pro uses it on
+  Meshtastic's channel. A third nRF52 board starts here.
 - **`xauth_hint_note()`** — `common/xprs_auth/xauth_hint.c`, platform-free, host
   test `test_xauth_hint_host.sh`. The neighbours' clock hint (XPRS.md 11.10):
   one row per author, samples carried forward by the time since heard, the

@@ -38,6 +38,7 @@
 #include <stdbool.h>
 
 #include "xprs.h"
+#include "xb_qos.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -75,8 +76,13 @@ extern "C" {
 #define XB_STALE_MS      120000u
 #define XB_STALE_PRIO_MS 600000u
 
-/* The duty ledger's rolling hour: sixty one-minute buckets. */
-#define XB_DUTY_BUCKETS   60
+/* The duty ledger's rolling hour: one-minute buckets, SIXTY-ONE of them.
+ * A bucket is dropped whole, so with sixty a transmission made at the end
+ * of a minute was forgotten up to 59 s before its hour was over, and the
+ * hour could hold more than the budget (QoS.md 4.1, criterion 1). With
+ * sixty-one every transmission is counted for at least a full hour: the
+ * ledger can over-count by a minute's worth, never under-count. */
+#define XB_DUTY_BUCKETS   61
 #define XB_DUTY_BUCKET_MS 60000u
 
 /**
@@ -141,6 +147,12 @@ typedef struct {
     uint8_t  prio;      /* 1 = t:sos, t:warning or urg:urgent */
     uint8_t  own;       /* ours, deferred by the budget: never stales */
     uint8_t  why;       /* xb_wait_t, the last reason it sat */
+    /* QoS.md, filled only on a bearer with xb_set_qos: the class, 4.3's
+     * rank (0 sos, 1 owner, 2 first:, 3 the rest), the urg: rank, ts: in
+     * UTC seconds, the third-party author, 4.8's deadline, and what 4.5's
+     * one-per-author-and-type in the queue compares. */
+    uint8_t  cls, rank, urg, ptype;
+    uint32_t author, ts_s, expires_ms, k;
 } xb_queued_t;
 
 /** How long [len] bytes take on this medium, in ms. NULL is unmetered, and
@@ -155,7 +167,7 @@ typedef uint32_t (*xb_airtime_cb_t)(int len, void *ctx);
  * ring on a board whose whole free heap is ten kilobytes.
  */
 typedef struct {
-    uint16_t bucket[XB_DUTY_BUCKETS]; /* ms aired in each of the last 60 min */
+    uint16_t bucket[XB_DUTY_BUCKETS]; /* ms aired, per minute, the last hour */
     uint32_t head_ms;                 /* now_ms at the start of bucket[head] */
     uint32_t spent_ms;                /* running sum: the check is O(1) */
     uint32_t budget_ms;               /* per rolling hour; 0 = ledger off */
@@ -224,6 +236,7 @@ typedef struct {
     uint32_t     paced;         /* packets this held back at least once */
     uint32_t     declined;      /* 13.2.2: relays we sat out, not being named */
     xb_duty_t   *duty;          /* NULL = unmetered (LAN, ESP-NOW, BLE) */
+    xq_t        *qos;           /* NULL = no QoS.md gate (xb_set_qos) */
 } xb_t;
 
 /** Bring a bearer up. @p call is this station, used for `via:` when relaying. */
@@ -319,6 +332,21 @@ void xb_set_duty_keep(xb_t *b, xb_duty_t *d, xb_airtime_cb_t airtime,
                       uint32_t dwell_ms);
 
 void xb_duty_report(const xb_t *b, uint32_t now_ms, xb_duty_report_t *out);
+
+/**
+ * Put this bearer under QoS.md (xb_qos.h): admission at every door
+ * (xb_offer, xb_digipeat, xb_echo, xb_send_ex, xb_spend), and the pump airs
+ * in 4.3's order against the reserve, the six-minute pace and the fair
+ * share instead of the duty ledger's two tiers. The hour is still the duty
+ * ledger's, so set that too on a metered bearer; without one only scope,
+ * repeats and "reached already" apply. [q] is caller-owned (about 1.7 KB)
+ * and initialised by the caller with xq_init; NULL takes the gate off.
+ */
+void xb_set_qos(xb_t *b, xq_t *q);
+
+/** 4.3's order between two queued packets under QoS: negative when [a]
+ *  goes first. For a harness that checks the pump kept it. */
+int xb_qos_order(const xb_queued_t *a, const xb_queued_t *b);
 
 /**
  * Spend [air_ms] of this bearer's hour on something that is NOT an XPRS

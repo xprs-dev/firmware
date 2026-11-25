@@ -167,6 +167,9 @@ static SPIClass        s_spi(NRF_SPIM2, T1_LR_MISO, T1_LR_SCK, T1_LR_MOSI);
 static LR1110          s_radio = new Module(T1_LR_NSS, T1_LR_IRQ, T1_LR_RESET,
                                             T1_LR_BUSY, s_spi);
 static xb_t            s_lora;
+/* QoS.md on LoRa (xb_qos.h): what the channel carries, in what order, on
+ * the duty ledger's hour; nhr_qos_hooks says who is heard where. */
+static xq_t            s_lora_qos;
 static volatile bool   s_rx_pending;
 static bool            s_radio_up;
 static uint32_t        s_heard;
@@ -1238,6 +1241,14 @@ static void console(int c)
                       (unsigned long)s_native_frames, (unsigned long)s_rep[s_net].st.aired,
                       s_det.active ? "sweeping" : "idle", (unsigned long)s_irqs,
                       (unsigned long)s_rx_bad, s_rx_continuous ? "continuous" : "duty");
+        {
+            static char qj[768];
+            xq_json(&s_lora_qos, qj, sizeof qj);
+            /* print, not printf: the core's printf buffer is shorter
+             * than this line and garbled it. */
+            Serial.print("qos: ");
+            Serial.println(qj);
+        }
         break;
     default: break;
     }
@@ -1342,6 +1353,13 @@ static void station_setup(void)
     static xb_duty_t s_lora_duty;
     air_model_for(s_net);
     xb_set_duty(&s_lora, &s_lora_duty, lora_airtime_fn, NULL, 360000u, 6000u, 0u);
+    xq_init(&s_lora_qos, &XQ_PROFILE_LORA, XPRS_REACH_REGIONAL);
+    {
+        xq_hooks_t qh;
+        nhr_qos_hooks(&qh);
+        xq_set_hooks(&s_lora_qos, &qh);
+    }
+    xb_set_qos(&s_lora, &s_lora_qos);
     xb_set_driver(s_radio_up);
 
     xb_init(&s_ble, &k_ble_ops, nst_call());

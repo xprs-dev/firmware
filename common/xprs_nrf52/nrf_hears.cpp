@@ -106,67 +106,27 @@ int nhr_render(char *out, int cap)
     return n;
 }
 
-#define LORA_FRESH_S      1800u
-#define LORA_SENT_RING    24
-#define LORA_SENT_MS      1800000UL
-#define LORA_IDENT_MS     (3 * 3600000UL)
-/* 32 authors: with 8, a bench of sixteen callsigns turned the ring over in
- * minutes and the P1-Pro re-aired the same identity 3-4 times in 13 minutes
- * (2026-11-25) -- 24 of its 27 LoRa frames. */
-#define LORA_IDENT_N      32
-static struct { char call[10]; uint32_t t_ms; } s_lora_ident[LORA_IDENT_N];
-static struct { char id[XB_ID_LEN]; uint32_t t_ms; } s_lora_sent[LORA_SENT_RING];
-static int      s_lora_sent_pos;
-static uint32_t s_newest_ts, s_newest_ts_ms;
-
+/* What a shared LoRa channel may be offered at all: worth LoRa by type
+ * (lr_worth) and not kept to the room by its author (9.11.1). Everything
+ * else that used to be decided here -- reached on Bluetooth already, a
+ * transaction for nobody on LoRa, an identity again too soon, old news,
+ * twice in half an hour -- is QoS.md's, decided by the bearer's gate
+ * (xb_set_qos, fed by nhr_qos_hooks), the same rules on every station. */
 bool nhr_to_lora(const char *wire, int len)
 {
-    if (!lr_worth(wire, len, false) ||
-        !xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_REGIONAL))
-        return false;
-    xprs_t p;
-    if (!xprs_parse(wire, len, &p)) return false;
-    char d[16] = "", ts[24] = "", t[16] = "", f[10] = "";
-    xprs_get_str(&p, "t", t, sizeof t);
-    xprs_get_str(&p, "d", d, sizeof d);
-    if (d[0] && nhr_on(d, true)) return false;
-    if ((!strcmp(t, "command") || !strcmp(t, "result") || !strcmp(t, "request")) &&
-        !(d[0] && nhr_on(d, false)))
-        return false;
-    if (!strcmp(t, "identity") && xprs_get_str(&p, "f", f, sizeof f)) {
-        uint32_t ms = millis();
-        int slot = 0;
-        for (int i = 0; i < LORA_IDENT_N; i++) {
-            if (!strcmp(s_lora_ident[i].call, f)) {
-                if (ms - s_lora_ident[i].t_ms < LORA_IDENT_MS) return false;
-                slot = i;
-                break;
-            }
-            if ((int32_t)(s_lora_ident[i].t_ms - s_lora_ident[slot].t_ms) < 0) slot = i;
-        }
-        snprintf(s_lora_ident[slot].call, sizeof s_lora_ident[slot].call, "%s", f);
-        s_lora_ident[slot].t_ms = ms ? ms : 1;
-    }
-    if (xprs_get_str(&p, "ts", ts, sizeof ts)) {
-        uint32_t tv = nst_ts_to_epoch(ts), ms = millis();
-        if (tv && (!s_newest_ts || (int32_t)(tv - s_newest_ts) > 0 ||
-                   ms - s_newest_ts_ms > NHR_FRESH_MS)) {
-            s_newest_ts = tv;
-            s_newest_ts_ms = ms;
-        }
-        uint32_t now = nst_now();
-        if (!now && s_newest_ts) now = s_newest_ts + (ms - s_newest_ts_ms) / 1000u;
-        if (tv && now && tv + LORA_FRESH_S < now) return false;
-    }
-    char id[XB_ID_LEN];
-    if (!xprs_id_of(wire, len, id)) return false;
-    uint32_t ms = millis();
-    for (int i = 0; i < LORA_SENT_RING; i++)
-        if (s_lora_sent[i].t_ms && strcmp(s_lora_sent[i].id, id) == 0 &&
-            ms - s_lora_sent[i].t_ms < LORA_SENT_MS)
-            return false;
-    snprintf(s_lora_sent[s_lora_sent_pos].id, XB_ID_LEN, "%s", id);
-    s_lora_sent[s_lora_sent_pos].t_ms = ms ? ms : 1;
-    s_lora_sent_pos = (s_lora_sent_pos + 1) % LORA_SENT_RING;
-    return true;
+    return lr_worth(wire, len, false) &&
+           xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_REGIONAL);
+}
+
+static bool q_here(const char *call)    { return nhr_on(call, false); }
+static bool q_cheaper(const char *call) { return nhr_on(call, true); }
+static uint32_t q_epoch(void)           { return nst_now(); }
+
+void nhr_qos_hooks(xq_hooks_t *h)
+{
+    if (!h) return;
+    memset(h, 0, sizeof *h);
+    h->heard_here = q_here;
+    h->reached_cheaper = q_cheaper;
+    h->epoch_s = q_epoch;
 }

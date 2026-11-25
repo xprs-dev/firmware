@@ -229,7 +229,8 @@ static void test_report_explains_the_wait(void)
     CHECK(!prio, "an ordinary relay marked priority");
     xb_duty_report_t r; xb_duty_report(&g_b, g_now, &r);
     CHECK(r.held == 1, "held = %u", r.held);
-    CHECK(r.next_free_ms > 0 && r.next_free_ms <= 3600000u,
+    CHECK(r.next_free_ms > 0 &&
+          r.next_free_ms <= XB_DUTY_BUCKETS * XB_DUTY_BUCKET_MS,
           "next_free_ms = %u", r.next_free_ms);
 }
 

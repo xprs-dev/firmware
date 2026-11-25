@@ -267,6 +267,12 @@ int  xst_chat_peers(const char *self, char out[][XPRS_CALL_LEN], int max);
  * bearer within [in_range_sec]? The chat's green/grey presence dot. */
 bool xst_heard(const char *call, int in_range_sec);
 
+/* Heard DIRECTLY (no relay in between) on [bearer] ("lora", "ble", ...)
+ * within [in_range_sec]: base match, case-insensitive. What QoS.md 4.4 asks
+ * of a constrained bearer -- is the destination here, or reached already on
+ * a cheaper one. Any task. */
+bool xst_heard_direct(const char *call, const char *bearer, int in_range_sec);
+
 /* Series for the stats charts. view 0 = last 24 ten-minute buckets,
  * 1 = last 24 hours, 2 = last 30 days. Returns the point count written
  * (<= max), 0 before NTP has spoken. */

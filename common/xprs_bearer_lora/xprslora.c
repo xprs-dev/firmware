@@ -39,12 +39,29 @@ static const char *TAG = "xprslora";
  * answers ESP_ERR_HTTPD_TASK. */
 static xb_t *s_lora;
 static xb_duty_t s_duty;               /* the ledger; ~150 B of BSS */
+/* QoS.md (xb_qos.h): what the channel carries and in what order, on the
+ * ledger's hour. Heap, with s_lora, for the same reason; the station's
+ * answers (who is heard where, the clock) come by xprslora_set_qos. */
+static xq_t *s_qos;
+static xq_hooks_t s_qos_hooks;
+static xprs_reach_t s_qos_reach = XPRS_REACH_REGIONAL;
+
 static xb_lora_air_t s_air;            /* what one byte costs here */
 static const xprslora_region_t *s_region;
 static uint32_t s_self;                /* our Meshtastic node number */
 static int8_t   s_tx_power = 14;       /* what start() was given */
 static char     s_region_want[12];     /* the region name the operator chose */
 static bool     s_far;                 /* the `far` profile, xprs mode only */
+
+/* The profile follows the ledger's budget, the operator's lora_duty_ms
+ * included: a 1% sub-band gets the longer repeats and no bulk (QoS.md 6).
+ * Called after every change of the ledger's limits. */
+static void lr_qos_refresh(void)
+{
+    if (!s_qos) return;
+    s_qos->p = s_duty.budget_ms && s_duty.budget_ms <= 36000u
+                   ? &XQ_PROFILE_LORA_1PCT : &XQ_PROFILE_LORA;
+}
 /*
  * A frequency the operator set by hand, which outranks the region's.
  *
@@ -745,6 +762,7 @@ static void rotate_tick(void)
          * limit at all while believing itself compliant. */
         xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                          s_region->reserve_ms, s_region->dwell_ms);
+        lr_qos_refresh();
     }
     lr_unlock(NULL);
     if (err != ESP_OK) {
@@ -1088,7 +1106,12 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
     s_mt_mutex = xSemaphoreCreateRecursiveMutex();
     if (!s_mutex || !s_mt_mutex) return ESP_ERR_NO_MEM;
     s_lora = calloc(1, sizeof *s_lora);
-    if (!s_lora) {
+    s_qos = calloc(1, sizeof *s_qos);
+    if (!s_lora || !s_qos) {
+        free(s_lora);
+        free(s_qos);
+        s_lora = NULL;
+        s_qos = NULL;
         vSemaphoreDelete(s_mutex);
         s_mutex = NULL;
         return ESP_ERR_NO_MEM;
@@ -1189,6 +1212,10 @@ esp_err_t xprslora_start(const char *callsign, const xprslora_cfg_t *cfg)
     xb_set_pace(s_lora, s_def->pace_ms);
     xb_set_duty(s_lora, &s_duty, lr_airtime, NULL,
                 s_region->duty_ms, s_region->reserve_ms, s_region->dwell_ms);
+    xq_init(s_qos, &XQ_PROFILE_LORA, s_qos_reach);
+    xq_set_hooks(s_qos, &s_qos_hooks);
+    lr_qos_refresh();
+    xb_set_qos(s_lora, s_qos);
     xb_register_ticked(s_lora);
     if (!xb_has_driver())
         ESP_LOGE(TAG, "no bearer task is pumping -- start the LAN bearer "
@@ -1672,6 +1699,7 @@ esp_err_t xprslora_set_region(const char *name)
     if (err == ESP_OK) {
         xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                     s_region->reserve_ms, s_region->dwell_ms);
+        lr_qos_refresh();
     } else {
         snprintf(s_region_want, sizeof s_region_want, "%s", was);
         s_freq_want = was_freq;
@@ -1716,6 +1744,7 @@ esp_err_t xprslora_set_mode(xprslora_mode_t mode)
         xb_set_pace(s_lora, s_def->pace_ms);
         xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                     s_region->reserve_ms, s_region->dwell_ms);
+        lr_qos_refresh();
     }
     lr_unlock(NULL);
     if (err == ESP_OK) lr_mc_release();
@@ -1900,6 +1929,7 @@ static esp_err_t survey_begin(uint32_t per_mode_s, bool probe)
         s_survey.active = false;
         xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                     s_region->reserve_ms, s_region->dwell_ms);
+        lr_qos_refresh();
         return err;
     }
     if (per_mode_s)
@@ -2101,6 +2131,7 @@ static void survey_tick(void)
     xb_set_pace(s_lora, s_def->pace_ms);
     xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL, s_region->duty_ms,
                 s_region->reserve_ms, s_region->dwell_ms);
+    lr_qos_refresh();
     s_survey.active = false;
     s_survey.done = true;
     /* What the asking cost, charged to the hour now that the ledger the
@@ -2193,6 +2224,25 @@ void xprslora_set_duty(uint32_t budget_ms, uint32_t reserve_ms,
     if (s_lora)
         xb_set_duty_keep(s_lora, &s_duty, lr_airtime, NULL,
                     budget_ms, reserve_ms, dwell_ms);
+    lr_qos_refresh();
+}
+
+void xprslora_set_qos(const xq_hooks_t *hooks, xprs_reach_t reach)
+{
+    if (hooks) s_qos_hooks = *hooks;
+    else memset(&s_qos_hooks, 0, sizeof s_qos_hooks);
+    s_qos_reach = reach;
+    if (s_qos) {
+        xq_set_hooks(s_qos, &s_qos_hooks);
+        s_qos->reach = reach;
+    }
+}
+
+int xprslora_qos_json(char *out, int cap)
+{
+    if (!out || cap <= 0) return 0;
+    out[0] = 0;
+    return s_qos ? xq_json(s_qos, out, cap) : 0;
 }
 
 void xprslora_duty(xb_duty_report_t *out)

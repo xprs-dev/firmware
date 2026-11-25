@@ -157,6 +157,18 @@ void xprslora_duty(xb_duty_report_t *out)
 {
 }
 
+void xprslora_set_qos(const xq_hooks_t *hooks, xprs_reach_t reach)
+{
+    (void)hooks;
+    (void)reach;
+}
+
+int xprslora_qos_json(char *out, int cap)
+{
+    if (out && cap > 0) out[0] = 0;
+    return 0;
+}
+
 esp_err_t xprslora_set_freq(uint32_t hz)
 {
     return ESP_ERR_NOT_SUPPORTED;

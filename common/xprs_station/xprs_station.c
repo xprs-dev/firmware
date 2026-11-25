@@ -920,6 +920,30 @@ bool xst_heard(const char *call, int in_range_sec)
     return fresh;
 }
 
+bool xst_heard_direct(const char *call, const char *bearer, int in_range_sec)
+{
+    if (!call || !call[0] || !bearer) return false;
+    chat_ensure();
+    char want[XPRS_CALL_LEN];
+    xst_base(call, want, sizeof want);
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    bool fresh = false;
+    LOCK();
+    for (int i = 0; i < XST_SEEN_MAX; i++) {
+        if (!s_seen[i].call[0] || s_seen[i].hops) continue;
+        if (strcmp(s_seen[i].bearer, bearer) != 0) continue;
+        char b[XPRS_CALL_LEN];
+        xst_base(s_seen[i].call, b, sizeof b);
+        if (strcasecmp(b, want) != 0) continue;
+        if ((now - s_seen[i].last_ms) / 1000 < (uint32_t)in_range_sec) {
+            fresh = true;
+            break;
+        }
+    }
+    UNLOCK();
+    return fresh;
+}
+
 int xst_chat(xst_chat_t *out, int max)
 {
     chat_ensure();

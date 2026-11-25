@@ -226,6 +226,9 @@ static SPIClass       &s_spi = SPI;
 static SX1262          s_radio = new Module(P1_LORA_CS, P1_LORA_DIO1,
                                             P1_LORA_RST, P1_LORA_BUSY, s_spi);
 static xb_t            s_lora;
+/* QoS.md on LoRa (xb_qos.h): what the channel carries, in what order, on
+ * the duty ledger's hour; nhr_qos_hooks says who is heard where. */
+static xq_t            s_lora_qos;
 static volatile bool   s_rx_pending;
 static bool            s_radio_up;
 static uint32_t        s_heard;
@@ -1067,6 +1070,12 @@ static void console(int c)
                           (unsigned)(STATION_STACK_WORDS * 4),
                           (unsigned long)(dr.spent_ms / 1000), (unsigned long)(dr.budget_ms / 1000),
                           (unsigned long)dr.held);
+            static char qj[768];
+            xq_json(&s_lora_qos, qj, sizeof qj);
+            /* print, not printf: the core's printf buffer is shorter
+             * than this line and garbled it. */
+            Serial.print("qos: ");
+            Serial.println(qj);
         }
         break;
     default: break;
@@ -1262,6 +1271,13 @@ static void station_setup(void)
         return t; } };
     xb_set_duty(&s_lora, &s_lora_duty, air_fn::ms, NULL,
                 360000u, 6000u, 0u);
+    xq_init(&s_lora_qos, &XQ_PROFILE_LORA, XPRS_REACH_REGIONAL);
+    {
+        xq_hooks_t qh;
+        nhr_qos_hooks(&qh);
+        xq_set_hooks(&s_lora_qos, &qh);
+    }
+    xb_set_qos(&s_lora, &s_lora_qos);
     xb_set_driver(s_radio_up);
 
     s_self_node = mt_node_of_call(nst_call(), (int)strlen(nst_call()));

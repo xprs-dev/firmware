@@ -15,6 +15,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "xb_qos.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -47,25 +49,17 @@ const char *nhr_find_ble(uint32_t ms, bool (*want)(const char *call));
 int  nhr_render(char *out, int cap);
 
 /*
- * What Bluetooth (or a LoRa digipeat) may put on a shared LoRa channel. A
- * station in a room full of stations hears their whole conversation, most
- * of which is no business of a shared, slow channel. In this order:
- *  - only what is worth LoRa (lr_worth) and never what its author kept to
- *    the room (scope:local, XPRS.md 9.11.1);
- *  - not a packet for somebody heard directly on Bluetooth: it reached them
- *    already, the way it reached us;
- *  - a command, a result or a request only for somebody heard directly on
- *    LoRa: a phone here asking a station only LoRa reaches. The rest is
- *    stations keeping their archives in step on media of their own;
- *  - somebody's identity once in three hours: a phone re-signs it every
- *    half hour, and the keys in it do not change;
- *  - not old news: a ts: more than half an hour behind now (or, with no
- *    clock, behind the newest ts: heard lately) is a carousel or a history
- *    replay;
- *  - not twice in half an hour.
- * True: offer it to LoRa (and it is remembered as aired).
+ * What Bluetooth (or a LoRa digipeat) may offer a shared LoRa channel: what
+ * is worth LoRa (lr_worth) and not scope:local. The rest -- reached on
+ * Bluetooth already, a transaction for nobody on LoRa, repeats, old news,
+ * twice in half an hour, the hour's budget -- is the LoRa bearer's QoS.md
+ * gate (xb_qos.h), fed by nhr_qos_hooks.
  */
 bool nhr_to_lora(const char *wire, int len);
+
+/* The station's answers for the LoRa bearer's QoS gate: heard directly on
+ * LoRa (heard_here), on Bluetooth (reached_cheaper), and the clock. */
+void nhr_qos_hooks(xq_hooks_t *h);
 
 #ifdef __cplusplus
 }
