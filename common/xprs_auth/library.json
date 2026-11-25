@@ -6,7 +6,7 @@
   "platforms": "*",
   "dependencies": {"xprs_codec": "*", "xprs_id": "*", "xprs_sig": "*", "xprs_nostr": "*"},
   "build": {
-    "srcFilter": ["+<xprs_auth.c>"],
+    "srcFilter": ["+<xprs_auth.c>", "+<xauth_hint.c>"],
     "flags": ["-I."]
   }
 }

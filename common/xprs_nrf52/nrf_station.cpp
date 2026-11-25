@@ -296,6 +296,163 @@ void nst_clock_learn(const xprs_t *p)
     nst_clock_set(nst_ts_to_epoch(ts), from);
 }
 
+/* ── The neighbours' hint (nrf_station.h) ─────────────────────────────── */
+#define HINT_KEYS     24        /* ~1.2 KB: a bench hears twenty callsigns */
+#define HINT_RECHECK  30000u    /* an author counted this recently is not verified again */
+/* Keys from identities, least recently USED out first: a phone announcing
+ * every half hour must not push out the station whose results date us
+ * (measured: with a ring of 12, X3SEP2's key was evicted between its
+ * identity and its next result, every time). */
+static struct { char call[16]; uint8_t pk[32]; uint32_t used_ms; } s_hint_key[HINT_KEYS];
+static xauth_hint_t s_hint[XAUTH_HINT_N];
+static int8_t       s_hint_on = -1;     /* -1: config not read yet */
+static uint32_t     s_hint_verify_ms;   /* the slowest verification, for '?' */
+
+static bool hint_key(const char *call, uint8_t out[32])
+{
+    for (int i = 0; i < HINT_KEYS; i++)
+        if (s_hint_key[i].call[0] && strcmp(s_hint_key[i].call, call) == 0) {
+            memcpy(out, s_hint_key[i].pk, 32);
+            s_hint_key[i].used_ms = millis() | 1;
+            return true;
+        }
+    return false;
+}
+
+static void hint_key_put(const char *call, const uint8_t pk[32])
+{
+    int slot = -1, lru = 0;
+    for (int i = 0; i < HINT_KEYS && slot < 0; i++) {
+        if (!s_hint_key[i].call[0] || strcmp(s_hint_key[i].call, call) == 0) slot = i;
+        else if ((int32_t)(s_hint_key[i].used_ms - s_hint_key[lru].used_ms) < 0) lru = i;
+    }
+    if (slot < 0) slot = lru;
+    snprintf(s_hint_key[slot].call, sizeof s_hint_key[slot].call, "%s", call);
+    memcpy(s_hint_key[slot].pk, pk, 32);
+    s_hint_key[slot].used_ms = millis() | 1;
+}
+
+static bool hint_verify(const xprs_t *p, const uint8_t pk[32])
+{
+    uint32_t t0 = millis();
+    bool ok = xprsid_verify(p, pk);
+    uint32_t took = millis() - t0;
+    if (took > s_hint_verify_ms) s_hint_verify_ms = took;
+    return ok;
+}
+
+#define HINT_ASK_EACH  600000u  /* the same author asked again after ten minutes */
+#define HINT_ASK_GAP   20000u   /* and nobody asked twice in 20 s */
+static struct { char call[16]; uint32_t ms; } s_hint_ask[8];
+static uint32_t s_hint_ask_last;
+
+#define HINT_ANSWER_MS 30000u   /* an identity this soon after our ask answers it */
+
+static bool hint_asked_within(const char *from, uint32_t ms)
+{
+    uint32_t now = millis();
+    for (int i = 0; i < 8; i++)
+        if (s_hint_ask[i].ms && !strcmp(s_hint_ask[i].call, from) && now - s_hint_ask[i].ms < ms)
+            return true;
+    return false;
+}
+
+static bool hint_ask(const char *from, char ask[16])
+{
+    uint32_t now = millis();
+    if (s_hint_ask_last && now - s_hint_ask_last < HINT_ASK_GAP) return false;
+    int slot = 0;
+    for (int i = 0; i < 8; i++) {
+        if (!strcmp(s_hint_ask[i].call, from)) {
+            if (now - s_hint_ask[i].ms < HINT_ASK_EACH) return false;
+            slot = i;
+            break;
+        }
+        if ((int32_t)(s_hint_ask[i].ms - s_hint_ask[slot].ms) < 0) slot = i;
+    }
+    snprintf(s_hint_ask[slot].call, sizeof s_hint_ask[slot].call, "%s", from);
+    s_hint_ask[slot].ms = now ? now : 1;
+    s_hint_ask_last = now ? now : 1;
+    snprintf(ask, 16, "%s", from);
+    return true;
+}
+
+bool nst_clock_hint(const xprs_t *p, char ask[16])
+{
+    if (!p || nst_now()) return false;
+    if (s_hint_on < 0) {
+        const char *v = xcfg_get("clock_hint", "0");
+        s_hint_on = (!strcmp(v, "1") || !strcmp(v, "true") || !strcmp(v, "on") ||
+                     !strcmp(v, "yes")) ? 1 : 0;
+    }
+    if (!s_hint_on) return false;
+    char from[16] = "", t[16] = "", ts[24] = "";
+    if (!xprs_get_str(p, "f", from, sizeof from) || !from[0] || strcmp(from, s_call) == 0) return false;
+    if (!xprs_get(p, "sig", NULL)) return false;
+    /* A signed packet with no ts: (an observation, the commonest thing a
+     * neighbour says) cannot date us, but its author can be asked. */
+    if (!xprs_get_str(p, "ts", ts, sizeof ts) || strlen(ts) != 19)
+        return xprs_get(p, "via", NULL) == NULL && hint_ask(from, ask);
+    uint32_t epoch = nst_ts_to_epoch(ts), now = millis();
+    if (!epoch) return false;
+    for (int i = 0; i < XAUTH_HINT_N; i++)
+        if (s_hint[i].call[0] && !strcmp(s_hint[i].call, from) && now - s_hint[i].ms < HINT_RECHECK)
+            return false;
+    /* Only what a station says about NOW dates anything. Measured on the
+     * bench (2026-11-25, 6,000 packets heard by the T-Deck): heard direct, a
+     * result arrives 1 s after its ts:, a command 18 s, a receipt 34 s; an
+     * identity ~5 min (a carousel re-says it), a message hours, and an
+     * observation carries no ts: at all. The first hint, taken from
+     * everything that verified, was 5 min 21 s slow.
+     *
+     * And what a station signs because WE asked is now by construction: an
+     * identity arriving within HINT_ANSWER_MS of our q:identity to its author
+     * was signed for us (X1R5J9's answer was 0 s old). Waiting for direct
+     * results took 5 minutes on one boot and did not finish in 10 on the
+     * next, so with no clock the station asks those it hears directly, one
+     * every 20 s, each once in ten minutes, and three answers are a clock. */
+    xprs_get_str(p, "t", t, sizeof t);
+    bool direct = xprs_get(p, "via", NULL) == NULL;
+    bool is_ident = !strcmp(t, "identity");
+    bool answer = is_ident && hint_asked_within(from, HINT_ANSWER_MS);
+    bool live = answer ||
+                (direct && (!strcmp(t, "result") || !strcmp(t, "command") || !strcmp(t, "receipt")));
+    uint8_t pk[32];
+    bool have = hint_key(from, pk);
+    if (is_ident) {
+        /* Its own key, which the callsign must derive from (section 3). */
+        char npub[80] = "", hrp[8] = "";
+        uint8_t buf[64];
+        size_t n = sizeof buf;
+        if (!xprs_get_str(p, "k", npub, sizeof npub) || !xauth_call_matches_npub(from, npub) ||
+            bech32_decode(npub, hrp, buf, &n) != ESP_OK || n != 32 || strcmp(hrp, "npub") != 0)
+            return false;
+        if (!answer && have && !memcmp(pk, buf, 32)) return false;   /* known, and not ours to count */
+        if (!hint_verify(p, buf)) return false;
+        hint_key_put(from, buf);
+        if (!answer) return false;
+    } else {
+        if (!live || !have) return direct && hint_ask(from, ask);
+        if (!hint_verify(p, pk)) return false;
+    }
+    uint32_t med = xauth_hint_note(s_hint, from, epoch, now);
+    if (med && nst_clock_set(med, "neighbours that agreed"))
+        Serial.printf("clock: hint %lu UTC (slowest check %lu ms)\n",
+                      (unsigned long)med, (unsigned long)s_hint_verify_ms);
+    return false;
+}
+
+void nst_hint_status(int *keys, int *samples)
+{
+    int k = 0, n = 0;
+    uint32_t now = millis();
+    for (int i = 0; i < HINT_KEYS; i++) if (s_hint_key[i].call[0]) k++;
+    for (int i = 0; i < XAUTH_HINT_N; i++)
+        if (s_hint[i].call[0] && now - s_hint[i].ms <= 600000u) n++;
+    if (keys) *keys = k;
+    if (samples) *samples = n;
+}
+
 int nst_time_field(char *out, int cap)
 {
     uint32_t now = nst_now();

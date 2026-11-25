@@ -82,10 +82,27 @@ XPRS <-> Meshtastic bridge of `common/xprs_meshtastic` -- with XPRS carried in
 Meshtastic frames, as on every ESP32 station. Only what somebody waits for
 goes on LoRa (`lr_worth`); presence stays on Bluetooth. Measured against the
 T-Deck `X3SEP2` in `meshtastic` mode the same day: XPRS both ways at -19 /
--23 dBm, each side decoding and repeating the other's NodeInfo. Still open:
-a stock Meshtastic node on the bench, and a clock -- the bridge mirrors
-nothing onto Meshtastic without one, and this board only learns the time
-from an owner's signed command. The rest of this section describes the
+-23 dBm, each side decoding and repeating the other's NodeInfo. Against a
+stock Meshtastic 2.7.26 Heltec V3 (`!02ee0510`) the same day: the Heltec
+lists `X3S7S8` with its key; its LongFast text is translated to XPRS here
+(`f:MT02EE0510 scope:regional`) and repeated; its PKI direct message to
+`!e394fb46` is opened here, acknowledged, and delivered as `d:X3S7S8` --
+which needed AES-256 in software (`xlc_aes_sw.c`): the nRF52's ECB block is
+AES-128 only, and before it every DM here logged "does not open". Still
+open: a clock -- the bridge mirrors nothing onto Meshtastic without one, and
+this board has no RTC. Since the same day it can take the time its
+neighbours agree on (`cfg set clock_hint 1`, the owner's choice of XPRS.md
+11.10; `nst_clock_hint`): keys from identities that verify under the key
+they carry, `q:identity` asked of stations it hears directly (the answer is
+signed for it, so it is both a key and a reading of now), and the median of
+three. On the bench it had a clock 2-3 s from true UTC about a minute after
+boot, and then bridged on its own -- the
+T-Deck's bridge off -- a Regional message from the web chat to the Heltec
+and a sealed DM the Heltec acknowledged. What Bluetooth hands to LoRa goes
+through the T1000-E's gate (`nrf_hears.h`): with lr_worth alone, 117 of 195
+frames in 43 minutes were other stations' history commands (~380 s of
+LongFast an hour, over the 360 s budget); with the gate, 33 s in the first
+twelve minutes after boot, mostly each neighbour's identity once. The rest of this section describes the
 `xprs` channel the board ran before.
 
 A headless LoRa + BLE5 station, bridging between the two and digipeating

@@ -47,6 +47,12 @@ bool xlc_aes_encrypt_block(const uint8_t *key, int key_len,
 bool xlc_aes_decrypt_block(const uint8_t *key, int key_len,
                            const uint8_t in[16], uint8_t out[16]);
 
+/** AES encrypt in software (xlc_aes_sw.c), [key_len] 16, 24 or 32: for a
+ *  target whose AES hardware lacks a key length (the nRF52's ECB is
+ *  AES-128, Meshtastic DMs are AES-256), called from its seam above. */
+bool xlc_aes_sw_encrypt_block(const uint8_t *key, int key_len,
+                              const uint8_t in[16], uint8_t out[16]);
+
 /** SHA-512 of one buffer. Filled by xlc_sha512_idf.c (mbedtls) or
  *  xlc_sha512_sw.c (the software one, for a target without it). Ed25519
  *  needs it; nothing else here does. */

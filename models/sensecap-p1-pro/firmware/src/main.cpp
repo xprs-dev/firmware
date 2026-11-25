@@ -103,6 +103,9 @@ extern "C" {
 #include "update.h"
 #include "nrf_station.h"
 #include "nrf_flash.h"
+#include "nrf_hears.h"
+#include <malloc.h>
+#include <unistd.h>
 using namespace Adafruit_LittleFS_Namespace;
 
 /* ── What this radio is set to ───────────────────────────────────────────
@@ -242,49 +245,10 @@ static uint32_t        s_heard;
  * xprs_station, which leans on FreeRTOS and is not ported; this is the
  * eight-row version of the same fact. A peer id for the bearer's own table
  * is derived from the callsign too, so peers: stops reading zero. */
-#define HEARS_MAX     8
-#define HEARS_FRESH_MS 600000UL
-static struct { char call[10]; uint32_t t_ms; } s_hears[HEARS_MAX];
-
-static uint64_t peer_of(const char *wire, int len, bool *direct)
-{
-    xprs_t p; char from[10] = "";
-    if (direct) *direct = false;
-    if (!xprs_parse(wire, len, &p) || !xprs_get_str(&p, "f", from, sizeof from) || !from[0]) return 0;
-    if (direct) *direct = xprs_via_count(&p) == 0;
-    uint64_t h = 1469598103934665603ULL;               /* FNV-1a, never zero */
-    for (const char *c = from; *c; c++) { h ^= (uint8_t)*c; h *= 1099511628211ULL; }
-    return h ? h : 1;
-}
-
-static void hears_touch(const char *wire, int len)
-{
-    xprs_t p; char from[10] = "";
-    if (!xprs_parse(wire, len, &p) || xprs_via_count(&p) != 0) return;
-    if (!xprs_get_str(&p, "f", from, sizeof from) || !from[0] || strcmp(from, nst_call()) == 0) return;
-    uint32_t now = millis();
-    int slot = -1, oldest = 0;
-    for (int i = 0; i < HEARS_MAX; i++) {
-        if (strcmp(s_hears[i].call, from) == 0 || !s_hears[i].call[0]) { slot = i; break; }
-        if ((int32_t)(s_hears[i].t_ms - s_hears[oldest].t_ms) < 0) oldest = i;
-    }
-    if (slot < 0) slot = oldest;
-    snprintf(s_hears[slot].call, sizeof s_hears[slot].call, "%s", from);
-    s_hears[slot].t_ms = now;
-}
-
-static int hears_render(char *out, int cap)
-{
-    uint32_t now = millis();
-    int n = 0;
-    for (int i = 0; i < HEARS_MAX; i++) {
-        if (!s_hears[i].call[0] || now - s_hears[i].t_ms > HEARS_FRESH_MS) continue;
-        int w = snprintf(out + n, (size_t)(cap - n), "%s%s", n ? "," : " hears:", s_hears[i].call);
-        if (w <= 0 || n + w >= cap) { out[n] = 0; break; }
-        n += w;
-    }
-    return n;
-}
+/* The table, per link, and what Bluetooth may hand to LoRa: nrf_hears.h,
+ * shared with the T1000-E. */
+static uint64_t peer_of(const char *wire, int len, bool *direct) { return nhr_peer_of(wire, len, direct); }
+static int hears_render(char *out, int cap) { return nhr_render(out, cap); }
 
 /* ── The LEDs ────────────────────────────────────────────────────────────
  *
@@ -424,6 +388,25 @@ static void heard(const char *link, const char *wire, int len, int rssi)
     bool parsed = xprs_parse(wire, len, &p);
     Serial.printf("%-6s rx %4d dBm %3dB %s%.*s\n", link, rssi, len,
                   parsed ? "" : "(unparsed) ", len > 90 ? 90 : len, wire);
+    /* No clock, no network, no owner in range: the neighbours' hint, if
+     * the owner chose it (clock_hint, XPRS.md 11.10). Without a clock the
+     * bridge carries nothing from XPRS onto Meshtastic. */
+    char ask[16];
+    if (parsed && nst_clock_hint(&p, ask) && s_ble_up) {
+        /* Its identity, asked for the section 8 way: its key, and signed
+         * for us, a reading of now. On Bluetooth, which is cheap, where
+         * the stations that answer are. */
+        char out[XPRS_MAX_WIRE + 1], tf[32];
+        nst_time_field(tf, sizeof tf);
+        int n = snprintf(out, sizeof out, "t:request f:%s d:%s %s q:identity", nst_call(), ask, tf);
+        if (n > 0 && n < (int)sizeof out) {
+            n = nst_sign(out, n, (int)sizeof out);
+            if (n > 0) {
+                xb_send(&s_ble, out, n);
+                Serial.printf("clock: asked %s for its identity (key and time)\n", ask);
+            }
+        }
+    }
     led_blip(P1_LED_USER, 20);
 }
 
@@ -447,7 +430,7 @@ static void on_lora(const char *wire, int len, uint64_t peer, int rssi)
 {
     (void)peer;
     heard("lora", wire, len, rssi);
-    hears_touch(wire, len);
+    nhr_touch(wire, len, false);
     if (command_for_us(&s_lora, wire, len)) return;
     /* THE DIGIPEATER. This station's whole reason to be on a pole: what it
      * hears on LoRa it says again on LoRa, so a small device at the edge of
@@ -464,8 +447,14 @@ static void on_lora(const char *wire, int len, uint64_t peer, int rssi)
      * messages, receipts, commands, identities...), the rule every ESP32
      * station applies there; at SF11 a frame is the best part of a second
      * of a channel the whole mesh shares. */
-    if (lr_worth(wire, len, !s_mt)) xb_digipeat(&s_lora, wire, len);
-    if (s_ble_up) xb_offer(&s_ble, wire, len);
+    /* On Meshtastic's channel the T1000-E's gate (nrf_hears.h): besides
+     * lr_worth, nothing for somebody heard on Bluetooth, commands only for
+     * somebody heard on LoRa, identities once in three hours, no old news,
+     * nothing twice in half an hour. */
+    if (s_mt ? nhr_to_lora(wire, len) : lr_worth(wire, len, true))
+        xb_digipeat(&s_lora, wire, len);
+    if (s_ble_up && xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_REGIONAL))
+        xb_offer(&s_ble, wire, len);
     /* And to Meshtastic: the bridge decides what it can carry (a message,
      * not sealed, not local) and never takes back what came from it. */
     if (s_mesh_on) mt_mesh_on_xprs(&s_mesh, wire, len, MT_XPRS_HEARD);
@@ -475,13 +464,17 @@ static void on_ble(const char *wire, int len, uint64_t peer, int rssi)
 {
     (void)peer;
     heard("ble", wire, len, rssi);
-    hears_touch(wire, len);
+    nhr_touch(wire, len, true);
     if (command_for_us(&s_ble, wire, len)) return;
     /* Bluetooth is busy and cheap, LoRa is neither: presence (observation,
      * service, status) stays on Bluetooth when we are on Meshtastic's
      * channel. Measured on the bench the day this changed: with no filter
      * the station spent its air re-airing every neighbour's history query. */
-    if (lr_worth(wire, len, !s_mt)) xb_offer(&s_lora, wire, len);
+    /* Measured after lr_worth alone (2026-11-25): 117 of 195 frames in 43
+     * minutes were other stations' history commands, ~380 s of LongFast an
+     * hour. nrf_hears' gate keeps those for the media they came on. */
+    if (s_mt ? nhr_to_lora(wire, len) : lr_worth(wire, len, true))
+        xb_offer(&s_lora, wire, len);
     if (s_mesh_on) mt_mesh_on_xprs(&s_mesh, wire, len, MT_XPRS_HEARD);
 }
 
@@ -964,6 +957,8 @@ static void ble_begin(void)
     Serial.printf("ble: up -- BLE5 extended advertising (connectable), scanning, serve=%d\n", sv);
 }
 
+#define STATION_STACK_WORDS 3072     /* 12 KB: the station task, below */
+
 static void console(int c)
 {
     switch (c) {
@@ -1051,6 +1046,27 @@ static void console(int c)
                           (unsigned long)m->nodeinfo_out, (unsigned long)m->pki_in,
                           (unsigned long)m->pki_fail, (unsigned long)m->no_clock,
                           (unsigned long)m->dropped);
+        }
+        {
+            /* What the station costs, measured rather than guessed: the heap
+             * the core hands malloc, this task's deepest stack so far, and
+             * the hour's LoRa airtime. */
+            struct mallinfo mi = mallinfo();
+            extern unsigned char __HeapLimit[];
+            uint32_t untouched = (uint32_t)__HeapLimit - (uint32_t)sbrk(0);
+            xb_duty_report_t dr;
+            xb_duty_report(&s_lora, millis(), &dr);
+            int hk, hs;
+            nst_hint_status(&hk, &hs);
+            Serial.printf("clock: %s  hint=%s keys=%d samples=%d\n",
+                          nst_now() ? "set" : "none", xcfg_get("clock_hint", "0"), hk, hs);
+            Serial.printf("memory: heap used=%u free=%lu  station stack spare=%lu of %u B  "
+                          "lora air %lu/%lu s this hour, held=%lu\n",
+                          (unsigned)mi.uordblks, (unsigned long)(mi.fordblks + untouched),
+                          (unsigned long)uxTaskGetStackHighWaterMark(NULL) * 4u,
+                          (unsigned)(STATION_STACK_WORDS * 4),
+                          (unsigned long)(dr.spent_ms / 1000), (unsigned long)(dr.budget_ms / 1000),
+                          (unsigned long)dr.held);
         }
         break;
     default: break;
@@ -1141,7 +1157,7 @@ static void bearers_flush(uint32_t ms)
  * the board fell silent between "ble: up" and the first key line, with
  * nothing on the port to say so. So the station is its own task with a
  * stack sized for the work, and the core's loop() only parks. */
-#define STATION_STACK_WORDS 3072     /* 12 KB */
+/* STATION_STACK_WORDS (12 KB) is defined above the console, which reports it. */
 static void station_setup(void);
 static void station_loop(void);
 static void station_task(void *arg)
@@ -1232,7 +1248,7 @@ static void station_setup(void)
     static xb_duty_t s_lora_duty;
     s_air = (xb_lora_air_t){
         .bw_hz = (uint32_t)(s_net.bw_khz * 1000.0f), .sf = s_net.sf,
-        .cr = LORA_CR - 4, .preamble = s_net.preamble, .crc = true,
+        .cr = LORA_CR - 4, .preamble = (uint8_t)s_net.preamble, .crc = true,
         .implicit_header = false,
     };
     /* On Meshtastic's channel a wire is one or two frames with a header

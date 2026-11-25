@@ -102,6 +102,22 @@ bool xauth_call_matches_npub(const char *call, const char *npub);
 uint32_t xauth_ts_epoch(const char *ts);
 
 /**
+ * The neighbours' clock hint (XPRS.md 11.10: the owner's choice, never a
+ * default, and only while the station has no clock at all). Feed it the
+ * `ts:` of each packet whose signature VERIFIED, with its author; it keeps
+ * one row per author for ten minutes, each carried forward by the time
+ * since it was heard, and returns the median (as of [now_ms]) once three
+ * authors agree within ten minutes, else 0. Platform-free: the caller owns
+ * the ring (zeroed once), any lock around it, and setting the clock.
+ * One key is free to mint, so it takes several; a median of agreeing
+ * values is not one liar's number.
+ */
+#define XAUTH_HINT_N 6
+typedef struct { char call[12]; uint32_t epoch, ms; } xauth_hint_t;
+uint32_t xauth_hint_note(xauth_hint_t ring[XAUTH_HINT_N], const char *from,
+                         uint32_t epoch, uint32_t now_ms);
+
+/**
  * The HTTP door. [auth_header] is a complete signed XPRS command wire, and
  * [body_sha16] is the first 16 hex characters of sha256(request body) which
  * the wire must carry in `zsha:` -- so an authorisation captured from one

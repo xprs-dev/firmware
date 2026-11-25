@@ -236,8 +236,42 @@ static void test_seed_from_call(void)
     CHECK(!same(a, c, 32), "another network's identity is another identity");
 }
 
+/* The software AES (xlc_aes_sw.c, the nRF52's AES-256): FIPS-197 Appendix
+ * C for each key length, then random blocks against the OpenSSL seam. */
+static void test_aes_sw(void)
+{
+    static const char *keys[3] = {
+        "000102030405060708090a0b0c0d0e0f",
+        "000102030405060708090a0b0c0d0e0f1011121314151617",
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f" };
+    static const char *want[3] = {
+        "69c4e0d86a7b0430d8cdb78070b4c55a",
+        "dda97ca4864cdfe06eaf70a0ec0d7191",
+        "8ea2b7ca516745bfeafc49904b496089" };
+    uint8_t k[32], in[16], out[16], ref[16];
+    unhex("00112233445566778899aabbccddeeff", in, 16);
+    for (int t = 0; t < 3; t++) {
+        unhex(keys[t], k, 16 + 8 * t);
+        unhex(want[t], ref, 16);
+        CHECK(xlc_aes_sw_encrypt_block(k, 16 + 8 * t, in, out) && same(out, ref, 16),
+              "aes-%d FIPS-197 vector", 128 + 64 * t);
+    }
+    uint32_t x = 7;
+    for (int i = 0; i < 500; i++) {
+        int kl = i & 1 ? 32 : 16;
+        for (int j = 0; j < 32; j++) k[j] = (uint8_t)((x = x * 1103515245u + 12345u) >> 16);
+        for (int j = 0; j < 16; j++) in[j] = (uint8_t)((x = x * 1103515245u + 12345u) >> 16);
+        xlc_aes_sw_encrypt_block(k, kl, in, out);
+        xlc_aes_encrypt_block(k, kl, in, ref);
+        if (!same(out, ref, 16)) { CHECK(0, "aes-%d random block %d", kl * 8, i); break; }
+    }
+    uint8_t bad[20] = { 0 };
+    CHECK(!xlc_aes_sw_encrypt_block(bad, 20, in, out), "aes refuses a 20-byte key");
+}
+
 int main(void)
 {
+    test_aes_sw();
     test_sha512();
     test_x25519();
     test_ed25519();

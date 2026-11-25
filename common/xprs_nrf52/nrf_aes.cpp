@@ -4,9 +4,12 @@
  * Meshtastic's default channel is AES-128-CTR under a published key, and its
  * direct messages are AES-CCM: both need the block cipher in the encrypt
  * direction only. The nRF52840's ECB block does AES-128 in hardware; through
- * the SoftDevice once it is up, directly before. 256-bit keys and the decrypt
- * direction (MeshCore direct messages) are not done here: an nRF52 station
- * relays those, it does not open them, so it says no rather than pretend.
+ * the SoftDevice once it is up, directly before. That block is AES-128 only,
+ * and a Meshtastic DM is AES-256-CCM, so the longer keys go to the software
+ * cipher (xlc_aes_sw.c): before it, the P1-Pro heard DMs to itself and logged
+ * "does not open" (2026-11-25). The decrypt direction (MeshCore direct
+ * messages) is not done here: an nRF52 station relays those, it does not
+ * open them, so it says no rather than pretend.
  *
  * Moved here unchanged from the T1000-E's main.cpp when the P1-Pro became the
  * second nRF52 board on Meshtastic's channel (2026-11-25).
@@ -19,10 +22,13 @@ extern "C" {
 #include "nrf_soc.h"
 }
 
+extern "C" bool xlc_aes_sw_encrypt_block(const uint8_t *key, int key_len,
+                                         const uint8_t in[16], uint8_t out[16]);
+
 extern "C" bool xlc_aes_encrypt_block(const uint8_t *key, int key_len,
                                       const uint8_t in[16], uint8_t out[16])
 {
-    if (key_len != 16) return false;
+    if (key_len != 16) return xlc_aes_sw_encrypt_block(key, key_len, in, out);
     nrf_ecb_hal_data_t e;
     memcpy(e.key, key, 16);
     memcpy(e.cleartext, in, 16);

@@ -9,6 +9,6 @@ cd "$(dirname "$0")"
 XPRS=../xprs_codec
 SHA=../xprs_index/test_sha256_host.c
 gcc -Wall -Wextra -Werror -O1 -I. -I"$XPRS" -o /tmp/test_xlc \
-    xlc_x25519.c xlc_ed25519.c xlc_hmac.c xlc_sha512_sw.c "$XPRS"/xprs.c \
+    xlc_x25519.c xlc_ed25519.c xlc_hmac.c xlc_sha512_sw.c xlc_aes_sw.c "$XPRS"/xprs.c \
     test_xlc_host.c "$SHA" -lcrypto
 /tmp/test_xlc

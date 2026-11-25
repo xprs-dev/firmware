@@ -409,9 +409,15 @@ reuse potential.
 - **`xlc_aes_encrypt_block()`** — `common/xprs_nrf52/nrf_aes.cpp`. The
   nRF52840's ECB block as xprs_loracrypto's AES seam: through the SoftDevice
   once it is up, the ECB peripheral directly before. Encrypt direction only (all
-  Meshtastic needs: CTR channels, CCM DMs). Moved out of the T1000-E's
-  main.cpp when the P1-Pro joined Meshtastic's channel; a third nRF52 board
-  gets it by linking xprs_nrf52.
+  Meshtastic needs: CTR channels, CCM DMs). The ECB block is AES-128 only, so
+  192/256-bit keys (Meshtastic DMs are AES-256-CCM) go to the software cipher
+  below. Moved out of the T1000-E's main.cpp when the P1-Pro joined
+  Meshtastic's channel; a third nRF52 board gets it by linking xprs_nrf52.
+- **`xlc_aes_sw_encrypt_block()`** — `common/xprs_loracrypto/xlc_aes_sw.c`.
+  Portable FIPS-197 AES encrypt, 128/192/256-bit keys, one S-box, no state.
+  For any target whose AES hardware lacks a key length; tested against the
+  FIPS-197 vectors and OpenSSL in `test_xlc_host.sh`. Not on ESP-IDF (mbedtls
+  there).
 - **Meshtastic on an nRF52 station** — `models/sensecap-p1-pro/firmware/src/main.cpp`,
   the "Meshtastic: the repeater and the bridge" section. The hooks mt_mesh
   needs on this chip: `mt_air` (CAD + `xb_spend` on the LoRa bearer's ledger),
@@ -420,6 +426,24 @@ reuse potential.
   `nst_time_field`-based stamp, and the keys/vnodes kept in one flash page
   through `nrf_flash`. The T1000-E runs the repeat-only lr_repeat instead; a
   board that wants the full bridge copies this section.
+- **`nrf_hears.h`** — `common/xprs_nrf52/nrf_hears.cpp`. Who an nRF52 station
+  hears directly, per link (`nhr_touch`, `nhr_on`, `nhr_render` for the
+  beacon's `hears:`, `nhr_find_ble`), and `nhr_to_lora()`: what Bluetooth or a
+  digipeat may put on a shared LoRa channel (lr_worth, scope, nothing for a
+  callsign heard on BLE, commands only for one heard on LoRa, identities once
+  in 3 h, no old news, nothing twice in 30 min). Lifted from the T1000-E; the
+  P1-Pro uses it on Meshtastic's channel. A third nRF52 board starts here.
+- **`xauth_hint_note()`** — `common/xprs_auth/xauth_hint.c`, platform-free, host
+  test `test_xauth_hint_host.sh`. The neighbours' clock hint (XPRS.md 11.10):
+  one row per author, samples carried forward by the time since heard, the
+  median once three agree within ten minutes. The nRF52 boards use it through
+  `nst_clock_hint()` (`nrf_station.cpp`: keys from self-verifying identities,
+  an LRU of 24, `q:identity` asked of stations heard directly, counted are
+  the identities that answer within 30 s -- signed for us, so a reading of
+  now -- and direct results/commands/receipts; clock in ~1 min, 2-3 s off). **Candidate:** xprs_app.c's
+  `clock_hint()` on the ESP32 boards still has its own copy with a 60 s window
+  and counts every verified packet; switching it to this helper (and to the
+  live-packet filter) fixes the 5-minute-slow clock that carousels cause.
 - **`lr_worth(wire, len, xprs_channel)`** — `common/xprs_bearer_lora/lr_worth.c`.
   What deserves LoRa airtime on a shared mesh channel. Apply it on every path
   that puts somebody else's packet on LoRa (digipeat and bridge), not only one.

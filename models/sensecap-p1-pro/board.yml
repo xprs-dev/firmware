@@ -72,9 +72,14 @@ bearers:
     Measured against the T-Deck X3SEP2 in `meshtastic` mode: the T-Deck
     decodes this station's XPRS frames at -19 dBm SNR 7 and its NodeInfo
     (node !e394fb46), and this station decodes and repeats the T-Deck's
-    NodeInfo. `cfg set lora_mode xprs` puts the old channel back. Not yet
-    measured against a stock Meshtastic node; mirroring XPRS onto Meshtastic
-    needs a clock, which this station only learns from owner commands.
+    NodeInfo. Against a stock Meshtastic 2.7.26 Heltec V3: its texts and PKI
+    DMs are opened, acknowledged and bridged to XPRS here (DMs need
+    AES-256, done in software by xlc_aes_sw.c since the ECB block is
+    AES-128 only). `cfg set lora_mode xprs` puts the old channel back.
+    Mirroring XPRS onto Meshtastic needs a clock: with no RTC, the owner
+    sets `clock_hint 1` and the station takes the time verified neighbours
+    agree on (measured 2-3 s off, about a minute after boot), after which it
+    bridges both ways on its own, sealed DMs included.
   lan: "no"
   lan_note: >-
     nRF52840 has no WiFi radio, so there is no LAN and there never will be

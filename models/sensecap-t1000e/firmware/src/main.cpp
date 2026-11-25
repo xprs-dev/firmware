@@ -51,6 +51,7 @@ extern "C" {
 }
 #include "update.h"
 #include "nrf_station.h"
+#include "nrf_hears.h"
 #include "sensors.h"
 #include "gnss.h"
 #include "mail.h"
@@ -206,87 +207,15 @@ static lrd_ev_t        s_hour_ev[NET_N]; /* heard between sweeps, per network */
  * P1-Pro (the nRF52840's ECB block, through the SoftDevice once it is up). */
 
 /* ── Who we hear directly (15.6.3) ───────────────────────────────────── */
-#define HEARS_MAX      12
-#define HEARS_FRESH_MS 600000UL
-static struct { char call[10]; uint32_t t_ms, ble_ms, lora_ms; } s_hears[HEARS_MAX];
-
-static uint64_t peer_of(const char *wire, int len)
-{
-    xprs_t p; char from[10] = "";
-    if (!xprs_parse(wire, len, &p) || !xprs_get_str(&p, "f", from, sizeof from) || !from[0]) return 0;
-    uint64_t h = 1469598103934665603ULL;
-    for (const char *c = from; *c; c++) { h ^= (uint8_t)*c; h *= 1099511628211ULL; }
-    return h ? h : 1;
-}
-
-static void hears_touch(const char *wire, int len, bool ble)
-{
-    xprs_t p; char from[10] = "";
-    if (!xprs_parse(wire, len, &p) || xprs_via_count(&p) != 0) return;
-    if (!xprs_get_str(&p, "f", from, sizeof from) || !from[0] || strcmp(from, nst_call()) == 0) return;
-    uint32_t now = millis();
-    int slot = -1, oldest = 0;
-    for (int i = 0; i < HEARS_MAX; i++) {
-        if (strcmp(s_hears[i].call, from) == 0 || !s_hears[i].call[0]) { slot = i; break; }
-        if ((int32_t)(s_hears[i].t_ms - s_hears[oldest].t_ms) < 0) oldest = i;
-    }
-    if (slot < 0) slot = oldest;
-    if (strcmp(s_hears[slot].call, from) != 0) s_hears[slot].ble_ms = s_hears[slot].lora_ms = 0;
-    snprintf(s_hears[slot].call, sizeof s_hears[slot].call, "%s", from);
-    s_hears[slot].t_ms = now;
-    if (ble) s_hears[slot].ble_ms = now ? now : 1;
-    else     s_hears[slot].lora_ms = now ? now : 1;
-}
-
-/* Heard directly, on any link, within [ms]. */
-static bool heard_directly(const char *call, uint32_t ms)
-{
-    uint32_t now = millis();
-    for (int i = 0; i < HEARS_MAX; i++)
-        if (s_hears[i].call[0] && !strcmp(s_hears[i].call, call) && now - s_hears[i].t_ms <= ms)
-            return true;
-    return false;
-}
-
-/* Heard directly on that link in the last ten minutes. */
-static bool hears_on(const char *call, bool ble)
-{
-    uint32_t now = millis();
-    for (int i = 0; i < HEARS_MAX; i++) {
-        uint32_t t = ble ? s_hears[i].ble_ms : s_hears[i].lora_ms;
-        if (t && strcmp(s_hears[i].call, call) == 0 && now - t <= HEARS_FRESH_MS) return true;
-    }
-    return false;
-}
-
-static int hears_count(void)
-{
-    uint32_t now = millis(); int n = 0;
-    for (int i = 0; i < HEARS_MAX; i++)
-        if (s_hears[i].call[0] && now - s_hears[i].t_ms <= HEARS_FRESH_MS) n++;
-    return n;
-}
-
-/* Most recent first, so a truncated list keeps the useful half (15.6.3). */
-static int hears_render(char *out, int cap)
-{
-    uint32_t now = millis();
-    bool used[HEARS_MAX] = {false};
-    int n = 0;
-    for (;;) {
-        int best = -1;
-        for (int i = 0; i < HEARS_MAX; i++) {
-            if (used[i] || !s_hears[i].call[0] || now - s_hears[i].t_ms > HEARS_FRESH_MS) continue;
-            if (best < 0 || (int32_t)(s_hears[i].t_ms - s_hears[best].t_ms) > 0) best = i;
-        }
-        if (best < 0) break;
-        used[best] = true;
-        int w = snprintf(out + n, (size_t)(cap - n), "%s%s", n ? "," : " hears:", s_hears[best].call);
-        if (w <= 0 || n + w >= cap) { out[n] = 0; break; }
-        n += w;
-    }
-    return n;
-}
+/* The table and the Bluetooth -> LoRa gate live in nrf_hears.h, shared
+ * with the P1-Pro; these names stay so the rest of this file reads as it
+ * did. */
+#define HEARS_FRESH_MS NHR_FRESH_MS
+static uint64_t peer_of(const char *wire, int len) { return nhr_peer_of(wire, len, NULL); }
+static void hears_touch(const char *wire, int len, bool ble) { nhr_touch(wire, len, ble); }
+static bool heard_directly(const char *call, uint32_t ms) { return nhr_heard_directly(call, ms); }
+static int  hears_count(void) { return nhr_count(); }
+static int  hears_render(char *out, int cap) { return nhr_render(out, cap); }
 
 /* ── The LED: lit HIGH, used in blips only ───────────────────────────── */
 static void led_blip(uint16_t ms)
@@ -687,14 +616,14 @@ static bool pos_fresh(void)
 }
 
 /* An owner of this card heard directly on Bluetooth lately. */
+static bool owner_phone(const char *call)
+{
+    return call[0] == 'X' && call[1] == '1' && xauth_is_owner(call);
+}
+
 static const char *owner_in_reach(void)
 {
-    uint32_t now = millis();
-    for (int i = 0; i < HEARS_MAX; i++)
-        if (s_hears[i].ble_ms && now - s_hears[i].ble_ms < PHONE_NEAR_MS &&
-            s_hears[i].call[0] == 'X' && s_hears[i].call[1] == '1' && xauth_is_owner(s_hears[i].call))
-            return s_hears[i].call;
-    return NULL;
+    return nhr_find_ble(PHONE_NEAR_MS, owner_phone);
 }
 
 static void ask_pos(const char *who)
@@ -820,88 +749,9 @@ static void pos_tick(void)
     if (!s_gnss_last_ms || now - s_gnss_last_ms >= every) gnss_start();
 }
 
-/* What Bluetooth hands to LoRa. A card in a room full of stations hears
- * their whole conversation, most of which is no business of a shared,
- * slow channel and every frame of which costs the battery a second of
- * transmitter. So, in this order:
- *  - only what is worth LoRa (docs/lora.md rule 11, the ESP32 stations'
- *    own list) and never what its author kept to the room (scope:local,
- *    XPRS.md 9.11.1);
- *  - not a packet for somebody heard directly on Bluetooth: it reached
- *    them already, the way it reached us;
- *  - a command, a result or a request only for somebody heard directly on
- *    LoRa: that is a phone here asking a station only LoRa reaches, which
- *    is the card's job. The rest is stations and phones keeping their
- *    archives in step, which they do on media of their own;
- *  - somebody's identity once in three hours, as our own goes out: a
- *    phone re-signs it every half hour, and the keys in it do not change;
- *  - not old news: a ts: more than half an hour behind now (or, with no
- *    clock, behind the newest ts: heard lately) is a carousel or a
- *    history replay, which stations re-say on their own media;
- *  - not twice in half an hour: the bearer forgets what it aired after a
- *    minute, and carousels come round again after that. */
-#define LORA_FRESH_S      1800u
-#define LORA_SENT_RING    24
-#define LORA_SENT_MS      1800000UL
-#define LORA_IDENT_MS     (3 * 3600000UL)
-static struct { char call[10]; uint32_t t_ms; } s_lora_ident[8];
-static struct { char id[XB_ID_LEN]; uint32_t t_ms; } s_lora_sent[LORA_SENT_RING];
-static int      s_lora_sent_pos;
-static uint32_t s_newest_ts, s_newest_ts_ms;
-
-static bool ble_to_lora(const char *wire, int len)
-{
-    /* XPRS.md 9.11: LoRa is regional; a local packet stays on Bluetooth,
-     * and so does one whose scope word this card does not know. */
-    if (!lr_worth(wire, len, false) ||
-        !xprs_reach_admits(xprs_scope_reach_wire(wire, len), XPRS_REACH_REGIONAL))
-        return false;
-    xprs_t p;
-    if (!xprs_parse(wire, len, &p)) return false;
-    char d[16] = "", ts[24] = "", t[16] = "", f[10] = "";
-    xprs_get_str(&p, "t", t, sizeof t);
-    xprs_get_str(&p, "d", d, sizeof d);
-    if (d[0] && hears_on(d, true)) return false;
-    if ((!strcmp(t, "command") || !strcmp(t, "result") || !strcmp(t, "request")) &&
-        !(d[0] && hears_on(d, false)))
-        return false;
-    if (!strcmp(t, "identity") && xprs_get_str(&p, "f", f, sizeof f)) {
-        uint32_t ms = millis();
-        int slot = 0;
-        for (int i = 0; i < 8; i++) {
-            if (!strcmp(s_lora_ident[i].call, f)) {
-                if (ms - s_lora_ident[i].t_ms < LORA_IDENT_MS) return false;
-                slot = i;
-                break;
-            }
-            if ((int32_t)(s_lora_ident[i].t_ms - s_lora_ident[slot].t_ms) < 0) slot = i;
-        }
-        snprintf(s_lora_ident[slot].call, sizeof s_lora_ident[slot].call, "%s", f);
-        s_lora_ident[slot].t_ms = ms ? ms : 1;
-    }
-    if (xprs_get_str(&p, "ts", ts, sizeof ts)) {
-        uint32_t t = nst_ts_to_epoch(ts), ms = millis();
-        if (t && (!s_newest_ts || (int32_t)(t - s_newest_ts) > 0 ||
-                  ms - s_newest_ts_ms > HEARS_FRESH_MS)) {
-            s_newest_ts = t;
-            s_newest_ts_ms = ms;
-        }
-        uint32_t now = nst_now();
-        if (!now && s_newest_ts) now = s_newest_ts + (ms - s_newest_ts_ms) / 1000u;
-        if (t && now && t + LORA_FRESH_S < now) return false;
-    }
-    char id[XB_ID_LEN];
-    if (!xprs_id_of(wire, len, id)) return false;
-    uint32_t ms = millis();
-    for (int i = 0; i < LORA_SENT_RING; i++)
-        if (s_lora_sent[i].t_ms && strcmp(s_lora_sent[i].id, id) == 0 &&
-            ms - s_lora_sent[i].t_ms < LORA_SENT_MS)
-            return false;
-    snprintf(s_lora_sent[s_lora_sent_pos].id, XB_ID_LEN, "%s", id);
-    s_lora_sent[s_lora_sent_pos].t_ms = ms ? ms : 1;
-    s_lora_sent_pos = (s_lora_sent_pos + 1) % LORA_SENT_RING;
-    return true;
-}
+/* What Bluetooth hands to LoRa: nrf_hears.h (nhr_to_lora), the rule this
+ * card wrote first and now shares with the P1-Pro. */
+static bool ble_to_lora(const char *wire, int len) { return nhr_to_lora(wire, len); }
 
 static bool direct_of(const char *wire, int len)
 {

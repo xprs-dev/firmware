@@ -65,6 +65,24 @@ uint32_t nst_now(void);
 uint32_t nst_ts_to_epoch(const char *ts);
 void     nst_clock_learn(const xprs_t *p);
 bool     nst_clock_set(uint32_t epoch, const char *source);
+/* The neighbours' hint (XPRS.md 11.10), for a station with no network and
+ * no owner in range: OFF unless the owner sets `clock_hint 1`, and only
+ * while there is no clock at all. Call it with every packet heard; it
+ * learns keys from t:identity packets that verify under the key they carry
+ * (and whose callsign derives from it), verifies the ts: of direct
+ * results, commands and receipts -- what a station says about now --
+ * against those keys, and sets the clock once three agree
+ * (xauth_hint_note). */
+/* True when the caller should send `t:request d:<ask> q:identity` (XPRS.md
+ * 8, 29.1; [ask] 16 bytes) to a station heard directly: the identity it
+ * signs in answer is both its key and a reading of now (counted when it
+ * arrives within 30 s of the ask). Waiting for traffic that happens to say
+ * the time took 5 to 10+ minutes on the bench. Rate-limited here: one
+ * author per ten minutes, one ask per 20 s, and only while there is no
+ * clock and the owner chose the hint. */
+bool     nst_clock_hint(const xprs_t *p, char ask[16]);
+/* For a status line: keys learned, samples held (of XAUTH_HINT_N). */
+void     nst_hint_status(int *keys, int *samples);
 /* ts: under a known clock, epoch:<boots>.<uptime> otherwise (15.7). */
 int      nst_time_field(char *out, int cap);
 
