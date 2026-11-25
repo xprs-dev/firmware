@@ -183,3 +183,8 @@ CONFIG_BT_CTRL_BLE_SCAN_DUPL=n
 # No LoRa radio on this board (.lora = NULL): the bearer is built as stubs
 # and the SX1262, Meshtastic and MeshCore code is not linked.
 CONFIG_XPRS_LORA=n
+# And without esp_err_to_name's table of error names: a log line on this
+# board says the error's number (ESP_ERR_* in esp_err.h) instead of its
+# name. A few kilobytes back from a slot that was 117 bytes over
+# (2026-11-25, the station's location and the owner's phone).
+# CONFIG_ESP_ERR_TO_NAME_LOOKUP is not set

@@ -10344,8 +10344,10 @@ static int api_locate(void)
         bool dup = false;
         for (int j = 0; j < k; j++) dup |= same_base(s_posask.to[j], d->call);
         if (dup) continue;
-        snprintf(s_posask.to[k], sizeof s_posask.to[k], "%s", d->call);
-        snprintf(s_posask.bearer[k], sizeof s_posask.bearer[k], "%s", d->bearer);
+        snprintf(s_posask.to[k], sizeof s_posask.to[k], "%.*s",
+                 (int)sizeof s_posask.to[k] - 1, d->call);
+        snprintf(s_posask.bearer[k], sizeof s_posask.bearer[k], "%.*s",
+                 (int)sizeof s_posask.bearer[k] - 1, d->bearer);
         k++;
     }
     s_posask.n = k;
