@@ -74,6 +74,20 @@ task of its own. It would tidy the ESP32 boards too.
 
 ## What it does today
 
+**On Meshtastic's channel since 2026-11-25** (`lora_mode`, default
+`meshtastic`; `cfg set lora_mode xprs` for the old SF7 channel). The station
+is a Meshtastic node in its own right -- LongFast at 869.525 MHz, its own
+NodeInfo (`!e394fb46` for `X3S7S8`), the managed-flood repeater and the
+XPRS <-> Meshtastic bridge of `common/xprs_meshtastic` -- with XPRS carried in
+Meshtastic frames, as on every ESP32 station. Only what somebody waits for
+goes on LoRa (`lr_worth`); presence stays on Bluetooth. Measured against the
+T-Deck `X3SEP2` in `meshtastic` mode the same day: XPRS both ways at -19 /
+-23 dBm, each side decoding and repeating the other's NodeInfo. Still open:
+a stock Meshtastic node on the bench, and a clock -- the bridge mirrors
+nothing onto Meshtastic without one, and this board only learns the time
+from an owner's signed command. The rest of this section describes the
+`xprs` channel the board ran before.
+
 A headless LoRa + BLE5 station, bridging between the two and digipeating
 on each. On LoRa it listens on 868 MHz, keeps what it hears out of its own
 duplicate rings, repeats within the hop budget with itself appended to

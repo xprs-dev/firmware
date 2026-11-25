@@ -202,43 +202,8 @@ static lrd_ev_t        s_hour_ev[NET_N]; /* heard between sweeps, per network */
  * loudly; the Meshtastic identity is then gone if the card goes back. */
 #define CALL_PREFIX "X2"
 
-/* ── AES for the LoRa networks (common/xprs_loracrypto/xlc.h) ────────────
- *
- * Meshtastic's default channel is AES-128-CTR under a published key, which
- * is all detection needs (the probe and the names it hears). The nRF52840's
- * ECB block does AES-128 in hardware; through the SoftDevice once it is up,
- * directly before. 256-bit keys and the decrypt direction (MeshCore direct
- * messages) are not done here: this card relays those, it does not open
- * them, so it says no rather than pretend. */
-extern "C" bool xlc_aes_encrypt_block(const uint8_t *key, int key_len,
-                                      const uint8_t in[16], uint8_t out[16])
-{
-    if (key_len != 16) return false;
-    nrf_ecb_hal_data_t e;
-    memcpy(e.key, key, 16);
-    memcpy(e.cleartext, in, 16);
-    uint8_t sd_on = 0;
-    sd_softdevice_is_enabled(&sd_on);
-    if (sd_on) {
-        if (sd_ecb_block_encrypt(&e) != NRF_SUCCESS) return false;
-    } else {
-        NRF_ECB->ECBDATAPTR = (uint32_t)&e;
-        NRF_ECB->EVENTS_ENDECB = 0;
-        NRF_ECB->EVENTS_ERRORECB = 0;
-        NRF_ECB->TASKS_STARTECB = 1;
-        while (!NRF_ECB->EVENTS_ENDECB && !NRF_ECB->EVENTS_ERRORECB) { }
-        if (NRF_ECB->EVENTS_ERRORECB) return false;
-    }
-    memcpy(out, e.ciphertext, 16);
-    return true;
-}
-
-extern "C" bool xlc_aes_decrypt_block(const uint8_t *key, int key_len,
-                                      const uint8_t in[16], uint8_t out[16])
-{
-    (void)key; (void)key_len; (void)in; (void)out;
-    return false;
-}
+/* AES for the LoRa networks: common/xprs_nrf52/nrf_aes.cpp, shared with the
+ * P1-Pro (the nRF52840's ECB block, through the SoftDevice once it is up). */
 
 /* ── Who we hear directly (15.6.3) ───────────────────────────────────── */
 #define HEARS_MAX      12

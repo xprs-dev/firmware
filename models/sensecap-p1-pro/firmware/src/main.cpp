@@ -96,9 +96,13 @@ extern "C" {
 #include "tn_att.h"
 #include "nrf_sdm.h"
 #include "nrf_soc.h"
+#include "mt.h"
+#include "mt_mesh.h"
+#include "lr_worth.h"
 }
 #include "update.h"
 #include "nrf_station.h"
+#include "nrf_flash.h"
 using namespace Adafruit_LittleFS_Namespace;
 
 /* ── What this radio is set to ───────────────────────────────────────────
@@ -140,6 +144,45 @@ using namespace Adafruit_LittleFS_Namespace;
 #define LORA_SYNC_WORD   0x12      /* = 0x1424, the SX1262 private default */
 #define LORA_POWER_DBM   22
 #define LORA_PREAMBLE    8
+
+/* ── Which LoRa network: Meshtastic's, unless told otherwise ────────────
+ *
+ * The figures above are the `xprs` mode's, and they are what this board ran
+ * alone until 2026-11-25. By then every ESP32 station defaulted to
+ * Meshtastic's LongFast (xprslora.h, XPRSLORA_MODE_DEFAULT), so a P1 left on
+ * its own channel heard none of them, and a Meshtastic user near the pole
+ * did not know it was there. The default is now `meshtastic`, the same as
+ * the rest of the fleet:
+ *
+ *   LongFast: SF11, 250 kHz, CR 4/5, preamble 16, sync 0x2B, the frequency
+ *   from Meshtastic's own slot rule (mt_slot_freq_hz: 869.525 MHz in EU)
+ *
+ * and on it the station is a Meshtastic node in its own right: XPRS rides
+ * in Meshtastic frames on a private portnum (mt_xprs_wrap, so stock routers
+ * flood it by header), and common/xprs_meshtastic's mt_mesh repeats the
+ * mesh's own traffic, announces this station with a NodeInfo, and bridges
+ * text both ways -- the code the ESP32 stations run, and the bridge the
+ * T1000-E left to "a station on mains" (its main.cpp says why).
+ *
+ * `cfg set lora_mode xprs` puts the old channel back (a cfg set reboots);
+ * `lora_region` picks Meshtastic's region (default eu). */
+typedef struct {
+    const char *name;
+    float       freq_mhz;
+    float       bw_khz;
+    uint8_t     sf;
+    uint8_t     sync;
+    uint16_t    preamble;
+} lora_net_t;
+static lora_net_t s_net = { "xprs", LORA_FREQ_MHZ, LORA_BW_KHZ, LORA_SF,
+                            LORA_SYNC_WORD, LORA_PREAMBLE };
+static bool        s_mt;                 /* on Meshtastic's channel */
+static uint32_t    s_self_node;          /* our Meshtastic node number */
+static mt_reasm_t  s_mt_reasm;
+static mt_mesh_t   s_mesh;               /* the repeater and the bridge */
+static bool        s_mesh_on;
+static uint32_t    s_native_frames;      /* Meshtastic's own, not XPRS */
+static xb_lora_air_t s_air;              /* the modem, for the ledger */
 
 /* XPRS 31.1: what one packet owes this bearer in silence. A shared airwave
  * with no pacing is a bearer that talks over everybody, and this one is meant
@@ -267,10 +310,61 @@ static void led_blip(int pin, uint16_t ms)
 
 static void dio1_isr(void) { s_rx_pending = true; }
 
+/* Listen before talking (CAD). The CAD-done interrupt is on DIO1 too, so
+ * the flag it raised is not a packet; and CAD leaves the radio in standby,
+ * so whoever asked puts it back to receive or transmits. */
+static bool channel_free(void)
+{
+    int r = s_radio.scanChannel();
+    s_rx_pending = false;
+    return r == RADIOLIB_CHANNEL_FREE;
+}
+
+/* One raw frame on the air, then back to receive (see the note in
+ * lora_air on why the flag is cleared after). */
+static bool radio_tx(const uint8_t *f, int len)
+{
+    int st = s_radio.transmit(f, (size_t)len);
+    s_radio.startReceive();
+    s_rx_pending = false;
+    if (st != RADIOLIB_ERR_NONE) {
+        Serial.printf("lora: transmit failed (%d)\n", st);
+        return false;
+    }
+    led_blip(P1_LED_MESH, 20);
+    return true;
+}
+
+/* An XPRS wire on Meshtastic's channel: one or two frames (mt_xprs_wrap),
+ * each after a clear channel. The xb pump has already charged the ledger
+ * for both and dropped the packet from its queue, so "not now" is not an
+ * answer it can take: up to eight looks a slot or so apart, then go anyway,
+ * as xprslora.c does. */
+static bool lora_air_mt(const char *wire, int len)
+{
+    static uint8_t frames[2][MT_FRAME_MAX];
+    int fl[2];
+    int n = mt_xprs_wrap(wire, len, s_self_node, frames, fl);
+    if (!n) {
+        Serial.printf("lora: not wrappable: %.40s\n", wire);
+        return false;
+    }
+    bool ok = true;
+    for (int i = 0; i < n && ok; i++) {
+        for (int t = 0; t < 8 && !channel_free(); t++)
+            delay(mt_mesh_slot_ms() + (uint32_t)random(0, 200));
+        ok = radio_tx(frames[i], fl[i]);
+    }
+    if (ok) Serial.printf("lora: aired %dB%s %.*s\n", len, n > 1 ? " (2 frames)" : "",
+                          len > 60 ? 60 : len, wire);
+    return ok;
+}
+
 static bool lora_air(void *ctx, const char *wire, int len)
 {
     (void)ctx;
     if (!s_radio_up) return false;
+    if (s_mt) return lora_air_mt(wire, len);
 
     int st = s_radio.transmit((const uint8_t *)wire, (size_t)len);
     if (st != RADIOLIB_ERR_NONE) {
@@ -366,8 +460,15 @@ static void on_lora(const char *wire, int len, uint64_t peer, int rssi)
      * does exactly this (common/xprs_bearer_lora/xprslora.c); this line was
      * missing here, and the station bridged to BLE while repeating nothing
      * on the air. */
-    xb_digipeat(&s_lora, wire, len);
+    /* On Meshtastic's channel only what somebody is waiting for (lr_worth:
+     * messages, receipts, commands, identities...), the rule every ESP32
+     * station applies there; at SF11 a frame is the best part of a second
+     * of a channel the whole mesh shares. */
+    if (lr_worth(wire, len, !s_mt)) xb_digipeat(&s_lora, wire, len);
     if (s_ble_up) xb_offer(&s_ble, wire, len);
+    /* And to Meshtastic: the bridge decides what it can carry (a message,
+     * not sealed, not local) and never takes back what came from it. */
+    if (s_mesh_on) mt_mesh_on_xprs(&s_mesh, wire, len, MT_XPRS_HEARD);
 }
 
 static void on_ble(const char *wire, int len, uint64_t peer, int rssi)
@@ -376,7 +477,268 @@ static void on_ble(const char *wire, int len, uint64_t peer, int rssi)
     heard("ble", wire, len, rssi);
     hears_touch(wire, len);
     if (command_for_us(&s_ble, wire, len)) return;
-    xb_offer(&s_lora, wire, len);
+    /* Bluetooth is busy and cheap, LoRa is neither: presence (observation,
+     * service, status) stays on Bluetooth when we are on Meshtastic's
+     * channel. Measured on the bench the day this changed: with no filter
+     * the station spent its air re-airing every neighbour's history query. */
+    if (lr_worth(wire, len, !s_mt)) xb_offer(&s_lora, wire, len);
+    if (s_mesh_on) mt_mesh_on_xprs(&s_mesh, wire, len, MT_XPRS_HEARD);
+}
+
+/* ── Meshtastic: the repeater and the bridge (common/xprs_meshtastic) ───
+ *
+ * mt_mesh is platform-free; what is here is its five hooks, the same ones
+ * xprslora.c and xprs_app.c give it on an ESP32, on this chip's terms. */
+
+/* A Meshtastic frame from the bridge (a relay, a NodeInfo, a translated
+ * text, an ack): the channel first, then the shared ledger, and "not now"
+ * is an answer -- the bridge keeps the frame and asks again. */
+static bool mt_air(void *ctx, const uint8_t *f, int len, int prio)
+{
+    (void)ctx;
+    if (!s_radio_up || len <= 0 || len > MT_FRAME_MAX) return false;
+    if (!channel_free()) { s_radio.startReceive(); s_rx_pending = false; return false; }
+    if (!xb_spend(&s_lora, xb_lora_airtime_ms(&s_air, len), prio >= MT_PRIO_URGENT)) {
+        s_radio.startReceive();
+        s_rx_pending = false;
+        return false;
+    }
+    bool ok = radio_tx(f, len);
+    mt_hdr_t h;
+    if (ok && mt_hdr_parse(f, len, &h))
+        Serial.printf("mt tx %08lx>%08lx id %08lx hop %d/%d %dB\n", (unsigned long)h.from,
+                      (unsigned long)h.to, (unsigned long)h.id, h.hop_limit, h.hop_start, len);
+    return ok;
+}
+
+/* The bridge hands translations over from inside its receive and tick
+ * paths; they go out from the loop, after it returns, the way xprs_app.c
+ * parks them for idx_task. A receipt is signed as this station first. */
+#define MESHQ_N 4
+static struct { bool full, sign; int len; char wire[XPRS_MAX_WIRE + 1]; } s_meshq[MESHQ_N];
+
+static void mt_deliver(void *ctx, const char *wire, int len, bool sign,
+                       int rssi, int hops, const char *relay)
+{
+    (void)ctx; (void)rssi; (void)hops; (void)relay;
+    if (len <= 0 || len > XPRS_MAX_WIRE) return;
+    for (int i = 0; i < MESHQ_N; i++) {
+        if (s_meshq[i].full) continue;
+        memcpy(s_meshq[i].wire, wire, (size_t)len);
+        s_meshq[i].wire[len] = 0;
+        s_meshq[i].len = len;
+        s_meshq[i].sign = sign;
+        s_meshq[i].full = true;
+        return;
+    }
+    Serial.printf("mesh: %s dropped, %d waiting\n", sign ? "receipt" : "translation", MESHQ_N);
+}
+
+/* A translation leaves the way our own packets leave (xprs_app.c's
+ * mesh_out, and the bug that taught it): xb_send, not xb_offer -- its via:
+ * already names us, and an offer would take that for a loop and drop it --
+ * and never onto LoRa as XPRS, because every LoRa station on this channel
+ * heard the Meshtastic frame and translates for itself. A gateway receipt is
+ * ours, signed, and goes everywhere. */
+static void mesh_drain(void)
+{
+    for (int i = 0; i < MESHQ_N; i++) {
+        if (!s_meshq[i].full) continue;
+        static char w[XPRS_MAX_WIRE + 1];
+        int n = s_meshq[i].len;
+        bool sign = s_meshq[i].sign;
+        memcpy(w, s_meshq[i].wire, (size_t)n + 1);
+        s_meshq[i].full = false;
+        if (!sign) {
+            s_heard++;
+            Serial.printf("mesh   %3dB %.*s\n", n, n > 100 ? 100 : n, w);
+            led_blip(P1_LED_USER, 20);
+            if (s_ble_up) xb_send(&s_ble, w, n);
+            continue;
+        }
+        if (n + 5 + XPRSSIG_B85_LEN <= XPRS_MAX_WIRE) n = nst_sign(w, n, (int)sizeof w);
+        if (n <= 0 || n > XPRS_MAX_WIRE) continue;
+        Serial.printf("mesh: gateway receipt %.60s\n", w);
+        if (s_ble_up) xb_send(&s_ble, w, n);
+        xb_send(&s_lora, w, n);
+    }
+}
+
+/* To the minute, so two bridges hearing the same frame compose the same
+ * packet (docs/lora.md); epoch: when there is no clock. */
+static int mt_stamp(void *ctx, char *out, int cap, bool to_minute)
+{
+    (void)ctx;
+    int n = nst_time_field(out, cap);
+    if (to_minute && n == 22 && strncmp(out, "ts:", 3) == 0) { out[20] = '0'; out[21] = '0'; }
+    return n;
+}
+
+/* The clock learned from owner commands. Without one the bridge carries
+ * Meshtastic into XPRS but mirrors nothing heard the other way: it cannot
+ * tell old news from new (mt_mesh.h, MT_MIRROR_SETTLE_MS). */
+static uint32_t mt_utc(void *ctx)
+{
+    (void)ctx;
+    uint32_t t = nst_now();
+    return t > 1700000000u ? t : 0;
+}
+
+static void mt_log(void *ctx, const char *line) { (void)ctx; Serial.printf("mt: %s\n", line); }
+
+/* What the bridge keeps across a restart: the X25519 keys it learned from
+ * NodeInfos (a node answers a NodeInfo request once in 12 hours, so a bridge
+ * that forgot would be unable to DM it for half a day) and the callsigns it
+ * announced. One flash page, rewritten whole; the bridge saves at most once
+ * a minute and only when something is new, from its tick on this task,
+ * which is where nrf_flash may be called (nrf_flash.h).
+ *
+ * The page is the last of the 24 KB gap between the update's BACKUP slot
+ * (ends 0xE7000) and the internal LittleFS (0xED000), update.cpp's flash
+ * map. A cable flash writes the application region only, so it survives. */
+#define MTP_ADDR   0xEC000u
+#define MTP_MAGIC  0x3154584Du                      /* "MXT1" */
+#define MTP_KEYS   (MT_KEYS * (int)sizeof(mt_keyrec_t))
+#define MTP_VNODES (MT_VNODES * MT_CALL_LEN)
+typedef struct {
+    uint32_t magic;
+    uint16_t keys_len, vnodes_len;
+    uint8_t  keys[MTP_KEYS];
+    uint8_t  vnodes[MTP_VNODES];
+} mtp_page_t;
+static_assert(sizeof(mtp_page_t) <= NRF_FLASH_PAGE, "the bridge's page");
+static_assert(sizeof(mtp_page_t) % 4 == 0, "whole words");
+static mtp_page_t s_mtp;                            /* what is on flash */
+
+static void mtp_read(void)
+{
+    memcpy(&s_mtp, (const void *)MTP_ADDR, sizeof s_mtp);
+    if (s_mtp.magic != MTP_MAGIC || s_mtp.keys_len > MTP_KEYS || s_mtp.vnodes_len > MTP_VNODES) {
+        memset(&s_mtp, 0, sizeof s_mtp);
+        s_mtp.magic = MTP_MAGIC;
+    }
+}
+
+static void mtp_write(void)
+{
+    if (!nrf_flash_erase(MTP_ADDR) ||
+        !nrf_flash_write(MTP_ADDR, (const uint32_t *)&s_mtp, sizeof s_mtp / 4))
+        Serial.println("mt: could not save the bridge's keys");
+}
+
+static int mt_keys_load(void *ctx, void *buf, int cap)
+{
+    (void)ctx;
+    int n = s_mtp.keys_len < cap ? s_mtp.keys_len : cap;
+    memcpy(buf, s_mtp.keys, (size_t)n);
+    return n;
+}
+
+static void mt_keys_save(void *ctx, const void *buf, int len)
+{
+    (void)ctx;
+    if (len < 0 || len > MTP_KEYS) return;
+    memcpy(s_mtp.keys, buf, (size_t)len);
+    s_mtp.keys_len = (uint16_t)len;
+    mtp_write();
+}
+
+static int mt_vnodes_load(void *ctx, void *buf, int cap)
+{
+    (void)ctx;
+    int n = s_mtp.vnodes_len < cap ? s_mtp.vnodes_len : cap;
+    memcpy(buf, s_mtp.vnodes, (size_t)n);
+    return n;
+}
+
+static void mt_vnodes_save(void *ctx, const void *buf, int len)
+{
+    (void)ctx;
+    if (len < 0 || len > MTP_VNODES) return;
+    memcpy(s_mtp.vnodes, buf, (size_t)len);
+    s_mtp.vnodes_len = (uint16_t)len;
+    mtp_write();
+}
+
+static uint32_t mt_now_ms(void) { return millis(); }
+static uint32_t mt_random(void) { return (uint32_t)random(0x7FFFFFFF); }
+
+/* The repeater and the bridge, from the same config keys an ESP32 station
+ * reads (xprs_app.c, lora_start_bridge). */
+static bool cfg_bool(const char *key, bool def)
+{
+    const char *v = xcfg_get(key, NULL);
+    if (!v || !v[0]) return def;
+    return strcmp(v, "1") == 0 || strcmp(v, "true") == 0 || strcmp(v, "on") == 0 || strcmp(v, "yes") == 0;
+}
+
+static void mesh_begin(void)
+{
+    mt_mesh_cfg_t cfg = {
+        .repeat = cfg_bool("mt_repeat", true),
+        .bridge = cfg_bool("mt_bridge", true),
+        .bcast_per_hour = 12,
+        .nodeinfo_min = 180,
+    };
+    const char *v;
+    if ((v = xcfg_get("mt_bcast_hr", NULL)) && v[0]) cfg.bcast_per_hour = (uint16_t)strtoul(v, NULL, 10);
+    if ((v = xcfg_get("mt_ni_min", NULL)) && v[0])   cfg.nodeinfo_min = (uint16_t)strtoul(v, NULL, 10);
+    if (!cfg.repeat && !cfg.bridge) return;
+    mtp_read();
+    static const mt_mesh_ops_t ops = {
+        .air = mt_air, .now_ms = mt_now_ms, .random = mt_random,
+        .deliver = mt_deliver, .heard = NULL, .stamp = mt_stamp,
+        .utc_now = mt_utc, .tz_offset = NULL, .nick_of = NULL, .log = mt_log,
+        .keys_load = mt_keys_load, .keys_save = mt_keys_save,
+        .vnodes_load = mt_vnodes_load, .vnodes_save = mt_vnodes_save,
+        .ctx = NULL,
+    };
+    mt_mesh_init(&s_mesh, &ops, &cfg, nst_call(), xcfg_get("name", ""));
+    s_mesh_on = true;
+    Serial.printf("meshtastic: node !%08lx, repeater %s, bridge %s, %u broadcasts an hour, "
+                  "%u keys kept, %u bytes\n",
+                  (unsigned long)s_self_node, cfg.repeat ? "on" : "off", cfg.bridge ? "on" : "off",
+                  (unsigned)cfg.bcast_per_hour, (unsigned)(s_mtp.keys_len / sizeof(mt_keyrec_t)),
+                  (unsigned)sizeof s_mesh);
+}
+
+/* A frame off the air on Meshtastic's channel: XPRS inside it goes to the
+ * bearer as any wire would; anything else is the mesh's own, for the
+ * repeater and the bridge. */
+static void lora_rx_mt(const uint8_t *f, int len, int rssi, int snr)
+{
+    static char wire[XPRS_MAX_WIRE + 8];
+    int n = mt_xprs_unwrap(&s_mt_reasm, f, len, millis(), wire, sizeof wire);
+    if (n > 0) {
+        wire[n] = 0;
+        if (s_mesh_on) mt_mesh_note_xprs_frame(&s_mesh, f, len);
+        xb_on_wire(&s_lora, wire, n, peer_of(wire, n, NULL), rssi);
+        return;
+    }
+    if (n == 0) return;                   /* half a wire, waiting for the rest */
+    s_native_frames++;
+    mt_hdr_t h;
+    if (mt_hdr_parse(f, len, &h))
+        Serial.printf("mt %08lx>%08lx id %08lx hop %d/%d ch %02x %dB %d dBm SNR %d\n",
+                      (unsigned long)h.from, (unsigned long)h.to, (unsigned long)h.id,
+                      h.hop_limit, h.hop_start, h.channel, len, rssi, snr);
+    if (s_mesh_on) mt_mesh_on_frame(&s_mesh, f, len, rssi, snr);
+}
+
+/* 'n' on the console: the Meshtastic nodes heard. */
+static void mesh_nodes(void)
+{
+    if (!s_mesh_on) { Serial.println("meshtastic: not on this channel"); return; }
+    const mt_node_t *nd = NULL;
+    int count = mt_mesh_node(&s_mesh, 0, &nd);
+    Serial.printf("meshtastic: %d node(s) heard\n", count);
+    for (int i = 0; i < count; i++) {
+        mt_mesh_node(&s_mesh, i, &nd);
+        if (!nd) continue;
+        Serial.printf("  !%08lx %-5s %-24s snr %d, %lus ago%s\n", (unsigned long)nd->num,
+                      nd->short_name, nd->long_name, nd->snr,
+                      (unsigned long)((millis() - nd->heard_ms) / 1000), nd->xprs ? " (xprs)" : "");
+    }
 }
 
 /* ── What we say ─────────────────────────────────────────────────────────
@@ -647,6 +1009,7 @@ static void console(int c)
         nst_key_import(line);
         break; }
     case 'i': air_identity(); break;             /* say who we are, now */
+    case 'n': mesh_nodes(); break;               /* the Meshtastic nodes heard */
     case 'U': xfw_selftest(); break;             /* prove the flash path, non-destructively */
     case 'c': {                                  /* cfg set|get|list ... */
         char line[128]; int n = 0;
@@ -668,19 +1031,51 @@ static void console(int c)
         NVIC_SystemReset();
         break;
     case '?':
-        Serial.printf("call=%s fw=%s%s clock=%lu key=%d lora=%d ble=%d(err %d) link=%s peer=%s gatt rx=%lu tx=%lu\n",
+        Serial.printf("call=%s fw=%s%s clock=%lu key=%d lora=%d(%s %.3f MHz SF%u) ble=%d(err %d) link=%s peer=%s gatt rx=%lu tx=%lu\n",
                       nst_call(), xfw_version(), xfw_probation() ? "(probation)" : "",
                       (unsigned long)nst_now(),
-                      (int)nst_have_key(), (int)s_radio_up, (int)s_ble_up, s_ble_err,
+                      (int)nst_have_key(), (int)s_radio_up, s_net.name, s_net.freq_mhz,
+                      (unsigned)s_net.sf, (int)s_ble_up, s_ble_err,
                       tn_gatt_connected() ? "UP" : "none",
                       s_peer_known ? s_peer_call : "-",
                       (unsigned long)s_gatt_rx, (unsigned long)s_gatt_tx);
+        if (s_mesh_on) {
+            const mt_mesh_stats_t *m = &s_mesh.st;
+            Serial.printf("meshtastic: node !%08lx frames=%lu decoded=%lu dupes=%lu relayed=%lu "
+                          "cancelled=%lu text in=%lu out=%lu nodeinfo=%lu pki in=%lu fail=%lu "
+                          "no_clock=%lu dropped=%lu\n",
+                          (unsigned long)s_self_node, (unsigned long)m->rx_frames,
+                          (unsigned long)m->rx_decoded, (unsigned long)m->rx_dupes,
+                          (unsigned long)m->relayed, (unsigned long)m->relay_cancelled,
+                          (unsigned long)m->text_in, (unsigned long)m->text_out,
+                          (unsigned long)m->nodeinfo_out, (unsigned long)m->pki_in,
+                          (unsigned long)m->pki_fail, (unsigned long)m->no_clock,
+                          (unsigned long)m->dropped);
+        }
         break;
     default: break;
     }
 }
 
 /* ── Bring-up ────────────────────────────────────────────────────────── */
+
+/* `lora_mode` from /xprs/cfg: meshtastic (the default) or xprs. */
+static void lora_pick(void)
+{
+    const char *m = xcfg_get("lora_mode", "meshtastic");
+    if (strcmp(m, "xprs") == 0) return;
+    if (strcmp(m, "meshtastic") != 0)
+        Serial.printf("lora: mode %s is not on this board -- meshtastic\n", m);
+    const mt_region_t *r = mt_region_find(xcfg_get("lora_region", "eu"));
+    if (!r) r = mt_region_find("eu");
+    s_net.name     = "meshtastic";
+    s_net.freq_mhz = (float)mt_slot_freq_hz(r, MT_CH_NAME_LONGFAST, MT_LF_BW_HZ) / 1e6f;
+    s_net.bw_khz   = MT_LF_BW_HZ / 1000.0f;
+    s_net.sf       = MT_LF_SF;
+    s_net.sync     = MT_LF_SYNC;
+    s_net.preamble = MT_LF_PREAMBLE;
+    s_mt = true;
+}
 
 static bool lora_begin(void)
 {
@@ -691,8 +1086,8 @@ static bool lora_begin(void)
 
     s_spi.begin();
 
-    int st = s_radio.begin(LORA_FREQ_MHZ, LORA_BW_KHZ, LORA_SF, LORA_CR,
-                           LORA_SYNC_WORD, LORA_POWER_DBM, LORA_PREAMBLE);
+    int st = s_radio.begin(s_net.freq_mhz, s_net.bw_khz, s_net.sf, LORA_CR,
+                           s_net.sync, LORA_POWER_DBM, s_net.preamble);
     if (st != RADIOLIB_ERR_NONE) {
         Serial.printf("lora: begin failed (%d) -- no radio this boot\n", st);
         return false;
@@ -710,8 +1105,9 @@ static bool lora_begin(void)
         Serial.printf("lora: startReceive failed (%d)\n", st);
         return false;
     }
-    Serial.printf("lora: up on %.1f MHz SF%d BW%.0f, %d dBm\n",
-                  LORA_FREQ_MHZ, LORA_SF, LORA_BW_KHZ, LORA_POWER_DBM);
+    Serial.printf("lora: up on %s, %.3f MHz SF%u BW%.0f sync 0x%02X preamble %u, %d dBm\n",
+                  s_net.name, s_net.freq_mhz, (unsigned)s_net.sf, s_net.bw_khz,
+                  (unsigned)s_net.sync, (unsigned)s_net.preamble, LORA_POWER_DBM);
     return true;
 }
 
@@ -820,26 +1216,40 @@ static void station_setup(void)
     xprssig_platform_random((uint8_t *)&seed, sizeof seed);
     randomSeed(seed ^ NRF_FICR->DEVICEID[0]);
 
+    lora_pick();
     s_radio_up = lora_begin();
 
     xb_init(&s_lora, &k_lora_ops, nst_call());
     xb_set_rx_cb(&s_lora, on_lora);
-    xb_set_beacon(&s_lora, lora_beacon, BEACON_EVERY_SEC, BEACON_JITTER_SEC);
+    /* No observation beacon on Meshtastic's channel, as no ESP32 station
+     * has one on LoRa: presence is Bluetooth's, the NodeInfo tells the mesh
+     * we are here, and t:identity (worth it) still goes every 30 minutes. */
+    if (!s_mt) xb_set_beacon(&s_lora, lora_beacon, BEACON_EVERY_SEC, BEACON_JITTER_SEC);
     xb_set_pace(&s_lora, LORA_PACE_MS);
     /* The rolling-hour ledger, from the same modem constants the radio was
      * given ten lines up, so the charge cannot drift from the wire. Band
      * g3: 360 s of airtime an hour, 6 s of it kept for sos. */
     static xb_duty_t s_lora_duty;
-    static const xb_lora_air_t k_lora_air = {
-        .bw_hz = (uint32_t)(LORA_BW_KHZ * 1000.0), .sf = LORA_SF,
-        .cr = LORA_CR - 4, .preamble = LORA_PREAMBLE, .crc = true,
+    s_air = (xb_lora_air_t){
+        .bw_hz = (uint32_t)(s_net.bw_khz * 1000.0f), .sf = s_net.sf,
+        .cr = LORA_CR - 4, .preamble = s_net.preamble, .crc = true,
         .implicit_header = false,
     };
+    /* On Meshtastic's channel a wire is one or two frames with a header
+     * each, and the ledger is charged for what actually goes out. */
     struct air_fn { static uint32_t ms(int len, void *ctx) {
-        (void)ctx; return xb_lora_airtime_ms(&k_lora_air, len); } };
+        (void)ctx;
+        if (!s_mt) return xb_lora_airtime_ms(&s_air, len);
+        uint32_t t = 0;
+        for (int i = 0; i < mt_xprs_frames_for(len); i++)
+            t += xb_lora_airtime_ms(&s_air, mt_xprs_frame_len(len, i));
+        return t; } };
     xb_set_duty(&s_lora, &s_lora_duty, air_fn::ms, NULL,
                 360000u, 6000u, 0u);
     xb_set_driver(s_radio_up);
+
+    s_self_node = mt_node_of_call(nst_call(), (int)strlen(nst_call()));
+    if (s_mt && s_radio_up) mesh_begin();
 
     xb_init(&s_ble, &k_ble_ops, nst_call());
     xb_set_rx_cb(&s_ble, on_ble);
@@ -855,9 +1265,17 @@ static void station_loop(void)
     if (s_rx_pending) {
         s_rx_pending = false;
 
-        uint8_t buf[XB_WIRE_MAX + 1];
+        uint8_t buf[MT_FRAME_MAX + 1];
         size_t n = s_radio.getPacketLength();
-        if (n > 0 && n <= XB_WIRE_MAX) {
+        if (s_mt && n > 0 && n <= MT_FRAME_MAX) {
+            int st = s_radio.readData(buf, n);
+            if (st == RADIOLIB_ERR_NONE)
+                lora_rx_mt(buf, (int)n, (int)s_radio.getRSSI(), (int)s_radio.getSNR());
+            else
+                Serial.printf("lora: readData failed (%d)\n", st);
+        } else if (s_mt) {
+            Serial.printf("lora: dropped a %u-byte frame\n", (unsigned)n);
+        } else if (n > 0 && n <= XB_WIRE_MAX) {
             int st = s_radio.readData(buf, n);
             if (st == RADIOLIB_ERR_NONE) {
                 buf[n] = 0;
@@ -879,6 +1297,7 @@ static void station_loop(void)
     }
 
     xb_tick(&s_lora, millis());
+    if (s_mesh_on) { mt_mesh_tick(&s_mesh, millis()); mesh_drain(); }
     if (s_ble_up) { tn_gatt_pump(); xb_tick(&s_ble, millis()); }
     if (s_blob_active) {
         xblob_tick(&s_blob, millis());
@@ -924,6 +1343,9 @@ static void station_loop(void)
                       xb_peer_count(&s_lora, 600),
                       (unsigned long)brx, (unsigned long)btx, xb_peer_count(&s_ble, 600),
                       (unsigned long)s_heard, (int)s_radio_up);
+        if (s_mesh_on) Serial.printf(" | mt frames=%lu relayed=%lu in=%lu out=%lu",
+                                     (unsigned long)s_mesh.st.rx_frames, (unsigned long)s_mesh.st.relayed,
+                                     (unsigned long)s_mesh.st.text_in, (unsigned long)s_mesh.st.text_out);
         if (sof) Serial.printf(" | update %lu/%lu", (unsigned long)sgot, (unsigned long)sof);
         Serial.println();
     }

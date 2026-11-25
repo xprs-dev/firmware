@@ -403,3 +403,23 @@ reuse potential.
   (`boot`, `heap.min_ever`, `crash`) and `/api/log` to watch a running board.
 
 | a lock that names its long holder: `XI_LOCK`/`XI_UNLOCK` (`common/xprs_index/xprsindex.c`) keep `lock_by` (`__func__`) and `lock_at`, and log `store held N ms by <function>` on release after a second or more | the web server has one task, so a long holder of any shared lock is every page waiting; copy the two macros for any new mutex a handler can wait on, and release inside long loops the way `xi_evict_breathe` does |
+
+## nRF52 stations (common/xprs_nrf52, shared by the P1-Pro and the T1000-E)
+
+- **`xlc_aes_encrypt_block()`** — `common/xprs_nrf52/nrf_aes.cpp`. The
+  nRF52840's ECB block as xprs_loracrypto's AES seam: through the SoftDevice
+  once it is up, the ECB peripheral directly before. Encrypt direction only (all
+  Meshtastic needs: CTR channels, CCM DMs). Moved out of the T1000-E's
+  main.cpp when the P1-Pro joined Meshtastic's channel; a third nRF52 board
+  gets it by linking xprs_nrf52.
+- **Meshtastic on an nRF52 station** — `models/sensecap-p1-pro/firmware/src/main.cpp`,
+  the "Meshtastic: the repeater and the bridge" section. The hooks mt_mesh
+  needs on this chip: `mt_air` (CAD + `xb_spend` on the LoRa bearer's ledger),
+  a deliver queue drained from the loop (translations by `xb_send` on BLE
+  only, receipts signed and sent everywhere — the xprs_app.c mesh_out rules),
+  `nst_time_field`-based stamp, and the keys/vnodes kept in one flash page
+  through `nrf_flash`. The T1000-E runs the repeat-only lr_repeat instead; a
+  board that wants the full bridge copies this section.
+- **`lr_worth(wire, len, xprs_channel)`** — `common/xprs_bearer_lora/lr_worth.c`.
+  What deserves LoRa airtime on a shared mesh channel. Apply it on every path
+  that puts somebody else's packet on LoRa (digipeat and bridge), not only one.
