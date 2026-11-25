@@ -1615,6 +1615,30 @@ static struct {
     volatile bool pending;
 } s_qpol;                      /* a q:policy to answer */
 
+/* Where the station is: its owners' phones in reach asked (XPRS.md 8,
+ * `t:request d:<owner> q:pos`), for the web chat's Location card. A phone
+ * answers a station its owner owns, with its own fix, signed and addressed
+ * to us (the core's _onPosAsk). The answer is taken only from a phone we
+ * asked, within two minutes, signed by its key; the point is then the
+ * station's (xwc_pos_found), and what goes out is still the square its
+ * administrator chose to share. The same rules as the T1000-E card's. */
+#define POSASK_MAX    3
+#define POSASK_NEAR_S 180          /* heard directly this recently */
+#define POSASK_WAIT_S 120
+static struct {
+    char to[POSASK_MAX][XPRS_CALL_LEN];
+    char bearer[POSASK_MAX][8];
+    int n;
+    uint32_t at_s;               /* when the asks went out */
+    volatile bool pending;       /* asks to send, on idx_task */
+} s_posask;
+static struct {
+    char wire[XPRS_MAX_WIRE + 1];
+    int len;
+    volatile bool pending;       /* an answer to check, on idx_task */
+} s_posans;
+static bool api_is_owner(const char *call);
+
 /* The last cmd:set this station answered with a verdict (11.10). A phone's
  * Bluetooth advertisement repeats until the phone stops it, so the same
  * command arrives many times: the radio side drops copies for fifteen
@@ -3198,6 +3222,25 @@ static void seen_note_ex(const char *wire, int len, const char *bearer,
         snprintf((char *)s_qpol.to, sizeof s_qpol.to, "%s", asker);
         snprintf((char *)s_qpol.bearer, sizeof s_qpol.bearer, "%s", bearer);
         s_qpol.pending = true;
+    } while (0);
+
+    /* s:pos from a phone we asked where it is: parked whole, the signature
+     * is checked on idx_task. */
+    do {
+        char type[16], sv[24], dst[16], f[XPRS_CALL_LEN];
+        if (!s_posask.at_s || s_posans.pending || len > XPRS_MAX_WIRE) break;
+        xprs_type(&sp, type, sizeof type);
+        if (strcmp(type, "observation") != 0) break;
+        if (!xprs_get_str(&sp, "d", dst, sizeof dst) || !is_self(dst)) break;
+        if (!xprs_get_str(&sp, "s", sv, sizeof sv) || !strstr(sv, "pos")) break;
+        if (!xprs_get_str(&sp, "f", f, sizeof f)) break;
+        bool asked = false;
+        for (int i = 0; i < s_posask.n; i++) asked |= same_base(s_posask.to[i], f);
+        if (!asked) break;
+        memcpy(s_posans.wire, wire, len);
+        s_posans.wire[len] = 0;
+        s_posans.len = len;
+        s_posans.pending = true;
     } while (0);
 
     /* cmd:set carrying a policy key (11.9) or a setup key (11.10), or a
@@ -9310,6 +9353,38 @@ no_announce:
             }
         }
 
+        /* Where the station is: ask the owners' phones the page named. */
+        if (s_posask.pending) {
+            s_posask.pending = false;
+            for (int i = 0; i < s_posask.n; i++) {
+                char w[XPRS_MAX_WIRE + 1], ts[32];
+                time_field(ts, sizeof ts);
+                int n = snprintf(w, sizeof w, "t:request f:%s d:%s %s q:pos", s_call, s_posask.to[i], ts);
+                if (n <= 0 || n >= (int)sizeof w) continue;
+                n = sign_wire(w, n, sizeof w);
+                idx_air(s_posask.bearer[i], w, n);
+                ESP_LOGI(TAG, "pos: asked %s on %s", s_posask.to[i], s_posask.bearer[i]);
+            }
+        }
+        /* And its answer, if it is the one asked for. */
+        if (s_posans.pending) {
+            xprs_t p;
+            char f[XPRS_CALL_LEN] = "", pos[40] = "";
+            const char *why = NULL;
+            if (!xprs_parse(s_posans.wire, s_posans.len, &p)) why = "does not parse";
+            else if (!xprs_get_str(&p, "f", f, sizeof f)) why = "no f:";
+            else if (now_s - s_posask.at_s > POSASK_WAIT_S) why = "too late";
+            else if (!xprs_get_str(&p, "pos", pos, sizeof pos) || !strchr(pos, ',')) why = "no pos:";
+            else if (!any_key(f) || !xprsid_verify(&p, any_key(f))) why = "does not verify";
+            else if (!xwc_pos_found(pos)) why = "not a position";
+            s_posans.pending = false;
+            if (why) ESP_LOGW(TAG, "pos: answer from %s ignored: %s", f, why);
+            else {
+                s_posask.at_s = 0;
+                ESP_LOGI(TAG, "pos: the station's point is now %s's (the page decides what is shared)", f);
+            }
+        }
+
 #ifdef XPRSBLE_RX_TRACE
         {
             extern void tn_hci_trace_dump(void);
@@ -10254,6 +10329,33 @@ static void api_heard(const xprs_t *p, const char *wire, int len)
     }
 }
 
+/* The web chat's Location card asked where the station is: its owners'
+ * phones heard directly lately are asked (s_posask, sent on idx_task). On
+ * the HTTP task; reads the devices table only. */
+static int api_locate(void)
+{
+    static xst_dev_t rows[24];
+    if (s_posask.pending) return s_posask.n;
+    int n = xst_devices_links(rows, 24, POSASK_NEAR_S), k = 0;
+    for (int i = 0; i < n && k < POSASK_MAX; i++) {
+        const xst_dev_t *d = &rows[i];
+        if (d->hops || d->api || d->call[0] != 'X' || d->call[1] != '1') continue;
+        if (!xauth_is_owner(d->call) && !api_is_owner(d->call)) continue;
+        bool dup = false;
+        for (int j = 0; j < k; j++) dup |= same_base(s_posask.to[j], d->call);
+        if (dup) continue;
+        snprintf(s_posask.to[k], sizeof s_posask.to[k], "%s", d->call);
+        snprintf(s_posask.bearer[k], sizeof s_posask.bearer[k], "%s", d->bearer);
+        k++;
+    }
+    s_posask.n = k;
+    if (!k) return 0;
+    s_posask.at_s = (uint32_t)(esp_timer_get_time() / 1000000);
+    if (!s_posask.at_s) s_posask.at_s = 1;
+    s_posask.pending = true;
+    return k;
+}
+
 /* The one session that reads everybody's mail over HTTP: the station's
  * owner (11.9, the `owner` policy key) or the web chat's administrator. */
 static bool api_is_owner(const char *call)
@@ -10921,6 +11023,7 @@ static xprs_api_cfg_t s_api_cfg = {
     .peer_key = any_key,
     .visitor_heard = web_visitor_heard,
     .is_owner = api_is_owner,
+    .locate = api_locate,
     .session_extra = api_session_extra,
     .on_card = api_on_card,
     .serve_json = api_serve_json,

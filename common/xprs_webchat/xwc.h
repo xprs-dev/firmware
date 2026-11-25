@@ -75,6 +75,11 @@ typedef struct {
     /* A hosted room took [wire]: the files it names are that room's, served
      * to whoever may read it (XPRS.md 11.2, xwcf_acl_bind). NULL: none. */
     void (*bind)(const char *wire, int len, const char *room);
+    /* Ask the station's owners' phones in reach where they are (XPRS.md 8,
+     * `t:request d:<owner> q:pos`); the answer comes back later through
+     * xwc_pos_found. Returns how many were asked; 0 when none is in reach.
+     * NULL: this station has no way to ask (the page offers no button). */
+    int (*locate)(void);
 } xwc_cb_t;
 
 /** Start. [station_priv] is the station's secp256k1 scalar (32 bytes). */
@@ -105,9 +110,16 @@ int xwc_admin_post(const char *body, bool local, char *buf, size_t cap);
 bool        xwc_local_private(void);
 const char *xwc_who_may_post(void);    /* everyone | local | nobody */
 const char *xwc_who_may_alert(void);   /* moderators | everyone */
-/** The position the administrator set (`pos`, `acc` settings), as the beacon
- *  carries it; false when none is set. */
+/** Where the station says it is, as the beacon and the identity carry it:
+ *  the square its administrator chose to share (XPRS.md 15.1, 6.2.1;
+ *  `pos_share`, `pos_at`, `pos_range`, the app's own choice), the digits
+ *  past the range barred, with the range in metres as `acc`. False when it
+ *  is not shared or no point is set. */
 bool        xwc_station_pos(char *pos, size_t pcap, uint32_t *acc_m);
+/** An owner's phone said where it is ("lat,lon"), answering the station's
+ *  ask: kept as the station's point. Sharing stays as the administrator
+ *  chose. False when it is not a position. */
+bool        xwc_pos_found(const char *latlon);
 const char *xwc_admin_call(void);      /* or NULL */
 
 /* ---- hosted rooms (/api/rooms) ------------------------------------------- */

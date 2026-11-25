@@ -137,6 +137,12 @@ typedef struct {
 
     /** The timezone string for /api/status, e.g. "+00:00". */
     const char *tz;
+
+    /** Ask the station's owners' phones in reach where they are (XPRS.md
+     *  8, `t:request d:<owner> q:pos`), for the web chat's Location card:
+     *  how many were asked, 0 when none is in reach. The answer comes back
+     *  through xwc_pos_found. Optional; NULL offers no such button. */
+    int (*locate)(void);
 } xprs_api_cfg_t;
 
 /** Start the server. The cfg (and everything it points at) must outlive it. */

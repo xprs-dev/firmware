@@ -778,13 +778,18 @@ int xwc_station_session(const char *m, char *out, size_t cap)
 }
 
 /* ---- init --------------------------------------------------------------- */
+static uint32_t s_pos_asked;   /* uptime of the last ask of the owners' phones */
+static void pos_from_older_page(void);
+
 void xwc_init(const xwc_cb_t *cb, const char *station_call, const uint8_t *station_priv)
 {
     s_cb = *cb;
     base_call(station_call ? station_call : "", s_station);
     s_priv = station_priv;
     s_have_pub = s_priv && xprssig_public_key(s_priv, s_station_pub);
+    s_pos_asked = 0;
     rooms_load();
+    pos_from_older_page();
 }
 
 void xwc_reset(void)
@@ -924,17 +929,83 @@ bool        xwc_local_private(void) { return strcmp(kv_or("wc_lp", "1"), "0") !=
 const char *xwc_who_may_post(void)  { return kv_or("wc_post", "everyone"); }
 const char *xwc_who_may_alert(void) { return kv_or("wc_alert", "moderators"); }
 
-/* Where the station says it is (XPRS.md 15.1), as its administrator set it
- * from the page: `pos` carried as given (its decimals are the precision
- * claimed), `acc` in metres. The page does the arithmetic (a country's
- * centre and radius, a spot coarsened); the station stores and announces. */
+/* Where the station is: the app's own choice (XPRS.md 15.1, 6.2.1), the
+ * same three settings as on a phone or a server (the core's
+ * XprsSharedPosition): whether it is shared (wc_psh: "1", "0", or never
+ * chosen), the exact point (wc_pat, kept here, never aired) and the range
+ * everyone sees (wc_prg, metres). What goes out is the square. */
+static bool pos_ok(const char *v);
+#define POS_ASK_WAIT_S 120
+
+static uint32_t pos_range(void)
+{
+    uint32_t r = (uint32_t)strtoul(kv_or("wc_prg", "100000"), NULL, 10);
+    for (int i = 0; i < XPRS_POS_RANGES; i++)
+        if (xprs_pos_ranges_m[i] == r) return r;
+    return 100000;
+}
+
 bool xwc_station_pos(char *pos, size_t pcap, uint32_t *acc_m)
 {
-    const char *p = kv_or("wc_pos", "");
-    if (!*p) return false;
-    if (pos) snprintf(pos, pcap, "%s", p);
-    if (acc_m) *acc_m = (uint32_t)strtoul(kv_or("wc_acc", "0"), NULL, 10);
+    const char *at = kv_or("wc_pat", "");
+    double lat, lon;
+    if (strcmp(kv_or("wc_psh", ""), "1") || !*at || sscanf(at, "%lf,%lf", &lat, &lon) != 2)
+        return false;
+    uint32_t r = pos_range();
+    char b[64];
+    if (!xprs_pos_barred(lat, lon, r, b, sizeof b)) return false;
+    if (pos) snprintf(pos, pcap, "%s", b);
+    if (acc_m) *acc_m = r;
     return true;
+}
+
+bool xwc_pos_found(const char *latlon)
+{
+    double lat, lon;
+    char v[32];
+    if (!latlon || sscanf(latlon, "%lf,%lf", &lat, &lon) != 2 ||
+        !(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) return false;
+    snprintf(v, sizeof v, "%.5f,%.5f", lat, lon);
+    if (!s_cb.kv_set || !s_cb.kv_set("wc_pat", v)) return false;
+    s_pos_asked = 0;
+    return true;
+}
+
+/* Asking now, and not long ago. */
+static bool pos_asking(void)
+{
+    uint32_t up = s_cb.uptime ? s_cb.uptime() : 0;
+    return s_pos_asked && up - s_pos_asked < POS_ASK_WAIT_S;
+}
+
+static int pos_locate(void)
+{
+    if (!s_cb.locate) return 0;
+    int n = s_cb.locate();
+    if (n > 0) {
+        uint32_t up = s_cb.uptime ? s_cb.uptime() : 0;
+        s_pos_asked = up ? up : 1;      /* 0 means "not asking" */
+    }
+    return n;
+}
+
+/* A place an older page set (wc_pos as aired, wc_acc in metres) becomes the
+ * same choice once: its owner had chosen to share, so sharing stays on, at
+ * the next range up (25 km is 100 km). The old keys go. */
+static void pos_from_older_page(void)
+{
+    const char *old = kv_or("wc_pos", "");
+    if (!*old || !s_cb.kv_set) return;
+    if (!*kv_or("wc_psh", "") && pos_ok(old)) {
+        char r[12];
+        snprintf(r, sizeof r, "%lu",
+                 (unsigned long)xprs_pos_range_for((uint32_t)strtoul(kv_or("wc_acc", "0"), NULL, 10)));
+        s_cb.kv_set("wc_pat", old);
+        s_cb.kv_set("wc_prg", r);
+        s_cb.kv_set("wc_psh", "1");
+    }
+    s_cb.kv_set("wc_pos", "");
+    s_cb.kv_set("wc_acc", "");
 }
 
 /* "lat,lon" in degrees, at most five decimals each, in range. */
@@ -1001,11 +1072,15 @@ static int admin_state(jb_t *j, const char *token, bool local)
     if (admin) jb_str(j, admin); else jb(j, "null");
     jb(j, ",\"you\":%s,\"local\":%s,\"claimable\":%s", you ? "true" : "false",
        local ? "true" : "false", (!admin && local) ? "true" : "false");
-    if (you)
+    if (you) {
+        const char *sh = kv_or("wc_psh", "");
         jb(j, ",\"settings\":{\"local_private\":%s,\"who_may_post\":\"%s\",\"who_may_alert\":\"%s\","
-              "\"pos\":\"%s\",\"acc\":%s}",
+              "\"pos_share\":%s,\"pos_chosen\":%s,\"pos_at\":\"%s\",\"pos_range\":%lu,"
+              "\"pos_locate\":%s,\"pos_asking\":%s}",
            xwc_local_private() ? "true" : "false", xwc_who_may_post(), xwc_who_may_alert(),
-           kv_or("wc_pos", ""), kv_or("wc_acc", "0"));
+           strcmp(sh, "1") ? "false" : "true", *sh ? "true" : "false", kv_or("wc_pat", ""),
+           (unsigned long)pos_range(), s_cb.locate ? "true" : "false", pos_asking() ? "true" : "false");
+    }
     moderation_state(j, token, you);
     jb(j, "}");
     return 200;
@@ -1077,17 +1152,31 @@ int xwc_admin_post(const char *body, bool local, char *buf, size_t cap)
                 return refuse(buf, cap, 400, "who_may_alert must be moderators or everyone");
             s_cb.kv_set("wc_alert", v);
         }
-        if (jget(body, "pos", v, sizeof v)) {
-            if (*v && !pos_ok(v))
-                return refuse(buf, cap, 400, "pos is \"lat,lon\" in degrees, at most 5 decimals");
-            s_cb.kv_set("wc_pos", v);
-        }
-        if (jget(body, "acc", v, sizeof v)) {
+        /* Where the station is: the app's own three settings. The older
+         * page's pos and acc are no longer taken. */
+        if (jhas(body, "pos") || jhas(body, "acc"))
+            return refuse(buf, cap, 400, "unknown setting: pos and acc are pos_at and pos_range");
+        char sh[8] = "", at[32] = "", rg[12] = "";
+        bool has_sh = jget(body, "pos_share", sh, sizeof sh);
+        bool has_at = jget(body, "pos_at", at, sizeof at);
+        bool has_rg = jget(body, "pos_range", rg, sizeof rg);
+        if (has_sh && strcmp(sh, "true") && strcmp(sh, "false"))
+            return refuse(buf, cap, 400, "pos_share must be true or false");
+        if (has_at && *at && !pos_ok(at))
+            return refuse(buf, cap, 400, "pos_at is \"lat,lon\" in degrees, at most 5 decimals");
+        if (has_rg) {
             char *end = NULL;
-            unsigned long a = strtoul(v, &end, 10);
-            if (!*v || *end || v[0] == '-' || a > 3000000UL)
-                return refuse(buf, cap, 400, "acc is metres, 0 to 3000000");
-            s_cb.kv_set("wc_acc", v);
+            unsigned long r = strtoul(rg, &end, 10);
+            bool known = false;
+            for (int i = 0; i < XPRS_POS_RANGES; i++) known |= xprs_pos_ranges_m[i] == r;
+            if (!known || !end || *end || !*rg) return refuse(buf, cap, 400, "pos_range is one of 100000, 10000, 1000, 100, 10 metres");
+            s_cb.kv_set("wc_prg", rg);
+        }
+        if (has_at) s_cb.kv_set("wc_pat", at);
+        if (has_sh) {
+            s_cb.kv_set("wc_psh", sh[0] == 't' ? "1" : "0");
+            /* Yes, with no point yet: ask the owners' phones once. */
+            if (sh[0] == 't' && !*kv_or("wc_pat", "")) pos_locate();
         }
         jb_t j; jb_init(&j, buf, cap);
         return admin_state(&j, token, local);
@@ -1103,7 +1192,15 @@ int xwc_admin_post(const char *body, bool local, char *buf, size_t cap)
         jb_t j; jb_init(&j, buf, cap);
         return admin_state(&j, token, local);
     }
-    return refuse(buf, cap, 400, "action must be claim, release, set, appoint, dismiss or lift");
+    /* Ask the owners' phones in reach where they are (XPRS.md 8); the point
+     * arrives through xwc_pos_found and the page reads it from the state. */
+    if (strcmp(action, "locate") == 0) {
+        if (!s_cb.locate) return refuse(buf, cap, 409, "this station cannot ask for its location");
+        if (pos_locate() <= 0) return refuse(buf, cap, 409, "no owner's phone in reach");
+        jb_t j; jb_init(&j, buf, cap);
+        return admin_state(&j, token, local);
+    }
+    return refuse(buf, cap, 400, "action must be claim, release, set, appoint, dismiss, lift or locate");
 }
 
 /* ---- hosted rooms --------------------------------------------------------- */
@@ -1682,6 +1779,12 @@ int xwc_services_json(char *buf, size_t cap, const char *tabs_csv, bool storage)
        s_priv ? "true" : "false", s_priv ? "true" : "false", xwc_who_may_alert());
     /* And keeps photographs: gallery rooms, where a card gives it the room. */
     if (s_priv && storage) jb(&j, ",\"gallery\":true,\"storage\":true");
+    /* Where the station says it is, as it is aired: the square, never the
+     * point the administrator set. */
+    char pos[64];
+    uint32_t acc = 0;
+    if (xwc_station_pos(pos, sizeof pos, &acc))
+        jb(&j, ",\"place\":{\"pos\":\"%s\",\"acc\":%lu}", pos, (unsigned long)acc);
     jb(&j, "}");
     return (int)j.n;
 }

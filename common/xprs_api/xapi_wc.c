@@ -812,6 +812,12 @@ static esp_err_t h_file_post(httpd_req_t *req)
 }
 
 /* ---- the hooks ------------------------------------------------------ */
+/* The owners' phones, asked where they are: the board's to do (radio). */
+static int locate_cb(void)
+{
+    return s_cfg && s_cfg->locate ? s_cfg->locate() : 0;
+}
+
 int xapi_wc_services(char *buf, size_t cap)
 {
     /* Every panel the board serves: the page hides what is not listed. A
@@ -850,7 +856,7 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
     static const xwc_cb_t cb = {
         .now = now_cb, .uptime = uptime_cb, .peer_key = peer_key_cb, .random_bytes = random_cb,
         .kv_get = kv_get, .kv_set = kv_set, .air = air_cb, .file = file_cb, .bind = bind_cb,
-        .acts_path = "/idx/wcacts.txt",
+        .acts_path = "/idx/wcacts.txt", .locate = locate_cb,
     };
     const nostr_keys_t *k = nostr_keys_available() ? nostr_keys_get() : NULL;
     xwc_init(&cb, cfg->callsign, k ? k->private_key : NULL);

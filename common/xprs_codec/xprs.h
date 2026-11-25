@@ -206,6 +206,27 @@ bool xprs_is_unissued(const char *call, int len);
 int xprs_append_via(const char *wire, int len, const char *self,
                     char *out, int cap);
 
+/* ---- where a station is (sections 15.1, 6.2.1) -------------------------
+ * The ranges an owner picks from, in metres, coarsest first: each leaves one
+ * more decimal readable. 100 km is the default. The same list and rule as
+ * the core (xprs_shared_position.dart: kXprsPosRangesM, xprsPosAuthored). */
+#define XPRS_POS_RANGES 5
+extern const uint32_t xprs_pos_ranges_m[XPRS_POS_RANGES];
+
+/* Decimals everyone may read for a range: none for 100 km, one for 10 km,
+ * two for 1 km, three for 100 m, four for 10 m. */
+int xprs_pos_decimals(uint32_t range_m);
+
+/* The finest offered range that is not finer than [acc_m]: an older value
+ * (25 km, 5 km) is never made more precise than its owner chose. */
+uint32_t xprs_pos_range_for(uint32_t acc_m);
+
+/* [lat],[lon] as a station airs it for [range_m]: the fix to four decimals,
+ * every digit past the range a bar (U+2588), so 38.7077,-9.1365 at 100 km
+ * is "38█████,-9█████". The square its readable digits name, never a
+ * rounding. False when it does not fit [cap] or is out of range. */
+bool xprs_pos_barred(double lat, double lon, uint32_t range_m, char *out, int cap);
+
 #ifdef __cplusplus
 }
 #endif

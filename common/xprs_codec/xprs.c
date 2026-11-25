@@ -13,6 +13,7 @@
  */
 #include "xprs.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static bool key_ok(const char *k, int n)
@@ -498,4 +499,50 @@ int xprs_append_via(const char *wire, int len, const char *self,
     nv[n] = 0;
 
     return encode_ex(&p, false, "via", nv, out, cap);
+}
+
+/* ---- where a station is (15.1, 6.2.1) ------------------------------- */
+const uint32_t xprs_pos_ranges_m[XPRS_POS_RANGES] = {100000, 10000, 1000, 100, 10};
+
+int xprs_pos_decimals(uint32_t m)
+{
+    return m <= 10 ? 4 : m <= 100 ? 3 : m <= 1000 ? 2 : m <= 10000 ? 1 : 0;
+}
+
+uint32_t xprs_pos_range_for(uint32_t acc_m)
+{
+    for (int i = XPRS_POS_RANGES - 1; i >= 0; i--)
+        if (xprs_pos_ranges_m[i] >= acc_m) return xprs_pos_ranges_m[i];
+    return xprs_pos_ranges_m[0];
+}
+
+/* One coordinate: four decimals, the digits past [keep] barred. */
+static int pos_cut(double v, int keep, char *out, int cap)
+{
+    char t[24];
+    /* Four decimals in integers, rounded half away from zero, so the C and
+     * the Dart (toStringAsFixed) write the same digits. */
+    long long u = (long long)(v * 10000.0 + (v < 0 ? -0.5 : 0.5));
+    long long a = u < 0 ? -u : u;
+    int tl = snprintf(t, sizeof t, "%s%lld.%04lld", u < 0 ? "-" : "", a / 10000, a % 10000);
+    if (tl <= 0 || tl >= (int)sizeof t) return -1;
+    int dot = (int)(strchr(t, '.') - t);
+    int at = keep ? dot + 1 + keep : dot;
+    int bars = tl - at, n = at + bars * 3;
+    if (n >= cap) return -1;
+    memcpy(out, t, at);
+    for (int i = 0; i < bars; i++) memcpy(out + at + i * 3, "\xE2\x96\x88", 3);
+    out[n] = 0;
+    return n;
+}
+
+bool xprs_pos_barred(double lat, double lon, uint32_t range_m, char *out, int cap)
+{
+    if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) || cap < 4) return false;
+    int keep = xprs_pos_decimals(range_m);
+    int a = pos_cut(lat, keep, out, cap - 1);
+    if (a < 0) return false;
+    out[a] = ',';
+    int b = pos_cut(lon, keep, out + a + 1, cap - a - 1);
+    return b >= 0;
 }

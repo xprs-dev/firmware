@@ -230,6 +230,31 @@ int main(void)
     CHECK(p.n == 3, "skips must leave t,f,m only (got %d)", p.n);
     CHECK(!xprs_parse("x:message f:A m:y", 17, &p), "no t: must not parse");
 
+    /* 6. Where a station is: the core's worked values
+     *    (core/test/xprs_shared_position_test.dart). */
+    {
+        char b[64];
+#define BAR "\xE2\x96\x88"
+        CHECK(xprs_pos_barred(38.70771234, -9.13654321, 100000, b, sizeof b) &&
+              strcmp(b, "38" BAR BAR BAR BAR BAR ",-9" BAR BAR BAR BAR BAR) == 0, "100 km: '%s'", b);
+        CHECK(xprs_pos_barred(38.7077, -9.1365, 10000, b, sizeof b) &&
+              strcmp(b, "38.7" BAR BAR BAR ",-9.1" BAR BAR BAR) == 0, "10 km: '%s'", b);
+        CHECK(xprs_pos_barred(38.7077, -9.1365, 1000, b, sizeof b) &&
+              strcmp(b, "38.70" BAR BAR ",-9.13" BAR BAR) == 0, "1 km: '%s'", b);
+        CHECK(xprs_pos_barred(38.7077, -9.1365, 100, b, sizeof b) &&
+              strcmp(b, "38.707" BAR ",-9.136" BAR) == 0, "100 m: '%s'", b);
+        CHECK(xprs_pos_barred(38.7077, -9.1365, 10, b, sizeof b) &&
+              strcmp(b, "38.7077,-9.1365") == 0, "10 m: nothing hidden: '%s'", b);
+        CHECK(xprs_pos_barred(-0.25, 0.5, 100000, b, sizeof b) &&
+              strcmp(b, "-0" BAR BAR BAR BAR BAR ",0" BAR BAR BAR BAR BAR) == 0, "south of the equator keeps its sign: '%s'", b);
+        CHECK(!xprs_pos_barred(91, 0, 100000, b, sizeof b), "out of range");
+        CHECK(!xprs_pos_barred(38.7, -9.1, 100000, b, 10), "too small a buffer");
+        CHECK(xprs_pos_range_for(25000) == 100000 && xprs_pos_range_for(5000) == 10000 &&
+              xprs_pos_range_for(0) == 10 && xprs_pos_range_for(171000) == 100000,
+              "an older radius goes to the next range up");
+#undef BAR
+    }
+
     if (g_fail) { printf("FAILED: %d check(s)\n", g_fail); return 1; }
     printf("OK: all checks passed\n");
     return 0;

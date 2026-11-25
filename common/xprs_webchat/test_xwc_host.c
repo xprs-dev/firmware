@@ -65,6 +65,10 @@ static int file_cb(const char *w, int n)
 /* The files a room took: the room and the wire, as the host binds them. */
 static char s_bound[256];
 static void bind_cb(const char *w, int n, const char *room) { snprintf(s_bound, sizeof s_bound, "%s %.*s", room, n, w); }
+/* The owners' phones in reach (xwc_cb_t.locate): how many there are, and
+ * how many times they were asked. */
+static int s_owners_near, s_located;
+static int locate_cb(void) { s_located += s_owners_near > 0; return s_owners_near; }
 static bool aired_has(const char *s) { for (int i = 0; i < s_naired && i < 32; i++) if (strstr(s_aired[i], s)) return true; return false; }
 static bool filed_has(const char *s) { for (int i = 0; i < s_nfiled && i < 32; i++) if (strstr(s_filed[i], s)) return true; return false; }
 
@@ -77,7 +81,7 @@ static void fresh(void)
     remove(ACTS);
     s_nkv = 0; s_naired = s_nfiled = 0;
     xwc_reset();
-    s_cb = (xwc_cb_t){ now_cb, uptime_cb, peer_key_cb, random_cb, kv_get_cb, kv_set_cb, air_cb, file_cb, ACTS, bind_cb };
+    s_cb = (xwc_cb_t){ now_cb, uptime_cb, peer_key_cb, random_cb, kv_get_cb, kv_set_cb, air_cb, file_cb, ACTS, bind_cb, NULL };
     s_bound[0] = 0;
     xwc_init(&s_cb, "X3STAT", s_station->priv);
 }
@@ -206,29 +210,45 @@ int main(void)
     snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"who_may_post\":\"everyone\"}}", tok);
     admin_post(body);
 
-    printf("where the station is (pos, acc)\n");
+    printf("where the station is (pos_share, pos_at, pos_range)\n");
     {
-        char pv[24]; uint32_t acc = 1;
-        CHECK(!xwc_station_pos(pv, sizeof pv, &acc), "no position until one is set");
+        char pv[64]; uint32_t acc = 1;
+#define BAR "\xE2\x96\x88"
+        xwc_admin_json(s_buf, sizeof s_buf, tok, true);
+        CHECK(jfind("\"pos_share\":false,\"pos_chosen\":false,\"pos_at\":\"\",\"pos_range\":100000"),
+              "nothing shared, and nothing chosen, until the administrator says");
+        CHECK(jfind("\"pos_locate\":false"), "a station with no way to ask offers no button");
+        CHECK(!xwc_station_pos(pv, sizeof pv, &acc), "no position until one is shared");
         static const char *const bad[] = {
-            "\"pos\":\"91,0\"", "\"pos\":\"38.7,-9.1,3\"", "\"pos\":\"38.123456,-9.1\"",
-            "\"pos\":\"Lisbon\"", "\"pos\":\"38.,-9\"", "\"acc\":-1", "\"acc\":3000001",
-            "\"acc\":\"300km\"",
+            "\"pos_at\":\"91,0\"", "\"pos_at\":\"38.7,-9.1,3\"", "\"pos_at\":\"38.123456,-9.1\"",
+            "\"pos_at\":\"Lisbon\"", "\"pos_at\":\"38.,-9\"", "\"pos_range\":25000",
+            "\"pos_range\":\"100km\"", "\"pos_share\":\"yes\"", "\"pos\":\"39,-8\"", "\"acc\":171000",
         };
         int refused = 0;
         for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
             snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{%s}}", tok, bad[i]);
             if (admin_post(body) == 400) refused++;
         }
-        CHECK(refused == (int)(sizeof bad / sizeof bad[0]), "malformed positions and radii are refused");
-        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos\":\"39,-8\",\"acc\":171000}}", tok);
-        CHECK(admin_post(body) == 200 && jfind("\"pos\":\"39,-8\",\"acc\":171000"), "a country's centre and radius are kept");
-        CHECK(xwc_station_pos(pv, sizeof pv, &acc) && !strcmp(pv, "39,-8") && acc == 171000,
-              "and given to the beacon as set");
-        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos\":\"-33.86882,151.20929\",\"acc\":0}}", tok);
-        CHECK(admin_post(body) == 200 && xwc_station_pos(pv, sizeof pv, &acc) && acc == 0, "a spot to five decimals");
-        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos\":\"\"}}", tok);
-        CHECK(admin_post(body) == 200 && !xwc_station_pos(pv, sizeof pv, &acc), "cleared, the station says nothing");
+        CHECK(refused == (int)(sizeof bad / sizeof bad[0]), "malformed points and ranges, and the older keys, are refused");
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":"
+                 "{\"pos_share\":true,\"pos_at\":\"49.6317,8.6683\",\"pos_range\":100000}}", tok);
+        CHECK(admin_post(body) == 200 && jfind("\"pos_share\":true,\"pos_chosen\":true,\"pos_at\":\"49.6317,8.6683\""),
+              "shared: the administrator sees the point");
+        CHECK(xwc_station_pos(pv, sizeof pv, &acc) && !strcmp(pv, "49" BAR BAR BAR BAR BAR ",8" BAR BAR BAR BAR BAR) &&
+              acc == 100000, "the beacon carries the square, as a phone airs it");
+        xwc_services_json(s_buf, sizeof s_buf, "chat,traffic", false);
+        CHECK(jfind("\"place\":{\"pos\":\"49" BAR BAR BAR BAR BAR ",8" BAR BAR BAR BAR BAR "\",\"acc\":100000}") &&
+              !jfind("49.63"), "visitors get the square, never the point");
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos_range\":1000}}", tok);
+        CHECK(admin_post(body) == 200 && xwc_station_pos(pv, sizeof pv, &acc) &&
+              !strcmp(pv, "49.63" BAR BAR ",8.66" BAR BAR) && acc == 1000, "within 1 km: two decimals readable");
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos_share\":false}}", tok);
+        CHECK(admin_post(body) == 200 && !xwc_station_pos(pv, sizeof pv, &acc), "not shared, the station says nothing");
+        xwc_services_json(s_buf, sizeof s_buf, "chat,traffic", false);
+        CHECK(!jfind("place"), "and the page shows no place");
+        snprintf(body, sizeof body, "{\"action\":\"locate\",\"session\":\"%s\"}", tok);
+        CHECK(admin_post(body) == 409, "locate where the station has no way to ask");
+#undef BAR
     }
 
     printf("moderation\n");
@@ -558,6 +578,54 @@ int main(void)
     admin_post(body);
     CHECK(gate(bob, "t:warning f:%s kind:outage sev:watch ts:%s m:power cut", 0) == 0, "opened to everyone, bob may");
     CHECK(gate(bob, "t:sos f:%s ts:%s m:help", 0) == 0, "an sos is never gated here");
+
+    printf("where the station is: its owner's phone says (q:pos)\n");
+    {
+        char pv[64]; uint32_t acc = 0;
+        fresh();
+        s_cb.locate = locate_cb;
+        xwc_init(&s_cb, "X3STAT", s_station->priv);
+        CHECK(claim(alice, tok), "alice administers it");
+        xwc_admin_json(s_buf, sizeof s_buf, tok, true);
+        CHECK(jfind("\"pos_locate\":true,\"pos_asking\":false"), "a station that can ask offers the button");
+        s_owners_near = 0;
+        snprintf(body, sizeof body, "{\"action\":\"locate\",\"session\":\"%s\"}", tok);
+        CHECK(admin_post(body) == 409 && jfind("no owner's phone in reach"), "no owner's phone near: said so");
+        s_owners_near = 1;
+        CHECK(admin_post(body) == 200 && s_located == 1 && jfind("\"pos_asking\":true"), "one near: asked, and the page waits");
+        CHECK(!xwc_pos_found("north") && !xwc_pos_found("91,0"), "an answer that is not a position is not kept");
+        CHECK(xwc_pos_found("38.70771,-9.13654"), "the phone's answer is kept");
+        xwc_admin_json(s_buf, sizeof s_buf, tok, true);
+        CHECK(jfind("\"pos_share\":false") && jfind("\"pos_at\":\"38.70771,-9.13654\"") && jfind("\"pos_asking\":false"),
+              "as the point, while sharing stays as it was chosen");
+        CHECK(!xwc_station_pos(pv, sizeof pv, &acc), "so nothing goes out yet");
+        /* Yes with no point: asked once at the yes. */
+        fresh();
+        s_cb.locate = locate_cb;
+        xwc_init(&s_cb, "X3STAT", s_station->priv);
+        claim(alice, tok);
+        s_located = 0;
+        snprintf(body, sizeof body, "{\"action\":\"set\",\"session\":\"%s\",\"settings\":{\"pos_share\":true,\"pos_range\":100000}}", tok);
+        CHECK(admin_post(body) == 200 && s_located == 1 && jfind("\"pos_asking\":true"),
+              "yes with no point asks the owners' phones by itself");
+        xwc_pos_found("38.70771,-9.13654");
+        CHECK(xwc_station_pos(pv, sizeof pv, &acc) && acc == 100000, "and the answer goes out as the square");
+        s_cb.locate = NULL;
+    }
+
+    printf("where the station is: what an older page set\n");
+    {
+        char pv[64]; uint32_t acc = 0;
+        fresh();
+        kv_set_cb("wc_pos", "49.6,8.7");
+        kv_set_cb("wc_acc", "25000");
+        xwc_init(&s_cb, "X3STAT", s_station->priv);
+        CHECK(xwc_station_pos(pv, sizeof pv, &acc) && acc == 100000 &&
+              !strcmp(pv, "49\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88,8\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88\xE2\x96\x88"),
+              "its owner had shared: still shared, at the next range up (25 km is 100 km)");
+        CHECK(!*(kv_get_cb("wc_pos") ? kv_get_cb("wc_pos") : "") && !*(kv_get_cb("wc_acc") ? kv_get_cb("wc_acc") : ""),
+              "the older keys are gone");
+    }
 
     printf("%s\n", fails ? "FAILED" : "all passed");
     return fails ? 1 : 0;
