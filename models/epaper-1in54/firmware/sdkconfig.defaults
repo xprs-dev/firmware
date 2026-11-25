@@ -188,3 +188,8 @@ CONFIG_XPRS_LORA=n
 # name. A few kilobytes back from a slot that was 117 bytes over
 # (2026-11-25, the station's location and the owner's phone).
 # CONFIG_ESP_ERR_TO_NAME_LOOKUP is not set
+
+# The 1.5 MB app slot again (2026-11-25, 3.9 KB over after the web chat's map
+# grew): assertions keep stopping the board but without their file and line
+# text. The partition table cannot change over the air, so the slot cannot.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
