@@ -2030,6 +2030,21 @@ static void rel_resume_set(const char *call, uint32_t until_s, uint32_t wait_s)
     }
 }
 
+/* New mail for @p call was just kept: the next sighting of them is worth a
+ * release now, not when the period from their last sighting runs out. The
+ * period was armed by every sighting, mail or not, so somebody heard on the
+ * way out and back within ten minutes found the station silent about the
+ * letter left for them meanwhile (bench, 2026-11-27). idx_task only. */
+static void rel_mail_arrived(const char *call)
+{
+    for (int i = 0; i < 16; i++) {
+        if (strncasecmp(s_rel_seen[i].call, call, XPRS_CALL_LEN) != 0) continue;
+        s_rel_seen[i].wait_s = 1;     /* the next sighting releases */
+        s_rel_seen[i].until_s = 0;
+        return;
+    }
+}
+
 /*
  * XPRS.md 25.3: standing alerts. An alert is a t:warning or t:info with
  * scope:local and until:, and it is archived like everything else heard;
@@ -9181,9 +9196,14 @@ static void idx_task(void *arg)
                 } else if (xprsindex_add3(s_index, s_idxq[r].wire, s_idxq[r].len,
                                           s_idxq[r].rssi, s_idxq[r].own,
                                           s_idxq[r].own ? (uint32_t)time(NULL) : 0,
-                                          s_idxq[r].bearer) == XI_ADD_STORED &&
-                           other) {
-                    xmc_took(&s_mailcap, mfrom, hour);
+                                          s_idxq[r].bearer) == XI_ADD_STORED) {
+                    if (other) xmc_took(&s_mailcap, mfrom, hour);
+                    char mto[XPRS_CALL_LEN] = "";
+                    xprs_t mp;
+                    if (xprs_parse(s_idxq[r].wire, s_idxq[r].len, &mp) &&
+                        xprs_get_str(&mp, "d", mto, sizeof mto) && mto[0] &&
+                        !is_self(mto))
+                        rel_mail_arrived(mto);
                 }
             }
             /* 12.7.1: a sealed letter left here first-hand is kept, and its
