@@ -9,6 +9,6 @@
 # test_xprsindex_host.sh) and are deliberately not listed in SRCS — same
 # arrangement as xprs_codec/test_xprs_host.c.
 idf_component_register(
-    SRCS "xprsindex.c"
+    SRCS "xprsindex.c" "xmailcap.c"
     INCLUDE_DIRS "."
     REQUIRES xprs_codec fatfs vfs log esp_timer xprs_common)

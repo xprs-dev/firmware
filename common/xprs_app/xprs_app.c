@@ -124,6 +124,7 @@ static uint32_t heap_floor(void);   /* the board's, or the default above */
 #include "xprs_power.h"
 #include "xprs_tz.h"
 #include "xprsindex.h"
+#include "xmailcap.h"
 #include "xgossip.h"
 #include "xcadence.h"
 #include "rns_tcp.h"
@@ -640,6 +641,21 @@ static void idx_enqueue_own(const char *wire, int len, uint8_t bearer)
     s_idxq[w].bearer = bearer;
     s_idxq[w].own = true;
     s_idxq_w = nw;
+}
+
+/* The hourly limits on other people's mail (xmailcap.h), idx_task only. */
+static xmc_t s_mailcap;
+
+/* A directed packet neither from us nor for us: somebody else's mail. Its
+ * sender in @p from. */
+static bool mail_of_other(const char *wire, int len, char *from, int cap)
+{
+    xprs_t p;
+    char d[XPRS_CALL_LEN] = "";
+    if (!xprs_parse(wire, len, &p)) return false;
+    if (!xprs_get_str(&p, "d", d, sizeof d) || !d[0] || is_self(d)) return false;
+    if (!xprs_get_str(&p, "f", from, cap) || !from[0] || is_self(from)) return false;
+    return true;
 }
 
 static uint8_t bearer_code(const char *name)
@@ -5057,7 +5073,8 @@ static void status_task(void *arg)
          *   quiet seconds since the last one; -1 = never heard anything */
         ESP_LOGW(TAG, "alive %us heap=%u/%u call=%s ch=%u espnow rx=%u tx=%u "
                       "cancel=%u drop=%u sent=%u/%u fail=%u peers=%d heard=%u "
-                      "ble rx=%u drop=%u chain=%u/%u quiet=%ds idx=%u",
+                      "ble rx=%u drop=%u chain=%u/%u quiet=%ds idx=%u "
+                      "mailcap=%u/%u",
                  (unsigned)(esp_timer_get_time() / 1000000ULL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -5068,7 +5085,9 @@ static void status_task(void *arg)
                  xprsnow_peer_count(600), (unsigned)s_heard_count,
                  (unsigned)xprsble_scan_results(), (unsigned)xprsble_ad_dropped(),
                  (unsigned)xprsble_chained(), (unsigned)xprsble_chain_lost(),
-                 xprsble_silent_for(), (unsigned)s_idx_stack_free);
+                 xprsble_silent_for(), (unsigned)s_idx_stack_free,
+                 /* mail refused: one sender's hour full / everybody's */
+                 (unsigned)s_mailcap.refused_sender, (unsigned)s_mailcap.refused_all);
         {
             static int64_t s_storage_at;
             int64_t up = esp_timer_get_time();
@@ -9148,11 +9167,25 @@ static void idx_task(void *arg)
                     ble_duty_apply();
                 }
             }
-            if (s_index && xcfg_get_bool("index_on", true))
-                xprsindex_add2(s_index, s_idxq[r].wire, s_idxq[r].len,
-                               s_idxq[r].rssi, s_idxq[r].own,
-                               s_idxq[r].own ? (uint32_t)time(NULL) : 0,
-                               s_idxq[r].bearer);
+            if (s_index && xcfg_get_bool("index_on", true)) {
+                /* Somebody else's mail is limited per sender and for
+                 * everybody together, per hour (xmailcap.h): a flood must not
+                 * push out the mail already waiting here. */
+                char mfrom[XPRS_CALL_LEN] = "";
+                bool other = !s_idxq[r].own &&
+                             mail_of_other(s_idxq[r].wire, s_idxq[r].len,
+                                           mfrom, sizeof mfrom);
+                uint32_t hour = (uint32_t)(esp_timer_get_time() / 3600000000LL);
+                if (other && !xmc_may(&s_mailcap, mfrom, hour)) {
+                    /* refused: counted in s_mailcap */
+                } else if (xprsindex_add3(s_index, s_idxq[r].wire, s_idxq[r].len,
+                                          s_idxq[r].rssi, s_idxq[r].own,
+                                          s_idxq[r].own ? (uint32_t)time(NULL) : 0,
+                                          s_idxq[r].bearer) == XI_ADD_STORED &&
+                           other) {
+                    xmc_took(&s_mailcap, mfrom, hour);
+                }
+            }
             /* 12.7.1: a sealed letter left here first-hand is kept, and its
              * author is told so, once, on the bearer it came on: a signed
              * observation naming the letter. Somebody leaving word for a
@@ -9637,7 +9670,11 @@ no_announce:
             s_rel.pending = false;
             xprsidx_query_t q = {
                 .type = -1,
-                .types = xprsidx_type_mask("message"),
+                /* A receipt is mail too (13.7): the "delivered" a sender
+                 * who walked away is owed. Without it a station that held
+                 * the receipt said nothing when the sender came back, and
+                 * the tick waited for some other station to repeat it. */
+                .types = xprsidx_type_mask("message,receipt"),
                 .only = rcall,
                 .asker = rcall,          /* xi_may_serve: their own mail */
                 /* Where the last page stopped: mail older than the oldest
