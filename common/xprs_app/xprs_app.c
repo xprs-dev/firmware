@@ -2005,6 +2005,7 @@ static struct {
 #define REL_THROTTLE_SEC 600
 #define REL_MORE_SEC      45     /* while there is more to hand over */
 #define REL_PAGE           4     /* messages per sighting */
+#define RCPT_MAX_AGE_S (3u * 24u * 3600u)  /* a held receipt's useful life */
 static struct {
     char     call[XPRS_CALL_LEN];
     uint32_t at_s;
@@ -9725,9 +9726,25 @@ no_announce:
                  * holding a copy". Without this the release is ended by a
                  * clock, and the same packet goes out every REL_THROTTLE_SEC
                  * for as long as the board holds it. */
-                char relid[XPRS_ID_LEN];
+                char relid[XPRS_ID_LEN] = "";
                 if (xprs_id_of(s_page->wire[i], s_page->len[i], relid) &&
                     acked_has(relid)) continue;
+                /* A receipt is handed to its writer once (nothing
+                 * acknowledges a receipt), and not past three days: a writer
+                 * gone that long has given the message up. The phone's rule
+                 * is XprsMailbox.handOverOnce / receiptMaxAge. */
+                char rtype[12] = "";
+                xprs_type(&mp, rtype, sizeof rtype);
+                const bool is_rcpt = strcmp(rtype, "receipt") == 0;
+                if (is_rcpt) {
+                    char rts[24] = "";
+                    time_t nowt = time(NULL);
+                    if (xprs_get_str(&mp, "ts", rts, sizeof rts) &&
+                        nowt > 1700000000) {
+                        uint32_t t = xprsindex_ts_to_epoch(rts, (int)strlen(rts));
+                        if (t && (uint32_t)nowt - t > RCPT_MAX_AGE_S) continue;
+                    }
+                }
                 /* A sealed letter opens only against its author's key, and
                  * the reader may never have heard its author: the identity
                  * this station kept with the letter goes out first, once an
@@ -9798,6 +9815,7 @@ no_announce:
                          rel + (rn > 80 ? rn - 80 : 0));
                 idx_air(rbearer, rel, rn);
                 aired++;
+                if (is_rcpt && relid[0]) acked_note(relid);   /* handed over */
                 /* Where the next page resumes. Read from the wire because
                  * that is what was handed over; a record with no ts: cannot
                  * anchor a page, so it does not move the mark. */
