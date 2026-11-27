@@ -14,3 +14,12 @@ page (`/api/...`). Keep it generic and XPRS-compliant: what a station can or
 cannot do reaches the page as data (`/api/services`: `page.tabs`, features),
 never as a different page or a feature placed somewhere else on one kind of
 station. Feature logic belongs in the page's JavaScript.
+
+## A message left with a station always gets through
+
+A board keeps every packet it hears, and hands a recipient its mail
+(messages AND receipts) the moment it hears them (XPRS.md 36.8.1). That is the
+use case XPRS is valued for (spec/USECASES.md 10). The rules are
+app/docs/store-and-forward.md section 5.5; a change to the index release,
+`rel_*`, `xmailcap` or the receipt handling runs
+`app/tool/bench_left_with_a_station.py` on the bench before it ships.
