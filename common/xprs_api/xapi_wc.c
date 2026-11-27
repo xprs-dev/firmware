@@ -20,8 +20,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "bech32.h"
+#include "esp_http_client.h"
 #include "nostr_keys.h"
 #include "xapi_send.h"
+#include "xprs.h"
 #include "xprsindex.h"
 #include "xwc.h"
 #include "xwc_file.h"
@@ -311,6 +314,7 @@ static esp_err_t h_admin_get(httpd_req_t *req)
 {
     char token[XWC_TOKEN_LEN + 8];
     query_val(req, "session", token, sizeof token);
+    xapi_wc_public_poll();
     int code = xwc_admin_json(s_buf, WC_BUF, token, xapi_wc_local(req));
     return answer(req, code, s_buf);
 }
@@ -834,9 +838,281 @@ int xapi_wc_services(char *buf, size_t cap)
     return n;
 }
 
+/* ---- the public rooms' moderators (XPRS.md 10.10.3) ------------------
+ * The list is published at xprs.dev and read from there only: no key is in
+ * the build. It is asked for when the station's WiFi gets an address (the
+ * event that says the site may be in reach), at most every twelve hours of
+ * uptime, and after an ask that failed ten minutes later, then twenty, up
+ * to twelve hours; the last list read is kept
+ * in the engine's state and stands while the site is out of reach.
+ *
+ * The engine is not locked, and its callers so far are on the httpd task.
+ * So the two things that arrive on other tasks (a list just fetched, a
+ * removal heard on a bearer) are left here and taken in by the next request
+ * that needs them: a removal matters when somebody is shown the room. */
+#define PM_URL    "https://xprs.dev/moderators.json"
+#define PM_TEXT   1024      /* the list as kept: npub,since,until;...  */
+#define PM_FETCH  2048      /* a list is a handful of people            */
+#define PM_HEARD  2
+static portMUX_TYPE s_pm_mux = portMUX_INITIALIZER_UNLOCKED;
+static char *s_pm_new;                       /* a list fetched, not taken in yet */
+static char  s_pm_heard[PM_HEARD][XPRS_MAX_WIRE + 1];
+static int   s_pm_nheard;
+static volatile bool s_pm_fetching, s_pm_net;
+static uint32_t s_pm_asked_s, s_pm_failed_s, s_pm_wait_s = 300;
+static bool  s_pm_asked;
+
+/* The value of "key" in the JSON object [obj, end), unquoted. */
+static bool pm_field(const char *obj, const char *end, const char *key, char *out, size_t cap)
+{
+    char k[16];
+    int kn = snprintf(k, sizeof k, "\"%s\"", key);
+    out[0] = 0;
+    for (const char *p = obj; p + kn < end; p++) {
+        if (strncmp(p, k, (size_t)kn) != 0) continue;
+        p += kn;
+        while (p < end && (*p == ' ' || *p == ':')) p++;
+        if (p >= end || *p != '"') return false;
+        size_t o = 0;
+        for (p++; p < end && *p != '"' && o < cap - 1; p++) out[o++] = *p;
+        out[o] = 0;
+        return true;
+    }
+    return false;
+}
+
+/* `2026-11-27` or a full XPRS timestamp, as epoch seconds; 0 for none. */
+static uint32_t pm_day(const char *v)
+{
+    char t[24];
+    size_t n = strlen(v);
+    if (n == 10) snprintf(t, sizeof t, "%s_00:00:00", v);
+    else if (n == 19) snprintf(t, sizeof t, "%s", v);
+    else return 0;
+    return xprsindex_ts_to_epoch(t, 19);
+}
+
+/* The published JSON as the line this station keeps. Returns how many
+ * were listed, or -1 when [json] is not a list: a captive portal's page or
+ * half a download must not leave the rooms with nobody, or with anybody. */
+static int pm_compact(const char *json, char *out, size_t cap)
+{
+    const char *p = strstr(json, "\"moderators\"");
+    if (!p || !(p = strchr(p, '['))) return -1;
+    const char *stop = strchr(p, ']');
+    if (!stop) return -1;
+    int n = 0;
+    size_t o = 0;
+    out[0] = 0;
+    while (n < XWC_PMODS) {
+        const char *obj = memchr(p, '{', (size_t)(stop - p));
+        if (!obj) break;
+        const char *end = memchr(obj, '}', (size_t)(stop - obj));
+        if (!end) return -1;
+        char npub[XWC_NPUB_LEN + 4], since[24], until[24], hrp[8];
+        uint8_t key[40];
+        size_t klen = sizeof key;
+        p = end + 1;
+        if (!pm_field(obj, end, "npub", npub, sizeof npub) || strlen(npub) >= XWC_NPUB_LEN) continue;
+        if (bech32_decode(npub, hrp, key, &klen) != ESP_OK || klen != 32 || strcmp(hrp, "npub") != 0) continue;
+        pm_field(obj, end, "since", since, sizeof since);
+        pm_field(obj, end, "until", until, sizeof until);
+        int w = snprintf(out + o, cap - o, "%s%s,%lu,%lu", n ? ";" : "", npub,
+                         (unsigned long)pm_day(since), (unsigned long)pm_day(until));
+        if (w <= 0 || (size_t)w >= cap - o) { out[o] = 0; break; }
+        o += (size_t)w;
+        n++;
+    }
+    return n;
+}
+
+/* Hand the kept line to the engine. */
+static void pm_apply(const char *line)
+{
+    xwc_public_mods_clear();
+    while (line && *line) {
+        char npub[XWC_NPUB_LEN], hrp[8];
+        uint8_t key[40];
+        size_t klen = sizeof key, o = 0;
+        unsigned long since = 0, until = 0;
+        while (*line && *line != ',' && *line != ';' && o < sizeof npub - 1) npub[o++] = *line++;
+        npub[o] = 0;
+        if (*line == ',') sscanf(line, ",%lu,%lu", &since, &until);
+        while (*line && *line != ';') line++;
+        if (*line == ';') line++;
+        if (bech32_decode(npub, hrp, key, &klen) == ESP_OK && klen == 32 && !strcmp(hrp, "npub"))
+            xwc_public_mods_add(npub, key, (uint32_t)since, (uint32_t)until);
+    }
+}
+
+void xapi_wc_public_poll(void)
+{
+    char *fresh = NULL;
+    static char heard[PM_HEARD][XPRS_MAX_WIRE + 1];   /* this task only; not on its stack */
+    int nh;
+    portENTER_CRITICAL(&s_pm_mux);
+    fresh = s_pm_new; s_pm_new = NULL;
+    nh = s_pm_nheard; s_pm_nheard = 0;
+    if (nh) memcpy(heard, s_pm_heard, sizeof heard);
+    portEXIT_CRITICAL(&s_pm_mux);
+    if (fresh) {
+        kv_set("wc_pmods", fresh);
+        pm_apply(fresh);
+        ESP_LOGI(TAG, "public rooms: %d moderator(s) listed at xprs.dev", xwc_public_mods_count());
+        free(fresh);
+    }
+    for (int i = 0; i < nh; i++)
+        if (xwc_public_heard(heard[i], (int)strlen(heard[i])))
+            ESP_LOGI(TAG, "public rooms: a listed moderator removed a message");
+}
+
+static bool pm_has(const char *w, int len, const char *word)
+{
+    int n = (int)strlen(word);
+    for (int i = 0; i + n <= len; i++)
+        if (w[i] == word[0] && memcmp(w + i, word, (size_t)n) == 0) return true;
+    return false;
+}
+
+void xapi_wc_public_heard(const char *wire, int len)
+{
+    /* Every packet the station hears comes through here: one compare for
+     * all but an act. The check itself waits for a visitor. */
+    if (len < 12 || len > XPRS_MAX_WIRE || strncmp(wire, "t:moderate ", 11) != 0) return;
+    if (pm_has(wire, len, " d:") || !pm_has(wire, len, " remove:message")) return;
+    portENTER_CRITICAL(&s_pm_mux);
+    if (s_pm_nheard >= PM_HEARD) {          /* the oldest gives way */
+        memmove(s_pm_heard[0], s_pm_heard[1], sizeof s_pm_heard[0] * (PM_HEARD - 1));
+        s_pm_nheard = PM_HEARD - 1;
+    }
+    memcpy(s_pm_heard[s_pm_nheard], wire, (size_t)len);
+    s_pm_heard[s_pm_nheard++][len] = 0;
+    portEXIT_CRITICAL(&s_pm_mux);
+}
+
+/* The site's certificate is checked against the roots its authority uses
+ * (Let's Encrypt: ISRG Root X1 and X2), carried here because the boards are
+ * built without the certificate bundle. Who moderates is not taken from a
+ * server that did not prove it is xprs.dev; a board without the memory for
+ * the handshake reads no list and honours nobody. */
+static const char k_pm_roots[] =
+    "-----BEGIN CERTIFICATE-----\n"
+    "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\n"
+    "-----END CERTIFICATE-----\n"
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIICGzCCAaGgAwIBAgIQQdKd0XLq7qeAwSxs6S+HUjAKBggqhkjOPQQDAzBPMQsw\n"
+    "CQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJuZXQgU2VjdXJpdHkgUmVzZWFyY2gg\n"
+    "R3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBYMjAeFw0yMDA5MDQwMDAwMDBaFw00\n"
+    "MDA5MTcxNjAwMDBaME8xCzAJBgNVBAYTAlVTMSkwJwYDVQQKEyBJbnRlcm5ldCBT\n"
+    "ZWN1cml0eSBSZXNlYXJjaCBHcm91cDEVMBMGA1UEAxMMSVNSRyBSb290IFgyMHYw\n"
+    "EAYHKoZIzj0CAQYFK4EEACIDYgAEzZvVn4CDCuwJSvMWSj5cz3es3mcFDR0HttwW\n"
+    "+1qLFNvicWDEukWVEYmO6gbf9yoWHKS5xcUy4APgHoIYOIvXRdgKam7mAHf7AlF9\n"
+    "ItgKbppbd9/w+kHsOdx1ymgHDB/qo0IwQDAOBgNVHQ8BAf8EBAMCAQYwDwYDVR0T\n"
+    "AQH/BAUwAwEB/zAdBgNVHQ4EFgQUfEKWrt5LSDv6kviejM9ti6lyN5UwCgYIKoZI\n"
+    "zj0EAwMDaAAwZQIwe3lORlCEwkSHRhtFcP9Ymd70/aTSVaYgLXTWNLxBo1BfASdW\n"
+    "tL4ndQavEi51mI38AjEAi/V3bNTIZargCyzuFJ0nN6T5U6VR5CmD1/iQMVtCnwr1\n"
+    "/q4AaOeMSQ+2b1tbFfLn\n"
+    "-----END CERTIFICATE-----\n";
+
+static void pm_fetch_task(void *arg)
+{
+    (void)arg;
+    bool ok = false;
+    int status = 0;     /* 0: no connection or no handshake */
+    char *buf = malloc(PM_FETCH + 1);
+    char *line = malloc(PM_TEXT);
+    if (buf && line) {
+        esp_http_client_config_t hc = {
+            .url = PM_URL,
+            .timeout_ms = 20000,
+            .buffer_size = 1024,
+            .cert_pem = k_pm_roots,
+            .user_agent = "XPRS-ESP32/1.0",
+        };
+        esp_http_client_handle_t c = esp_http_client_init(&hc);
+        if (c) {
+            if (esp_http_client_open(c, 0) == ESP_OK) {
+                esp_http_client_fetch_headers(c);
+                int n = 0, got;
+                while (n < PM_FETCH && (got = esp_http_client_read(c, buf + n, PM_FETCH - n)) > 0) n += got;
+                buf[n > 0 ? n : 0] = 0;
+                status = esp_http_client_get_status_code(c);
+                if (status == 200 && n > 0 && n < PM_FETCH &&
+                    pm_compact(buf, line, PM_TEXT) >= 0) {
+                    char *old;
+                    portENTER_CRITICAL(&s_pm_mux);
+                    old = s_pm_new; s_pm_new = line;
+                    portEXIT_CRITICAL(&s_pm_mux);
+                    free(old);
+                    line = NULL;
+                    ok = true;
+                }
+                esp_http_client_close(c);
+            }
+            esp_http_client_cleanup(c);
+        }
+    }
+    free(buf);
+    free(line);
+    uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
+    if (ok) {
+        s_pm_asked = true; s_pm_asked_s = up; s_pm_wait_s = 600;
+    } else {
+        /* Asked again later, and later still each time: a site that is down,
+         * or a board that cannot make the handshake, is not asked at every
+         * address its WiFi gets. */
+        s_pm_failed_s = up ? up : 1;
+        s_pm_wait_s = s_pm_wait_s * 2 > 12 * 3600 ? 12 * 3600 : s_pm_wait_s * 2;
+        ESP_LOGW(TAG, "public rooms: the moderators' list was not read (status %d); the one kept stands", status);
+    }
+    s_pm_fetching = false;
+    vTaskDelete(NULL);
+}
+
+void xapi_wc_net_up(void)
+{
+    /* An address before the engine started: asked when it starts. */
+    s_pm_net = true;
+    if (!s_buf || s_pm_fetching) return;
+    uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
+    if (s_pm_asked && up - s_pm_asked_s < 12 * 3600) return;
+    if (s_pm_failed_s && up - s_pm_failed_s < s_pm_wait_s) return;
+    s_pm_fetching = true;
+    if (xTaskCreate(pm_fetch_task, "pmods", 8192, NULL, 3, NULL) != pdPASS) s_pm_fetching = false;
+}
+
 int xapi_wc_gate(httpd_req_t *req, const char *wire, int len,
                  char id[7], char *why, size_t why_cap)
 {
+    xapi_wc_public_poll();
     return xwc_gate(wire, len, xapi_wc_local(req), id, why, why_cap);
 }
 
@@ -861,6 +1137,7 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
     const nostr_keys_t *k = nostr_keys_available() ? nostr_keys_get() : NULL;
     xwc_init(&cb, cfg->callsign, k ? k->private_key : NULL);
     int n = xwc_load();
+    pm_apply(kv_get("wc_pmods"));
     static const httpd_uri_t uris[] = {
         { .uri = "/api/session", .method = HTTP_GET,  .handler = h_session_get },
         { .uri = "/api/session", .method = HTTP_POST, .handler = h_session_post },
@@ -876,4 +1153,5 @@ void xapi_wc_start(httpd_handle_t h, const xprs_api_cfg_t *cfg)
         httpd_register_uri_handler(h, &uris[i]);
     ESP_LOGI(TAG, "web chat engine up: %s, %d act(s) replayed, admin %s",
              cfg->callsign, n, xwc_admin_call() ? xwc_admin_call() : "none");
+    if (s_pm_net) xapi_wc_net_up();
 }

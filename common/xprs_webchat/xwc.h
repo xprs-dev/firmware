@@ -180,6 +180,36 @@ bool xwc_hide_row(const char *group, const char *id, const char *from,
 /** `"moderation":{...}` for [group] (the station, or a hosted room). */
 int  xwc_moderation_json(char *buf, size_t cap, const char *group);
 
+/* ---- the public rooms' moderators (XPRS.md 10.10.3) -------------------- */
+
+/* Regional and Global belong to no station. Their moderators are the keys
+ * published at https://xprs.dev/moderators.json; the host reads that list
+ * (and keeps the last copy read) and hands it over key by key. A listed key
+ * signs `t:moderate ... r:<id> remove:message` addressed to nobody, and this
+ * station then leaves that message out of what it shows. Removal only. No
+ * key is compiled in: until a list was handed over, nobody moderates. */
+#define XWC_PMODS        8       /* listed keys a board keeps */
+#define XWC_NPUB_LEN     64
+
+/** Forget the list (before handing over a newer one). */
+void xwc_public_mods_clear(void);
+/** One listed key: [since]/[until] in epoch seconds, 0 for no bound. False
+ *  when the table is full or the npub is not one. */
+bool xwc_public_mods_add(const char *npub, const uint8_t key[32],
+                         uint32_t since, uint32_t until);
+int  xwc_public_mods_count(void);
+/** The operator's switch (kv `wc_pmh`, "0" for off): false and no act is
+ *  honoured, none is listed. */
+bool xwc_public_mods_honoured(void);
+/** A packet heard on any bearer. True when it is a listed moderator's
+ *  removal: its target is remembered (and kept across a restart). Cheap for
+ *  everything else: a packet of another shape costs two string compares. */
+bool xwc_public_heard(const char *wire, int len);
+/** True when [id] was removed from the public rooms by a listed moderator.
+ *  The caller applies it only to an undirected `t:message` not said in the
+ *  Local room: nothing else is in a public moderator's reach. */
+bool xwc_public_removed(const char *id);
+
 /** The gate on POST /api/xprs/send, before the ordinary send path.
  *   0   let the ordinary path air it
  *   1   handled here (filed, or aired as an act); [id] is set

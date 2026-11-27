@@ -292,6 +292,14 @@ static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
         if (xwc_hide_row(c->group, rec->id, rec->from, xprsidx_type_name(rec->type),
                          scope_local, c->local || c->keep_local))
             return true;
+        /* 10.10.3: removed from the public rooms by a listed moderator. In
+         * its reach: a message to nobody, not said in the Local room. */
+        if (!rec->to[0] && xwc_public_removed(rec->id) &&
+            strcmp(xprsidx_type_name(rec->type), "message") == 0) {
+            const char *m = strstr(rec->wire, " m:");
+            const char *sc = strstr(rec->wire, " scope:local");
+            if (!(sc && (!m || sc < m) && (sc[12] == ' ' || sc[12] == 0))) return true;
+        }
     }
     /* A request to join (XPRS.md 10.3): a post by somebody who was no
      * member then, shown to the room's staff only and marked so. */
@@ -360,6 +368,7 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
      * with the reader still there (C3, 2026-11-23: 9 to 21 KB free and two
      * pings in five lost, against 48 KB and none with Bluetooth back). */
     xprs_wifi_busy(5000);
+    xapi_wc_public_poll();
 
     char query[256] = {0}, p[48], call[48] = {0}, session[XWC_TOKEN_LEN + 8] = {0};
     char room[20] = {0};

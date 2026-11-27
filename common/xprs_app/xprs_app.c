@@ -89,6 +89,7 @@ static char s_pass[64];
 #include "xprs_config.h"
 #include "xprs_api.h"
 #include "xwc.h"
+#include "xapi_wc.h"
 #include "xprs_health.h"
 #include "xprs_diag.h"
 
@@ -5293,6 +5294,9 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id,
         snprintf(s_ip_str, sizeof s_ip_str, IPSTR, IP2STR(&e->ip_info.ip));
         if (s_wjoin.active) s_wjoin.got_ip = true;
         s_wk_gotip = true;
+        /* The public rooms' moderators are read from xprs.dev when it may
+         * be in reach, which is now (XPRS.md 10.10.3). */
+        xapi_wc_net_up();
         ESP_LOGI(TAG, "wifi up on channel %u, ip %s", xprsnow_channel(),
                  s_ip_str);
     }
@@ -5835,6 +5839,7 @@ static void qemu_got_ip(void *arg, esp_event_base_t base, int32_t id, void *data
     ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
     snprintf(s_ip_str, sizeof s_ip_str, IPSTR, IP2STR(&e->ip_info.ip));
     ESP_LOGI(TAG, "QEMU ethernet up, ip %s", s_ip_str);
+    xapi_wc_net_up();           /* as the WiFi branch does (10.10.3) */
 }
 
 static void qemu_eth_up(void)
@@ -9183,6 +9188,8 @@ static void idx_task(void *arg)
                     ble_duty_apply();
                 }
             }
+            /* 10.10.3: a removal in the public rooms, heard on any bearer. */
+            if (!s_idxq[r].own) xapi_wc_public_heard(s_idxq[r].wire, s_idxq[r].len);
             if (s_index && xcfg_get_bool("index_on", true)) {
                 /* Somebody else's mail is limited per sender and for
                  * everybody together, per hour (xmailcap.h): a flood must not

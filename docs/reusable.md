@@ -382,6 +382,26 @@ reuse potential.
 | `xprsidx_query_t.to` and `xprsindex_mail_count(st, call, cap, skip)` | mail TO a callsign (base form), never the author's own words or a `hears:` mention, minus what a `skip` callback says was acknowledged: the one honest `mail:` |
 | `xprsindex_add3()` (`common/xprs_index`) | what became of a record handed to the index: `XI_ADD_STORED`, `XI_ADD_DUPLICATE` (kept already), `XI_ADD_DROPPED` (write queue full), `XI_ADD_REFUSED`. Any door that answers somebody "kept" uses it: the room gate (`file_cb` -> `XWC_FILE_BUSY` -> 503 with `Retry-After`) and a visitor's mailbox declaration or receipt (kept before it is aired, `XAPI_SEND_BUSY`). Host-tested (`test_says_what_became_of_it`, `xprsindex_host_queue_full` stands in for a slow card) |
 
+## The public rooms' moderators (XPRS.md 10.10.3)
+
+- **`xwc_public_*` (common/xprs_webchat/xwc.c)** is the board's half of the
+  rule the Dart core has in `XprsPublicModerators`: the list handed over key
+  by key (`xwc_public_mods_add`), the verdict (`xwc_public_heard`, and the
+  same check inside `xwc_gate` for a visitor's act), what was removed
+  (`xwc_public_removed`, kept in the engine's kv as `wc_prem`). No key is in
+  the build. Failed signature checks are limited to six a minute.
+- **The glue (common/xprs_api/xapi_wc.c)** reads
+  `https://xprs.dev/moderators.json` when WiFi gets an address
+  (`xapi_wc_net_up`), with the site's certificate checked against ISRG Root
+  X1 and X2 carried in the file (the boards have no certificate bundle), and
+  keeps the last list read (`wc_pmods`). What arrives on other tasks (a
+  fetched list, a removal heard on a bearer through `xapi_wc_public_heard`)
+  is left for the next request and taken in on the httpd task
+  (`xapi_wc_public_poll`): the engine has no lock. Reuse that shape for
+  anything else another task wants to tell the engine.
+- **The switch** is kv `wc_pmh` (`0` for off).
+- The portal's `contract/conformance.py` holds the rule for both engines.
+
 ## Logging on a hot path
 
 - **Feeding the task watchdog from code that may run on any task**: check

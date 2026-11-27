@@ -68,6 +68,20 @@ typedef struct {
 } roster_t;
 static roster_t s_rosters[XWC_ROOMS + 1];
 
+/* The public rooms' moderators (10.10.3): the list the host handed over,
+ * and what they removed, newest last. */
+#define PREMOVED_MAX  48
+/* A check that fails costs a few hundred milliseconds here, and anybody can
+ * air packets shaped like a removal: so many failures a minute, no more. */
+#define PMOD_FAILS_PER_MIN 6
+typedef struct { char npub[XWC_NPUB_LEN]; uint8_t key[32]; uint32_t since, until; } pmod_t;
+static pmod_t   s_pmods[XWC_PMODS];
+static int      s_npmods;
+static char     s_premoved[PREMOVED_MAX][XWC_ID_LEN];
+static int      s_npremoved;
+static uint32_t s_pm_since, s_pm_failed;
+uint32_t        xwc_public_unchecked;
+
 typedef struct { char nonce[XWC_NONCE_LEN]; uint32_t until; } nonce_t;
 typedef struct { char token[XWC_TOKEN_LEN]; char call[XWC_CALL_LEN]; uint32_t until; } session_t;
 static nonce_t   s_nonces[NONCES_MAX];
@@ -712,9 +726,11 @@ static int acts_take(const xprs_t *p, const char *wire, int len, bool persist)
     return added;
 }
 
+static void premoved_load(void);
 int xwc_load(void)
 {
     int n = 0;
+    premoved_load();
     if (!s_cb.acts_path) return 0;
     FILE *f = fopen(s_cb.acts_path, "r");
     if (!f) return 0;
@@ -799,6 +815,9 @@ void xwc_reset(void)
     memset(s_nonces, 0, sizeof s_nonces);
     memset(s_sessions, 0, sizeof s_sessions);
     s_nrooms = 0;
+    s_npmods = s_npremoved = 0;
+    s_pm_since = s_pm_failed = 0;
+    xwc_public_unchecked = 0;
 }
 
 /* ---- sessions ------------------------------------------------------------ */
@@ -1082,7 +1101,11 @@ static int admin_state(jb_t *j, const char *token, bool local)
            (unsigned long)pos_range(), s_cb.locate ? "true" : "false", pos_asking() ? "true" : "false");
     }
     moderation_state(j, token, you);
-    jb(j, "}");
+    /* 10.10.3: whose removals this station honours in the public rooms. */
+    jb(j, ",\"public_moderators\":[");
+    if (xwc_public_mods_honoured())
+        for (int i = 0; i < s_npmods; i++) jb(j, "%s\"%s\"", i ? "," : "", s_pmods[i].npub);
+    jb(j, "]}");
     return 200;
 }
 
@@ -1596,12 +1619,125 @@ int xwc_moderation_json(char *buf, size_t cap, const char *group)
     uint32_t now = now_s();
     jb(&j, "\"moderation\":{\"removed\":[");
     for (int i = 0; i < r->nr; i++) jb(&j, "%s\"%s\"", i ? "," : "", r->removed[i]);
+    /* What the public rooms' moderators removed is told with the station's
+     * own conversation, where those rooms are shown. */
+    if (strcmp(g, s_station) == 0)
+        for (int i = 0; i < s_npremoved; i++) jb(&j, "%s\"%s\"", (i || r->nr) ? "," : "", s_premoved[i]);
     jb(&j, "],\"away\":[");
     int k = 0;
     for (int i = 0; i < r->na; i++)
         if (!r->away[i].until || r->away[i].until > now) jb(&j, "%s\"%s\"", k++ ? "," : "", r->away[i].call);
     jb(&j, "]}");
     return (int)j.n;
+}
+
+/* ---- the public rooms' moderators (XPRS.md 10.10.3) -------------------- */
+void xwc_public_mods_clear(void) { s_npmods = 0; }
+int  xwc_public_mods_count(void) { return xwc_public_mods_honoured() ? s_npmods : 0; }
+bool xwc_public_mods_honoured(void) { return strcmp(kv_or("wc_pmh", "1"), "0") != 0; }
+
+bool xwc_public_mods_add(const char *npub, const uint8_t key[32], uint32_t since, uint32_t until)
+{
+    if (!npub || strncmp(npub, "npub1", 5) != 0 || strlen(npub) >= XWC_NPUB_LEN || !key) return false;
+    for (int i = 0; i < s_npmods; i++)
+        if (memcmp(s_pmods[i].key, key, 32) == 0) { s_pmods[i].since = since; s_pmods[i].until = until; return true; }
+    if (s_npmods >= XWC_PMODS) return false;
+    pmod_t *m = &s_pmods[s_npmods++];
+    snprintf(m->npub, sizeof m->npub, "%s", npub);
+    memcpy(m->key, key, 32);
+    m->since = since; m->until = until;
+    return true;
+}
+
+bool xwc_public_removed(const char *id)
+{
+    if (!id || !s_npremoved) return false;
+    for (int i = 0; i < s_npremoved; i++) if (strcmp(s_premoved[i], id) == 0) return true;
+    return false;
+}
+
+static void premoved_save(void)
+{
+    char v[PREMOVED_MAX * XWC_ID_LEN + 1];
+    int o = 0;
+    for (int i = 0; i < s_npremoved; i++)
+        o += snprintf(v + o, sizeof v - (size_t)o, "%s%s", i ? "," : "", s_premoved[i]);
+    v[o] = 0;
+    if (s_cb.kv_set) s_cb.kv_set("wc_prem", v);
+}
+
+static void premoved_load(void)
+{
+    s_npremoved = 0;
+    const char *v = s_cb.kv_get ? s_cb.kv_get("wc_prem") : NULL;
+    while (v && *v && s_npremoved < PREMOVED_MAX) {
+        int n = 0;
+        while (v[n] && v[n] != ',') n++;
+        if (n == XWC_ID_LEN - 1) snprintf(s_premoved[s_npremoved++], XWC_ID_LEN, "%.6s", v);
+        v += n;
+        if (*v == ',') v++;
+    }
+}
+
+/* The shape of an act about the public rooms: a removal of a message,
+ * addressed to nobody. Says nothing about who signed it. */
+static bool pm_shaped(const xprs_t *p, char id[XWC_ID_LEN])
+{
+    char v[16];
+    if (xprs_get(p, "d", NULL)) return false;
+    if (!xprs_get_str(p, "remove", v, sizeof v) || strcmp(v, "message") != 0) return false;
+    if (!xprs_get_str(p, "r", v, sizeof v) || strlen(v) != XWC_ID_LEN - 1) return false;
+    for (int i = 0; i < XWC_ID_LEN - 1; i++) {
+        char c = (char)tolower((unsigned char)v[i]);
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        id[i] = c;
+    }
+    id[XWC_ID_LEN - 1] = 0;
+    return true;
+}
+
+/* A listed key's removal, standing at its own date? Authority is the key:
+ * the callsign in f: is a label and is not looked at. */
+static bool pm_judge(const xprs_t *p)
+{
+    char v[24];
+    if (!xwc_public_mods_honoured() || !s_npmods) return false;
+    if (!xprs_get_str(p, "ts", v, sizeof v)) return false;
+    uint32_t ts = ts_parse(v), now = now_s();
+    if (!ts || (now && ts > now + 300)) return false;
+    for (int i = 0; i < s_npmods; i++) {
+        const pmod_t *m = &s_pmods[i];
+        if (ts < m->since || (m->until && ts >= m->until)) continue;
+        uint32_t up = mono();
+        if (up - s_pm_since >= 60 || up < s_pm_since) { s_pm_since = up; s_pm_failed = 0; }
+        if (s_pm_failed >= PMOD_FAILS_PER_MIN) { xwc_public_unchecked++; return false; }
+        if (xprsid_verify(p, m->key)) { ts_seen(p); return true; }
+        s_pm_failed++;
+    }
+    return false;
+}
+
+static bool pm_take(const xprs_t *p, const char id[XWC_ID_LEN])
+{
+    if (xwc_public_removed(id)) return pm_judge(p);
+    if (!pm_judge(p)) return false;
+    if (s_npremoved >= PREMOVED_MAX) {
+        memmove(s_premoved[0], s_premoved[1], (size_t)(PREMOVED_MAX - 1) * XWC_ID_LEN);
+        s_npremoved = PREMOVED_MAX - 1;
+    }
+    snprintf(s_premoved[s_npremoved++], XWC_ID_LEN, "%s", id);
+    premoved_save();
+    return true;
+}
+
+bool xwc_public_heard(const char *wire, int len)
+{
+    /* Before any parse: this is called for every packet the station hears. */
+    if (len < 12 || strncmp(wire, "t:moderate ", 11) != 0) return false;
+    xprs_t p;
+    char id[XWC_ID_LEN];
+    if (!xprs_parse(wire, len, &p) || !pm_shaped(&p, id)) return false;
+    return pm_take(&p, id);
 }
 
 /* `title:` is a label (XPRS.md 18.1): lowercase letters, digits and `-`,
@@ -1643,6 +1779,15 @@ int xwc_gate(const char *wire, int len, bool local_peer,
     if (strcmp(type, "moderate") == 0) {
         char target[XWC_CALL_LEN];
         base_call(d, target);
+        char rid[XWC_ID_LEN];
+        if (!d[0] && pm_shaped(&p, rid)) {
+            /* 10.10.3: the public rooms have no group. The only authority
+             * there is a key on the published list; no session, no role on
+             * this station, and its administrator is nobody special. */
+            if (!pm_take(&p, rid)) { snprintf(why, why_cap, "not a moderator of the public rooms"); return -403; }
+            if (s_cb.air) s_cb.air(wire, len);
+            return 1;
+        }
         if (strcmp(target, s_station) != 0 && !room) {
             /* Somebody else's group (XPRS.md 10): an act its members and
              * moderators sign is carried like a post to it, and judged by

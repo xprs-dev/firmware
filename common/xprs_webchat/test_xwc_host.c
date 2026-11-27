@@ -298,6 +298,72 @@ int main(void)
     CHECK(admin_post(body) == 200 && strcmp(xwc_role_of("X3STAT", "X1BOBB"), "mod") != 0, "and dismisses bob");
     CHECK(gate(bob, "t:moderate f:%s d:X3STAT ts:%s r:aaaaaa remove:message", 1) == -403, "who cannot act any more");
 
+    printf("the public rooms' moderators (10.10.3)\n");
+    {
+        extern uint32_t xwc_public_unchecked;
+        person_t *dave = person("X1DAVE", 0x44), *mall = person("X1MALL", 0x55);
+        char w[300];
+        int n;
+        xwc_admin_json(s_buf, sizeof s_buf, tok, true);
+        CHECK(jfind("\"public_moderators\":[]"), "no key is in the build: nobody is listed until a list is handed over");
+        CHECK(gate(dave, "t:moderate f:%s ts:%s r:89a9c8 remove:message", 0) == -403 && strstr(s_why, "public rooms"),
+              "so nobody removes");
+        CHECK(!xwc_public_mods_add("nsec1nope", dave->pub, 0, 0), "what is not an npub is not listed");
+        CHECK(xwc_public_mods_add("npub1davedavedave", dave->pub, 0, 0) && xwc_public_mods_count() == 1, "a list is handed over");
+        xwc_admin_json(s_buf, sizeof s_buf, NULL, false);
+        CHECK(jfind("\"public_moderators\":[\"npub1davedavedave\"]"), "and the station says so to anybody");
+        CHECK(gate(mall, "t:moderate f:%s ts:%s r:89a9c8 remove:message", 0) == -403, "a key that is not listed cannot remove");
+        CHECK(gate(alice, "t:moderate f:%s ts:%s r:89a9c8 remove:message", 0) == -403, "nor can this station's administrator");
+        CHECK(!xwc_public_removed("89a9c8"), "nothing was removed");
+        s_naired = 0;
+        CHECK(gate(dave, "t:moderate f:%s ts:%s r:89a9c8 remove:message", 0) == 1 && aired_has("r:89a9c8 remove:message"),
+              "the listed key removes, with no session and no role here, and the act is aired");
+        CHECK(xwc_public_removed("89a9c8"), "the message is removed");
+        xwc_moderation_json(s_buf, sizeof s_buf, "X3STAT");
+        CHECK(jfind("\"89a9c8\""), "and told to the page under moderation.removed");
+        CHECK(gate(dave, "t:moderate f:%s d:X3STAT ts:%s revoke:X1CARO", 0) == -403, "removal only: a listed key sends nobody away");
+        CHECK(gate(dave, "t:moderate f:%s ts:%s r:89a9c8 remove:warning", 0) == -403, "and removes no alert");
+        /* Authority is the key, whatever name the act wears. */
+        {
+            person_t as_mall = *dave;
+            snprintf(as_mall.call, sizeof as_mall.call, "X1MALL");
+            n = signed_wire(w, sizeof w, &as_mall, "t:moderate f:%s ts:%s r:111111 remove:message", 0);
+            CHECK(xwc_public_heard(w, n) && xwc_public_removed("111111"), "heard on a bearer, under another name: the key decides");
+            person_t as_dave = *mall;
+            snprintf(as_dave.call, sizeof as_dave.call, "X1DAVE");
+            n = signed_wire(w, sizeof w, &as_dave, "t:moderate f:%s ts:%s r:222222 remove:message", 0);
+            CHECK(!xwc_public_heard(w, n) && !xwc_public_removed("222222"), "the moderator's name on an unlisted key is nothing");
+        }
+        n = signed_wire(w, sizeof w, dave, "t:moderate f:%s ts:%s r:333333 remove:message", 30);
+        CHECK(!xwc_public_heard(w, n), "an act dated in the future is not taken");
+        xwc_public_mods_add("npub1davedavedave", dave->pub, 0, s_now - 3600);
+        n = signed_wire(w, sizeof w, dave, "t:moderate f:%s ts:%s r:444444 remove:message", 0);
+        CHECK(!xwc_public_heard(w, n), "nor one dated after the key left the list");
+        n = signed_wire(w, sizeof w, dave, "t:moderate f:%s ts:%s r:555555 remove:message", -120);
+        CHECK(xwc_public_heard(w, n), "one dated while it was listed still stands");
+        xwc_public_mods_add("npub1davedavedave", dave->pub, 0, 0);
+        n = signed_wire(w, sizeof w, dave, "t:message f:%s ts:%s m:hello", 0);
+        CHECK(!xwc_public_heard(w, n), "any other packet is not looked at");
+        /* A flood of forged removals costs a bounded number of checks. */
+        s_now += 120;
+        uint32_t before = xwc_public_unchecked;
+        for (int i = 0; i < 10; i++) {
+            char fmt[96];
+            snprintf(fmt, sizeof fmt, "t:moderate f:%%s ts:%%s r:%06x remove:message", 0xabc000 + i);
+            n = signed_wire(w, sizeof w, mall, fmt, 0);
+            xwc_public_heard(w, n);
+        }
+        CHECK(xwc_public_unchecked - before == 4, "forged removals: six checks a minute, the rest are not checked");
+        s_now += 61;
+        n = signed_wire(w, sizeof w, dave, "t:moderate f:%s ts:%s r:666666 remove:message", 0);
+        CHECK(xwc_public_heard(w, n), "and the next minute a real one is heard again");
+        kv_set_cb("wc_pmh", "0");
+        n = signed_wire(w, sizeof w, dave, "t:moderate f:%s ts:%s r:777777 remove:message", 0);
+        xwc_admin_json(s_buf, sizeof s_buf, NULL, false);
+        CHECK(!xwc_public_heard(w, n) && jfind("\"public_moderators\":[]"), "the operator's switch off: nothing honoured, nobody listed");
+        kv_set_cb("wc_pmh", "1");
+    }
+
     printf("the record survives a restart\n");
     {
         xwc_cb_t cb = s_cb;
@@ -306,6 +372,8 @@ int main(void)
         int n = xwc_load();
         CHECK(n > 5 && !strcmp(xwc_role_of("X3STAT", "X1ALIC"), "mod") && strcmp(xwc_role_of("X3STAT", "X1BOBB"), "mod") != 0,
               "acts replayed from the file: alice moderates, bob does not");
+        CHECK(xwc_public_removed("89a9c8") && xwc_public_removed("666666") && xwc_public_mods_count() == 0,
+              "what the public moderators removed is kept; the list is the host's to hand over again");
         CHECK(session(alice, tok), "alice proves her key again");
     }
 
