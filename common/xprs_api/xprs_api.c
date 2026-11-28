@@ -260,12 +260,17 @@ typedef struct {
     size_t bytes;         /* the rows so far */
     bool staff;           /* the asker moderates the hosted room asked for */
     const char *asker;    /* the session's callsign, or NULL */
+    bool has_after;       /* after=: only records filed after this one */
+    uint32_t after;
 } hist_ctx_t;
 
 static bool hist_emit(const xprsidx_rec_t *rec, void *arg)
 {
     hist_ctx_t *c = (hist_ctx_t *)arg;
     bool own = rec->flags & XI_F_OUTGOING;
+    /* Told at an earlier ask (spec/API-HTTP.md, `after`): records are
+     * numbered as they are filed. */
+    if (c->has_after && rec->index <= c->after) return true;
     if (c->dir == 1 && own) return true;
     if (c->dir == 2 && !own) return true;
     if (c->mail_for) {
@@ -381,6 +386,17 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
         q.since_ts = parse_when(p);
     if (httpd_query_key_value(query, "until", p, sizeof p) == ESP_OK)
         q.until_ts = parse_when(p);
+    /* cursor / after (spec/API-HTTP.md): a page asking again is told only
+     * what was filed since its last ask. The sender's timestamp cannot say
+     * that (a packet arrives late), the record's number can. Read before
+     * the rows: a record filed meanwhile is told twice, never missed. A
+     * mark ahead of the store (it was wiped) is no mark. */
+    uint32_t mark = xprsindex_latest_index(s_cfg->index);
+    if (httpd_query_key_value(query, "after", p, sizeof p) == ESP_OK &&
+        p[0] >= '0' && p[0] <= '9') {
+        uint32_t a = (uint32_t)strtoul(p, NULL, 10);
+        if (a <= mark) { ctx.has_after = true; ctx.after = a; }
+    }
     if (httpd_query_key_value(query, "only", p, sizeof p) == ESP_OK)
         q.type = xprsidx_type_code(p);
     /* Several types at once (comma-separated), e.g. the chat page's
@@ -460,11 +476,13 @@ static esp_err_t history_common(httpd_req_t *req, bool mail_only)
 
     xprsidx_stats_t st;
     xprsindex_stats(s_cfg->index, &st);
-    char head[128];
+    char head[160];
     int n = snprintf(head, sizeof head,
-                     "{\"ok\":true,\"held\":%lu,\"time\":\"%s\",\"rows\":[",
+                     "{\"ok\":true,\"held\":%lu,\"time\":\"%s\","
+                     "\"cursor\":\"%lu\",\"rows\":[",
                      (unsigned long)st.count,
-                     time_synced() ? "synced" : "unsynced");
+                     time_synced() ? "synced" : "unsynced",
+                     (unsigned long)mark);
     /* What follows the rows, made first: an answer with a size to fit
      * (xapi_wc_room) gives the rows what the head and this leave. */
     char tail[512];
